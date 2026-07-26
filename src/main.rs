@@ -1,14 +1,12 @@
 //! Causal Memory MCP Server — entry point.
 //!
-//! Run: causal-memory
-//! Connects via stdio (standard MCP transport). The host agent spawns this
-//! as a child process and communicates via JSON-RPC over stdin/stdout.
-//!
-//! Data path: ~/.local/share/causal-memory/causal.db (or CAUSAL_MEMORY_DB env var)
+//! Two modes:
+//! - Default (no args): run as MCP server via stdio
+//! - `extract <session-dir>`: one-shot extraction from grok-build session logs
 
 use std::path::PathBuf;
 
-use causal_memory::{server::CausalMemoryServer, store::CausalStore};
+use causal_memory::{extractor::DecisionExtractor, server::CausalMemoryServer, store::CausalStore};
 
 fn get_db_path() -> PathBuf {
     if let Ok(path) = std::env::var("CAUSAL_MEMORY_DB") {
@@ -30,6 +28,18 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    let args: Vec<String> = std::env::args().collect();
+
+    // Subcommand: extract <session-dir>
+    if args.len() >= 2 && args[1] == "extract" {
+        return run_extract(&args[2..]);
+    }
+
+    // Default: MCP server mode
+    run_mcp_server()
+}
+
+fn run_mcp_server() -> anyhow::Result<()> {
     let db_path = get_db_path();
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -42,7 +52,6 @@ fn main() -> anyhow::Result<()> {
 
     let server = CausalMemoryServer::new(store);
 
-    // MCP stdio transport: read from stdin, write to stdout
     use rmcp::ServiceExt;
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
@@ -54,4 +63,32 @@ fn main() -> anyhow::Result<()> {
         tracing::info!("MCP server shut down");
         Ok(())
     })
+}
+
+fn run_extract(args: &[String]) -> anyhow::Result<()> {
+    if args.is_empty() {
+        eprintln!("Usage: causal-memory extract <session-dir>");
+        eprintln!("  session-dir = ~/.grok/sessions/<workspace>/<session-id>/");
+        std::process::exit(1);
+    }
+
+    let session_dir = PathBuf::from(&args[0]);
+    let db_path = get_db_path();
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let store = CausalStore::open(&db_path)?;
+
+    println!("Extracting decisions from: {}", session_dir.display());
+    let stats = DecisionExtractor::extract_from_session(&store, &session_dir)?;
+
+    println!("\n=== Extraction complete ===");
+    println!("  Decisions found:      {}", stats.decisions_found);
+    println!("  Results matched:      {}", stats.results_matched);
+    println!("  Skipped (low-value):  {}", stats.skipped_low_value);
+    println!("  Edges inserted:       {}", stats.edges_inserted);
+    println!("\nTotal causal edges in DB: {}", store.count_edges()?);
+
+    Ok(())
 }

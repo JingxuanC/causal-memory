@@ -1,6 +1,6 @@
 [package]
 name = "causal-memory"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Causal Memory Layer for AI Agents — MCP server that records and retrieves decision→outcome causal relationships"
 license = "Apache-2.0"
