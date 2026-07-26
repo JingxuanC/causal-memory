@@ -41,6 +41,12 @@ fn main() -> anyhow::Result<()> {
         return rt.block_on(run_judge(&args[2..]));
     }
 
+    // Subcommand: reasoning <session-dir> — extract reasoning-level decisions via LLM
+    if args.len() >= 2 && args[1] == "reasoning" {
+        let rt = tokio::runtime::Runtime::new()?;
+        return rt.block_on(run_reasoning(&args[2..]));
+    }
+
     // Default: MCP server mode
     run_mcp_server()
 }
@@ -155,6 +161,59 @@ fn run_extract(args: &[String]) -> anyhow::Result<()> {
     println!("  Skipped (low-value):  {}", stats.skipped_low_value);
     println!("  Edges inserted:       {}", stats.edges_inserted);
     println!("\nTotal causal edges in DB: {}", store.count_edges()?);
+
+    Ok(())
+}
+
+async fn run_reasoning(args: &[String]) -> anyhow::Result<()> {
+    use causal_memory::llm;
+    use causal_memory::reasoning_extractor::ReasoningExtractor;
+
+    if args.is_empty() {
+        eprintln!("Usage: causal-memory reasoning <session-dir> [max_messages]");
+        eprintln!("  Extracts high-value decisions from assistant reasoning text using LLM.");
+        eprintln!("  This is the v0.4 feature — captures decisions that tool_call extraction misses.");
+        std::process::exit(1);
+    }
+
+    let config = match llm::LlmConfig::from_env() {
+        Some(c) => {
+            println!("LLM: {} @ {}", c.model, c.api_base);
+            c
+        }
+        None => {
+            eprintln!("No LLM configured. Set CAUSAL_MEMORY_LLM_API + CAUSAL_MEMORY_LLM_KEY");
+            std::process::exit(1);
+        }
+    };
+
+    let session_dir = PathBuf::from(&args[0]);
+    let max_messages = args.get(1)
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(30);
+
+    let db_path = get_db_path();
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let store = CausalStore::open(&db_path)?;
+
+    println!("Extracting reasoning-level decisions from: {}", session_dir.display());
+    println!("Max messages to scan: {}\n", max_messages);
+
+    let stats = ReasoningExtractor::extract_from_session(
+        &store, &session_dir, &config, max_messages,
+    ).await?;
+
+    println!("\n=== Reasoning extraction complete ===");
+    println!("  Messages scanned:        {}", stats.messages_scanned);
+    println!("  Messages with decisions: {}", stats.messages_with_decisions);
+    println!("  Decisions extracted:     {}", stats.decisions_extracted);
+    println!("  Edges inserted:          {}", stats.edges_inserted);
+    println!("  LLM calls:               {}", stats.llm_calls);
+    println!("  LLM errors:              {}", stats.llm_errors);
+    println!("\nTotal causal edges: {}", store.count_edges()?);
 
     Ok(())
 }
