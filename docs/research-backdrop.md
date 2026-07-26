@@ -3,13 +3,22 @@
 > Papers and theoretical foundations that shaped `causal-memory`.
 > This is not a bibliography — it's a map of which ideas ended up in which design decisions.
 
+For the **full systematic research documentation** (BibTeX, detailed abstracts, methodology critiques, and per-paper design traces), see [`docs/research/`](research/) — organized by theme:
+
+- [`neuroscience/`](research/neuroscience/) — how the brain handles memory, causality, and consolidation
+- [`cognitive-psychology/`](research/cognitive-psychology/) — how humans represent and reason about causal knowledge
+- [`computational-ai/`](research/computational-ai/) — what the AI field does and where the causal memory gap is
+- [`causal-inference/`](research/causal-inference/) — formal foundations (Pearl, Spirtes)
+
+This page provides a **quick-reference summary**. For depth, follow the links above.
+
 ---
 
 ## 1. The Core Thesis: LLM is a Stateless Function
 
 **Reference**: [insights/09-stateless-function](https://github.com/JingxuanC/agent-teardown/blob/main/insights/09-stateless-function.md)
 
-The starting point: every LLM inference call starts from scratch. Context is assembled, fed, then discarded. This means **memory is not a feature — it's a mandatory injection layer**. Causal memory is one specific injection strategy optimized for decision→outcome links.
+Every LLM inference call starts from scratch. Memory is not a feature — it's a mandatory injection layer. Causal memory is one specific injection strategy optimized for decision→outcome links.
 
 ---
 
@@ -17,7 +26,7 @@ The starting point: every LLM inference call starts from scratch. Context is ass
 
 **Paper**: [papers/02-compaction-degradation](https://github.com/JingxuanC/agent-teardown/blob/main/papers/02-compaction-degradation.md)
 
-Real-LLM benchmark (using grok-build's production compaction prompt):
+Real-LLM benchmark (grok-build's production compaction prompt):
 
 | Compactions (k) | Textual recall | Causal-table recall |
 |---|---|---|
@@ -26,119 +35,140 @@ Real-LLM benchmark (using grok-build's production compaction prompt):
 | 3 | 55% | 100% |
 | 5 | **45%** | **100%** |
 
-Key finding: **causal information (C-class) decays faster than expected under text compaction**. After k=5, textual recall is below 50%. The causal table survives because it lives outside the compaction pipeline.
+Key finding: **causal information decays faster than expected under text compaction**. The causal table survives because it lives outside the compaction pipeline.
 
 ---
 
-## 3. Neuroscience: Hippocampus as Causal Inference Engine
+## 3. Neuroscience
 
-**Kumaran, D., Hassabis, D., & McClelland, J. L. (2016).** *"What Learning Systems are Intelligent? Complementary Learning Systems Theory Updated."* Trends in Cognitive Sciences, 20(7), 512-534.
+### Kumaran, Hassabis & McClelland (2016) — CLS Theory
 
-**Why it matters**: CLS theory explains the dual-system architecture we use:
-- **Hippocampus** = fast, sparse, episodic (our `causal_edges` table)
-- **Neocortex** = slow, statistical, semantic (future: `meta_causal_edges` for cross-task patterns)
+**Key idea**: The brain has two memory systems — hippocampus (fast, episodic) and neocortex (slow, semantic).
 
-The hippocampus is not just a storage device — it's a **causal inference engine** that extracts structure from discrete events via statistical learning. This is exactly what `record_decision` does: each call is a "causal sample" fed into the graph.
+**Design connection**: Our dual-table schema (`causal_edges` + `meta_causal_edges`) directly copies this architecture. We refuse to compact `causal_edges` because the hippocampus does not compress episodic traces during initial encoding.
 
----
+**Deep dive**: [`neuroscience/cls-theory.md`](research/neuroscience/cls-theory.md)
 
-## 4. Neuroscience: Compressed Replay and Offline Consolidation
+### Schapiro et al. (2017) — Hippocampal Replay
 
-**Schapiro, A. C., et al. (2017).** *"The Hippocampus is Necessary for Disambiguating Temporal Sequences."* Hippocampus, 27(11), 1123-1133.
+**Key idea**: The hippocampus resolves temporal ambiguity via **compressed replay** during rest — not faithful playback, but structured re-evaluation.
 
-**Diekelmann, S. & Born, J. (2010).** *"The memory function of sleep."* Nature Reviews Neuroscience 11, 114–126.
+**Design connection**: v0.4 offline consolidation cycle ("sleep") is directly inspired by this. Replay detects contradictions, merges redundant chains, and updates `meta_causal_edges`.
 
-**Why it matters**: The brain doesn't consolidate memories in real-time. It does **compressed replay during sleep** — reactivating experience sequences in fast-forward to evaluate causal weights and resolve ambiguities.
+**Deep dive**: [`neuroscience/hippocampus-temporal.md`](research/neuroscience/hippocampus-temporal.md)
 
-**Engineering implication**: `causal-memory` v0.2 is real-time only. v0.4+ should introduce an **offline consolidation cycle**:
-- Active phase: accumulate raw causal edges
-- Consolidation phase: replay recent experience, detect contradictions, merge redundant chains, update `meta_causal_edges`
-- This maps directly to the "sleep" mechanism proposed in [insights/05-agi-7x24](https://github.com/JingxuanC/agent-teardown/blob/main/insights/05-agi-7x24.md)
+### Davachi (2006) — Temporal Contiguity
 
----
+**Key idea**: The brain defaults to "A happened before B, therefore A caused B" — a heuristic, not a fact.
 
-## 5. Cognitive Science: Causal Graph Theory
+**Design connection**: Our confidence levels encode this explicitly: `temporal` = 0.4 (weak), `rule` = 0.7 (strong), `user_feedback` = 0.95 (gold standard). This prevents over-weighting spurious temporal correlations.
 
-**Sloman, S. A. (2005).** *"Causal Models: How People Think About the World and Its Alternatives."* Oxford University Press.
+**Deep dive**: [`neuroscience/temporal-contiguity.md`](research/neuroscience/temporal-contiguity.md)
 
-**Why it matters**: Humans use **directed acyclic graphs (DAGs)** as the default representation for causal knowledge. This is not a metaphor — it's the actual cognitive format. The `causal_edges` table is a flattened DAG edge list.
+### Diekelmann & Born (2010) — Sleep Consolidation
 
-Sloman's work also supports **intervention reasoning** (Pearl's do-calculus): "If I do X, what happens to Y?" This is the theoretical foundation for future `trace_cause_chain` extensions — not just "what caused Y?" but "what would have happened if I hadn't done X?"
+**Key idea**: Sleep actively transforms memory via selective reactivation, gist extraction, and synaptic down-selection.
 
----
+**Design connection**: The v0.4 consolidation cycle includes: reactivation (priority queue), generalization (meta_causal_edges), and down-selection (confidence decay + garbage collection).
 
-## 6. Cognitive Science: Counterfactual Simulation
-
-**Gerstenberg, T., et al. (2021).** *"Counterfactual Simulation in Human Cognition."* Science, 373(6568), 1428-1431.
-
-**Why it matters**: Humans determine causal responsibility by running **counterfactual simulations** — "if I hadn't done X, would Y still have happened?" This is computationally expensive but cognitively natural.
-
-**Engineering implication**: The `trace_cause_chain` tool is a partial implementation of this. Full counterfactual support would require:
-- Storing "alternative decisions" at each node (decision forks)
-- Evaluating which fork would have prevented the outcome
-- This maps to `meta_causal_edges` with `contradicts` relation type (v0.3+ roadmap)
+**Deep dive**: [`neuroscience/sleep-consolidation.md`](research/neuroscience/sleep-consolidation.md)
 
 ---
 
-## 7. Cognitive Science: Reconstructive Memory
+## 4. Cognitive Psychology
 
-**Schacter, D. L., & Addis, D. R. (2007).** *"The Cognitive Neuroscience of Constructive Memory: Remembering the Past and Imagining the Future."* Philosophical Transactions of the Royal Society B, 362(1481), 773-786.
+### Sloman (2005) — Causal Graph Theory
 
-**Why it matters**: Memory is not playback — it's **reconstruction**. The hippocampus stores "construction blueprints," not raw footage. Every retrieval is a reassembly based on current goals.
+**Key idea**: Humans use **directed acyclic graphs (DAGs)** as the default representational format for causal knowledge.
 
-**Engineering implication**: This is the theoretical basis for **reconstructive retrieval** (roadmap v1.1+). Instead of returning raw `CausalEntry` records, the system could:
-1. Retrieve relevant causal subgraph
-2. Feed it to a lightweight LLM layer
-3. Generate a coherent "lessons learned" narrative tailored to the current query context
+**Design connection**: `causal_edges` is a flattened DAG edge list. The `relation` types (`caused`, `enabled`, `prevented`, `no_effect`) encode structural constraints that causal models must satisfy.
 
-This is more token-efficient and more cognitively natural than dumping raw edges into context.
+**Deep dive**: [`cognitive-psychology/causal-graph-theory.md`](research/cognitive-psychology/causal-graph-theory.md)
 
----
+### Gerstenberg et al. (2021) — Counterfactual Simulation
 
-## 8. Neuroscience: Temporal Contiguity Heuristic
+**Key idea**: Humans determine causal responsibility by running **mental simulations** of counterfactual worlds — "if I hadn't done X, would Y still have happened?"
 
-**Davachi, L. (2006).** *"Item, Context and Relational Episodic Encoding in Humans."* Current Opinion in Neurobiology, 16(6), 693-700.
+**Design connection**: `trace_cause_chain` is a partial implementation of this. Future v0.5+ could add full counterfactual queries ("if I had used channels instead of mutexes...").
 
-**Why it matters**: The brain defaults to "A happened before B, therefore A caused B" (temporal contiguity). This is a **heuristic, not a fact**.
+**Deep dive**: [`cognitive-psychology/counterfactual-simulation.md`](research/cognitive-psychology/counterfactual-simulation.md)
 
-**Engineering implication**: Our confidence levels encode this explicitly:
-- `temporal` = 0.4 (weak — just happened in sequence)
-- `rule` = 0.7 (strong — matches known causal pattern)
-- `user_feedback` = 0.95 (gold standard — human confirmed)
+### Schacter & Addis (2007) — Reconstructive Memory
 
-This prevents the system from over-weighting spurious temporal correlations.
+**Key idea**: Memory is not playback — it's **reconstruction**. The hippocampus stores "construction blueprints," not raw footage. Every retrieval reassembles stored components.
+
+**Design connection**: This is the theoretical basis for **reconstructive retrieval** (v1.1+). Instead of returning raw edges, the system retrieves a causal subgraph and generates a coherent "lessons learned" narrative.
+
+**Deep dive**: [`cognitive-psychology/reconstructive-memory.md`](research/cognitive-psychology/reconstructive-memory.md)
 
 ---
 
-## 9. AI: Memory Framework Survey
+## 5. Computational AI
 
-**Wang, L., et al. (2024).** *"A Survey on Large Language Model based Autonomous Agents."* Frontiers of Computer Science, 18(6), 186345.
+### Wang et al. (2024) — Agent Memory Survey
 
-**Park, J. S., et al. (2023).** *"Generative Agents: Interactive Simulacra of Human Behavior."* UIST 2023.
+**Key idea**: Current LLM agent memory systems are almost entirely RAG-based. **None store causal relationships as a primary data structure.**
 
-**Why it matters**: The survey confirms that **current LLM Agent memory systems are almost entirely retrieval-augmented (RAG) paradigms** — none store causal relationships as first-class citizens.
+**Design connection**: This is our primary evidence that causal memory is a genuine market gap, not a feature that existing systems "just haven't gotten around to."
 
-Generative Agents (Stanford Town) has the closest architecture with memory streams + reflection, but their "reflection" is coarse-grained — not decision-level causal links. This is the **market gap** causal-memory fills.
+**Deep dive**: [`computational-ai/agent-memory-survey.md`](research/computational-ai/agent-memory-survey.md)
 
----
+### Park et al. (2023) — Generative Agents
 
-## 10. AI: System 2 Deep Learning and Explicit Causal Representation
+**Key idea**: Persistent memory + periodic reflection enables emergent social behavior. But reflection is coarse-grained (text summaries), not decision-level causal links.
 
-**Goyal, A., & Bengio, Y. (2022).** *"Inductive Biases for Deep Learning of Higher-Level Cognition."* Proceedings of the Royal Society A, 478(2266), 20210068.
+**Design connection**: Generative Agents is the closest precedent. We extend it by making reflection structured (`meta_causal_edges`) and causal (`causal_edges`).
 
-**Why it matters**: Bengio argues that System 2 cognition (planning, causal reasoning, abstraction) requires **explicit object-relation-rule representations**, not end-to-end implicit encoding.
+**Deep dive**: [`computational-ai/generative-agents.md`](research/computational-ai/generative-agents.md)
 
-Causal-memory is an implementation of this principle: instead of hoping the LLM "learns" causality from context, we **externalize causal structure into an explicit graph** that the LLM can query, traverse, and reason about.
+### Goyal & Bengio (2022) — System 2 Inductive Biases
 
----
+**Key idea**: System 2 cognition (planning, causal reasoning) requires **explicit object-relation-rule representations**, not end-to-end implicit encoding.
 
-## Reading Order (if you want to follow our reasoning)
+**Design connection**: `causal-memory` is an implementation of this principle. Instead of hoping the LLM "learns" causality, we externalize causal structure into an explicit graph.
 
-1. Start with [insights/09](https://github.com/JingxuanC/agent-teardown/blob/main/insights/09-stateless-function.md) — the "LLM is stateless" premise
-2. Read [papers/02](https://github.com/JingxuanC/agent-teardown/blob/main/papers/02-compaction-degradation.md) — the empirical evidence that causal info is fragile
-3. Read [insights/11](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md) — the causal state store design this repo implements
-4. Then pick any paper from this list — they're all connected to specific design decisions
+**Deep dive**: [`computational-ai/system2-explicit-representation.md`](research/computational-ai/system2-explicit-representation.md)
 
 ---
 
-*This document is a living artifact. As we implement v0.3+ features (meta-causal edges, offline consolidation, reconstructive retrieval), we will update this map with the papers that shaped those decisions.*
+## 6. Causal Inference (Formal Foundations)
+
+### Pearl (2009) — Causality
+
+**Key idea**: The **ladder of causation** — three levels: association (seeing), intervention (doing), counterfactual (imagining). Each strictly more powerful.
+
+**Design connection**: v0.2 is Rung 1 (`search_causal`). v0.5 roadmap includes Rung 2 (intervention queries) and Rung 3 (counterfactual reasoning). Pearl provides the formal target.
+
+**Deep dive**: [`causal-inference/pearl-causality.md`](research/causal-inference/pearl-causality.md)
+
+### Spirtes, Glymour & Scheines (2000) — PC Algorithm
+
+**Key idea**: Automated causal discovery from observational data via conditional independence testing.
+
+**Design connection**: The v0.3 `meta_causal_edges` activation is inspired by PC. We will mine cross-task patterns from accumulated causal edges using similar constraint-based methods.
+
+**Deep dive**: [`causal-inference/pc-algorithm.md`](research/causal-inference/pc-algorithm.md)
+
+---
+
+## BibTeX
+
+All papers: [`docs/research/references.bib`](research/references.bib)
+
+```bash
+# Import into Zotero
+zotero docs/research/references.bib
+```
+
+---
+
+## Reading Order
+
+1. Start with [`insights/09`](https://github.com/JingxuanC/agent-teardown/blob/main/insights/09-stateless-function.md) — the "LLM is stateless" premise
+2. Read [`papers/02`](https://github.com/JingxuanC/agent-teardown/blob/main/papers/02-compaction-degradation.md) — the empirical evidence
+3. Read [`insights/11`](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md) — the design this implements
+4. Then explore [`docs/research/`](research/) by theme — each paper is connected to a specific design decision
+
+---
+
+*This document is a living artifact. As we implement v0.3+ features, we update the research map with the papers that shaped those decisions.*
