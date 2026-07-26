@@ -49,6 +49,11 @@ fn main() -> anyhow::Result<()> {
         return rt.block_on(run_reasoning(&args[2..]));
     }
 
+    // Subcommand: link — connect flat decisions into multi-hop chains
+    if args.len() >= 2 && args[1] == "link" {
+        return run_link();
+    }
+
     // Default: MCP server mode
     run_mcp_server()
 }
@@ -237,6 +242,57 @@ async fn run_reasoning(args: &[String]) -> anyhow::Result<()> {
     println!("  LLM calls:               {}", stats.llm_calls);
     println!("  LLM errors:              {}", stats.llm_errors);
     println!("\nTotal causal edges: {}", store.count_edges()?);
+
+    Ok(())
+}
+
+fn run_link() -> anyhow::Result<()> {
+    use causal_memory::chain_linker::ChainLinker;
+
+    let db_path = get_db_path();
+    let store = CausalStore::open(&db_path)?;
+
+    let edge_count = store.count_edges()?;
+    println!("=== Causal Chain Linker ===");
+    println!(
+        "DB: {} ({} edges before linking)\n",
+        db_path.display(),
+        edge_count
+    );
+
+    if edge_count == 0 {
+        anyhow::bail!("No edges. Run `extract` or `reasoning` first.");
+    }
+
+    let stats = ChainLinker::link_chains(&store)?;
+
+    println!("=== Linking complete ===");
+    println!("  Edges scanned:          {}", stats.edges_scanned);
+    println!("  Temporal links found:   {}", stats.temporal_links);
+    println!("  Text-overlap links:     {}", stats.text_links);
+    println!("  Self-loops skipped:     {}", stats.skipped_self);
+    println!("  Bridge edges created:   {}", stats.bridge_edges_created);
+    println!("\nTotal edges after linking: {}", store.count_edges()?);
+
+    // Verify: check if multi-hop chains now exist
+    println!("\n=== Multi-hop chain check ===");
+    let multi = store.trace_cause_chain("error", 5, 0.15)?;
+    if multi.is_empty() {
+        println!("No multi-hop chains found yet.");
+        println!("(This is expected if the session didn't have failure→fix→test sequences.)");
+    } else {
+        println!("Found {} chains! Sample:", multi.len());
+        for (i, chain) in multi.iter().take(3).enumerate() {
+            println!("  Chain {}: {} hops", i + 1, chain.len());
+            for hop in chain.iter().take(3) {
+                println!(
+                    "    hop {}: {}",
+                    hop.hop,
+                    &hop.decision_text[..hop.decision_text.len().min(50)]
+                );
+            }
+        }
+    }
 
     Ok(())
 }

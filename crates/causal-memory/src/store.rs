@@ -123,8 +123,30 @@ impl CausalStore {
         confidence: f64,
         discovered_by: &str,
     ) -> Result<String> {
+        self.record_decision_at(
+            decision,
+            outcome,
+            relation,
+            task_tag,
+            confidence,
+            discovered_by,
+            chrono::Utc::now().timestamp(),
+        )
+    }
+
+    /// Record with an explicit timestamp (for extractors that know the real event time).
+    pub fn record_decision_at(
+        &self,
+        decision: &str,
+        outcome: &str,
+        relation: &str,
+        task_tag: Option<&str>,
+        confidence: f64,
+        discovered_by: &str,
+        timestamp: i64,
+    ) -> Result<String> {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
-        let now = chrono::Utc::now().timestamp();
+        let now = timestamp;
         let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
         let dec_id = format!("d{}{}", now, seq);
         let out_id = format!("o{}{}", now, seq);
@@ -276,7 +298,8 @@ impl CausalStore {
                   AND ch.chain_confidence * ce2.confidence >= ?2
             )
             SELECT path_json FROM chain
-            ORDER BY chain_confidence DESC
+            WHERE depth >= 2
+            ORDER BY depth DESC, chain_confidence DESC
             LIMIT 50
             "#;
 
@@ -422,6 +445,16 @@ impl CausalStore {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM causal_edges", [], |row| row.get(0))?;
         Ok(n)
+    }
+
+    /// Execute a closure with a reference to the connection (for advanced queries).
+    /// Used by chain_linker to avoid duplicating the Mutex logic.
+    pub fn with_conn<F, T>(&self, f: F) -> Result<T>
+    where
+        F: FnOnce(&rusqlite::Connection) -> Result<T>,
+    {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        f(&conn)
     }
 }
 

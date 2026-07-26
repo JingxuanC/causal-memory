@@ -68,6 +68,8 @@ struct EventEntry {
     tool_name: Option<String>,
     #[serde(default)]
     outcome: Option<String>,
+    #[serde(default)]
+    ts: Option<String>,
 }
 
 /// An outcome event waiting to be consumed by a matching tool_call.
@@ -75,6 +77,8 @@ struct EventEntry {
 struct PendingOutcome {
     tool_name: String,
     outcome: String,
+    #[allow(dead_code)]
+    ts: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -142,15 +146,20 @@ impl DecisionExtractor {
             );
 
             // v0.2.1 fix: consume the next matching outcome from the queue
-            // (preserved over PR's older v0.2 logic — keeps the outcome-overwrite
-            // fix and graded confidence inference)
             let event_outcome = Self::consume_next_outcome(&mut outcome_queue, &decision.name);
 
-            // v0.2.1: graded causal inference (replaces binary temporal/rule)
+            // v0.4.1: parse real timestamp from event (enables multi-hop chains)
+            let event_ts = event_outcome
+                .as_ref()
+                .and_then(|o| o.ts.as_ref())
+                .and_then(|ts| Self::parse_event_ts(ts))
+                .unwrap_or_else(|| chrono::Utc::now().timestamp());
+
+            // v0.2.1: graded causal inference
             let (relation, confidence, source) = Self::infer_causal_confidence(
                 &decision_text,
                 &result_content,
-                event_outcome.as_deref(),
+                event_outcome.as_ref().map(|o| o.outcome.as_str()),
             );
 
             if source == "rule" && confidence >= 0.7 {
@@ -162,13 +171,14 @@ impl DecisionExtractor {
 
             let task_tag = Self::infer_task_tag(&decision.name, &decision.arguments);
 
-            match store.record_decision(
+            match store.record_decision_at(
                 &decision_text,
                 &result_content.chars().take(300).collect::<String>(),
                 relation,
                 Some(&task_tag),
                 confidence,
                 source,
+                event_ts,
             ) {
                 Ok(_) => stats.edges_inserted += 1,
                 Err(e) => tracing::warn!("Failed to insert edge: {e}"),
@@ -237,6 +247,7 @@ impl DecisionExtractor {
                     queue.push_back(PendingOutcome {
                         tool_name: name,
                         outcome,
+                        ts: event.ts,
                     });
                 }
             }
@@ -245,15 +256,13 @@ impl DecisionExtractor {
     }
 
     /// v0.2.1: consume the next outcome matching `tool_name` from the queue.
-    /// Scans from the front; the first match is removed and returned.
-    /// This prevents same-name tools from overwriting each other.
+    /// Returns the full PendingOutcome (including timestamp).
     fn consume_next_outcome(
         queue: &mut VecDeque<PendingOutcome>,
         tool_name: &str,
-    ) -> Option<String> {
+    ) -> Option<PendingOutcome> {
         let pos = queue.iter().position(|p| p.tool_name == tool_name)?;
-        let matched = queue.remove(pos)?;
-        Some(matched.outcome)
+        queue.remove(pos)
     }
 
     /// v0.2.1: graded causal confidence inference.
@@ -355,6 +364,15 @@ impl DecisionExtractor {
         }
 
         false
+    }
+
+    /// Parse an ISO timestamp from events.jsonl into Unix epoch seconds.
+    /// Example: "2026-07-26T06:03:11.008Z" → epoch_seconds
+    fn parse_event_ts(ts: &str) -> Option<i64> {
+        // Try chrono's parser for ISO 8601
+        chrono::DateTime::parse_from_rfc3339(ts)
+            .ok()
+            .map(|dt| dt.timestamp())
     }
 
     fn extract_text(content: &serde_json::Value) -> String {
@@ -560,27 +578,24 @@ mod tests {
 
     #[test]
     fn test_consume_next_outcome_no_overwrite() {
-        // v0.2.1 fix: two same-name tools, first error second success
-        // must NOT overwrite each other
         let mut queue = VecDeque::new();
         queue.push_back(PendingOutcome {
             tool_name: "run_terminal_command".into(),
             outcome: "error".into(),
+            ts: None,
         });
         queue.push_back(PendingOutcome {
             tool_name: "run_terminal_command".into(),
             outcome: "success".into(),
+            ts: None,
         });
 
-        // First call should consume the error
         let first = DecisionExtractor::consume_next_outcome(&mut queue, "run_terminal_command");
-        assert_eq!(first.as_deref(), Some("error"));
+        assert_eq!(first.as_ref().map(|o| o.outcome.as_str()), Some("error"));
 
-        // Second call should consume the success
         let second = DecisionExtractor::consume_next_outcome(&mut queue, "run_terminal_command");
-        assert_eq!(second.as_deref(), Some("success"));
+        assert_eq!(second.as_ref().map(|o| o.outcome.as_str()), Some("success"));
 
-        // Queue now empty
         assert!(queue.is_empty());
     }
 }
