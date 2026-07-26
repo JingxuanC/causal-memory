@@ -128,6 +128,8 @@ impl DecisionExtractor {
             );
 
             // v0.2.1 fix: consume the next matching outcome from the queue
+            // (preserved over PR's older v0.2 logic — keeps the outcome-overwrite
+            // fix and graded confidence inference)
             let event_outcome = Self::consume_next_outcome(&mut outcome_queue, &decision.name);
 
             // v0.2.1: graded causal inference (replaces binary temporal/rule)

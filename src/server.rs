@@ -1,4 +1,4 @@
-//! MCP server handler — exposes 3 tools for causal memory.
+//! MCP server handler — exposes 4 tools for causal memory.
 //!
 //! Tools:
 //! - record_decision: agent calls after completing an action, to log
@@ -6,7 +6,9 @@
 //! - search_causal: agent calls BEFORE a non-trivial decision, to check
 //!   past lessons in the same task domain.
 //! - trace_cause: agent calls when something fails, to find which past
-//!   decision could have caused it.
+//!   decision could have caused it (single-hop reverse lookup).
+//! - trace_cause_chain: agent calls for deep failure analysis, to follow
+//!   multi-hop causal chains backward through the decision graph.
 
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -68,6 +70,22 @@ pub struct TraceCauseParams {
     /// Description of the bad outcome
     #[schemars(description = "Description of what went wrong")]
     pub outcome_description: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct TraceCauseChainParams {
+    /// Description of the bad outcome to trace backward from
+    #[schemars(description = "Description of what went wrong")]
+    pub outcome_description: String,
+    /// Maximum chain depth (default 3)
+    #[schemars(description = "Maximum hops to trace backward (default 3)")]
+    pub max_depth: Option<usize>,
+    /// Minimum confidence per edge (default 0.5)
+    #[schemars(description = "Minimum confidence threshold for each hop (default 0.5)")]
+    pub min_confidence: Option<f64>,
+    /// Max chains to return (default 5)
+    #[schemars(description = "Maximum causal chains to return (default 5)")]
+    pub limit: Option<usize>,
 }
 
 // ─── Tool implementations ─────────────────────────────────────────────────
@@ -171,6 +189,51 @@ impl CausalMemoryServer {
             }
             Err(e) => format!("❌ Trace failed: {e}"),
         }
+    }
+
+    #[tool(name = "trace_cause_chain", description = "Deep failure analysis: trace multi-hop causal chains backward from a bad outcome. Use when a single-hop trace doesn't reveal the root cause. E.g., 'service crashed' ← 'OOM' ← 'cache had no TTL' ← 'Redis configured without expiry'. Parameters: outcome_description, max_depth (default 3), min_confidence (default 0.5), limit (default 5).")]
+    fn trace_cause_chain(
+        &self,
+        Parameters(params): Parameters<TraceCauseChainParams>,
+    ) -> String {
+        let max_depth = params.max_depth.unwrap_or(3);
+        let min_confidence = params.min_confidence.unwrap_or(0.5);
+        let limit = params.limit.unwrap_or(5);
+
+        let chains = match self.store.trace_cause_chain(
+            &params.outcome_description,
+            max_depth,
+            min_confidence,
+        ) {
+            Ok(c) => c,
+            Err(e) => return format!("❌ Chain trace failed: {e}"),
+        };
+
+        if chains.is_empty() {
+            return "📭 No multi-hop causal chains found. Try widening max_depth or lowering min_confidence.".to_string();
+        }
+
+        let show = chains.len().min(limit);
+        let mut out = format!(
+            "Found {} causal chain(s) (showing {}, max_depth={}, min_conf={}):\n\n",
+            chains.len(), show, max_depth, min_confidence
+        );
+
+        for (i, chain) in chains.iter().take(limit).enumerate() {
+            out.push_str(&format!("Chain {} (chain confidence: {:.0}%):\n", i + 1, chain.last().map(|h| h.chain_confidence * 100.0).unwrap_or(0.0)));
+            for hop in chain {
+                out.push_str(&format!(
+                    "  hop {}: \"{}\"\n         →({})→ \"{}\"\n         edge confidence: {:.0}%\n",
+                    hop.hop,
+                    hop.decision_text,
+                    hop.relation,
+                    hop.outcome_text,
+                    hop.confidence * 100.0,
+                ));
+            }
+            out.push('\n');
+        }
+        out
     }
 
     /// Get recent decisions for system prompt (L0 directory, per insights/13 §1.2).

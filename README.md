@@ -5,7 +5,7 @@
 > Memory frameworks today (Mem0, Zep, Letta, OpenViking, MemOS) store *what* happened. `causal-memory` stores *why* — the causal link between a decision and its outcome. This is the slice every other memory layer misses.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Status: v0.1.0](https://img.shields.io/badge/status-v0.1.0--alpha-orange.svg)](#status)
+[![Status: v0.2.0](https://img.shields.io/badge/status-v0.2.0--alpha-orange.svg)](#status)
 
 ## Why
 
@@ -24,13 +24,16 @@ The causal table doesn't decay because it lives outside the agent's context wind
 
 ## What it does
 
-Three MCP tools. That's it — small surface area is the point.
+Four MCP tools. Small surface area is the point.
 
 | Tool | When to call | What it does |
 |---|---|---|
 | `record_decision` | After completing an action | Logs `decision → outcome` as a causal edge with task tag + confidence |
 | `search_causal` | Before a non-trivial decision | Retrieves past causal episodes by task or text, ordered by confidence |
-| `trace_cause` | When something fails | Reverse-traces which past decision caused a given outcome |
+| `trace_cause` | When something fails (simple) | Single-hop reverse: which decision caused this outcome |
+| `trace_cause_chain` | When something fails (deep) | Multi-hop backward traversal through the causal graph |
+
+**Multi-hop example**: "service crashed" ← "OOM" ← "cache had no TTL" ← "Redis configured without expiry". `trace_cause` finds the first hop. `trace_cause_chain` walks the full chain.
 
 ## Quick start
 
@@ -86,20 +89,23 @@ The `causal_edges` table is never compacted — it's outside the agent's context
 
 ## Status
 
-**v0.1.0 — alpha.** Working MCP server, unit tests pass, builds clean. What works:
+**v0.2.0 — alpha.** What works:
 
-- ✅ Three MCP tools (record / search / trace)
+- ✅ Four MCP tools (record / search / single-hop trace / **multi-hop chain trace**)
 - ✅ SQLite persistence with CHECK constraints
+- ✅ **Parameterized queries** (no SQL injection risk)
 - ✅ Confidence levels (temporal / rule / llm_inferred / user_feedback)
 - ✅ Task-aware retrieval
-- ✅ Reverse causal lookup for failure attribution
+- ✅ **Multi-hop backward traversal** via recursive CTE
+- ✅ Rule-based **decision auto-extractor** for grok-build session logs
 
 What's not done yet (honest):
 
-- ❌ No decision auto-extractor (agent must call `record_decision` manually)
-- ❌ No Python/TS bindings (Rust binary only)
-- ❌ No LongMemEval benchmark integration
-- ❌ No cross-agent sharing protocol
+- ❌ Semantic / vector search (LIKE only for now)
+- ❌ Python/TS bindings (Rust binary only)
+- ❌ LongMemEval benchmark integration
+- ❌ Cross-agent sharing protocol
+- ❌ Offline consolidation ("sleep") cycle
 - ❌ Not yet wired into a production agent end-to-end
 
 Roadmap: see [docs/roadmap.md](docs/roadmap.md).
@@ -119,6 +125,8 @@ This project is the engineering output of 13 research notes on agent memory arch
 - [Memory company landscape (Letta/Mem0/Zep/OpenViking/MemOS)](https://github.com/JingxuanC/agent-teardown/blob/main/insights/10-memory-frameworks.md)
 - [Causal state store — the design this implements](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md)
 - [Real LLM compaction benchmark](https://github.com/JingxuanC/agent-teardown/blob/main/papers/02-compaction-degradation.md)
+
+Papers that shaped specific design decisions: [`docs/research-backdrop.md`](docs/research-backdrop.md)
 
 ## License
 
