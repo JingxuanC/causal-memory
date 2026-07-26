@@ -1,6 +1,6 @@
 [package]
 name = "causal-memory"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 description = "Causal Memory Layer for AI Agents — MCP server that records and retrieves decision→outcome causal relationships"
 license = "Apache-2.0"
@@ -19,3 +19,4 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = "0.4"
+reqwest = { version = "0.12", features = ["json"] }

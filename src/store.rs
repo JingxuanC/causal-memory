@@ -246,6 +246,32 @@ impl CausalStore {
             .map_err(|e| anyhow!("Query failed: {e}"))
     }
 
+    /// Get top decisions by confidence (high-value lessons first).
+    pub fn top_decisions_by_confidence(&self, limit: usize) -> Result<Vec<DecisionDirectoryEntry>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT cf.id, ce.task_tag, cf.text, ct.text, ce.relation
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             JOIN chunks ct ON ct.id = ce.to_id
+             ORDER BY ce.confidence DESC, ce.discovered_at DESC
+             LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            let dec_text: String = row.get(2)?;
+            let out_text: String = row.get(3)?;
+            Ok(DecisionDirectoryEntry {
+                id: row.get(0)?,
+                task_tag: row.get(1)?,
+                decision_snippet: if dec_text.chars().count() > 80 { format!("{}...", dec_text.chars().take(80).collect::<String>()) } else { dec_text },
+                outcome_snippet: if out_text.chars().count() > 80 { format!("{}...", out_text.chars().take(80).collect::<String>()) } else { out_text },
+                relation: row.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))
+    }
+
     /// Count causal edges (for diagnostics).
     pub fn count_edges(&self) -> Result<i64> {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
