@@ -88,11 +88,17 @@ async fn run_judge(args: &[String]) -> anyhow::Result<()> {
     // First extract (rule-based), then re-judge the high-value ones with LLM
     println!("Extracting from: {}", session_dir.display());
     let stats = DecisionExtractor::extract_from_session(&store, &session_dir)?;
-    println!("Extracted {} edges (rule-based). Now re-judging top entries with LLM...\n", stats.edges_inserted);
+    println!(
+        "Extracted {} edges (rule-based). Now re-judging top entries with LLM...\n",
+        stats.edges_inserted
+    );
 
     // Get top edges by rule-based confidence (high-value first), re-judge with LLM
     let recent = store.top_decisions_by_confidence(20)?;
-    println!("LLM-judging {} highest-confidence decisions:\n", recent.len());
+    println!(
+        "LLM-judging {} highest-confidence decisions:\n",
+        recent.len()
+    );
 
     for (i, entry) in recent.iter().enumerate() {
         let decision = &entry.decision_snippet;
@@ -100,7 +106,13 @@ async fn run_judge(args: &[String]) -> anyhow::Result<()> {
 
         match llm::judge_causality(&config, decision, outcome).await {
             Ok((confidence, reasoning)) => {
-                println!("{}. [{}] {:.0}% — {}", i + 1, entry.task_tag.as_deref().unwrap_or("?"), confidence * 100.0, decision);
+                println!(
+                    "{}. [{}] {:.0}% — {}",
+                    i + 1,
+                    entry.task_tag.as_deref().unwrap_or("?"),
+                    confidence * 100.0,
+                    decision
+                );
                 println!("   → {}", outcome);
                 println!("   LLM: {} (\"{}\")\n", confidence, reasoning);
             }
@@ -174,7 +186,9 @@ async fn run_reasoning(args: &[String]) -> anyhow::Result<()> {
     if args.is_empty() {
         eprintln!("Usage: causal-memory reasoning <session-dir> [max_messages]");
         eprintln!("  Extracts high-value decisions from assistant reasoning text using LLM.");
-        eprintln!("  This is the v0.4 feature — captures decisions that tool_call extraction misses.");
+        eprintln!(
+            "  This is the v0.4 feature — captures decisions that tool_call extraction misses."
+        );
         std::process::exit(1);
     }
 
@@ -190,7 +204,8 @@ async fn run_reasoning(args: &[String]) -> anyhow::Result<()> {
     };
 
     let session_dir = PathBuf::from(&args[0]);
-    let max_messages = args.get(1)
+    let max_messages = args
+        .get(1)
         .and_then(|s| s.parse::<usize>().ok())
         .unwrap_or(30);
 
@@ -201,16 +216,22 @@ async fn run_reasoning(args: &[String]) -> anyhow::Result<()> {
 
     let store = CausalStore::open(&db_path)?;
 
-    println!("Extracting reasoning-level decisions from: {}", session_dir.display());
+    println!(
+        "Extracting reasoning-level decisions from: {}",
+        session_dir.display()
+    );
     println!("Max messages to scan: {}\n", max_messages);
 
-    let stats = ReasoningExtractor::extract_from_session(
-        &store, &session_dir, &config, max_messages,
-    ).await?;
+    let stats =
+        ReasoningExtractor::extract_from_session(&store, &session_dir, &config, max_messages)
+            .await?;
 
     println!("\n=== Reasoning extraction complete ===");
     println!("  Messages scanned:        {}", stats.messages_scanned);
-    println!("  Messages with decisions: {}", stats.messages_with_decisions);
+    println!(
+        "  Messages with decisions: {}",
+        stats.messages_with_decisions
+    );
     println!("  Decisions extracted:     {}", stats.decisions_extracted);
     println!("  Edges inserted:          {}", stats.edges_inserted);
     println!("  LLM calls:               {}", stats.llm_calls);

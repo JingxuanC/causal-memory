@@ -11,10 +11,7 @@
 //!   multi-hop causal chains backward through the decision graph.
 
 use rmcp::{
-    handler::server::wrapper::Parameters,
-    schemars,
-    ServerHandler,
-    tool, tool_handler, tool_router,
+    handler::server::wrapper::Parameters, schemars, tool, tool_handler, tool_router, ServerHandler,
 };
 use serde::Deserialize;
 
@@ -48,7 +45,9 @@ pub struct RecordDecisionParams {
     #[schemars(description = "Task category for future retrieval")]
     pub task_tag: String,
     /// How confident are you in this causal link? (temporal=0.4, rule=0.7, llm_inferred=0.6, user_feedback=0.95)
-    #[schemars(description = "Confidence source. Use: temporal, rule, llm_inferred, or user_feedback")]
+    #[schemars(
+        description = "Confidence source. Use: temporal, rule, llm_inferred, or user_feedback"
+    )]
     pub confidence_source: Option<String>,
 }
 
@@ -92,18 +91,21 @@ pub struct TraceCauseChainParams {
 
 #[tool_router]
 impl CausalMemoryServer {
-    #[tool(name = "record_decision", description = "Record a decision and its observed outcome as a causal memory. Call this AFTER you've acted on a decision and observed the result, especially if the outcome was surprising or educational. This builds your experience base for future similar tasks.")]
-    fn record_decision(
-        &self,
-        Parameters(params): Parameters<RecordDecisionParams>,
-    ) -> String {
+    #[tool(
+        name = "record_decision",
+        description = "Record a decision and its observed outcome as a causal memory. Call this AFTER you've acted on a decision and observed the result, especially if the outcome was surprising or educational. This builds your experience base for future similar tasks."
+    )]
+    fn record_decision(&self, Parameters(params): Parameters<RecordDecisionParams>) -> String {
         let confidence = match params.confidence_source.as_deref() {
             Some("temporal") => 0.4,
             Some("rule") => 0.7,
             Some("user_feedback") => 0.95,
             _ => 0.6, // llm_inferred (default)
         };
-        let source = params.confidence_source.as_deref().unwrap_or("llm_inferred");
+        let source = params
+            .confidence_source
+            .as_deref()
+            .unwrap_or("llm_inferred");
 
         match self.store.record_decision(
             &params.decision,
@@ -126,17 +128,17 @@ impl CausalMemoryServer {
         }
     }
 
-    #[tool(name = "search_causal", description = "Search past decisions and their outcomes for situations similar to your current task. Call this BEFORE attempting a non-trivial decision to learn from past experience. Filter by task_tag for domain-specific lessons, or use query text for broader search.")]
-    fn search_causal(
-        &self,
-        Parameters(params): Parameters<SearchCausalParams>,
-    ) -> String {
+    #[tool(
+        name = "search_causal",
+        description = "Search past decisions and their outcomes for situations similar to your current task. Call this BEFORE attempting a non-trivial decision to learn from past experience. Filter by task_tag for domain-specific lessons, or use query text for broader search."
+    )]
+    fn search_causal(&self, Parameters(params): Parameters<SearchCausalParams>) -> String {
         let limit = params.limit.unwrap_or(5);
 
-        let results = match self.store.search_causal(
-            params.task_tag.as_deref(),
-            params.query.as_deref(),
-        ) {
+        let results = match self
+            .store
+            .search_causal(params.task_tag.as_deref(), params.query.as_deref())
+        {
             Ok(r) => r,
             Err(e) => return format!("❌ Search failed: {e}"),
         };
@@ -146,7 +148,11 @@ impl CausalMemoryServer {
         }
 
         let count = results.len().min(limit);
-        let mut out = format!("Found {} past episode(s) (showing {}):\n\n", results.len(), count);
+        let mut out = format!(
+            "Found {} past episode(s) (showing {}):\n\n",
+            results.len(),
+            count
+        );
         for (i, entry) in results.iter().take(limit).enumerate() {
             out.push_str(&format!(
                 "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n\n",
@@ -161,20 +167,17 @@ impl CausalMemoryServer {
         out
     }
 
-    #[tool(name = "trace_cause", description = "When something went wrong, trace back which past decision could have caused it. Use for post-mortem analysis. Provide a description of the bad outcome.")]
-    fn trace_cause(
-        &self,
-        Parameters(params): Parameters<TraceCauseParams>,
-    ) -> String {
+    #[tool(
+        name = "trace_cause",
+        description = "When something went wrong, trace back which past decision could have caused it. Use for post-mortem analysis. Provide a description of the bad outcome."
+    )]
+    fn trace_cause(&self, Parameters(params): Parameters<TraceCauseParams>) -> String {
         match self.store.trace_cause(&params.outcome_description) {
             Ok(results) if results.is_empty() => {
                 "📭 No past decisions found that match this outcome.".to_string()
             }
             Ok(results) => {
-                let mut out = format!(
-                    "Traced {} possible cause(s):\n\n",
-                    results.len()
-                );
+                let mut out = format!("Traced {} possible cause(s):\n\n", results.len());
                 for (i, entry) in results.iter().enumerate() {
                     out.push_str(&format!(
                         "{}. \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n\n",
@@ -191,11 +194,11 @@ impl CausalMemoryServer {
         }
     }
 
-    #[tool(name = "trace_cause_chain", description = "Deep failure analysis: trace multi-hop causal chains backward from a bad outcome. Use when a single-hop trace doesn't reveal the root cause. E.g., 'service crashed' ← 'OOM' ← 'cache had no TTL' ← 'Redis configured without expiry'. Parameters: outcome_description, max_depth (default 3), min_confidence (default 0.5), limit (default 5).")]
-    fn trace_cause_chain(
-        &self,
-        Parameters(params): Parameters<TraceCauseChainParams>,
-    ) -> String {
+    #[tool(
+        name = "trace_cause_chain",
+        description = "Deep failure analysis: trace multi-hop causal chains backward from a bad outcome. Use when a single-hop trace doesn't reveal the root cause. E.g., 'service crashed' ← 'OOM' ← 'cache had no TTL' ← 'Redis configured without expiry'. Parameters: outcome_description, max_depth (default 3), min_confidence (default 0.5), limit (default 5)."
+    )]
+    fn trace_cause_chain(&self, Parameters(params): Parameters<TraceCauseChainParams>) -> String {
         let max_depth = params.max_depth.unwrap_or(3);
         let min_confidence = params.min_confidence.unwrap_or(0.5);
         let limit = params.limit.unwrap_or(5);
@@ -216,11 +219,21 @@ impl CausalMemoryServer {
         let show = chains.len().min(limit);
         let mut out = format!(
             "Found {} causal chain(s) (showing {}, max_depth={}, min_conf={}):\n\n",
-            chains.len(), show, max_depth, min_confidence
+            chains.len(),
+            show,
+            max_depth,
+            min_confidence
         );
 
         for (i, chain) in chains.iter().take(limit).enumerate() {
-            out.push_str(&format!("Chain {} (chain confidence: {:.0}%):\n", i + 1, chain.last().map(|h| h.chain_confidence * 100.0).unwrap_or(0.0)));
+            out.push_str(&format!(
+                "Chain {} (chain confidence: {:.0}%):\n",
+                i + 1,
+                chain
+                    .last()
+                    .map(|h| h.chain_confidence * 100.0)
+                    .unwrap_or(0.0)
+            ));
             for hop in chain {
                 out.push_str(&format!(
                     "  hop {}: \"{}\"\n         →({})→ \"{}\"\n         edge confidence: {:.0}%\n",

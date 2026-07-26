@@ -10,19 +10,26 @@
 //!   content-relation analysis between decision and outcome, instead of
 //!   the old binary temporal(0.4)/rule(0.7) split.
 
-use std::path::Path;
 use std::collections::VecDeque;
+use std::path::Path;
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use serde::Deserialize;
 
 use crate::store::CausalStore;
 
 /// Minimum tool name to treat as a "decision worth recording".
 const DECISION_WORTHY_TOOLS: &[&str] = &[
-    "write", "search_replace", "run_terminal_command", "image_gen",
-    "image_edit", "spawn_subagent", "kill_command_or_subagent",
-    "scheduler_create", "scheduler_delete", "update_goal",
+    "write",
+    "search_replace",
+    "run_terminal_command",
+    "image_gen",
+    "image_edit",
+    "spawn_subagent",
+    "kill_command_or_subagent",
+    "scheduler_create",
+    "scheduler_delete",
+    "update_goal",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -90,7 +97,10 @@ impl DecisionExtractor {
         let events_path = session_dir.join("events.jsonl");
 
         if !chat_path.exists() {
-            return Err(anyhow!("chat_history.jsonl not found in {}", session_dir.display()));
+            return Err(anyhow!(
+                "chat_history.jsonl not found in {}",
+                session_dir.display()
+            ));
         }
 
         let (decisions, results) = Self::parse_chat_history(&chat_path)?;
@@ -109,7 +119,10 @@ impl DecisionExtractor {
         };
 
         for decision in &decisions {
-            if !DECISION_WORTHY_TOOLS.iter().any(|t| decision.name.contains(t)) {
+            if !DECISION_WORTHY_TOOLS
+                .iter()
+                .any(|t| decision.name.contains(t))
+            {
                 stats.skipped_low_value += 1;
                 continue;
             }
@@ -133,8 +146,11 @@ impl DecisionExtractor {
             let event_outcome = Self::consume_next_outcome(&mut outcome_queue, &decision.name);
 
             // v0.2.1: graded causal inference (replaces binary temporal/rule)
-            let (relation, confidence, source) =
-                Self::infer_causal_confidence(&decision_text, &result_content, event_outcome.as_deref());
+            let (relation, confidence, source) = Self::infer_causal_confidence(
+                &decision_text,
+                &result_content,
+                event_outcome.as_deref(),
+            );
 
             if source == "rule" && confidence >= 0.7 {
                 stats.errors_captured += 1;
@@ -163,12 +179,17 @@ impl DecisionExtractor {
 
     fn parse_chat_history(
         path: &Path,
-    ) -> Result<(Vec<ToolCallEntry>, std::collections::HashMap<String, ToolResultEntry>)> {
+    ) -> Result<(
+        Vec<ToolCallEntry>,
+        std::collections::HashMap<String, ToolResultEntry>,
+    )> {
         let mut decisions = Vec::new();
         let mut results = std::collections::HashMap::new();
 
         for line in std::fs::read_to_string(path)?.lines() {
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             let entry: ChatEntry = match serde_json::from_str(line) {
                 Ok(e) => e,
                 Err(_) => continue,
@@ -182,11 +203,14 @@ impl DecisionExtractor {
                 }
                 "tool_result" | "tool" => {
                     if let Some(id) = &entry.tool_call_id {
-                        results.insert(id.clone(), ToolResultEntry {
-                            entry_type: entry.entry_type,
-                            tool_call_id: id.clone(),
-                            content: entry.content,
-                        });
+                        results.insert(
+                            id.clone(),
+                            ToolResultEntry {
+                                entry_type: entry.entry_type,
+                                tool_call_id: id.clone(),
+                                content: entry.content,
+                            },
+                        );
                     }
                 }
                 _ => {}
@@ -200,14 +224,19 @@ impl DecisionExtractor {
     fn parse_events_ordered(path: &Path) -> Result<VecDeque<PendingOutcome>> {
         let mut queue = VecDeque::new();
         for line in std::fs::read_to_string(path)?.lines() {
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             let event: EventEntry = match serde_json::from_str(line) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
             if event.event_type == "tool_completed" {
                 if let (Some(name), Some(outcome)) = (event.tool_name, event.outcome) {
-                    queue.push_back(PendingOutcome { tool_name: name, outcome });
+                    queue.push_back(PendingOutcome {
+                        tool_name: name,
+                        outcome,
+                    });
                 }
             }
         }
@@ -240,7 +269,10 @@ impl DecisionExtractor {
         result: &str,
         event_outcome: Option<&str>,
     ) -> (&'static str, f64, &'static str) {
-        let is_failure_event = matches!(event_outcome, Some("error") | Some("failure") | Some("timeout"));
+        let is_failure_event = matches!(
+            event_outcome,
+            Some("error") | Some("failure") | Some("timeout")
+        );
         let is_success_event = matches!(event_outcome, Some("success"));
         let result_looks_like_failure = Self::looks_like_failure(result);
         let content_relates = Self::content_relates_to_decision(decision, result);
@@ -281,11 +313,14 @@ impl DecisionExtractor {
         // Extract the argument (inside parens) — usually a file path or command
         if let Some(start) = dec_lower.find('(') {
             if let Some(end) = dec_lower.rfind(')') {
-                let args = &dec_lower[start+1..end];
+                let args = &dec_lower[start + 1..end];
                 // Check if any meaningful token from args appears in result
-                for token in args.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.') {
+                for token in
+                    args.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.')
+                {
                     let t = token.trim();
-                    if t.len() >= 4 {  // skip short tokens
+                    if t.len() >= 4 {
+                        // skip short tokens
                         if res_lower.contains(t) {
                             return true;
                         }
@@ -296,8 +331,14 @@ impl DecisionExtractor {
 
         // Check generic success patterns that reference the action type
         let action_patterns: &[(&str, &[&str])] = &[
-            ("write", &["written", "created", "has been written", "file "]),
-            ("search_replace", &["updated", "has been updated", "replaced"]),
+            (
+                "write",
+                &["written", "created", "has been written", "file "],
+            ),
+            (
+                "search_replace",
+                &["updated", "has been updated", "replaced"],
+            ),
             ("run_terminal_command", &["exit:", "stdout", "stderr"]),
             ("spawn_subagent", &["subagent", "completed", "returned"]),
         ];
@@ -318,12 +359,11 @@ impl DecisionExtractor {
     fn extract_text(content: &serde_json::Value) -> String {
         match content {
             serde_json::Value::String(s) => s.clone(),
-            serde_json::Value::Array(arr) => {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            }
+            serde_json::Value::Array(arr) => arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect::<Vec<_>>()
+                .join(" "),
             _ => content.to_string(),
         }
     }
@@ -331,9 +371,18 @@ impl DecisionExtractor {
     fn summarize_args(args: &str) -> String {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
             if let Some(obj) = v.as_object() {
-                for key in &["command", "file_path", "target_file", "target_directory", "prompt"] {
+                for key in &[
+                    "command",
+                    "file_path",
+                    "target_file",
+                    "target_directory",
+                    "prompt",
+                ] {
                     if let Some(val) = obj.get(*key) {
-                        let s = val.as_str().map(String::from).unwrap_or_else(|| val.to_string());
+                        let s = val
+                            .as_str()
+                            .map(String::from)
+                            .unwrap_or_else(|| val.to_string());
                         if s.chars().count() > 50 {
                             return format!("{}...", s.chars().take(50).collect::<String>());
                         }
@@ -341,7 +390,10 @@ impl DecisionExtractor {
                     }
                 }
                 if let Some((_, v)) = obj.iter().next() {
-                    let s = v.as_str().map(String::from).unwrap_or_else(|| v.to_string());
+                    let s = v
+                        .as_str()
+                        .map(String::from)
+                        .unwrap_or_else(|| v.to_string());
                     if s.chars().count() > 50 {
                         return format!("{}...", s.chars().take(50).collect::<String>());
                     }
@@ -358,10 +410,15 @@ impl DecisionExtractor {
 
     fn looks_like_failure(text: &str) -> bool {
         let lower = text.to_lowercase();
-        lower.contains("error") || lower.contains("failed") || lower.contains("panic")
-            || lower.contains("exception") || lower.contains("traceback")
-            || lower.contains("denied") || lower.contains("not found")
-            || lower.contains("fatal") || lower.contains("reject")
+        lower.contains("error")
+            || lower.contains("failed")
+            || lower.contains("panic")
+            || lower.contains("exception")
+            || lower.contains("traceback")
+            || lower.contains("denied")
+            || lower.contains("not found")
+            || lower.contains("fatal")
+            || lower.contains("reject")
     }
 
     fn infer_task_tag(tool_name: &str, args: &str) -> String {
@@ -370,13 +427,22 @@ impl DecisionExtractor {
             "code-edit".into()
         } else if combined.contains("test") {
             "testing".into()
-        } else if combined.contains("build") || combined.contains("cargo") || combined.contains("compile") {
+        } else if combined.contains("build")
+            || combined.contains("cargo")
+            || combined.contains("compile")
+        {
             "build".into()
-        } else if combined.contains("git") || combined.contains("commit") || combined.contains("push") {
+        } else if combined.contains("git")
+            || combined.contains("commit")
+            || combined.contains("push")
+        {
             "vcs".into()
         } else if combined.contains("deploy") || combined.contains("docker") {
             "deploy".into()
-        } else if combined.contains("search") || combined.contains("grep") || combined.contains("find") {
+        } else if combined.contains("search")
+            || combined.contains("grep")
+            || combined.contains("find")
+        {
             "search".into()
         } else {
             "general".into()
@@ -390,23 +456,52 @@ mod tests {
 
     #[test]
     fn test_summarize_args() {
-        assert_eq!(DecisionExtractor::summarize_args(r#"{"command":"ls -la"}"#), "ls -la");
-        assert_eq!(DecisionExtractor::summarize_args(r#"{"target_file":"src/main.rs"}"#), "src/main.rs");
+        assert_eq!(
+            DecisionExtractor::summarize_args(r#"{"command":"ls -la"}"#),
+            "ls -la"
+        );
+        assert_eq!(
+            DecisionExtractor::summarize_args(r#"{"target_file":"src/main.rs"}"#),
+            "src/main.rs"
+        );
     }
 
     #[test]
     fn test_looks_like_failure() {
-        assert!(DecisionExtractor::looks_like_failure("error: compilation failed"));
+        assert!(DecisionExtractor::looks_like_failure(
+            "error: compilation failed"
+        ));
         assert!(DecisionExtractor::looks_like_failure("Permission denied"));
         assert!(!DecisionExtractor::looks_like_failure("Build succeeded"));
     }
 
     #[test]
     fn test_infer_task_tag() {
-        assert_eq!(DecisionExtractor::infer_task_tag("run_terminal_command", r#"{"command":"cargo test"}"#), "testing");
-        assert_eq!(DecisionExtractor::infer_task_tag("run_terminal_command", r#"{"command":"cargo build"}"#), "build");
-        assert_eq!(DecisionExtractor::infer_task_tag("search_replace", r#"{"file_path":"src/lib.rs"}"#), "code-edit");
-        assert_eq!(DecisionExtractor::infer_task_tag("spawn_subagent", r#"{"prompt":"grep for patterns"}"#), "search");
+        assert_eq!(
+            DecisionExtractor::infer_task_tag(
+                "run_terminal_command",
+                r#"{"command":"cargo test"}"#
+            ),
+            "testing"
+        );
+        assert_eq!(
+            DecisionExtractor::infer_task_tag(
+                "run_terminal_command",
+                r#"{"command":"cargo build"}"#
+            ),
+            "build"
+        );
+        assert_eq!(
+            DecisionExtractor::infer_task_tag("search_replace", r#"{"file_path":"src/lib.rs"}"#),
+            "code-edit"
+        );
+        assert_eq!(
+            DecisionExtractor::infer_task_tag(
+                "spawn_subagent",
+                r#"{"prompt":"grep for patterns"}"#
+            ),
+            "search"
+        );
     }
 
     #[test]
@@ -467,8 +562,14 @@ mod tests {
         // v0.2.1 fix: two same-name tools, first error second success
         // must NOT overwrite each other
         let mut queue = VecDeque::new();
-        queue.push_back(PendingOutcome { tool_name: "run_terminal_command".into(), outcome: "error".into() });
-        queue.push_back(PendingOutcome { tool_name: "run_terminal_command".into(), outcome: "success".into() });
+        queue.push_back(PendingOutcome {
+            tool_name: "run_terminal_command".into(),
+            outcome: "error".into(),
+        });
+        queue.push_back(PendingOutcome {
+            tool_name: "run_terminal_command".into(),
+            outcome: "success".into(),
+        });
 
         // First call should consume the error
         let first = DecisionExtractor::consume_next_outcome(&mut queue, "run_terminal_command");

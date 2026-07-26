@@ -22,7 +22,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde::Deserialize;
 
-use crate::llm::{LlmConfig, judge_causality};
+use crate::llm::{judge_causality, LlmConfig};
 use crate::store::CausalStore;
 
 const REASONING_EXTRACT_PROMPT: &str = r#"You are extracting decisions from an AI agent's reasoning text.
@@ -106,16 +106,15 @@ impl ReasoningExtractor {
 
             stats.llm_calls += 1;
 
-            let decisions = match Self::extract_decisions_from_text(
-                &client, config, &url, msg_text,
-            ).await {
-                Ok(d) => d,
-                Err(e) => {
-                    tracing::warn!("LLM extraction failed: {e}");
-                    stats.llm_errors += 1;
-                    continue;
-                }
-            };
+            let decisions =
+                match Self::extract_decisions_from_text(&client, config, &url, msg_text).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tracing::warn!("LLM extraction failed: {e}");
+                        stats.llm_errors += 1;
+                        continue;
+                    }
+                };
 
             if decisions.is_empty() {
                 continue;
@@ -127,12 +126,11 @@ impl ReasoningExtractor {
                 stats.decisions_extracted += 1;
 
                 // Use the LLM judge to assess confidence
-                let (confidence, _reason) = match judge_causality(
-                    config, &dec.decision, &dec.reasoning,
-                ).await {
-                    Ok((c, r)) => (c, r),
-                    Err(_) => (0.5, String::new()), // fallback
-                };
+                let (confidence, _reason) =
+                    match judge_causality(config, &dec.decision, &dec.reasoning).await {
+                        Ok((c, r)) => (c, r),
+                        Err(_) => (0.5, String::new()), // fallback
+                    };
 
                 // Skip trivial decisions (LLM judge says < 0.3)
                 if confidence < 0.3 {
@@ -159,12 +157,16 @@ impl ReasoningExtractor {
     fn collect_assistant_texts(path: &Path, max: usize) -> Result<Vec<String>> {
         let mut texts = Vec::new();
         for line in std::fs::read_to_string(path)?.lines() {
-            if line.trim().is_empty() { continue; }
+            if line.trim().is_empty() {
+                continue;
+            }
             let entry: ChatEntry = match serde_json::from_str(line) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
-            if entry.entry_type != "assistant" { continue; }
+            if entry.entry_type != "assistant" {
+                continue;
+            }
 
             let text = match &entry.content {
                 serde_json::Value::String(s) => s.clone(),
@@ -172,7 +174,9 @@ impl ReasoningExtractor {
             };
             if text.len() >= 100 {
                 texts.push(text);
-                if texts.len() >= max { break; }
+                if texts.len() >= max {
+                    break;
+                }
             }
         }
         Ok(texts)
@@ -237,8 +241,7 @@ impl ReasoningExtractor {
             .trim_end_matches("```")
             .trim();
 
-        let decisions: Vec<ExtractedDecision> = serde_json::from_str(json_str)
-            .unwrap_or_default();
+        let decisions: Vec<ExtractedDecision> = serde_json::from_str(json_str).unwrap_or_default();
 
         Ok(decisions)
     }

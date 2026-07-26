@@ -78,9 +78,13 @@ impl LlmConfig {
         let api_key = std::env::var("CAUSAL_MEMORY_LLM_KEY")
             .or_else(|_| std::env::var("DEEPSEEK_API_KEY"))
             .ok()?;
-        let model = std::env::var("CAUSAL_MEMORY_LLM_MODEL")
-            .unwrap_or_else(|_| "deepseek-chat".into());
-        Some(Self { api_base, api_key, model })
+        let model =
+            std::env::var("CAUSAL_MEMORY_LLM_MODEL").unwrap_or_else(|_| "deepseek-chat".into());
+        Some(Self {
+            api_base,
+            api_key,
+            model,
+        })
     }
 }
 
@@ -131,7 +135,8 @@ pub async fn judge_causality(
     }
 
     let chat_resp: ChatResponse = resp.json().await?;
-    let content = chat_resp.choices
+    let content = chat_resp
+        .choices
         .first()
         .ok_or_else(|| anyhow::anyhow!("No choices in LLM response"))?
         .message

@@ -8,7 +8,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -147,7 +147,11 @@ impl CausalStore {
 
     /// Search past causal episodes by task tag and/or text similarity.
     /// Returns entries ordered by confidence descending.
-    pub fn search_causal(&self, task_tag: Option<&str>, query: Option<&str>) -> Result<Vec<CausalEntry>> {
+    pub fn search_causal(
+        &self,
+        task_tag: Option<&str>,
+        query: Option<&str>,
+    ) -> Result<Vec<CausalEntry>> {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
 
         let mut sql = String::from(
@@ -155,7 +159,7 @@ impl CausalStore {
              FROM causal_edges ce
              JOIN chunks cf ON cf.id = ce.from_id
              JOIN chunks ct ON ct.id = ce.to_id
-             WHERE 1=1"
+             WHERE 1=1",
         );
         let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
 
@@ -198,7 +202,7 @@ impl CausalStore {
              JOIN chunks cf ON cf.id = ce.from_id
              JOIN chunks ct ON ct.id = ce.to_id
              WHERE ct.text LIKE ?
-             ORDER BY ce.confidence DESC"
+             ORDER BY ce.confidence DESC",
         )?;
         let rows = stmt.query_map(params![pattern], |row| {
             Ok(CausalEntry {
@@ -279,23 +283,22 @@ impl CausalStore {
         );
 
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(
-            params![pattern, min_confidence, max_depth as i64],
-            |row| {
-                let path_json: String = row.get(0)?;
-                Ok(path_json)
-            },
-        )?;
+        let rows = stmt.query_map(params![pattern, min_confidence, max_depth as i64], |row| {
+            let path_json: String = row.get(0)?;
+            Ok(path_json)
+        })?;
 
-        let paths_json: Vec<String> = rows.collect::<rusqlite::Result<Vec<_>>>()
+        let paths_json: Vec<String> = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| anyhow!("CTE query failed: {e}"))?;
 
         let mut chains: Vec<Vec<ChainHop>> = Vec::new();
         for path_json in paths_json {
-            let hops: Vec<serde_json::Value> = match serde_json::from_str::<Vec<serde_json::Value>>(&path_json) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
+            let hops: Vec<serde_json::Value> =
+                match serde_json::from_str::<Vec<serde_json::Value>>(&path_json) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
 
             let mut chain = Vec::new();
             let mut running_conf = 1.0;
@@ -309,8 +312,8 @@ impl CausalStore {
 
                 // Resolve text from chunks (single query per chain, or inline if cached).
                 // For v0.2 we do a lightweight lookup per node.
-                let (dec_text, out_text) = Self::resolve_chunk_pair(&conn, &from_id, &to_id)
-                    .unwrap_or_default();
+                let (dec_text, out_text) =
+                    Self::resolve_chunk_pair(&conn, &from_id, &to_id).unwrap_or_default();
 
                 chain.push(ChainHop {
                     hop,
@@ -357,7 +360,7 @@ impl CausalStore {
              JOIN chunks cf ON cf.id = ce.from_id
              JOIN chunks ct ON ct.id = ce.to_id
              ORDER BY ce.discovered_at DESC
-             LIMIT ?1"
+             LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             let dec_text: String = row.get(2)?;
@@ -365,8 +368,16 @@ impl CausalStore {
             Ok(DecisionDirectoryEntry {
                 id: row.get(0)?,
                 task_tag: row.get(1)?,
-                decision_snippet: if dec_text.len() > 80 { format!("{}...", &dec_text[..80]) } else { dec_text },
-                outcome_snippet: if out_text.len() > 80 { format!("{}...", &out_text[..80]) } else { out_text },
+                decision_snippet: if dec_text.len() > 80 {
+                    format!("{}...", &dec_text[..80])
+                } else {
+                    dec_text
+                },
+                outcome_snippet: if out_text.len() > 80 {
+                    format!("{}...", &out_text[..80])
+                } else {
+                    out_text
+                },
                 relation: row.get(4)?,
             })
         })?;
@@ -383,7 +394,7 @@ impl CausalStore {
              JOIN chunks cf ON cf.id = ce.from_id
              JOIN chunks ct ON ct.id = ce.to_id
              ORDER BY ce.confidence DESC, ce.discovered_at DESC
-             LIMIT ?1"
+             LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             let dec_text: String = row.get(2)?;
@@ -391,8 +402,16 @@ impl CausalStore {
             Ok(DecisionDirectoryEntry {
                 id: row.get(0)?,
                 task_tag: row.get(1)?,
-                decision_snippet: if dec_text.chars().count() > 80 { format!("{}...", dec_text.chars().take(80).collect::<String>()) } else { dec_text },
-                outcome_snippet: if out_text.chars().count() > 80 { format!("{}...", out_text.chars().take(80).collect::<String>()) } else { out_text },
+                decision_snippet: if dec_text.chars().count() > 80 {
+                    format!("{}...", dec_text.chars().take(80).collect::<String>())
+                } else {
+                    dec_text
+                },
+                outcome_snippet: if out_text.chars().count() > 80 {
+                    format!("{}...", out_text.chars().take(80).collect::<String>())
+                } else {
+                    out_text
+                },
                 relation: row.get(4)?,
             })
         })?;
@@ -415,22 +434,26 @@ mod tests {
     #[test]
     fn test_record_and_search() {
         let store = CausalStore::open_in_memory().unwrap();
-        store.record_decision(
-            "used Redis with mutex lock",
-            "deadlock — holder crashed without releasing",
-            "caused",
-            Some("concurrency"),
-            0.85,
-            "llm_inferred",
-        ).unwrap();
-        store.record_decision(
-            "switched to channel/single-flight",
-            "successfully fixed race condition",
-            "caused",
-            Some("concurrency"),
-            0.95,
-            "user_feedback",
-        ).unwrap();
+        store
+            .record_decision(
+                "used Redis with mutex lock",
+                "deadlock — holder crashed without releasing",
+                "caused",
+                Some("concurrency"),
+                0.85,
+                "llm_inferred",
+            )
+            .unwrap();
+        store
+            .record_decision(
+                "switched to channel/single-flight",
+                "successfully fixed race condition",
+                "caused",
+                Some("concurrency"),
+                0.95,
+                "user_feedback",
+            )
+            .unwrap();
 
         // Search by task
         let results = store.search_causal(Some("concurrency"), None).unwrap();
@@ -461,34 +484,40 @@ mod tests {
         // A: "configured Redis without TTL" → B: "cache entries never expired"
         // B: "cache entries never expired" → C: "memory grew unbounded"
         // C: "memory grew unbounded" → D: "service OOM and crashed"
-        let id_a = store.record_decision(
-            "configured Redis without TTL",
-            "cache entries never expired",
-            "caused",
-            Some("caching"),
-            0.8,
-            "llm_inferred",
-        ).unwrap();
-        let id_b = store.record_decision(
-            "cache entries never expired",
-            "memory grew unbounded",
-            "caused",
-            Some("caching"),
-            0.85,
-            "llm_inferred",
-        ).unwrap();
+        let id_a = store
+            .record_decision(
+                "configured Redis without TTL",
+                "cache entries never expired",
+                "caused",
+                Some("caching"),
+                0.8,
+                "llm_inferred",
+            )
+            .unwrap();
+        let id_b = store
+            .record_decision(
+                "cache entries never expired",
+                "memory grew unbounded",
+                "caused",
+                Some("caching"),
+                0.85,
+                "llm_inferred",
+            )
+            .unwrap();
         // Link B's outcome to C's decision — but B's outcome is not a decision chunk.
         // For this test we create a synthetic chain by making the "outcome" of step 1
         // the "decision" text of step 2. In production the auto-extractor would handle
         // this via outcome-to-decision bridging.
-        let _id_c = store.record_decision(
-            "memory grew unbounded",
-            "service OOM and crashed",
-            "caused",
-            Some("caching"),
-            0.9,
-            "rule",
-        ).unwrap();
+        let _id_c = store
+            .record_decision(
+                "memory grew unbounded",
+                "service OOM and crashed",
+                "caused",
+                Some("caching"),
+                0.9,
+                "rule",
+            )
+            .unwrap();
 
         // Single-hop still works
         let single = store.trace_cause("OOM").unwrap();
