@@ -75,13 +75,26 @@ checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "causal-memory"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "chrono",
  "reqwest",
- "rmcp",
  "rusqlite",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
+name = "causal-memory-cli"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "causal-memory",
+ "chrono",
+ "rmcp",
  "schemars 0.8.22",
  "serde",
  "serde_json",

@@ -6,7 +6,9 @@
 
 use std::path::PathBuf;
 
-use causal_memory::{extractor::DecisionExtractor, server::CausalMemoryServer, store::CausalStore};
+use causal_memory::{extractor::DecisionExtractor, store::CausalStore};
+mod server;
+use server::CausalMemoryServer;
 
 fn get_db_path() -> PathBuf {
     if let Ok(path) = std::env::var("CAUSAL_MEMORY_DB") {

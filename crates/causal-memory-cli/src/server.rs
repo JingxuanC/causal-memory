@@ -18,7 +18,7 @@ use rmcp::{
 };
 use serde::Deserialize;
 
-use crate::store::CausalStore;
+use causal_memory::store::CausalStore;
 
 pub struct CausalMemoryServer {
     store: CausalStore,

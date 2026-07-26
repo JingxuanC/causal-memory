@@ -1,26 +1,33 @@
-[package]
-name = "causal-memory"
-version = "0.4.0"
+# Auto-generated workspace root. Prefer editing per-crate Cargo.toml files.
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/causal-memory",
+    "crates/causal-memory-cli",
+]
+
+[workspace.package]
 edition = "2021"
-description = "Causal Memory Layer for AI Agents — MCP server that records and retrieves decision→outcome causal relationships"
 license = "Apache-2.0"
 repository = "https://github.com/JingxuanC/causal-memory"
-keywords = ["ai", "agent", "memory", "mcp", "causal"]
-categories = ["command-line-utilities", "development-tools"]
+version = "0.4.1"
 
-[dependencies]
+[workspace.dependencies]
+anyhow = "1"
 rmcp = { version = "2.1", features = ["server", "macros", "transport-io"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "0.8"
-anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = "0.4"
 reqwest = { version = "0.12", features = ["json"] }
+causal-memory = { path = "crates/causal-memory" }
 
-[[bin]]
-name = "causal-memory-bench"
-path = "benches/bench_retrieval.rs"
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

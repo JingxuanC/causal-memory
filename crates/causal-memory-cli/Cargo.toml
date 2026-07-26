@@ -1,0 +1,29 @@
+[package]
+name = "causal-memory-cli"
+description = "CLI and MCP server binary for causal-memory"
+keywords = ["ai", "agent", "memory", "mcp", "causal"]
+categories = ["command-line-utilities", "development-tools"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "causal-memory"
+path = "src/main.rs"
+
+[[bin]]
+name = "causal-memory-bench"
+path = "../../benches/bench_retrieval.rs"
+
+[dependencies]
+causal-memory.workspace = true
+rmcp.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+chrono.workspace = true

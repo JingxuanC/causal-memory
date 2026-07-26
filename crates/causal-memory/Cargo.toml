@@ -1,0 +1,23 @@
+[package]
+name = "causal-memory"
+description = "Causal Memory Layer for AI Agents — records and retrieves decision→outcome causal relationships"
+keywords = ["ai", "agent", "memory", "mcp", "causal"]
+categories = ["data-structures", "development-tools"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+
+[lib]
+name = "causal_memory"
+path = "src/lib.rs"
