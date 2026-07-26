@@ -147,10 +147,12 @@ fn run_mcp_server() -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let transport = (tokio::io::stdin(), tokio::io::stdout());
-        server
+        let server = server
             .serve(transport)
             .await
             .map_err(|e| anyhow::anyhow!("MCP server error: {e}"))?;
+        tracing::info!("MCP server initialized; waiting for shutdown");
+        let _ = server.waiting().await;
         tracing::info!("MCP server shut down");
         Ok(())
     })
