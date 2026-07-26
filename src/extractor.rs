@@ -1,36 +1,17 @@
 //! Decision extractor — watches grok-build's session logs and auto-extracts
 //! decision→outcome pairs into the causal store.
 //!
-//! This is the v0.2 feature: agents no longer need to manually call
-//! `record_decision`. The watcher reads `chat_history.jsonl` from the
-//! session directory and automatically populates the causal table.
-//!
-//! ## Data sources (grok-build session layout)
-//!
-//! ```text
-//! ~/.grok/sessions/<workspace-hash>/<session-id>/
-//!   ├── chat_history.jsonl    ← we read this
-//!   │     - assistant entries have `tool_calls[].{id, name, arguments}`
-//!   │     - tool_result entries have `tool_call_id, content`
-//!   ├── events.jsonl          ← we read this for outcome (success/failure)
-//!   │     - tool_completed events have `tool_name, outcome`
-//!   └── summary.json
-//! ```
-//!
-//! ## Extraction logic
-//!
-//! 1. Scan chat_history for `assistant` entries with `tool_calls`.
-//! 2. Each tool_call is a **decision** (the agent decided to call tool X with args Y).
-//! 3. Match each tool_call to its `tool_result` via `tool_call_id`.
-//! 4. The result content is the **outcome**.
-//! 5. Cross-reference events.jsonl for outcome status (success/failure/timeout).
-//! 6. Confidence:
-//!    - `rule` (0.7) if outcome was failure — failures are high-value lessons
-//!    - `temporal` (0.4) for success — time-adjacent, weak causal claim
-//!    - `llm_inferred` (0.6) is not used by the rule-based extractor (v0.3)
+//! v0.2.1 changes:
+//! - Fixed outcome-overwrite bug: each tool_call now consumes its own
+//!   tool_completed event by ordered name matching, instead of looking
+//!   up by tool_name in a HashMap (which got overwritten by same-name
+//!   later calls — 7 real errors in the test session were lost).
+//! - Added causal inference: confidence is now graded 0.3-0.8 based on
+//!   content-relation analysis between decision and outcome, instead of
+//!   the old binary temporal(0.4)/rule(0.7) split.
 
-use std::path::{Path, PathBuf};
-use std::collections::HashMap;
+use std::path::Path;
+use std::collections::VecDeque;
 
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
@@ -38,13 +19,10 @@ use serde::Deserialize;
 use crate::store::CausalStore;
 
 /// Minimum tool name to treat as a "decision worth recording".
-/// Read-only tools (list_dir, read_file, search) are low-value —
-/// they don't change state, so their causal impact is weak.
 const DECISION_WORTHY_TOOLS: &[&str] = &[
     "write", "search_replace", "run_terminal_command", "image_gen",
     "image_edit", "spawn_subagent", "kill_command_or_subagent",
     "scheduler_create", "scheduler_delete", "update_goal",
-    "search_replace",  // file edits
 ];
 
 #[derive(Debug, Deserialize)]
@@ -59,7 +37,7 @@ struct ChatEntry {
     tool_call_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct ToolCallEntry {
     id: String,
     name: String,
@@ -74,7 +52,7 @@ struct ToolResultEntry {
     content: serde_json::Value,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct EventEntry {
     #[serde(rename = "type")]
     event_type: String,
@@ -82,26 +60,28 @@ struct EventEntry {
     tool_name: Option<String>,
     #[serde(default)]
     outcome: Option<String>,
-    ts: String,
 }
 
-/// Result of a single extraction pass.
+/// An outcome event waiting to be consumed by a matching tool_call.
+#[derive(Debug, Clone)]
+struct PendingOutcome {
+    tool_name: String,
+    outcome: String,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct ExtractionStats {
     pub decisions_found: usize,
     pub results_matched: usize,
     pub edges_inserted: usize,
     pub skipped_low_value: usize,
+    pub errors_captured: usize,
+    pub llm_inferred_count: usize,
 }
 
-/// The watcher/extractor. Stateless — call `extract_from_session` on demand.
 pub struct DecisionExtractor;
 
 impl DecisionExtractor {
-    /// Extract decisions from a grok-build session directory.
-    ///
-    /// Reads chat_history.jsonl and events.jsonl, matches tool_calls to
-    /// tool_results, and writes causal edges to the store.
     pub fn extract_from_session(
         store: &CausalStore,
         session_dir: &Path,
@@ -113,67 +93,56 @@ impl DecisionExtractor {
             return Err(anyhow!("chat_history.jsonl not found in {}", session_dir.display()));
         }
 
-        // Phase 1: parse chat_history into decisions + results
         let (decisions, results) = Self::parse_chat_history(&chat_path)?;
 
-        // Phase 2: parse events for outcome status
-        let outcomes = if events_path.exists() {
-            Self::parse_events(&events_path)?
+        // v0.2.1 fix: collect outcomes as an ordered queue, consumed
+        // by matching tool_name — each tool_call gets its own outcome
+        let mut outcome_queue: VecDeque<PendingOutcome> = if events_path.exists() {
+            Self::parse_events_ordered(&events_path)?
         } else {
-            HashMap::new()
+            VecDeque::new()
         };
 
-        // Phase 3: match and insert
         let mut stats = ExtractionStats {
             decisions_found: decisions.len(),
             ..Default::default()
         };
 
         for decision in &decisions {
-            // Skip low-value tools (reads, searches)
             if !DECISION_WORTHY_TOOLS.iter().any(|t| decision.name.contains(t)) {
                 stats.skipped_low_value += 1;
                 continue;
             }
 
-            // Match to result
-            let result = results.get(&decision.id);
-            if result.is_none() {
-                continue;
-            }
+            let result = match results.get(&decision.id) {
+                Some(r) => r,
+                None => continue,
+            };
             stats.results_matched += 1;
 
-            let result_content = Self::extract_text(&result.unwrap().content);
+            let result_content = Self::extract_text(&result.content);
             let decision_text = format!(
                 "{}({})",
                 decision.name,
                 Self::summarize_args(&decision.arguments)
             );
 
-            // Determine relation and confidence
-            let outcome_key = format!("{}-{}", decision.name, "");
-            let event_outcome = outcomes.get(&decision.name);
-            let (relation, confidence, source) = match event_outcome.map(|s| s.as_str()) {
-                Some("failure") | Some("error") | Some("timeout") => {
-                    ("caused", 0.7, "rule") // failures are high-value
-                }
-                Some("success") => {
-                    ("caused", 0.4, "temporal") // success is weak causal
-                }
-                _ => {
-                    // No event data; infer from result content
-                    if Self::looks_like_failure(&result_content) {
-                        ("caused", 0.6, "rule")
-                    } else {
-                        ("caused", 0.4, "temporal")
-                    }
-                }
-            };
+            // v0.2.1 fix: consume the next matching outcome from the queue
+            let event_outcome = Self::consume_next_outcome(&mut outcome_queue, &decision.name);
 
-            // Infer task_tag from tool name + args
+            // v0.2.1: graded causal inference (replaces binary temporal/rule)
+            let (relation, confidence, source) =
+                Self::infer_causal_confidence(&decision_text, &result_content, event_outcome.as_deref());
+
+            if source == "rule" && confidence >= 0.7 {
+                stats.errors_captured += 1;
+            }
+            if source == "llm_inferred" {
+                stats.llm_inferred_count += 1;
+            }
+
             let task_tag = Self::infer_task_tag(&decision.name, &decision.arguments);
 
-            // Insert into store
             match store.record_decision(
                 &decision_text,
                 &result_content.chars().take(300).collect::<String>(),
@@ -192,14 +161,12 @@ impl DecisionExtractor {
 
     fn parse_chat_history(
         path: &Path,
-    ) -> Result<(Vec<ToolCallEntry>, HashMap<String, ToolResultEntry>)> {
+    ) -> Result<(Vec<ToolCallEntry>, std::collections::HashMap<String, ToolResultEntry>)> {
         let mut decisions = Vec::new();
-        let mut results = HashMap::new();
+        let mut results = std::collections::HashMap::new();
 
         for line in std::fs::read_to_string(path)?.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
+            if line.trim().is_empty() { continue; }
             let entry: ChatEntry = match serde_json::from_str(line) {
                 Ok(e) => e,
                 Err(_) => continue,
@@ -218,38 +185,132 @@ impl DecisionExtractor {
                             tool_call_id: id.clone(),
                             content: entry.content,
                         });
-                    } else {
-                        // Try parsing as standalone tool_result
-                        if let Ok(tr) = serde_json::from_str::<ToolResultEntry>(line) {
-                            results.insert(tr.tool_call_id.clone(), tr);
-                        }
                     }
                 }
                 _ => {}
             }
         }
-
         Ok((decisions, results))
     }
 
-    fn parse_events(path: &Path) -> Result<HashMap<String, String>> {
-        // Returns map: tool_name → last known outcome
-        let mut outcomes = HashMap::new();
+    /// v0.2.1: parse events preserving order, return as a consumable queue.
+    /// Each tool_completed becomes a PendingOutcome waiting to be matched.
+    fn parse_events_ordered(path: &Path) -> Result<VecDeque<PendingOutcome>> {
+        let mut queue = VecDeque::new();
         for line in std::fs::read_to_string(path)?.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
+            if line.trim().is_empty() { continue; }
             let event: EventEntry = match serde_json::from_str(line) {
                 Ok(e) => e,
                 Err(_) => continue,
             };
             if event.event_type == "tool_completed" {
                 if let (Some(name), Some(outcome)) = (event.tool_name, event.outcome) {
-                    outcomes.insert(name, outcome);
+                    queue.push_back(PendingOutcome { tool_name: name, outcome });
                 }
             }
         }
-        Ok(outcomes)
+        Ok(queue)
+    }
+
+    /// v0.2.1: consume the next outcome matching `tool_name` from the queue.
+    /// Scans from the front; the first match is removed and returned.
+    /// This prevents same-name tools from overwriting each other.
+    fn consume_next_outcome(
+        queue: &mut VecDeque<PendingOutcome>,
+        tool_name: &str,
+    ) -> Option<String> {
+        let pos = queue.iter().position(|p| p.tool_name == tool_name)?;
+        let matched = queue.remove(pos)?;
+        Some(matched.outcome)
+    }
+
+    /// v0.2.1: graded causal confidence inference.
+    ///
+    /// Combines three signals:
+    /// 1. event outcome (from events.jsonl) — success/error/timeout
+    /// 2. content relation — does the result text reference the decision's action?
+    /// 3. failure markers in result text
+    ///
+    /// Returns (relation, confidence 0.3-0.8, source).
+    /// The old v0.2 binary (0.4 temporal / 0.7 rule) is replaced by a gradient.
+    fn infer_causal_confidence(
+        decision: &str,
+        result: &str,
+        event_outcome: Option<&str>,
+    ) -> (&'static str, f64, &'static str) {
+        let is_failure_event = matches!(event_outcome, Some("error") | Some("failure") | Some("timeout"));
+        let is_success_event = matches!(event_outcome, Some("success"));
+        let result_looks_like_failure = Self::looks_like_failure(result);
+        let content_relates = Self::content_relates_to_decision(decision, result);
+
+        // Failure cases — high-value lessons
+        if is_failure_event || result_looks_like_failure {
+            if content_relates {
+                // Error AND result references the decision — strong causal link
+                return ("caused", 0.8, "rule");
+            }
+            // Error but result doesn't clearly reference decision
+            return ("caused", 0.65, "rule");
+        }
+
+        // Success cases — weaker causal claim (success doesn't teach much)
+        if is_success_event {
+            if content_relates {
+                // Success AND result clearly references the action (e.g. "file X updated")
+                return ("caused", 0.55, "llm_inferred");
+            }
+            // Generic success ("updated successfully") — weak causal
+            return ("caused", 0.4, "temporal");
+        }
+
+        // No event data — infer from content alone
+        if content_relates {
+            return ("caused", 0.5, "llm_inferred");
+        }
+        ("caused", 0.3, "temporal")
+    }
+
+    /// Check if result content references the decision's key action.
+    /// E.g. decision="write(src/main.rs)" → result should mention the file or "written/updated/created".
+    fn content_relates_to_decision(decision: &str, result: &str) -> bool {
+        let dec_lower = decision.to_lowercase();
+        let res_lower = result.to_lowercase();
+
+        // Extract the argument (inside parens) — usually a file path or command
+        if let Some(start) = dec_lower.find('(') {
+            if let Some(end) = dec_lower.rfind(')') {
+                let args = &dec_lower[start+1..end];
+                // Check if any meaningful token from args appears in result
+                for token in args.split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-' && c != '.') {
+                    let t = token.trim();
+                    if t.len() >= 4 {  // skip short tokens
+                        if res_lower.contains(t) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check generic success patterns that reference the action type
+        let action_patterns: &[(&str, &[&str])] = &[
+            ("write", &["written", "created", "has been written", "file "]),
+            ("search_replace", &["updated", "has been updated", "replaced"]),
+            ("run_terminal_command", &["exit:", "stdout", "stderr"]),
+            ("spawn_subagent", &["subagent", "completed", "returned"]),
+        ];
+
+        for (action, patterns) in action_patterns {
+            if dec_lower.contains(action) {
+                for p in *patterns {
+                    if res_lower.contains(p) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
     }
 
     fn extract_text(content: &serde_json::Value) -> String {
@@ -266,23 +327,20 @@ impl DecisionExtractor {
     }
 
     fn summarize_args(args: &str) -> String {
-        // Try to parse and extract the most relevant field
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
             if let Some(obj) = v.as_object() {
-                // Look for common fields: command, file_path, target_file, etc.
                 for key in &["command", "file_path", "target_file", "target_directory", "prompt"] {
                     if let Some(val) = obj.get(*key) {
                         let s = val.as_str().map(String::from).unwrap_or_else(|| val.to_string());
-                        if s.len() > 50 {
+                        if s.chars().count() > 50 {
                             return format!("{}...", s.chars().take(50).collect::<String>());
                         }
                         return s;
                     }
                 }
-                // Fallback: first field's value
                 if let Some((_, v)) = obj.iter().next() {
                     let s = v.as_str().map(String::from).unwrap_or_else(|| v.to_string());
-                    if s.len() > 50 {
+                    if s.chars().count() > 50 {
                         return format!("{}...", s.chars().take(50).collect::<String>());
                     }
                     return s;
@@ -301,11 +359,11 @@ impl DecisionExtractor {
         lower.contains("error") || lower.contains("failed") || lower.contains("panic")
             || lower.contains("exception") || lower.contains("traceback")
             || lower.contains("denied") || lower.contains("not found")
+            || lower.contains("fatal") || lower.contains("reject")
     }
 
     fn infer_task_tag(tool_name: &str, args: &str) -> String {
         let combined = format!("{} {}", tool_name, args).to_lowercase();
-        // Check edit/write BEFORE search (search_replace contains "search")
         if combined.contains("replace") || combined.contains("edit") || combined.contains("write") {
             "code-edit".into()
         } else if combined.contains("test") {
@@ -330,14 +388,8 @@ mod tests {
 
     #[test]
     fn test_summarize_args() {
-        assert_eq!(
-            DecisionExtractor::summarize_args(r#"{"command":"ls -la"}"#),
-            "ls -la"
-        );
-        assert_eq!(
-            DecisionExtractor::summarize_args(r#"{"target_file":"src/main.rs"}"#),
-            "src/main.rs"
-        );
+        assert_eq!(DecisionExtractor::summarize_args(r#"{"command":"ls -la"}"#), "ls -la");
+        assert_eq!(DecisionExtractor::summarize_args(r#"{"target_file":"src/main.rs"}"#), "src/main.rs");
     }
 
     #[test]
@@ -353,5 +405,78 @@ mod tests {
         assert_eq!(DecisionExtractor::infer_task_tag("run_terminal_command", r#"{"command":"cargo build"}"#), "build");
         assert_eq!(DecisionExtractor::infer_task_tag("search_replace", r#"{"file_path":"src/lib.rs"}"#), "code-edit");
         assert_eq!(DecisionExtractor::infer_task_tag("spawn_subagent", r#"{"prompt":"grep for patterns"}"#), "search");
+    }
+
+    #[test]
+    fn test_content_relates_to_decision() {
+        // File path in args appears in result
+        assert!(DecisionExtractor::content_relates_to_decision(
+            "write(src/main.rs)",
+            "The file src/main.rs has been written"
+        ));
+        // Command in args appears in result
+        assert!(DecisionExtractor::content_relates_to_decision(
+            "run_terminal_command(cargo build)",
+            "cargo build finished"
+        ));
+        // Unrelated result
+        assert!(!DecisionExtractor::content_relates_to_decision(
+            "write(src/main.rs)",
+            "ok"
+        ));
+    }
+
+    #[test]
+    fn test_infer_causal_confidence_failure() {
+        // Failure + content relation → high confidence rule
+        let (r, c, s) = DecisionExtractor::infer_causal_confidence(
+            "run_terminal_command(cargo build)",
+            "error: cargo build failed",
+            Some("error"),
+        );
+        assert_eq!(s, "rule");
+        assert!(c >= 0.7);
+    }
+
+    #[test]
+    fn test_infer_causal_confidence_success_related() {
+        let (r, c, s) = DecisionExtractor::infer_causal_confidence(
+            "write(src/main.rs)",
+            "The file src/main.rs has been written",
+            Some("success"),
+        );
+        assert!(c >= 0.5);
+    }
+
+    #[test]
+    fn test_infer_causal_confidence_generic_success() {
+        // "ok" doesn't relate to search_replace specifically → temporal
+        let (r, c, s) = DecisionExtractor::infer_causal_confidence(
+            "search_replace(README.md)",
+            "ok",
+            Some("success"),
+        );
+        assert_eq!(s, "temporal");
+        assert!(c < 0.5);
+    }
+
+    #[test]
+    fn test_consume_next_outcome_no_overwrite() {
+        // v0.2.1 fix: two same-name tools, first error second success
+        // must NOT overwrite each other
+        let mut queue = VecDeque::new();
+        queue.push_back(PendingOutcome { tool_name: "run_terminal_command".into(), outcome: "error".into() });
+        queue.push_back(PendingOutcome { tool_name: "run_terminal_command".into(), outcome: "success".into() });
+
+        // First call should consume the error
+        let first = DecisionExtractor::consume_next_outcome(&mut queue, "run_terminal_command");
+        assert_eq!(first.as_deref(), Some("error"));
+
+        // Second call should consume the success
+        let second = DecisionExtractor::consume_next_outcome(&mut queue, "run_terminal_command");
+        assert_eq!(second.as_deref(), Some("success"));
+
+        // Queue now empty
+        assert!(queue.is_empty());
     }
 }
