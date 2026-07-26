@@ -51,7 +51,7 @@ struct FlatEdge {
     out_text: String,
     task_tag: Option<String>,
     confidence: f64,
-    discovered_at: i64,
+    event_time: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,12 +148,12 @@ impl ChainLinker {
     /// Returns (link_type, confidence).
     fn check_link(edge_i: &FlatEdge, edge_j: &FlatEdge) -> (&'static str, f64) {
         // i must happen before j (temporal ordering)
-        if edge_i.discovered_at >= edge_j.discovered_at {
+        if edge_i.event_time >= edge_j.event_time {
             return ("none", 0.0);
         }
 
         // Time gap: closer = higher confidence
-        let gap = edge_j.discovered_at - edge_i.discovered_at;
+        let gap = edge_j.event_time - edge_i.event_time;
         let temporal_proximity = if gap < 60 {
             0.8
         } else if gap < 300 {
@@ -220,11 +220,12 @@ impl ChainLinker {
         store.with_conn(|conn| {
             let mut stmt = conn.prepare(
                 "SELECT ce.rowid, ce.from_id, ce.to_id, cf.text, ct.text,
-                        ce.task_tag, ce.confidence, ce.discovered_at
+                        ce.task_tag, ce.confidence, ce.event_time
                  FROM causal_edges ce
                  JOIN chunks cf ON cf.id = ce.from_id
                  JOIN chunks ct ON ct.id = ce.to_id
-                 ORDER BY ce.discovered_at ASC",
+                 WHERE ce.valid_to IS NULL
+                 ORDER BY ce.event_time ASC",
             )?;
 
             let rows = stmt.query_map([], |row| {
@@ -236,7 +237,7 @@ impl ChainLinker {
                     out_text: row.get(4)?,
                     task_tag: row.get(5)?,
                     confidence: row.get(6)?,
-                    discovered_at: row.get(7)?,
+                    event_time: row.get(7)?,
                 })
             })?;
 
@@ -268,8 +269,8 @@ impl ChainLinker {
         store.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO causal_edges
-                    (from_id, to_id, relation, confidence, discovered_by, discovered_at, task_tag)
-                 VALUES (?1, ?2, 'caused', ?3, ?4, ?5, ?6)",
+                    (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
+                 VALUES (?1, ?2, 'caused', ?3, ?4, ?5, ?5, ?6)",
                 rusqlite::params![from_id, to_id, confidence, source, now, task_tag],
             )?;
             Ok(())
