@@ -237,8 +237,7 @@ impl CausalStore {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
         let pattern = format!("%{}%", outcome_description);
 
-        let sql = format!(
-            r#"
+        let sql = r#"
             WITH RECURSIVE chain(node_id, path_json, depth, chain_confidence) AS (
                 -- Anchor: edges whose outcome matches the query.
                 SELECT ce.from_id,
@@ -279,10 +278,9 @@ impl CausalStore {
             SELECT path_json FROM chain
             ORDER BY chain_confidence DESC
             LIMIT 50
-            "#
-        );
+            "#;
 
-        let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare(sql)?;
         let rows = stmt.query_map(params![pattern, min_confidence, max_depth as i64], |row| {
             let path_json: String = row.get(0)?;
             Ok(path_json)

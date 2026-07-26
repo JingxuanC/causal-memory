@@ -100,7 +100,7 @@ fn main() -> anyhow::Result<()> {
     let mut tag_hits = 0;
     let mut causal_hits = 0;
 
-    for (qid, question, expected_tag, keyword) in &probes {
+    for (qid, _question, expected_tag, keyword) in &probes {
         // Strategy 1: Keyword LIKE (simulates basic RAG / Mem0 vector)
         let kw_results = store.search_causal(None, Some(keyword)).unwrap_or_default();
         let kw_relevant = !kw_results.is_empty();

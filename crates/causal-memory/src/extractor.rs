@@ -52,6 +52,7 @@ struct ToolCallEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)]
 struct ToolResultEntry {
     #[serde(rename = "type")]
     entry_type: String,

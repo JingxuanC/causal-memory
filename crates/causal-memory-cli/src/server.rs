@@ -250,6 +250,7 @@ impl CausalMemoryServer {
     }
 
     /// Get recent decisions for system prompt (L0 directory, per insights/13 §1.2).
+    #[allow(dead_code)]
     pub fn recent_decisions_directory(&self, limit: usize) -> String {
         match self.store.recent_decisions(limit) {
             Ok(entries) if entries.is_empty() => String::new(),
