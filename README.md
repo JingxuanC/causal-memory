@@ -76,6 +76,8 @@ Then copy [`CLAUDE.md`](CLAUDE.md) into your project's system prompt to activate
 |---|---|---|---|
 | Flat facts | User preferences | "User prefers TypeScript" | Mem0 |
 | Temporal facts | State changes over time | "User was on Pro plan in March" | Zep |
+| Entity-relation graph | Typed relations between entities | "User lives in Berlin" | Mem0g, Mnemis |
+| Text consolidation | Markdown notes, tidied offline | "Dreaming" merges/prunes notes | Claude Code Auto Dream |
 | Self-managed | Agent edits its own memory | Agent decides what to remember | Letta |
 | File system | Memory as virtual FS | Directory-based retrieval | OpenViking |
 | **Causal** | **Decision → outcome links** | **"Mutex lock caused deadlock"** | **causal-memory (this)** |
