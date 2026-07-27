@@ -24,7 +24,7 @@ The causal table doesn't decay because it lives outside the agent's context wind
 
 ## Benchmarks
 
-**LoCoMo** (1,986 questions, deepseek-chat answerer + judge, frozen protocol): overall **52.6%** · cats 1–4 **40.8%** · adversarial abstention **93.3%** — full methodology, per-category results, and measured failure analysis in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md). Honest reading: keyword retrieval is the bottleneck for factual chit-chat QA (that's Mem0/Zep's home turf, not ours); abstention — not hallucinating when memory has no answer — is where this system is strong.
+**LoCoMo** (1,986 questions, deepseek-chat answerer + judge, frozen protocol): overall **57.8%** · cats 1–4 **48.6%** · temporal category 20%→50% after one prompt fix · adversarial abstention **89.5%** — full methodology, both runs, and measured failure analysis in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md). Honest reading: keyword retrieval is the bottleneck for factual chit-chat QA (that's Mem0/Zep's home turf, not ours); abstention — not hallucinating when memory has no answer — is where this system is strong.
 
 **Compaction survival** (the experiment this system is designed for): see the table above — causal-table recall stays at 100% where text recall collapses.
 

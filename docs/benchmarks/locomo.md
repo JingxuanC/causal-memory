@@ -3,7 +3,7 @@
 Baseline evaluation of causal-memory on the [LoCoMo](https://github.com/snap-research/locomo)
 long-conversational-memory benchmark (`locomo10.json`: 10 conversations, 1,986 questions).
 
-**Headline: overall 52.6% (1,045/1,986) · cats 1–4: 40.8% (629/1,540) · adversarial abstention: 93.3% (416/446) · zero judge errors.**
+**Headline (run 2): overall 57.8% (1,148/1,986) · cats 1–4: 48.6% (749/1,540) · adversarial abstention: 89.5% (399/446) · zero judge errors.**
 
 This is an honest baseline, published with the same spirit as the v0.4.1 retrieval
 finding: causal-memory is a **causal layer**, not a general-purpose factual memory —
@@ -34,18 +34,47 @@ cargo build --release
 Per-question results: `benches/locomo/results/run_<ts>_conv<N>.jsonl`
 (gitignored); summary: `run_<ts>_summary.json`.
 
-## Results (run 20260727_022016)
+## Results
 
-| Category | n | Accuracy | Notes |
-|---|---|---|---|
-| 1 single-hop | 282 | 20.6% | retrieval bottleneck |
-| 2 temporal | 321 | 20.2% | relative-date normalization (see below) |
-| 3 multi-hop | 96 | 17.7% | needs both retrieval hops |
-| 4 open-domain | 841 | 58.1% | |
-| 5 adversarial | 446 | **93.3%** | abstention strength |
-| **overall** | 1,986 | **52.6%** | |
-| cats 1–4 (Genesys protocol) | 1,540 | **40.8%** | |
-| evidence retrieval hit rate | — | 60.2% | gold-evidence chunk in top-10 |
+### Run 2 — 20260727_151234 (commit `bea2201`, temporal-grounding prompt)
+
+| Category | n | Accuracy |
+|---|---|---|
+| 1 single-hop | 282 | 22.3% |
+| 2 temporal | 321 | **49.8%** |
+| 3 multi-hop | 96 | 19.8% |
+| 4 open-domain | 841 | 60.3% |
+| 5 adversarial | 446 | **89.5%** |
+| **overall** | 1,986 | **57.8%** |
+| cats 1–4 (Genesys protocol) | 1,540 | **48.6%** |
+| evidence retrieval hit rate | — | 61.2% |
+
+### Run 1 — 20260727_022016 (commit `b76571f`, first frozen baseline)
+
+| Category | n | Accuracy |
+|---|---|---|
+| 1 single-hop | 282 | 20.6% |
+| 2 temporal | 321 | 20.2% |
+| 3 multi-hop | 96 | 17.7% |
+| 4 open-domain | 841 | 58.1% |
+| 5 adversarial | 446 | 93.3% |
+| **overall** | 1,986 | **52.6%** |
+| cats 1–4 | 1,540 | **40.8%** |
+| evidence retrieval hit rate | — | 60.2% |
+
+### Run 1 → Run 2: one prompt line, controlled experiment
+
+Retrieval, DBs, models, temperature, top-k all unchanged; the only delta is a
+temporal-grounding instruction in the answerer prompt (resolve relative dates
+against the `[session_N YYYY-MM-DD]` chunk prefix).
+
+- **cat 2 (temporal): 20.2% → 49.8% (+29.6pp)** — the predicted bottleneck,
+  fixed at the prompt level. This confirms the failure was in answer
+  normalization, not in memory.
+- cats 1/3/4: +1.7/+2.1/+2.2pp — within judge variance.
+- **cat 5 (abstention): 93.3% → 89.5% (−3.8pp)** — a real regression: the
+  added instruction made the answerer slightly more eager to commit. Tuning
+  abstention back without losing the temporal gain is open work.
 
 Context (published, different answerer models — not strictly comparable):
 Mem0 66.9 · Zep 75.14 · Genesys 85.55 (gpt-4o-mini answerer, cats 1–4).
@@ -54,7 +83,7 @@ Mem0 66.9 · Zep 75.14 · Genesys 85.55 (gpt-4o-mini answerer, cats 1–4).
 
 Two distinct bottlenecks, measured rather than guessed:
 
-1. **Retrieval (40% of questions).** Evidence hit rate is 60.2% — for 2 in 5
+1. **Retrieval (40% of questions).** Evidence hit rate is ~60% — for 2 in 5
    questions the gold-evidence chunk never reaches the answerer. Keyword LIKE
    retrieval is the ceiling here; this is exactly the v0.4.1 finding
    (keyword retrieval ≈ causal retrieval on fresh data) restated at scale.
@@ -62,16 +91,16 @@ Two distinct bottlenecks, measured rather than guessed:
    implemented — DeepSeek has no embeddings endpoint, so this needs a
    second provider), BM25 ranking, hybrid fusion.
 
-2. **Temporal normalization (dominates category 2 even when hit=True).**
-   The answerer echoes relative dates from the dialog ("yesterday",
-   "next month", "last year") instead of resolving them against the session
-   date that is stamped on every chunk. Example: gold "7 May 2023", predicted
-   "Yesterday (2023-05-08)". Fix path: answerer prompt that includes the
-   session reference date and demands absolute dates.
+2. ~~Temporal normalization~~ **(fixed in run 2).** Run 1's answerer echoed
+   relative dates from the dialog ("yesterday", "next month") instead of
+   resolving them against the session date stamped on every chunk (gold
+   "7 May 2023" vs predicted "Yesterday (2023-05-08)"). One prompt line
+   demanding absolute dates took cat 2 from 20.2% to 49.8%.
 
-**Strength: adversarial abstention (93.3%).** When the information is not in
-memory, the system says so instead of hallucinating — the property that
-matters most for an agent memory layer you actually trust.
+**Strength: adversarial abstention (89.5–93.3%).** When the information is
+not in memory, the system says so instead of hallucinating — the property
+that matters most for an agent memory layer you actually trust. Run 2 shows
+this is tensioned against answer eagerness and needs deliberate tuning.
 
 ## What this benchmark does not measure
 

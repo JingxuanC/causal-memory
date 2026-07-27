@@ -1,0 +1,65 @@
+{
+  "run_id": "20260727_151234",
+  "date": "2026-07-27T15:20:50.988040+00:00",
+  "git_commit": "bea2201",
+  "model": "deepseek-chat",
+  "judge_model": "deepseek-chat",
+  "temperature": 0.0,
+  "topk": 10,
+  "data": "benches/locomo/data/locomo10.json",
+  "conversations": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "total_questions": 1986,
+  "correct": 1148,
+  "incorrect": 838,
+  "error": 0,
+  "accuracy": 0.5780463242698892,
+  "evidence_hit_rate": 0.6117824773413897,
+  "per_category": {
+    "1": {
+      "total": 282,
+      "correct": 63,
+      "incorrect": 219,
+      "error": 0,
+      "accuracy": 0.22340425531914893
+    },
+    "2": {
+      "total": 321,
+      "correct": 160,
+      "incorrect": 161,
+      "error": 0,
+      "accuracy": 0.4984423676012461
+    },
+    "3": {
+      "total": 96,
+      "correct": 19,
+      "incorrect": 77,
+      "error": 0,
+      "accuracy": 0.19791666666666666
+    },
+    "4": {
+      "total": 841,
+      "correct": 507,
+      "incorrect": 334,
+      "error": 0,
+      "accuracy": 0.6028537455410226
+    },
+    "5": {
+      "total": 446,
+      "correct": 399,
+      "incorrect": 47,
+      "error": 0,
+      "accuracy": 0.8946188340807175
+    }
+  }
+}
