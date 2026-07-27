@@ -45,6 +45,7 @@ const ANSWER_SYSTEM_PROMPT: &str = r#"You are answering questions about a conver
 Rules:
 - Base your answer ONLY on the memories provided below.
 - Keep the answer short: a few words or one sentence.
+- Each memory is prefixed with the session date, e.g. "[session_3 2023-05-08 13:56]". When the question asks WHEN something happened, resolve relative time expressions ("yesterday", "last week", "next month", "last year") against that date and answer with an ABSOLUTE date or time period (e.g. "7 May 2023", "June 2023"), not the relative expression.
 - If the memories do not contain the answer, say "I don't know" or state that the information was not mentioned in the conversation."#;
 
 const JUDGE_SYSTEM_PROMPT: &str = r#"You are an impartial judge evaluating whether a predicted answer correctly answers a question about a conversation.
