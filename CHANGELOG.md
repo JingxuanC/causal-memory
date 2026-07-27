@@ -5,6 +5,35 @@ All notable changes to causal-memory are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - Unreleased
+
+### Added
+- Schema v4: `outcome_polarity TEXT` column on `causal_edges`
+  (`positive` / `negative` / `mixed` / `neutral`, NULL for legacy rows)
+- Write-time outcome polarity (`llm::judge_polarity`): when an LLM is
+  configured, `record_decision` judges the outcome's polarity **as the direct
+  result of the decision** and persists it; unconfigured or any failure falls
+  back to the signal-word heuristic. The new `mixed` category covers compound
+  outcomes ("deadlock under load; fixed by switching to channels") that the
+  heuristic used to force into success
+- `intervention_query` chain labels now read the stored polarity first:
+  `mixed` gets its own `⚠️ WARNING (mixed outcome)` label instead of a
+  misleading `✅ SAFE`; NULL polarity keeps the exact pre-v4 heuristic behavior
+  (label logic extracted into the pure `chain_label` function)
+- Contradiction short-circuit (exact-match and semantic paths) prefers stored
+  polarity over the text heuristic, with a conservative rule: only
+  negative-old + positive-new auto-invalidates; `mixed`/`neutral` never
+  trigger on either side
+- `causal-memory polarity [--db <PATH>] [--limit N]` backfill subcommand
+  (LLM judge when configured, heuristic otherwise; idempotent)
+- `intervention_query` semantic seeding: embeds the action and walks forward
+  chains from cosine-similar past decisions (`similar_decision_edges` +
+  `trace_effect_chain_from_ids`), falling back to the LIKE path with
+  `[semantic]` / `[keyword]` output markers
+- Semantic contradiction candidates on `record_decision`: paraphrased
+  duplicates of a decision (cosine ≥ 0.85) with contradicting outcomes are
+  soft-invalidated alongside the exact-text path
+
 ## [0.7.0] - 2026-07-27
 
 ### Added

@@ -32,6 +32,19 @@ confidence guide:
 - 0.4-0.6: Moderate lesson, some non-obvious insight
 - 0.0-0.2: Trivial/obvious, NOT worth remembering (the default for routine operations)"#;
 
+const POLARITY_JUDGE_PROMPT: &str = r#"You are judging the polarity of an OUTCOME as the direct result of a DECISION.
+
+Judge the outcome as it happened to THIS decision — not whether the problem was eventually fixed later or by someone else.
+
+Categories:
+- "positive": the outcome is a success / things worked as intended
+- "negative": the outcome is a failure / error / regression caused by this decision
+- "mixed": the outcome contains BOTH a failure caused by this decision AND a fix or success in the same statement (e.g. "deadlock under load; fixed by switching to channels" — the deadlock is this decision's direct result, so it is NOT purely positive)
+- "neutral": neither clearly good nor bad
+
+Respond with ONLY a JSON object:
+{"polarity": "positive|negative|mixed|neutral"}"#;
+
 #[derive(Debug, Serialize)]
 struct ChatRequest {
     model: String,
@@ -61,6 +74,11 @@ struct CausalJudgment {
     confidence: f64,
     #[serde(default)]
     reasoning: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct PolarityJudgment {
+    polarity: String,
 }
 
 /// Configuration for the LLM judge. Read from environment variables.
@@ -103,16 +121,47 @@ pub async fn judge_causality(
         outcome.chars().take(500).collect::<String>()
     );
 
+    let content = chat(config, CAUSAL_JUDGE_PROMPT, &user_msg).await?;
+    let judgment: CausalJudgment = serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("Failed to parse LLM judgment: {e}\nRaw: {content}"))?;
+
+    Ok((judgment.confidence, judgment.reasoning))
+}
+
+/// Judge the polarity of an outcome as the direct result of a decision
+/// (write-time, v4). Returns one of "positive" / "negative" / "mixed" /
+/// "neutral"; any parse failure or out-of-enum value is an Err — the caller
+/// falls back to the signal-word heuristic.
+pub async fn judge_polarity(config: &LlmConfig, decision: &str, outcome: &str) -> Result<String> {
+    let user_msg = format!(
+        "Decision: {}\nOutcome: {}\n\nJudge the outcome polarity.",
+        decision,
+        outcome.chars().take(500).collect::<String>()
+    );
+
+    let content = chat(config, POLARITY_JUDGE_PROMPT, &user_msg).await?;
+    let judgment: PolarityJudgment = serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("Failed to parse LLM polarity: {e}\nRaw: {content}"))?;
+
+    match judgment.polarity.as_str() {
+        "positive" | "negative" | "mixed" | "neutral" => Ok(judgment.polarity),
+        other => anyhow::bail!("LLM returned unknown polarity: {other}"),
+    }
+}
+
+/// Shared chat-completions call: POSTs system+user messages, returns the
+/// reply content with any markdown code fence stripped.
+async fn chat(config: &LlmConfig, system_prompt: &str, user_msg: &str) -> Result<String> {
     let req = ChatRequest {
         model: config.model.clone(),
         messages: vec![
             ChatMessage {
                 role: "system".into(),
-                content: CAUSAL_JUDGE_PROMPT.into(),
+                content: system_prompt.into(),
             },
             ChatMessage {
                 role: "user".into(),
-                content: user_msg,
+                content: user_msg.into(),
             },
         ],
         max_tokens: 100,
@@ -154,8 +203,5 @@ pub async fn judge_causality(
         content
     };
 
-    let judgment: CausalJudgment = serde_json::from_str(json_str)
-        .map_err(|e| anyhow::anyhow!("Failed to parse LLM judgment: {e}\nRaw: {content}"))?;
-
-    Ok((judgment.confidence, judgment.reasoning))
+    Ok(json_str.to_string())
 }

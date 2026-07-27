@@ -31,9 +31,9 @@ Layer 3: causal-memory（代码实现）
 | 论文 | 核心发现 | 映射到 insights | 代码体现 |
 |---|---|---|---|
 | **Kumaran 2016** CLS 理论 | 大脑有两套记忆系统（海马体快速 episodic + 新皮层慢速 semantic） | `insights/11-causal-state-store.md` §1.2：「Agent 记忆也需要双系统」 | `causal_edges` 表（episodic，不压缩）+ `meta_causal_edges` 表（semantic，离线提炼） |
-| **Schapiro 2017** 海马体重放 | 离线重放不是回放，是重新评估因果权重 | `insights/05-agi-7x24.md` §4.2：「Agent 需要 sleep 阶段」 | v0.4 离线巩固周期（路线图） |
+| **Schapiro 2017** 海马体重放 | 离线重放不是回放，是重新评估因果权重 | `insights/05-agi-7x24.md` §4.2：「Agent 需要 sleep 阶段」 | 离线巩固周期（`consolidate.rs`，已实现） |
 | **Davachi 2006** 时间邻近性 | 大脑默认「时间相邻 = 因果相关」（启发式，常错） | `insights/11-causal-state-store.md` §3 step three：「不是所有决策→结果都是因果关系」 | `confidence_source` 字段（temporal=0.4 vs user_feedback=0.95） |
-| **Diekelmann 2010** 睡眠巩固 | 睡眠通过选择性重放 + 突触下调来转化记忆 | `insights/05-agi-7x24.md` §4.2 + §4.5 | v0.4 巩固周期的三个阶段（重放 → 泛化 → 下调） |
+| **Diekelmann 2010** 睡眠巩固 | 睡眠通过选择性重放 + 突触下调来转化记忆 | `insights/05-agi-7x24.md` §4.2 + §4.5 | 巩固周期四阶段：reactivation → generalization → downscaling → REM integration（`consolidate.rs`，已实现） |
 
 ### 认知心理学层
 
@@ -55,7 +55,7 @@ Layer 3: causal-memory（代码实现）
 
 | 论文 | 核心发现 | 映射到 insights | 代码体现 |
 |---|---|---|---|
-| **Pearl 2009** 因果梯级 | 关联 → 干预 → 反事实，三级严格递增 | `insights/11-causal-state-store.md` §4：「v0.2 只做 Rung 1，Rung 2/3 在路线图」 | `search_causal` (Rung 1) → `counterfactual_query` (Rung 2/3, 路线图) |
+| **Pearl 2009** 因果梯级 | 关联 → 干预 → 反事实，三级严格递增 | `insights/11-causal-state-store.md` §4：「v0.2 只做 Rung 1，Rung 2/3 在路线图」 | `search_causal`（Rung 1）+ `intervention_query`（Rung 2，已实现）；Rung 3 反事实明确出 scope |
 | **Spirtes 2000** PC 算法 | 可以从观测数据中自动发现因果结构 | `insights/11-causal-state-store.md` §8.5：「meta_causal_edges 的挖掘需要类似 PC 的方法」 | v0.3 `meta_causal_edges` 激活（约束基模式挖掘） |
 
 ---
@@ -87,13 +87,17 @@ server.serve(transport).await?;
 
 **代码体现**：
 ```rust
-// server.rs: 只有 4 个 MCP tools——小面积，不竞争
+// server.rs: 8 个 MCP tools——每个对应决策回路的一个明确时刻，小面积，不竞争
 #[tool_router]
 impl CausalMemoryServer {
     #[tool(name = "record_decision")]
     #[tool(name = "search_causal")]
     #[tool(name = "trace_cause")]
     #[tool(name = "trace_cause_chain")]
+    #[tool(name = "invalidate_decision")]
+    #[tool(name = "search_patterns")]
+    #[tool(name = "causal_directory")]
+    #[tool(name = "intervention_query")]
 }
 ```
 
@@ -136,12 +140,12 @@ conn.execute(
 - 实时写入（熵增）+ 离线巩固（熵减）
 - `confidence` 衰减作为「选择性遗忘」机制
 
-**代码体现**（路线图）：
+**代码体现**（`consolidate.rs` downscaling 阶段，已实现）：
 ```rust
-// v0.4 consolidation cycle:
-// 1. 时间衰减：所有边 confidence *= 0.99/day
-// 2. 重放增强：被查询的边 confidence += 0.05
-// 3. 垃圾回收：删除 confidence < 0.2 的边
+// sleep consolidation 的 downscaling:
+// 1. 时间衰减：所有边 confidence 按年龄指数衰减
+// 2. 重放增强：被访问的边获得 access-based boost
+// 3. 垃圾回收：回收低于阈值的边（user_feedback 边永不回收）
 ```
 
 ### `insights/05-agi-7x24.md` → 7×24 生存机制
@@ -152,12 +156,13 @@ conn.execute(
 - **身份持久性**：`causal_edges` 作为跨越 compaction 的「因果身份基底」
 - **离线巩固**：16h 活跃 + 4h 巩固 + 4h 维护的周期
 
-**代码体现**（路线图）：
+**代码体现**（已实现为 `causal-memory sleep` 四阶段离线周期）：
 ```
-v0.4 sleep cycle:
-  Active (16h): real-time record_decision
-  Consolidation (4h): replay + contradiction detection + meta_edge update
-  Maintenance (4h): confidence decay + garbage collection + index rebuild
+sleep cycle（每天一次，非幂等）:
+  reactivation:    为边打分排出重放优先级（失败与用户反馈优先）
+  generalization:  合并重复边 + 运行 pattern miner 提炼 meta 边
+  downscaling:     置信度时间衰减 + access boost + 垃圾回收
+  REM integration: 跨 task_tag 链接相似模式（跨域迁移）
 ```
 
 ### `insights/13-reconstructive-memory.md` → 重构式检索
@@ -220,7 +225,12 @@ CREATE TABLE meta_causal_edges (
 | `search_causal` | Sloman 2005（因果图检索） | `insights/11` §2 | Agent 做新决策前需要检索过去的因果经验 |
 | `trace_cause` | Gerstenberg 2021（单跳反事实） | `insights/11` §5 | 失败后找出直接原因 |
 | `trace_cause_chain` | Gerstenberg 2021（多跳反事实）+ Pearl Rung 1 | `insights/11` §5 + §4 | 失败后找出根因链 |
-| `counterfactual_query` (路线图) | Pearl 2009 Rung 2/3 | `insights/11` §4 | 「如果当初选了 B 而不是 A？」 |
+| `invalidate_decision` | `insights/08`（认识论谦逊） | `insights/11` §3 | 记录的经验被证明是错的时需要纠正路径 |
+| `search_patterns` | Kumaran 2016（新皮层慢速语义系统） | `insights/11` §6, §8.5 | 检索离线挖掘出的跨任务模式，而非原始片段 |
+| `causal_directory` | Schacter 2007（重构需要蓝图索引） | `insights/13` §1.3 | 零检索成本回答「我拥有什么经验」 |
+| `intervention_query` | Pearl 2009 Rung 2（干预） | `insights/11` §4 | 行动前预测相似历史动作造成的结果 |
+
+Rung 3 反事实查询（「如果当初选了 B 而不是 A？」）明确不做——见 `docs/roadmap.md` 的 out-of-scope 说明。
 
 ### 工程权衡溯源
 
@@ -228,7 +238,7 @@ CREATE TABLE meta_causal_edges (
 |---|---|---|
 | SQLite vs. 向量数据库 | SQLite | `insights/10`：不需要替换现有记忆系统，只需要一个因果 side table。SQLite 零依赖、单文件、可移植。 |
 | MCP stdio vs. HTTP | stdio | `insights/09`：记忆层是注入层，不是服务层。stdio 是最简单的进程间通信。 |
-| 4 个 tools vs. 更多 | 4 个 | `insights/14` §2.2：「complete-looking is the enemy of depth」——工具越多，Agent 越不会用。 |
+| 8 个 tools vs. 更多 | 8 个 | `insights/14` §2.2：「complete-looking is the enemy of depth」——每个工具必须覆盖决策回路中一个不重叠的时刻，再多就会互相踩踏。 |
 | 手动 record vs. 自动提取 | 两者都有 | `insights/02`：自动提取（extractor.rs）是 v0.2 功能，但 manual `record_decision` 保留作为 fallback。 |
 
 ---
@@ -259,18 +269,18 @@ CREATE TABLE meta_causal_edges (
 
 ---
 
-## 路线图：未来的 Insights 如何指导 v0.3+
+## 路线图：Insights 如何指导各版本（含落地状态）
 
-| 版本 | 功能 | Insight 来源 | 论文支撑 |
-|---|---|---|---|
-| **v0.3** | `meta_causal_edges` 激活 | `insights/11` §6, §8.5 | Spirtes 2000 PC 算法 |
-| **v0.3** | 语义/向量搜索 | `insights/13` §1.3 | Reimers & Gurevych (Sentence-BERT) |
-| **v0.4** | 离线巩固周期 | `insights/05` §4.2 | Diekelmann 2010, Schapiro 2017 |
-| **v0.4** | 置信度时间衰减 | `insights/04` §2 | Tononi SHY (突触稳态) |
-| **v0.5** | 干预查询 (Rung 2) | `insights/11` §4 | Pearl 2009 do-calculus |
-| **v0.5** | 反事实查询 (Rung 3) | `insights/11` §4 | Pearl 2009 counterfactuals |
-| **v0.5** | 跨 Agent 共享 | `insights/05` §4.5 + `insights/10` | Hutchins 1995 (分布式认知) |
-| **v1.1** | 重构式检索 | `insights/13` §1.3 | Schacter 2007 |
+| 版本 | 功能 | Insight 来源 | 论文支撑 | 状态 |
+|---|---|---|---|---|
+| **v0.3** | `meta_causal_edges` 激活 | `insights/11` §6, §8.5 | Spirtes 2000 PC 算法 | ✅ 已实现（patterns.rs miner） |
+| **v0.7** | 语义/向量搜索 | `insights/13` §1.3 | Reimers & Gurevych (Sentence-BERT) | ✅ 已实现（embed.rs，OpenAI 兼容端点） |
+| **v0.4** | 离线巩固周期 | `insights/05` §4.2 | Diekelmann 2010, Schapiro 2017 | ✅ 已实现（consolidate.rs） |
+| **v0.4** | 置信度时间衰减 | `insights/04` §2 | Tononi SHY (突触稳态) | ✅ 已实现（downscaling 阶段） |
+| **v0.7** | 干预查询 (Rung 2) | `insights/11` §4 | Pearl 2009 do-calculus | ✅ 已实现（intervention_query） |
+| ~~v0.5~~ | 反事实查询 (Rung 3) | `insights/11` §4 | Pearl 2009 counterfactuals | ❌ 明确出 scope（`insights/11`：对 agent 不切实际） |
+| **v1.x** | 跨 Agent 共享 | `insights/05` §4.5 + `insights/10` | Hutchins 1995 (分布式认知) | 路线图（v1.1 research direction） |
+| **v1.1** | 重构式检索 | `insights/13` §1.3 | Schacter 2007 | 路线图 |
 
 ---
 

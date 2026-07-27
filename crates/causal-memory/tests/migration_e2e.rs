@@ -1,6 +1,6 @@
 //! Phase 7 e2e: schema migration — open a pre-v0.6 (v1) database file and
-//! verify the automatic migration to v3 preserves data and keeps every
-//! read/write path functional.
+//! verify the automatic migration to the current schema (v4) preserves data
+//! and keeps every read/write path functional.
 //!
 //! v1 schema (reconstructed from migrate.rs docs): `causal_edges` has no
 //! `event_time` / `discovered_at` / `valid_to` / `access_count` columns and
@@ -55,7 +55,15 @@ fn migration_from_v1_file_db() {
     store
         .with_conn(|conn| {
             let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-            assert_eq!(version, 3, "migrated to schema v3");
+            assert_eq!(version, 4, "migrated to schema v4");
+            // v4: the polarity column exists and legacy rows stay NULL
+            // (read paths fall back to the signal-word heuristic).
+            let null_polarity: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM causal_edges WHERE outcome_polarity IS NULL",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(null_polarity, 2);
             Ok(())
         })
         .unwrap();

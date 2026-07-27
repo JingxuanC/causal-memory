@@ -126,7 +126,7 @@ Existing databases are upgraded automatically on open (schema v3); run
 **v0.7.0 — alpha.** What works:
 
 - ✅ Eight MCP tools (record / search / trace / chain-trace / invalidate / patterns / L0 directory / intervention)
-- ✅ SQLite persistence with CHECK constraints + idempotent schema migrations (v3)
+- ✅ SQLite persistence with CHECK constraints + idempotent schema migrations (v4)
 - ✅ **Parameterized queries** (no SQL injection risk)
 - ✅ Confidence levels (temporal / rule / llm_inferred / user_feedback)
 - ✅ Task-aware retrieval + optional **semantic (embedding) retrieval** with keyword fallback
@@ -136,7 +136,7 @@ Existing databases are upgraded automatically on open (schema v3); run
 - ✅ **Dual-system memory**: offline pattern miner distils meta edges (`similar_to` / `repeated` / `contradicts` / `refines`)
 - ✅ **Offline consolidation ("sleep") cycle** with four phases
 - ✅ **L0 causal directory** + **Rung-2 intervention queries**
-- ✅ 63 tests (60 unit + 3 e2e suites: migration / pipeline / MCP stdio)
+- ✅ 73 tests (70 unit + 3 e2e suites: migration / pipeline / MCP stdio)
 
 What's not done yet (honest):
 

@@ -25,7 +25,7 @@ use rusqlite::OptionalExtension;
 use serde::Deserialize;
 
 use causal_memory::embed::{EmbedConfig, Embedder};
-use causal_memory::store::{outcome_polarity, CausalStore};
+use causal_memory::store::{outcome_polarity, CausalStore, ChainHop};
 
 pub struct CausalMemoryServer {
     store: CausalStore,
@@ -47,6 +47,54 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
         Err(_) => tokio::runtime::Runtime::new()
             .expect("failed to create tokio runtime")
             .block_on(fut),
+    }
+}
+
+/// Cosine floor for semantic seeding in intervention_query (recall-oriented).
+const INTERVENTION_MIN_SIMILARITY: f64 = 0.5;
+/// Cosine floor for the semantic contradiction scan on record (precision-
+/// oriented: only paraphrase-level duplicates of the same decision).
+const SEMANTIC_CONTRADICTION_MIN_SIMILARITY: f64 = 0.85;
+
+/// Write-time outcome polarity: LLM judge when an LLM is configured, falling
+/// back to the signal-word heuristic on any failure or when unconfigured
+/// (Some(true)→positive, Some(false)→negative, None→neutral).
+fn judge_outcome_polarity(decision: &str, outcome: &str) -> String {
+    if let Some(config) = causal_memory::llm::LlmConfig::from_env() {
+        if let Ok(pol) = block_on(causal_memory::llm::judge_polarity(
+            &config, decision, outcome,
+        )) {
+            return pol;
+        }
+        // LLM failed — fall through to the heuristic.
+    }
+    match outcome_polarity(outcome) {
+        Some(true) => "positive",
+        Some(false) => "negative",
+        None => "neutral",
+    }
+    .to_string()
+}
+
+/// Label a forward (intervention) chain by its terminal hop. Stored polarity
+/// (v4) wins over the text heuristic; `mixed` gets its own WARNING label
+/// instead of being forced into SAFE/DANGER. A failure outcome that a
+/// `prevented` edge on the path blocked before downgrades DANGER → UNKNOWN.
+fn chain_label(
+    terminal_polarity: Option<&str>,
+    terminal_text: &str,
+    has_prevented: bool,
+) -> &'static str {
+    if terminal_polarity == Some("mixed") {
+        return "⚠️ WARNING (mixed outcome)";
+    }
+    match causal_memory::store::effective_polarity(terminal_polarity, terminal_text) {
+        Some(false) if has_prevented => {
+            "ℹ️ UNKNOWN (failure outcome, but a prevented edge on this path blocked it before)"
+        }
+        Some(false) => "⚠️ DANGER",
+        Some(true) => "✅ SAFE",
+        _ => "ℹ️ UNKNOWN",
     }
 }
 
@@ -173,13 +221,21 @@ impl CausalMemoryServer {
             .as_deref()
             .unwrap_or("llm_inferred");
 
-        match self.store.record_decision(
+        // Write-time outcome polarity (v4): LLM judge when configured,
+        // otherwise the signal-word heuristic. Silent on any failure —
+        // polarity must never block recording; legacy-style NULL would just
+        // make readers fall back to the heuristic anyway.
+        let polarity = judge_outcome_polarity(&params.decision, &params.outcome);
+
+        match self.store.record_decision_full(
             &params.decision,
             &params.outcome,
             &params.relation,
             Some(&params.task_tag),
             confidence,
             source,
+            chrono::Utc::now().timestamp(),
+            Some(&polarity),
         ) {
             Ok(id) => {
                 // Phase 6: opportunistically embed the new edge so semantic
@@ -203,6 +259,17 @@ impl CausalMemoryServer {
                         });
                         if let Ok(Some(eid)) = edge_id {
                             let _ = self.store.put_embedding(eid, embedder.model(), &vec);
+                            // Semantic contradiction scan: the exact-text path
+                            // already ran inside record_decision; this catches
+                            // paraphrased duplicates of the same decision.
+                            // High threshold, silent on any error.
+                            let _ = self.store.invalidate_semantic_contradictions(
+                                &params.decision,
+                                &params.outcome,
+                                Some(&polarity),
+                                &vec,
+                                SEMANTIC_CONTRADICTION_MIN_SIMILARITY,
+                            );
                         }
                     }
                 }
@@ -489,24 +556,38 @@ impl CausalMemoryServer {
         // away realistic 2-3 hop predictions at 0.5.
         let min_confidence = 0.3;
 
-        let chains = match self
-            .store
-            .trace_effect_chain(&params.action, max_depth, min_confidence)
-        {
-            Ok(c) => c,
-            Err(e) => return format!("❌ Intervention query failed: {e}"),
-        };
+        // Semantic seed path: embed the action, find similar past decisions by
+        // cosine, walk forward chains from them. Any failure (unconfigured,
+        // embed error, no seeds) falls back to the LIKE path — identical to
+        // the pre-embedding behavior.
+        let mut tag = "[keyword]";
+        let chains =
+            match self.semantic_effect_chains(&params.action, max_depth, min_confidence, limit) {
+                Some(c) => {
+                    tag = "[semantic]";
+                    c
+                }
+                None => {
+                    match self
+                        .store
+                        .trace_effect_chain(&params.action, max_depth, min_confidence)
+                    {
+                        Ok(c) => c,
+                        Err(e) => return format!("❌ Intervention query failed: {e}"),
+                    }
+                }
+            };
 
         if chains.is_empty() {
             return format!(
-                "📭 No precedent found for \"{}\" — absence of evidence is not evidence of safety. Proceed with caution, and record the outcome afterward with record_decision.",
+                "{tag} 📭 No precedent found for \"{}\" — absence of evidence is not evidence of safety. Proceed with caution, and record the outcome afterward with record_decision.",
                 params.action
             );
         }
 
         let show = chains.len().min(limit);
         let mut out = format!(
-            "Predicted effect(s) of \"{}\" — {} chain(s) (showing {}, max_depth={}):\n\n",
+            "{tag} Predicted effect(s) of \"{}\" — {} chain(s) (showing {}, max_depth={}):\n\n",
             params.action,
             chains.len(),
             show,
@@ -516,16 +597,11 @@ impl CausalMemoryServer {
         for (i, chain) in chains.iter().take(limit).enumerate() {
             let terminal = chain.last();
             let has_prevented = chain.iter().any(|h| h.relation == "prevented");
-            let label = match terminal.map(|h| outcome_polarity(&h.outcome_text)) {
-                // A failure that a `prevented` edge along the path blocked
-                // before: downgrade DANGER → UNKNOWN.
-                Some(Some(false)) if has_prevented => {
-                    "ℹ️ UNKNOWN (failure outcome, but a prevented edge on this path blocked it before)"
-                }
-                Some(Some(false)) => "⚠️ DANGER",
-                Some(Some(true)) => "✅ SAFE",
-                _ => "ℹ️ UNKNOWN",
-            };
+            let label = chain_label(
+                terminal.and_then(|h| h.outcome_polarity.as_deref()),
+                terminal.map(|h| h.outcome_text.as_str()).unwrap_or(""),
+                has_prevented,
+            );
             out.push_str(&format!(
                 "Chain {} {} (chain confidence: {:.0}%):\n",
                 i + 1,
@@ -545,6 +621,33 @@ impl CausalMemoryServer {
             out.push('\n');
         }
         out
+    }
+
+    /// Semantic seed path for intervention_query: embed the action, find
+    /// similar past decisions (cosine >= INTERVENTION_MIN_SIMILARITY), then
+    /// walk forward effect chains from those decisions. Returns None when
+    /// embeddings are unavailable/fail or no similar decision exists — the
+    /// caller then falls back to the LIKE path.
+    fn semantic_effect_chains(
+        &self,
+        action: &str,
+        max_depth: usize,
+        min_confidence: f64,
+        limit: usize,
+    ) -> Option<Vec<Vec<ChainHop>>> {
+        let embedder = EmbedConfig::from_env().map(Embedder::new)?;
+        let vec = block_on(embedder.embed(action)).ok()?;
+        let seeds = self
+            .store
+            .similar_decision_edges(&vec, limit, INTERVENTION_MIN_SIMILARITY)
+            .ok()?;
+        if seeds.is_empty() {
+            return None;
+        }
+        let decision_ids: Vec<String> = seeds.iter().map(|(e, _)| e.decision_id.clone()).collect();
+        self.store
+            .trace_effect_chain_from_ids(&decision_ids, max_depth, min_confidence)
+            .ok()
     }
 
     /// Get recent decisions for system prompt (L0 directory, per insights/13 §1.2).
@@ -574,3 +677,78 @@ impl CausalMemoryServer {
 
 #[tool_handler]
 impl ServerHandler for CausalMemoryServer {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_chain_label_stored_polarity() {
+        // Stored polarity wins over the text, whatever the text says.
+        assert_eq!(
+            chain_label(Some("negative"), "一切正常", false),
+            "⚠️ DANGER"
+        );
+        assert_eq!(
+            chain_label(Some("positive"), "deadlock occurred", false),
+            "✅ SAFE"
+        );
+        // mixed gets its own WARNING, never forced into SAFE/DANGER — even
+        // when the text heuristic would call it a success.
+        assert_eq!(
+            chain_label(
+                Some("mixed"),
+                "deadlock under load; fixed by switching to channels",
+                false
+            ),
+            "⚠️ WARNING (mixed outcome)"
+        );
+        assert_eq!(
+            chain_label(Some("mixed"), "deadlock under load; fixed later", true),
+            "⚠️ WARNING (mixed outcome)"
+        );
+        // neutral is never SAFE/DANGER.
+        assert_eq!(
+            chain_label(Some("neutral"), "deploy finished", false),
+            "ℹ️ UNKNOWN"
+        );
+    }
+
+    #[test]
+    fn test_chain_label_prevented_downgrade() {
+        let downgraded =
+            "ℹ️ UNKNOWN (failure outcome, but a prevented edge on this path blocked it before)";
+        // Stored negative + a prevented edge on the path → UNKNOWN.
+        assert_eq!(chain_label(Some("negative"), "x", true), downgraded);
+        // Heuristic failure + prevented → UNKNOWN (pre-v4 behavior preserved).
+        assert_eq!(chain_label(None, "service crashed", true), downgraded);
+        // positive/neutral are unaffected by prevented.
+        assert_eq!(chain_label(Some("positive"), "x", true), "✅ SAFE");
+        assert_eq!(chain_label(Some("neutral"), "x", true), "ℹ️ UNKNOWN");
+    }
+
+    #[test]
+    fn test_chain_label_heuristic_fallback() {
+        // NULL stored polarity → identical to the pre-v4 text heuristic.
+        assert_eq!(
+            chain_label(None, "deadlock — holder crashed", false),
+            "⚠️ DANGER"
+        );
+        assert_eq!(
+            chain_label(None, "successfully fixed race", false),
+            "✅ SAFE"
+        );
+        assert_eq!(chain_label(None, "deploy finished", false), "ℹ️ UNKNOWN");
+        // The documented heuristic quirk is preserved on the fallback path:
+        // failure+success in one text counts as success (use chain_label with
+        // a stored 'mixed' to get the WARNING instead).
+        assert_eq!(
+            chain_label(
+                None,
+                "Deadlock under concurrent load; fixed by switching to channel-based ownership",
+                false
+            ),
+            "✅ SAFE"
+        );
+    }
+}

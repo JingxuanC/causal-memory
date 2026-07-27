@@ -13,7 +13,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// SQL schema for causal tables (v3, see migrate::SCHEMA_VERSION).
+/// SQL schema for causal tables (v4, see migrate::SCHEMA_VERSION).
 /// All statements use IF NOT EXISTS; older DBs are upgraded column-by-column
 /// by `crate::migrate::migrate`.
 pub const CAUSAL_SCHEMA_SQL: &str = r#"
@@ -30,6 +30,9 @@ CREATE TABLE IF NOT EXISTS chunks (
 --   discovered_at = when this edge was written to DB (for audit)
 --   valid_to      = NULL = still valid; non-NULL = when this edge was invalidated
 -- Access tracking (v3): bumped on every read-path hit (search/trace).
+-- Outcome polarity (v4): write-time judgment of the outcome's direction
+-- (positive/negative/mixed/neutral); NULL = legacy row, readers fall back to
+-- the signal-word heuristic.
 CREATE TABLE IF NOT EXISTS causal_edges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     from_id TEXT NOT NULL,
@@ -43,6 +46,7 @@ CREATE TABLE IF NOT EXISTS causal_edges (
     task_tag TEXT,
     access_count INTEGER NOT NULL DEFAULT 0,
     last_accessed_at INTEGER,
+    outcome_polarity TEXT CHECK(outcome_polarity IN ('positive','negative','mixed','neutral')),
     FOREIGN KEY (from_id) REFERENCES chunks(id),
     FOREIGN KEY (to_id) REFERENCES chunks(id)
 );
@@ -201,6 +205,21 @@ pub fn outcomes_contradict(old: &str, new: &str) -> bool {
     }
 }
 
+/// Effective polarity of an edge's outcome for contradiction checks and
+/// intervention labels: a stored polarity (v4) wins over the text heuristic —
+/// 'negative' counts as failure, 'positive' as success, and 'mixed'/'neutral'
+/// as neither (they never auto-invalidate and never label a chain SAFE/DANGER
+/// on their own). `None` (legacy rows) falls back to the signal-word
+/// heuristic on the outcome text.
+pub fn effective_polarity(stored: Option<&str>, outcome_text: &str) -> Option<bool> {
+    match stored {
+        Some("negative") => Some(false),
+        Some("positive") => Some(true),
+        Some(_) => None,
+        None => outcome_polarity(outcome_text),
+    }
+}
+
 /// A single hop in a multi-hop causal chain.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct ChainHop {
@@ -213,6 +232,8 @@ pub struct ChainHop {
     pub relation: String,
     pub confidence: f64,
     pub chain_confidence: f64,
+    /// Stored write-time outcome polarity (v4); None for legacy rows.
+    pub outcome_polarity: Option<String>,
 }
 
 /// A compact decision directory entry (for L0 system-prompt injection).
@@ -296,6 +317,34 @@ impl CausalStore {
         discovered_by: &str,
         event_time: i64,
     ) -> Result<String> {
+        self.record_decision_full(
+            decision,
+            outcome,
+            relation,
+            task_tag,
+            confidence,
+            discovered_by,
+            event_time,
+            None,
+        )
+    }
+
+    /// Record with an explicit event_time and a pre-judged outcome polarity
+    /// (v4: positive/negative/mixed/neutral, judged by the LLM or the
+    /// heuristic at the caller). `None` stores NULL — read paths then fall
+    /// back to the signal-word heuristic.
+    #[allow(clippy::too_many_arguments)]
+    pub fn record_decision_full(
+        &self,
+        decision: &str,
+        outcome: &str,
+        relation: &str,
+        task_tag: Option<&str>,
+        confidence: f64,
+        discovered_by: &str,
+        event_time: i64,
+        outcome_polarity: Option<&str>,
+    ) -> Result<String> {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
         let db_time = chrono::Utc::now().timestamp();
         let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -314,36 +363,108 @@ impl CausalStore {
         // already has valid edges whose outcome is contradicted by the new one,
         // the old lesson is falsified by the new evidence — soft-invalidate it.
         // Must run BEFORE inserting the new edge so the new edge is never matched.
-        Self::invalidate_contradicted_edges(&conn, decision, outcome, db_time)?;
+        Self::invalidate_contradicted_edges(&conn, decision, outcome, outcome_polarity, db_time)?;
         conn.execute(
-            "INSERT INTO causal_edges (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![&dec_id, &out_id, relation, confidence, discovered_by, event_time, db_time, task_tag],
+            "INSERT INTO causal_edges (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag, outcome_polarity)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![&dec_id, &out_id, relation, confidence, discovered_by, event_time, db_time, task_tag, outcome_polarity],
         )?;
         Ok(dec_id)
     }
 
     /// Soft-invalidate valid edges on the same decision text whose outcome
     /// contradicts the new outcome. Returns the number of invalidated edges.
+    ///
+    /// Conservative rule: only "old edge clearly negative AND new edge clearly
+    /// positive" auto-invalidates. A stored polarity (v4) wins over the text
+    /// heuristic — 'negative' counts as failure, 'positive' as success, and
+    /// 'mixed'/'neutral' never trigger on either side; edges with NULL stored
+    /// polarity fall back to the signal-word heuristic on the outcome text.
     fn invalidate_contradicted_edges(
         conn: &Connection,
         decision: &str,
         new_outcome: &str,
+        new_polarity: Option<&str>,
         now: i64,
     ) -> Result<usize> {
         let mut stmt = conn.prepare(
-            "SELECT ce.id, ct.text
+            "SELECT ce.id, ct.text, ce.outcome_polarity
              FROM causal_edges ce
              JOIN chunks cf ON cf.id = ce.from_id
              JOIN chunks ct ON ct.id = ce.to_id
              WHERE cf.text = ?1 AND ce.valid_to IS NULL",
         )?;
-        let old_edges: Vec<(i64, String)> = stmt
-            .query_map(params![decision], |row| Ok((row.get(0)?, row.get(1)?)))?
+        let old_edges: Vec<(i64, String, Option<String>)> = stmt
+            .query_map(params![decision], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        let new_eff = effective_polarity(new_polarity, new_outcome);
         let mut invalidated = 0;
-        for (edge_id, old_outcome) in old_edges {
-            if outcomes_contradict(&old_outcome, new_outcome) {
+        for (edge_id, old_outcome, old_polarity) in old_edges {
+            let old_eff = effective_polarity(old_polarity.as_deref(), &old_outcome);
+            if old_eff == Some(false) && new_eff == Some(true) {
+                conn.execute(
+                    "UPDATE causal_edges SET valid_to = ?1 WHERE id = ?2",
+                    params![now, edge_id],
+                )?;
+                invalidated += 1;
+            }
+        }
+        Ok(invalidated)
+    }
+
+    /// Semantic extension of the contradiction short-circuit: soft-invalidate
+    /// valid edges whose decision text DIFFERS from `decision` (same-text
+    /// edges are the exact-match path's job) but whose embedding is highly
+    /// similar to `query_embedding`, when the old outcome contradicts
+    /// `new_outcome`. Pure sync — the caller (MCP/CLI layer) supplies the
+    /// embedding, or skips this entirely when embeddings are unavailable.
+    /// Returns the number of invalidated edges.
+    ///
+    /// Uses the same conservative polarity rule as
+    /// `invalidate_contradicted_edges` (stored polarity wins, only
+    /// negative-old + positive-new invalidates, NULL falls back to heuristic).
+    pub fn invalidate_semantic_contradictions(
+        &self,
+        decision: &str,
+        new_outcome: &str,
+        new_polarity: Option<&str>,
+        query_embedding: &[f32],
+        min_similarity: f64,
+    ) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let now = chrono::Utc::now().timestamp();
+        let mut stmt = conn.prepare(
+            "SELECT ce.id, ct.text, ce.outcome_polarity, ee.vector
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             JOIN chunks ct ON ct.id = ce.to_id
+             JOIN edge_embeddings ee ON ee.edge_id = ce.id
+             WHERE cf.text != ?1 AND ce.valid_to IS NULL",
+        )?;
+        let rows = stmt.query_map(params![decision], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+            ))
+        })?;
+        let new_eff = effective_polarity(new_polarity, new_outcome);
+        let mut invalidated = 0;
+        for row in rows {
+            let (edge_id, old_outcome, old_polarity, blob) =
+                row.map_err(|e| anyhow!("Query failed: {e}"))?;
+            // Skip corrupt blobs instead of failing the whole scan.
+            let Ok(vec) = crate::embed::blob_to_vec(&blob) else {
+                continue;
+            };
+            if crate::embed::cosine_similarity(query_embedding, &vec) < min_similarity {
+                continue;
+            }
+            let old_eff = effective_polarity(old_polarity.as_deref(), &old_outcome);
+            if old_eff == Some(false) && new_eff == Some(true) {
                 conn.execute(
                     "UPDATE causal_edges SET valid_to = ?1 WHERE id = ?2",
                     params![now, edge_id],
@@ -365,6 +486,26 @@ impl CausalStore {
             params![now, edge_id],
         )?;
         Ok(n > 0)
+    }
+
+    /// Persist an LLM re-judged confidence on all valid edges originating
+    /// from a decision chunk. Returns the number of edges updated.
+    /// Used by the CLI `judge` path — previously the re-judged confidence
+    /// was only printed, never written back, so DB confidence stayed at
+    /// whatever the rule-based extractor had set.
+    pub fn rejudge_decision(
+        &self,
+        from_id: &str,
+        confidence: f64,
+        discovered_by: &str,
+    ) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let n = conn.execute(
+            "UPDATE causal_edges SET confidence = ?1, discovered_by = ?2
+             WHERE from_id = ?3 AND valid_to IS NULL",
+            params![confidence.clamp(0.0, 1.0), discovered_by, from_id],
+        )?;
+        Ok(n)
     }
 
     /// Fetch a single edge by id, including its invalidation status and audit
@@ -496,6 +637,23 @@ impl CausalStore {
         Ok(scored)
     }
 
+    /// Semantic seed lookup for intervention queries: cosine-rank
+    /// `query_embedding` against valid edge embeddings and keep only edges at
+    /// or above `min_similarity`. Delegates to `search_causal_semantic` —
+    /// results come back sorted by similarity descending, so filtering the
+    /// top `limit` by threshold is equivalent to filtering before truncation.
+    /// Access tracking is recorded for the candidates.
+    pub fn similar_decision_edges(
+        &self,
+        query_embedding: &[f32],
+        limit: usize,
+        min_similarity: f64,
+    ) -> Result<Vec<(CausalEntry, f64)>> {
+        let mut scored = self.search_causal_semantic(query_embedding, None, limit)?;
+        scored.retain(|(_, sim)| *sim >= min_similarity);
+        Ok(scored)
+    }
+
     /// Valid edges that have no embedding yet (for CLI backfill).
     /// Returns (edge_id, "decision outcome") pairs — the same text shape the
     /// record path embeds.
@@ -519,6 +677,37 @@ impl CausalStore {
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| anyhow!("Query failed: {e}"))
+    }
+
+    /// Valid edges that have no stored outcome polarity yet (for the CLI
+    /// `polarity` backfill). Returns (edge_id, decision, outcome) triples.
+    pub fn edges_without_polarity(&self, limit: usize) -> Result<Vec<(i64, String, String)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT ce.id, cf.text, ct.text
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             JOIN chunks ct ON ct.id = ce.to_id
+             WHERE ce.outcome_polarity IS NULL AND ce.valid_to IS NULL
+             ORDER BY ce.id
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<(i64, String, String)>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))
+    }
+
+    /// Store the outcome polarity of an edge (v4). The CHECK constraint
+    /// rejects values outside positive/negative/mixed/neutral.
+    pub fn set_outcome_polarity(&self, edge_id: i64, polarity: &str) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        conn.execute(
+            "UPDATE causal_edges SET outcome_polarity = ?1 WHERE id = ?2",
+            params![polarity, edge_id],
+        )?;
+        Ok(())
     }
 
     /// Trace which decisions could have caused a given outcome (reverse lookup).
@@ -570,7 +759,8 @@ impl CausalStore {
                            'from_id', ce.from_id,
                            'to_id', ce.to_id,
                            'rel', ce.relation,
-                           'conf', ce.confidence
+                           'conf', ce.confidence,
+                           'pol', ce.outcome_polarity
                        )),
                        1,
                        ce.confidence
@@ -591,7 +781,8 @@ impl CausalStore {
                            'from_id', ce2.from_id,
                            'to_id', ce2.to_id,
                            'rel', ce2.relation,
-                           'conf', ce2.confidence
+                           'conf', ce2.confidence,
+                           'pol', ce2.outcome_polarity
                        )),
                        ch.depth + 1,
                        ch.chain_confidence * ce2.confidence
@@ -635,6 +826,7 @@ impl CausalStore {
                 let to_id = hop_val["to_id"].as_str().unwrap_or("").to_string();
                 let rel = hop_val["rel"].as_str().unwrap_or("").to_string();
                 let conf = hop_val["conf"].as_f64().unwrap_or(0.5);
+                let pol = hop_val["pol"].as_str().map(String::from);
                 running_conf *= conf;
 
                 // Resolve text from chunks (single query per chain, or inline if cached).
@@ -652,6 +844,7 @@ impl CausalStore {
                     relation: rel,
                     confidence: conf,
                     chain_confidence: running_conf,
+                    outcome_polarity: pol,
                 });
             }
             if !chain.is_empty() {
@@ -679,10 +872,56 @@ impl CausalStore {
         max_depth: usize,
         min_confidence: f64,
     ) -> Result<Vec<Vec<ChainHop>>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
         let pattern = format!("%{}%", decision_description);
+        self.trace_effect_chain_impl(
+            "JOIN chunks c ON c.id = ce.from_id WHERE c.text LIKE ?1",
+            vec![Box::new(pattern)],
+            max_depth,
+            min_confidence,
+        )
+    }
 
-        let sql = r#"
+    /// Forward multi-hop variant anchored on explicit decision chunk ids
+    /// (semantic seed path of intervention_query): identical recursive walk
+    /// to `trace_effect_chain`, but the anchor is `ce.from_id IN (...)`
+    /// instead of a LIKE on the decision text.
+    pub fn trace_effect_chain_from_ids(
+        &self,
+        decision_ids: &[String],
+        max_depth: usize,
+        min_confidence: f64,
+    ) -> Result<Vec<Vec<ChainHop>>> {
+        if decision_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = (1..=decision_ids.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let anchor = format!("WHERE ce.from_id IN ({placeholders})");
+        let binds = decision_ids
+            .iter()
+            .map(|id| Box::new(id.clone()) as Box<dyn rusqlite::ToSql>)
+            .collect();
+        self.trace_effect_chain_impl(&anchor, binds, max_depth, min_confidence)
+    }
+
+    /// Shared forward-walk implementation. `anchor` is the JOIN/WHERE fragment
+    /// of the anchor SELECT and owns placeholders ?1..=?N; min_confidence and
+    /// max_depth are bound at ?N+1 / ?N+2.
+    fn trace_effect_chain_impl(
+        &self,
+        anchor: &str,
+        anchor_binds: Vec<Box<dyn rusqlite::ToSql>>,
+        max_depth: usize,
+        min_confidence: f64,
+    ) -> Result<Vec<Vec<ChainHop>>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conf_p = anchor_binds.len() + 1;
+        let depth_p = anchor_binds.len() + 2;
+
+        let sql = format!(
+            r#"
             WITH RECURSIVE chain(node_id, path_json, depth, chain_confidence) AS (
                 -- Anchor: edges whose decision matches the query.
                 SELECT ce.to_id,
@@ -692,14 +931,14 @@ impl CausalStore {
                            'from_id', ce.from_id,
                            'to_id', ce.to_id,
                            'rel', ce.relation,
-                           'conf', ce.confidence
+                           'conf', ce.confidence,
+                           'pol', ce.outcome_polarity
                        )),
                        1,
                        ce.confidence
                 FROM causal_edges ce
-                JOIN chunks c ON c.id = ce.from_id
-                WHERE c.text LIKE ?1
-                  AND ce.confidence >= ?2
+                {anchor}
+                  AND ce.confidence >= ?{conf_p}
                   AND ce.valid_to IS NULL
 
                 UNION ALL
@@ -713,25 +952,32 @@ impl CausalStore {
                            'from_id', ce2.from_id,
                            'to_id', ce2.to_id,
                            'rel', ce2.relation,
-                           'conf', ce2.confidence
+                           'conf', ce2.confidence,
+                           'pol', ce2.outcome_polarity
                        )),
                        ch.depth + 1,
                        ch.chain_confidence * ce2.confidence
                 FROM causal_edges ce2
                 JOIN chain ch ON ce2.from_id = ch.node_id
-                WHERE ch.depth < ?3
-                  AND ce2.confidence >= ?2
-                  AND ch.chain_confidence * ce2.confidence >= ?2
+                WHERE ch.depth < ?{depth_p}
+                  AND ce2.confidence >= ?{conf_p}
+                  AND ch.chain_confidence * ce2.confidence >= ?{conf_p}
                   AND ce2.valid_to IS NULL
             )
             SELECT path_json FROM chain
             WHERE depth >= 1
             ORDER BY depth DESC, chain_confidence DESC
             LIMIT 50
-            "#;
+            "#
+        );
 
-        let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map(params![pattern, min_confidence, max_depth as i64], |row| {
+        let mut stmt = conn.prepare(&sql)?;
+        let max_depth_i = max_depth as i64;
+        let mut bind_refs: Vec<&dyn rusqlite::ToSql> =
+            anchor_binds.iter().map(|b| b.as_ref()).collect();
+        bind_refs.push(&min_confidence);
+        bind_refs.push(&max_depth_i);
+        let rows = stmt.query_map(bind_refs.as_slice(), |row| {
             let path_json: String = row.get(0)?;
             Ok(path_json)
         })?;
@@ -757,6 +1003,7 @@ impl CausalStore {
                 let to_id = hop_val["to_id"].as_str().unwrap_or("").to_string();
                 let rel = hop_val["rel"].as_str().unwrap_or("").to_string();
                 let conf = hop_val["conf"].as_f64().unwrap_or(0.5);
+                let pol = hop_val["pol"].as_str().map(String::from);
                 running_conf *= conf;
 
                 let (dec_text, out_text) =
@@ -772,6 +1019,7 @@ impl CausalStore {
                     relation: rel,
                     confidence: conf,
                     chain_confidence: running_conf,
+                    outcome_polarity: pol,
                 });
             }
             if !chain.is_empty() {
@@ -1632,5 +1880,324 @@ mod tests {
         // Invalidated edges are excluded from backfill.
         store.invalidate_edge(2).unwrap();
         assert!(store.edges_without_embedding(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_similar_decision_edges() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // Distinct decision texts keep the contradiction short-circuit out of
+        // the way; fresh in-memory DB → edge ids 1..=5 in insertion order.
+        store
+            .record_decision("used Redis mutex", "deadlock", "caused", None, 0.8, "rule")
+            .unwrap();
+        store
+            .record_decision(
+                "used Redis lock",
+                "deadlock again",
+                "caused",
+                None,
+                0.8,
+                "rule",
+            )
+            .unwrap();
+        store
+            .record_decision(
+                "switched to channel",
+                "fixed race",
+                "caused",
+                None,
+                0.8,
+                "rule",
+            )
+            .unwrap();
+        store
+            .record_decision(
+                "added cache TTL",
+                "stampede stopped",
+                "caused",
+                None,
+                0.8,
+                "rule",
+            )
+            .unwrap();
+        // Edge 5 gets no embedding — semantic paths must never return it.
+        store
+            .record_decision("no vector edge", "nothing", "caused", None, 0.5, "rule")
+            .unwrap();
+
+        store.put_embedding(1, "test", &[1.0, 0.0, 0.0]).unwrap(); // sim 1.0
+        store.put_embedding(2, "test", &[0.9, 0.1, 0.0]).unwrap(); // sim ≈ 0.994
+        store.put_embedding(3, "test", &[0.6, 0.8, 0.0]).unwrap(); // sim 0.6
+        store.put_embedding(4, "test", &[0.0, 1.0, 0.0]).unwrap(); // sim 0.0
+
+        // Threshold 0.5: edges 1-3, ranked by similarity descending.
+        let res = store
+            .similar_decision_edges(&[1.0, 0.0, 0.0], 10, 0.5)
+            .unwrap();
+        let ids: Vec<i64> = res.iter().map(|(e, _)| e.edge_id).collect();
+        assert_eq!(ids, vec![1, 2, 3]);
+        assert!(res[0].1 > res[1].1 && res[1].1 > res[2].1);
+
+        // A higher threshold filters out the mid-similarity edge.
+        let res = store
+            .similar_decision_edges(&[1.0, 0.0, 0.0], 10, 0.9)
+            .unwrap();
+        let ids: Vec<i64> = res.iter().map(|(e, _)| e.edge_id).collect();
+        assert_eq!(ids, vec![1, 2]);
+
+        // limit applies to the sorted list.
+        let res = store
+            .similar_decision_edges(&[1.0, 0.0, 0.0], 1, 0.5)
+            .unwrap();
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].0.edge_id, 1);
+
+        // Invalidated edges never seed interventions.
+        store.invalidate_edge(2).unwrap();
+        let res = store
+            .similar_decision_edges(&[1.0, 0.0, 0.0], 10, 0.5)
+            .unwrap();
+        assert!(res.iter().all(|(e, _)| e.edge_id != 2));
+    }
+
+    #[test]
+    fn test_invalidate_semantic_contradictions() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // Edge 1: old lesson with a failure outcome, vector close to the query.
+        store
+            .record_decision(
+                "用 Redis 加互斥锁",
+                "死锁:持有者崩溃",
+                "caused",
+                None,
+                0.8,
+                "rule",
+            )
+            .unwrap();
+        // Edge 2: vector equally close, but the outcome does NOT contradict.
+        store
+            .record_decision(
+                "Redis mutex for stampede protection",
+                "成功防止缓存击穿",
+                "caused",
+                None,
+                0.8,
+                "rule",
+            )
+            .unwrap();
+        // Edge 3: contradicting outcome, but a distant (orthogonal) vector.
+        store
+            .record_decision(
+                "switched to channel single-flight",
+                "panic under load",
+                "caused",
+                None,
+                0.8,
+                "rule",
+            )
+            .unwrap();
+        // Edge 4: exact same decision text as the new edge — that is the
+        // exact-match path's job; the semantic path must skip it even with a
+        // close vector and a contradicting outcome.
+        store
+            .record_decision(
+                "used Redis with mutex lock",
+                "deadlock occurred",
+                "caused",
+                None,
+                0.8,
+                "rule",
+            )
+            .unwrap();
+
+        store.put_embedding(1, "test", &[0.95, 0.05, 0.0]).unwrap();
+        store.put_embedding(2, "test", &[0.95, 0.05, 0.0]).unwrap();
+        store.put_embedding(3, "test", &[0.0, 1.0, 0.0]).unwrap();
+        store.put_embedding(4, "test", &[1.0, 0.0, 0.0]).unwrap();
+
+        // New edge: decision text differs from edges 1-3, and its success
+        // outcome contradicts the failure outcomes of edges 1/3/4.
+        let n = store
+            .invalidate_semantic_contradictions(
+                "used Redis with mutex lock",
+                "成功修复,运行正常",
+                None,
+                &[1.0, 0.0, 0.0],
+                0.85,
+            )
+            .unwrap();
+        assert_eq!(n, 1, "only edge 1 (close vector + contradicting outcome)");
+
+        assert!(store.get_edge(1).unwrap().unwrap().valid_to.is_some());
+        let e2 = store.get_edge(2).unwrap().unwrap();
+        assert!(e2.valid_to.is_none(), "no contradiction → kept");
+        let e3 = store.get_edge(3).unwrap().unwrap();
+        assert!(e3.valid_to.is_none(), "low similarity → kept");
+        let e4 = store.get_edge(4).unwrap().unwrap();
+        assert!(e4.valid_to.is_none(), "same text → exact-match path's job");
+
+        // A query vector with no close neighbors invalidates nothing.
+        let n = store
+            .invalidate_semantic_contradictions(
+                "another decision",
+                "再次失败",
+                None,
+                &[0.0, 0.0, 1.0],
+                0.85,
+            )
+            .unwrap();
+        assert_eq!(n, 0);
+        assert!(store.get_edge(2).unwrap().unwrap().valid_to.is_none());
+        assert!(store.get_edge(3).unwrap().unwrap().valid_to.is_none());
+        assert!(store.get_edge(4).unwrap().unwrap().valid_to.is_none());
+    }
+
+    #[test]
+    fn test_record_with_polarity_and_cte_propagation() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // Build A → B → C with the link helper (raw edges, polarity NULL).
+        let edge_ab = link(&store, "action alpha", "state bravo", "caused", 0.9);
+        let edge_bc = link(&store, "state bravo", "state charlie", "caused", 0.9);
+
+        // Both edges lack a stored polarity → eligible for backfill.
+        let pending = store.edges_without_polarity(10).unwrap();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending[0].0, edge_ab);
+        assert!(pending[0].1.contains("action alpha"));
+        assert!(pending[0].2.contains("state bravo"));
+
+        store.set_outcome_polarity(edge_ab, "negative").unwrap();
+        store.set_outcome_polarity(edge_bc, "mixed").unwrap();
+        assert!(store.edges_without_polarity(10).unwrap().is_empty());
+        // Out-of-enum values are rejected by the CHECK constraint.
+        assert!(store.set_outcome_polarity(edge_ab, "bogus").is_err());
+
+        // Forward CTE hops carry the stored polarity.
+        let chains = store.trace_effect_chain("action alpha", 5, 0.1).unwrap();
+        let full = chains.iter().find(|c| c.len() == 2).expect("2-hop chain");
+        assert_eq!(full[0].outcome_polarity.as_deref(), Some("negative"));
+        assert_eq!(full[1].outcome_polarity.as_deref(), Some("mixed"));
+
+        // Backward CTE hops carry it too.
+        let chains = store.trace_cause_chain("state charlie", 5, 0.1).unwrap();
+        let full = chains.iter().find(|c| c.len() == 2).expect("2-hop chain");
+        assert_eq!(full[0].outcome_polarity.as_deref(), Some("mixed"));
+        assert_eq!(full[1].outcome_polarity.as_deref(), Some("negative"));
+
+        // record_decision_full persists the polarity it is given; the plain
+        // record_decision path stores NULL.
+        store
+            .record_decision_full(
+                "used Redis mutex",
+                "deadlock under load; fixed by switching to channels",
+                "caused",
+                None,
+                0.8,
+                "rule",
+                1000,
+                Some("mixed"),
+            )
+            .unwrap();
+        store
+            .record_decision("plain record", "nothing", "caused", None, 0.5, "rule")
+            .unwrap();
+        let pending = store.edges_without_polarity(10).unwrap();
+        assert_eq!(pending.len(), 1, "only the NULL-polarity edge is pending");
+        assert!(pending[0].1.contains("plain record"));
+    }
+
+    #[test]
+    fn test_contradiction_stored_polarity() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let record = |outcome: &str, polarity: Option<&str>| {
+            store
+                .record_decision_full(
+                    "用方案A部署",
+                    outcome,
+                    "caused",
+                    Some("deploy"),
+                    0.8,
+                    "rule",
+                    1000,
+                    polarity,
+                )
+                .unwrap();
+        };
+
+        // stored negative old + stored positive new → old invalidated, even
+        // though both outcome TEXTS look neutral to the heuristic.
+        record("rollout done", Some("negative"));
+        record("rollout done again", Some("positive"));
+        let valid = store.search_causal(Some("deploy"), None).unwrap();
+        assert_eq!(valid.len(), 1);
+        assert_eq!(valid[0].outcome_text, "rollout done again");
+
+        // stored mixed old + stored positive new → NOT invalidated (mixed
+        // never triggers on either side), even though the old outcome text
+        // contains a failure signal the heuristic would latch onto.
+        record("deadlock occurred; fixed later", Some("mixed"));
+        let valid = store.search_causal(Some("deploy"), None).unwrap();
+        assert_eq!(valid.len(), 2, "mixed old edge must survive");
+
+        // stored positive old + stored negative new → NOT invalidated
+        // (conservative: only negative-old + positive-new invalidates).
+        record("再次失败", Some("negative"));
+        let valid = store.search_causal(Some("deploy"), None).unwrap();
+        assert_eq!(
+            valid.len(),
+            3,
+            "nothing invalidated: positive edge + mixed edge + the new negative edge itself"
+        );
+    }
+
+    #[test]
+    fn test_semantic_contradiction_stored_polarity() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // Edge 1: text looks like failure, but stored 'mixed' — the stored
+        // value must win and protect it from invalidation.
+        store
+            .record_decision_full(
+                "用 Redis 加互斥锁",
+                "死锁:持有者崩溃",
+                "caused",
+                None,
+                0.8,
+                "rule",
+                1000,
+                Some("mixed"),
+            )
+            .unwrap();
+        // Edge 2: stored 'negative' with a neutral-looking text — stored wins,
+        // so a positive new edge invalidates it.
+        store
+            .record_decision_full(
+                "Redis mutex for stampede protection",
+                "rollout finished",
+                "caused",
+                None,
+                0.8,
+                "rule",
+                1001,
+                Some("negative"),
+            )
+            .unwrap();
+        store.put_embedding(1, "test", &[1.0, 0.0]).unwrap();
+        store.put_embedding(2, "test", &[1.0, 0.0]).unwrap();
+
+        let n = store
+            .invalidate_semantic_contradictions(
+                "used Redis with mutex lock",
+                "rollout completed",
+                Some("positive"),
+                &[1.0, 0.0],
+                0.85,
+            )
+            .unwrap();
+        assert_eq!(n, 1, "only the stored-negative edge is invalidated");
+        assert!(
+            store.get_edge(1).unwrap().unwrap().valid_to.is_none(),
+            "mixed → kept"
+        );
+        assert!(store.get_edge(2).unwrap().unwrap().valid_to.is_some());
     }
 }

@@ -13,6 +13,8 @@
 //! - v2 (v0.6): adds the three temporal columns to `causal_edges`.
 //! - v3: adds `access_count` / `last_accessed_at` to `causal_edges`,
 //!   the `edge_embeddings` table, and meta-edge indexes.
+//! - v4: adds `outcome_polarity` to `causal_edges` (write-time LLM/heuristic
+//!   judgment: positive / negative / mixed / neutral; NULL for legacy rows).
 
 use std::collections::HashSet;
 
@@ -22,7 +24,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 3;
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -43,6 +45,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 3 {
         migrate_to_v3(&tx)?;
+    }
+    if version < 4 {
+        migrate_to_v4(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -65,7 +70,9 @@ fn detect_version(conn: &Connection) -> Result<u32> {
         return Ok(SCHEMA_VERSION);
     }
     let cols = table_columns(conn, "causal_edges")?;
-    if cols.contains("access_count") {
+    if cols.contains("outcome_polarity") {
+        Ok(4)
+    } else if cols.contains("access_count") {
         Ok(3)
     } else if cols.contains("event_time") {
         Ok(2)
@@ -159,6 +166,20 @@ fn migrate_to_v3(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v3 → v4: write-time outcome polarity. Existing rows stay NULL (read paths
+/// fall back to the signal-word heuristic); the `polarity` CLI subcommand
+/// backfills them on demand.
+fn migrate_to_v4(conn: &Connection) -> Result<()> {
+    let cols = table_columns(conn, "causal_edges")?;
+    if !cols.contains("outcome_polarity") {
+        conn.execute_batch(
+            "ALTER TABLE causal_edges ADD COLUMN outcome_polarity TEXT
+             CHECK(outcome_polarity IN ('positive','negative','mixed','neutral'))",
+        )?;
+    }
+    Ok(())
+}
+
 fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -228,7 +249,7 @@ mod tests {
         let conn = build_v1_db();
         migrate(&conn).unwrap();
 
-        assert_eq!(user_version(&conn), 3);
+        assert_eq!(user_version(&conn), 4);
 
         let cols = table_columns(&conn, "causal_edges").unwrap();
         for col in [
@@ -237,6 +258,7 @@ mod tests {
             "valid_to",
             "access_count",
             "last_accessed_at",
+            "outcome_polarity",
         ] {
             assert!(cols.contains(col), "missing column {col}");
         }
@@ -264,6 +286,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(null_valid_to, 2);
+
+        // Legacy rows get NULL polarity (read paths fall back to heuristic).
+        let null_polarity: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM causal_edges WHERE outcome_polarity IS NULL",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(null_polarity, 2);
 
         assert!(table_exists(&conn, "edge_embeddings").unwrap());
     }
@@ -307,7 +339,7 @@ mod tests {
         .unwrap();
 
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 3);
+        assert_eq!(user_version(&conn), 4);
 
         let edge_cols = table_columns(&conn, "causal_edges").unwrap();
         for col in [
@@ -316,6 +348,7 @@ mod tests {
             "valid_to",
             "access_count",
             "last_accessed_at",
+            "outcome_polarity",
         ] {
             assert!(edge_cols.contains(col), "causal_edges missing {col}");
         }
@@ -353,7 +386,7 @@ mod tests {
         migrate(&conn).unwrap();
         migrate(&conn).unwrap();
 
-        assert_eq!(user_version(&conn), 3);
+        assert_eq!(user_version(&conn), 4);
         let snapshot: Vec<(i64, i64, i64, i64)> = conn
             .prepare(
                 "SELECT id, event_time, discovered_at, access_count FROM causal_edges ORDER BY id",
@@ -367,18 +400,76 @@ mod tests {
     }
 
     #[test]
-    fn test_fresh_db_is_v3() {
+    fn test_fresh_db_is_v4() {
         let store = CausalStore::open_in_memory().unwrap();
         store
             .with_conn(|conn| {
-                assert_eq!(user_version(conn), 3);
+                assert_eq!(user_version(conn), 4);
                 assert!(table_exists(conn, "edge_embeddings")?);
                 let cols = table_columns(conn, "causal_edges")?;
                 assert!(cols.contains("access_count"));
                 assert!(cols.contains("last_accessed_at"));
+                assert!(cols.contains("outcome_polarity"));
                 Ok(())
             })
             .unwrap();
+    }
+
+    /// v3 → v4: a DB at the v3 shape (marker set, no polarity column) gains
+    /// `outcome_polarity` with NULL on existing rows; re-running is a no-op.
+    #[test]
+    fn test_migrate_v3_to_v4() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(CAUSAL_SCHEMA_SQL).unwrap();
+        // Roll the v4 column back out to simulate a real v3 DB.
+        conn.execute_batch("ALTER TABLE causal_edges DROP COLUMN outcome_polarity")
+            .unwrap();
+        conn.execute_batch("PRAGMA user_version = 3").unwrap();
+        conn.execute_batch(
+            "INSERT INTO chunks (id, text, created_at) VALUES ('d1', 'decision', 1000), ('o1', 'outcome', 1000);
+             INSERT INTO causal_edges (from_id, to_id, relation, confidence, event_time, discovered_at)
+             VALUES ('d1', 'o1', 'caused', 0.8, 1000, 1000);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), 4);
+
+        let cols = table_columns(&conn, "causal_edges").unwrap();
+        assert!(cols.contains("outcome_polarity"));
+        let polarity: Option<String> = conn
+            .query_row(
+                "SELECT outcome_polarity FROM causal_edges WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(polarity, None, "existing rows stay NULL (no backfill)");
+
+        // The CHECK constraint rejects values outside the enum, allows NULL.
+        assert!(conn
+            .execute(
+                "UPDATE causal_edges SET outcome_polarity = 'bogus' WHERE id = 1",
+                [],
+            )
+            .is_err());
+        conn.execute(
+            "UPDATE causal_edges SET outcome_polarity = 'mixed' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+
+        // Idempotent.
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), 4);
+        let polarity: Option<String> = conn
+            .query_row(
+                "SELECT outcome_polarity FROM causal_edges WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(polarity.as_deref(), Some("mixed"));
     }
 
     #[test]

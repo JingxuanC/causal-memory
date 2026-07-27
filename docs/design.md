@@ -111,7 +111,7 @@ This is the same pattern Mem0's OpenMemory uses — memory-as-MCP-tool. We diffe
 ### Schema migrations
 
 The store version-marks the DB with `PRAGMA user_version` and migrates
-idempotently in a single transaction (`src/migrate.rs`, current: v3). A
+idempotently in a single transaction (`src/migrate.rs`, current: v4). A
 `table_info` probe handles pre-marker v0.6 DBs; legacy columns (e.g.
 `created_at`) are backfilled into the temporal columns and dropped. Opening
 any older DB upgrades it automatically; `causal-memory migrate` runs an
@@ -170,6 +170,24 @@ falling back to `CAUSAL_MEMORY_LLM_*`), edges get vector embeddings and
 `search_causal` ranks by cosine similarity (`src/embed.rs`). Unconfigured →
 silent fallback to keyword LIKE. This mirrors the LLM-judge contract:
 zero-invasive default, capability upgrade when configured.
+
+### Write-time outcome polarity (LLM judge + heuristic fallback)
+
+The signal-word polarity heuristic has a documented quirk: when failure and
+success signals co-occur, success wins. That is right for contradiction
+detection but wrong for intervention labels — "deadlock under load; fixed by
+switching to channels" is not a SAFE outcome for the decision that caused the
+deadlock. Since v4, polarity is judged **once at write time**
+(`llm::judge_polarity` when an LLM is configured, else the heuristic) and
+persisted on the edge (`outcome_polarity`: positive / negative / mixed /
+neutral; NULL for legacy rows). The new **mixed** category covers compound
+outcomes instead of forcing them into positive/negative. Read paths only read
+the column: `intervention_query` labels mixed chains `⚠️ WARNING` instead of a
+misleading `✅ SAFE`, and the contradiction short-circuit prefers stored
+polarity under a conservative rule — only negative-old + positive-new
+auto-invalidates, mixed/neutral never trigger on either side. NULL polarity
+everywhere falls back to the exact pre-v4 heuristic behavior;
+`causal-memory polarity` backfills legacy rows on demand.
 
 ## Theoretical foundation
 

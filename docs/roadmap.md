@@ -5,7 +5,7 @@
 - ✅ Eight MCP tools: `record_decision` / `search_causal` / `trace_cause` /
   `trace_cause_chain` / `invalidate_decision` / `search_patterns` /
   `causal_directory` / `intervention_query`
-- ✅ SQLite persistence with CHECK constraints + idempotent schema migrations (v3)
+- ✅ SQLite persistence with CHECK constraints + idempotent schema migrations (v4)
 - ✅ Temporal schema: `event_time` / `discovered_at` / `valid_to` on all edges
 - ✅ Invalidation: manual tool + automatic contradiction short-circuit on `record_decision`
 - ✅ Dual-system memory: offline pattern miner distils meta edges
@@ -18,16 +18,19 @@
   keyword LIKE fallback; `causal-memory embed` backfill
 - ✅ Multi-hop chain linker + recursive-CTE trace
 - ✅ Rule-based decision auto-extractor + LLM judge / reasoning extractor
-- ✅ 63 tests (60 unit + 3 e2e suites)
+- ✅ 73 tests (70 unit + 3 e2e suites)
 
 ## v0.8 — candidates
 
+- [x] Conflict detection via LLM judge: replace the signal-word polarity
+  heuristic in contradiction detection with the existing LLM-judge path —
+  **implemented (v0.8.0)**: write-time `outcome_polarity` column (LLM judge +
+  heuristic fallback, new `mixed` category); contradiction short-circuit
+  prefers stored polarity; `intervention_query` labels read it
 - [ ] Semantic retrieval upgrades: vector index (brute-force cosine does not
   scale), hybrid ranking (keyword + vector + confidence)
 - [ ] Meta-edge invalidation tool (meta edges are currently mined but cannot
   be revoked individually)
-- [ ] Conflict detection via LLM judge: replace the signal-word polarity
-  heuristic in contradiction detection with the existing LLM-judge path
 
 ## v1.0 — engineering hardening
 

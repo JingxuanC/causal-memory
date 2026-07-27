@@ -1,2 +1,5 @@
 target/
 *.db
+# Isolated Rust toolchain (local install for building, not part of the repo)
+.rustup/
+.cargo/

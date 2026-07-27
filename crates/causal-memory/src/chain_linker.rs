@@ -8,15 +8,17 @@
 //! This module detects those links and creates bridge edges so that
 //! trace_cause_chain can walk multi-hop paths.
 //!
-//! ## Three linking strategies (from cheap to expensive)
+//! ## Two linking strategies (from cheap to expensive)
 //!
 //! 1. **Temporal** (free): if decision_j happened right after outcome_i,
 //!    and outcome_i looks like a failure, create a bridge with low confidence.
 //! 2. **Text overlap** (free): if outcome_i and decision_j share keywords,
 //!    create a bridge with medium confidence.
-//! 3. **LLM** (costs $): ask LLM "did decision B happen because of outcome A?"
 //!
-//! All three write the same kind of bridge edge:
+//! (A third, LLM-based strategy — "did decision B happen because of
+//! outcome A?" — is a possible future addition; it is NOT implemented.)
+//!
+//! Both write the same kind of bridge edge:
 //!   from_id = outcome_i's chunk, to_id = decision_j's chunk
 //!   relation = "caused" (the outcome caused / triggered the next decision)
 //!
@@ -33,7 +35,6 @@ pub struct LinkStats {
     pub edges_scanned: usize,
     pub temporal_links: usize,
     pub text_links: usize,
-    pub llm_links: usize,
     pub bridge_edges_created: usize,
     pub skipped_self: usize,
 }

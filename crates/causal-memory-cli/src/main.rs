@@ -70,6 +70,12 @@ fn main() -> anyhow::Result<()> {
         return rt.block_on(run_embed(&args[2..]));
     }
 
+    // Subcommand: polarity [--db <PATH>] [--limit N] — backfill outcome polarity
+    if args.len() >= 2 && args[1] == "polarity" {
+        let rt = tokio::runtime::Runtime::new()?;
+        return rt.block_on(run_polarity(&args[2..]));
+    }
+
     // Default: MCP server mode
     run_mcp_server()
 }
@@ -135,7 +141,11 @@ async fn run_judge(args: &[String]) -> anyhow::Result<()> {
                     decision
                 );
                 println!("   → {}", outcome);
-                println!("   LLM: {} (\"{}\")\n", confidence, reasoning);
+                println!("   LLM: {} (\"{}\")", confidence, reasoning);
+                match store.rejudge_decision(&entry.id, confidence, "llm_inferred") {
+                    Ok(n) => println!("   ↳ wrote confidence back to {} edge(s)\n", n),
+                    Err(e) => println!("   ↳ write-back failed: {}\n", e),
+                }
             }
             Err(e) => {
                 println!("{}. {} — LLM judge failed: {}\n", i + 1, decision, e);
@@ -517,5 +527,115 @@ async fn run_embed(args: &[String]) -> anyhow::Result<()> {
     println!("\n=== Embed backfill complete ===");
     println!("  success: {success}");
     println!("  failed:  {failed}");
+    Ok(())
+}
+
+/// Backfill outcome polarity (v4) for valid edges that don't have one yet.
+/// Uses the LLM judge when configured, otherwise the signal-word heuristic.
+async fn run_polarity(args: &[String]) -> anyhow::Result<()> {
+    use causal_memory::llm::{judge_polarity, LlmConfig};
+    use causal_memory::store::outcome_polarity;
+
+    let mut db: Option<PathBuf> = None;
+    let mut limit: usize = 100;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--db" => {
+                i += 1;
+                let Some(path) = args.get(i) else {
+                    anyhow::bail!("--db requires a path\nUsage: causal-memory polarity [--db <PATH>] [--limit N]");
+                };
+                db = Some(PathBuf::from(path));
+            }
+            "--limit" => {
+                i += 1;
+                let Some(n) = args.get(i) else {
+                    anyhow::bail!("--limit requires a number\nUsage: causal-memory polarity [--db <PATH>] [--limit N]");
+                };
+                limit = n
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("--limit must be a positive integer, got: {n}"))?;
+            }
+            other => {
+                anyhow::bail!(
+                    "unknown flag: {other}\nUsage: causal-memory polarity [--db <PATH>] [--limit N]"
+                )
+            }
+        }
+        i += 1;
+    }
+
+    // LLM optional: unconfigured (or per-edge failure) falls back to the
+    // signal-word heuristic, same as the record path.
+    let config = LlmConfig::from_env();
+    match &config {
+        Some(c) => println!("LLM: {} @ {}", c.model, c.api_base),
+        None => println!("No LLM configured — using the signal-word heuristic."),
+    }
+
+    let db_path = db.unwrap_or_else(get_db_path);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let store = CausalStore::open(&db_path)?;
+
+    let pending = store.edges_without_polarity(limit)?;
+    if pending.is_empty() {
+        println!("No valid edges missing outcome polarity. Nothing to do.");
+        return Ok(());
+    }
+    println!("Judging polarity of {} edge(s)...\n", pending.len());
+
+    let total = pending.len();
+    let mut updated = 0usize;
+    let mut llm_failed = 0usize;
+    let mut failed = 0usize;
+    for (idx, (edge_id, decision, outcome)) in pending.iter().enumerate() {
+        let mut polarity = None;
+        if let Some(c) = &config {
+            match judge_polarity(c, decision, outcome).await {
+                Ok(pol) => polarity = Some(pol),
+                Err(e) => {
+                    llm_failed += 1;
+                    println!(
+                        "[{}/{}] edge {} LLM judge failed: {e} (heuristic fallback)",
+                        idx + 1,
+                        total,
+                        edge_id
+                    );
+                }
+            }
+        }
+        let polarity = polarity.unwrap_or_else(|| {
+            match outcome_polarity(outcome) {
+                Some(true) => "positive",
+                Some(false) => "negative",
+                None => "neutral",
+            }
+            .to_string()
+        });
+        match store.set_outcome_polarity(*edge_id, &polarity) {
+            Ok(()) => {
+                updated += 1;
+                println!("[{}/{}] edge {} → {polarity}", idx + 1, total, edge_id);
+            }
+            Err(e) => {
+                failed += 1;
+                println!(
+                    "[{}/{}] edge {} DB write failed: {e}",
+                    idx + 1,
+                    total,
+                    edge_id
+                );
+            }
+        }
+    }
+
+    println!("\n=== Polarity backfill complete ===");
+    println!("  processed:  {total}");
+    println!("  updated:    {updated}");
+    println!("  llm failed: {llm_failed}");
+    println!("  failed:     {failed}");
     Ok(())
 }
