@@ -5,7 +5,7 @@
 > Memory frameworks today (Mem0, Zep, Letta, OpenViking, MemOS) store *what* happened. `causal-memory` stores *why* — the causal link between a decision and its outcome. This is the slice every other memory layer misses.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Status: v0.7.0](https://img.shields.io/badge/status-v0.8.0--alpha-orange.svg)](#status)
+[![Status: v0.9.0](https://img.shields.io/badge/status-v0.9.0--alpha-orange.svg)](#status)
 
 ## Why
 
@@ -30,7 +30,7 @@ The causal table doesn't decay because it lives outside the agent's context wind
 
 ## What it does
 
-Eight MCP tools. Small surface area is the point.
+Ten MCP tools. Small surface area is the point.
 
 | Tool | When to call | What it does |
 |---|---|---|
@@ -39,9 +39,11 @@ Eight MCP tools. Small surface area is the point.
 | `trace_cause` | When something fails (simple) | Single-hop reverse: which decision caused this outcome |
 | `trace_cause_chain` | When something fails (deep) | Multi-hop backward traversal through the causal graph |
 | `invalidate_decision` | When a recorded lesson turns out wrong | Soft-invalidates the edge (`valid_to` set) — hidden from search/trace, kept for audit |
-| `search_patterns` | To recall cross-task lessons | Searches mined meta edges: `similar_to` / `repeated` / `contradicts` / `refines` |
+| `search_patterns` | To recall cross-task lessons | Searches mined meta edges: `similar_to` / `repeated` / `contradicts` / `refines`, with confounded / Simpson flags |
 | `causal_directory` | Pinned in the system prompt | L0 compact pointer list of recent decisions so the agent always knows what experience it holds |
-| `intervention_query` | Before taking an action | Pearl Rung-2: predicts what outcomes similar past actions caused, labeled safe / warning / danger |
+| `intervention_query` | Before taking an action | Pearl Rung-2: predicts what outcomes similar past actions caused, labeled safe / warning / danger, with task_tag-stratified confound check |
+| `counterfactual_query` | When choosing between two options | Contrastive (empirical) counterfactual: compares recorded outcome distributions of decision vs alternative — explicitly not an SCM counterfactual |
+| `reconstruct_lesson` | To get the distilled lesson of an episode | Reconstructive retrieval: Markov-blanket causal subgraph + LLM lesson narrative, with optional multi-sample calibration |
 
 **Multi-hop example**: "service crashed" ← "OOM" ← "cache had no TTL" ← "Redis configured without expiry". `trace_cause` finds the first hop. `trace_cause_chain` walks the full chain.
 
@@ -126,37 +128,61 @@ causal-memory embed --limit 50 # partial backfill
 
 Unconfigured → automatic fallback to keyword search. Zero-invasive by default.
 
-Existing databases are upgraded automatically on open (schema v3); run
+Existing databases are upgraded automatically on open (schema v5); run
 `causal-memory migrate` for an explicit check.
+
+## Sharing & benchmarks
+
+Share causal memory between agents (e.g. a team's agents pooling lessons) as
+versioned JSONL, with best-effort secret redaction on export and idempotent,
+content-keyed import:
+
+```bash
+causal-memory export lessons.jsonl --task-tag caching --min-confidence 0.5
+causal-memory import lessons.jsonl --task-tag agent-b   # tag the source
+causal-memory import lessons.jsonl --dry-run            # stats only, no writes
+```
+
+Reproduce the compaction-degradation benchmark above on your own LLM:
+
+```bash
+export CAUSAL_MEMORY_LLM_API=https://api.deepseek.com/v1
+export CAUSAL_MEMORY_LLM_KEY=sk-...
+causal-memory bench-compaction --compressions 5 --seed 42
+# prints the recall table and writes bench-results-<timestamp>.md
+```
 
 ## Status
 
-**v0.8.0 — alpha.** What works:
+**v0.9.0 — alpha.** What works:
 
-- ✅ Eight MCP tools (record / search / trace / chain-trace / invalidate / patterns / L0 directory / intervention)
-- ✅ SQLite persistence with CHECK constraints + idempotent schema migrations (v4)
+- ✅ Ten MCP tools (record / search / trace / chain-trace / invalidate / patterns / L0 directory / intervention / counterfactual / reconstruct)
+- ✅ SQLite persistence with CHECK constraints + idempotent schema migrations (v5)
 - ✅ **Parameterized queries** (no SQL injection risk)
 - ✅ Confidence levels (temporal / rule / llm_inferred / user_feedback)
 - ✅ Task-aware retrieval + optional **semantic (embedding) retrieval** with keyword fallback
 - ✅ **Multi-hop backward traversal** via recursive CTE
 - ✅ Rule-based **decision auto-extractor** for grok-build session logs
-- ✅ **Invalidation**: manual (`invalidate_decision`) + automatic contradiction short-circuit
-- ✅ **Dual-system memory**: offline pattern miner distils meta edges (`similar_to` / `repeated` / `contradicts` / `refines`)
-- ✅ **Offline consolidation ("sleep") cycle** with four phases
-- ✅ **L0 causal directory** + **Rung-2 intervention queries**
-- ✅ 79 tests (unit + e2e suites: migration / pipeline / MCP stdio + benchmark harness)
+- ✅ **Invalidation**: manual (`invalidate_decision`) + automatic contradiction short-circuit (stored-polarity aware)
+- ✅ **Write-time outcome polarity** (LLM judge + heuristic fallback, `mixed` category) driving labels and contradiction checks
+- ✅ **BM25 keyword retrieval** as the default text-query ranking (semantic path unchanged, LIKE demoted to tag-only listing)
+- ✅ **Dual-system memory**: offline pattern miner with **stratified replication test** (confounded / Simpson flags)
+- ✅ **Offline consolidation ("sleep") cycle** with real replay: reactivation priority feeds decay protection and cross-cycle marking
+- ✅ **L0 causal directory** + **Rung-2 intervention queries** with stratified confound warning
+- ✅ **Contrastive counterfactuals** (`counterfactual_query`) + **reconstructive retrieval** (`reconstruct_lesson` with optional calibration)
+- ✅ **Cross-agent sharing** (`export` / `import`, redacted + idempotent)
+- ✅ **Benchmarks**: LoCoMo harness (see [Benchmarks](#benchmarks)) + reproducible `bench-compaction`
+- ✅ 118 tests (115 unit + 3 e2e suites: migration / pipeline / MCP stdio)
 
 What's not done yet (honest):
 
 - ❌ Python/TS bindings (Rust binary only)
 - ❌ HTTP transport (MCP stdio only)
 - ❌ LongMemEval benchmark integration (LoCoMo done — see [Benchmarks](#benchmarks))
-- ❌ Cross-agent sharing protocol
-- ❌ Reconstructive retrieval (causal subgraph → LLM narrative)
-- ❌ Rung 3 counterfactuals — **explicitly out of scope by design**: per
-  [insights/11](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md),
-  counterfactual reasoning is practically impossible for agents; we only
-  prepare the data structures (temporal validity windows), we do not build it
+- ❌ Rung 3 **SCM** counterfactuals — structural-causal-model reasoning stays
+  out of scope per
+  [insights/11](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md);
+  we ship only the contrastive/empirical subset (`counterfactual_query`)
 - ❌ Not yet wired into a production agent end-to-end
 
 Roadmap: see [docs/roadmap.md](docs/roadmap.md).

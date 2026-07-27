@@ -13,8 +13,17 @@
 //! direction reuses the Phase-2 signal-word polarity (`store::outcome_polarity`)
 //! and `store::outcomes_contradict`. Writes go through
 //! `CausalStore::upsert_meta_edge`, so `mine()` is idempotent.
+//!
+//! Stratified replication test (v5, honest engineering stand-in for a PC-style
+//! conditional-independence check): candidate pairs are grouped by their
+//! shared decision-token signature, and a pattern is only promoted at full
+//! confidence when it holds in ≥ 2 distinct strata (task_tag). A pattern seen
+//! in a single stratum is marked `confounded` (half confidence) — it may be
+//! domain-specific. When the outcome direction flips between strata within a
+//! group, the group is marked `simpson` (Simpson's-paradox warning).
+//! Re-running re-tests and upgrades/downgrades existing meta edges.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 
@@ -109,6 +118,10 @@ pub struct MineReport {
     pub repeated: usize,
     pub contradicts: usize,
     pub refines: usize,
+    /// Hits whose pattern held in a single stratum only (halved confidence).
+    pub confounded: usize,
+    /// Hits in groups where the outcome direction flips across strata.
+    pub simpson: usize,
 }
 
 /// Heuristic pattern miner over all valid causal edges.
@@ -140,6 +153,12 @@ impl<'a> PatternMiner<'a> {
         let tokens: Vec<Vec<String>> = edges.iter().map(|e| tokenize(&e.decision_text)).collect();
         let mut report = MineReport::default();
 
+        // Pass 1: classify every similar pair, keeping the pair's shared-token
+        // signature and endpoint strata/polarities for the replication test.
+        let mut hits: Vec<PatternHit> = Vec::new();
+        let mut hit_sigs: Vec<String> = Vec::new();
+        // signature → group accumulator
+        let mut groups: HashMap<String, StrataAcc> = HashMap::new();
         for (i, a) in edges.iter().enumerate() {
             for (j, b) in edges.iter().enumerate().skip(i + 1) {
                 let sim = jaccard(&tokens[i], &tokens[j]);
@@ -147,22 +166,49 @@ impl<'a> PatternMiner<'a> {
                     continue;
                 }
                 if let Some(hit) = classify_pair(a, b, sim) {
-                    if write {
-                        self.store.upsert_meta_edge(
-                            hit.from_id,
-                            hit.to_id,
-                            hit.relation,
-                            &hit.pattern,
-                            hit.confidence,
-                        )?;
-                    }
-                    match hit.relation {
-                        "contradicts" => report.contradicts += 1,
-                        "refines" => report.refines += 1,
-                        "repeated" => report.repeated += 1,
-                        _ => report.similar_to += 1,
-                    }
+                    let sig = pair_signature(&tokens[i], &tokens[j]);
+                    let acc = groups.entry(sig.clone()).or_default();
+                    acc.observe(a);
+                    acc.observe(b);
+                    hit_sigs.push(sig);
+                    hits.push(hit);
                 }
+            }
+        }
+        let verdicts: Vec<StrataVerdict> =
+            hit_sigs.iter().map(|sig| groups[sig].verdict()).collect();
+
+        // Pass 2: upsert with the stratification verdict attached.
+        for (hit, verdict) in hits.iter().zip(&verdicts) {
+            // Confounded (single-stratum) patterns are kept but distrusted.
+            let confidence = if verdict.confounded {
+                hit.confidence * 0.5
+            } else {
+                hit.confidence
+            };
+            if write {
+                self.store.upsert_meta_edge_stratified(
+                    hit.from_id,
+                    hit.to_id,
+                    hit.relation,
+                    &hit.pattern,
+                    confidence,
+                    Some(&verdict.strata),
+                    Some(verdict.confounded),
+                    Some(verdict.simpson),
+                )?;
+            }
+            match hit.relation {
+                "contradicts" => report.contradicts += 1,
+                "refines" => report.refines += 1,
+                "repeated" => report.repeated += 1,
+                _ => report.similar_to += 1,
+            }
+            if verdict.confounded {
+                report.confounded += 1;
+            }
+            if verdict.simpson {
+                report.simpson += 1;
             }
         }
         Ok(report)
@@ -176,6 +222,63 @@ struct PatternHit<'a> {
     to_id: &'a str,
     confidence: f64,
     pattern: String,
+}
+
+/// Shared-token signature of a pair: the sorted intersection of the two
+/// token sets. Pairs about the same decision family share a signature, so
+/// their strata are pooled for the replication test.
+fn pair_signature(a: &[String], b: &[String]) -> String {
+    let sa: HashSet<&str> = a.iter().map(String::as_str).collect();
+    let sb: HashSet<&str> = b.iter().map(String::as_str).collect();
+    let mut inter: Vec<&str> = sa.intersection(&sb).copied().collect();
+    inter.sort_unstable();
+    inter.join(" ")
+}
+
+/// Per-signature accumulator for the stratified replication test: which
+/// strata (task_tag) the decision family appears in, and the outcome
+/// direction seen in each stratum.
+#[derive(Default)]
+struct StrataAcc {
+    /// stratum → (saw_success, saw_failure) over endpoint outcomes.
+    /// `None` task tags count as the "untagged" stratum.
+    dirs: HashMap<String, (bool, bool)>,
+}
+
+impl StrataAcc {
+    fn observe(&mut self, e: &CausalEntry) {
+        let stratum = e.task_tag.clone().unwrap_or_else(|| "untagged".into());
+        let dir = self.dirs.entry(stratum).or_default();
+        match outcome_polarity(&e.outcome_text) {
+            Some(true) => dir.0 = true,
+            Some(false) => dir.1 = true,
+            None => {}
+        }
+    }
+
+    fn verdict(&self) -> StrataVerdict {
+        let mut strata: Vec<String> = self.dirs.keys().cloned().collect();
+        strata.sort();
+        // Simpson: one stratum purely positive, another with failures —
+        // the pooled direction depends on which stratum you look at.
+        let pure_positive = strata.iter().any(|s| self.dirs[s].0 && !self.dirs[s].1);
+        let any_negative = strata.iter().any(|s| self.dirs[s].1);
+        StrataVerdict {
+            confounded: strata.len() < 2,
+            simpson: pure_positive && any_negative,
+            strata,
+        }
+    }
+}
+
+/// The replication-test verdict for one signature group.
+struct StrataVerdict {
+    /// Pattern holds in a single stratum only — possibly domain-specific.
+    confounded: bool,
+    /// Outcome direction flips between strata (Simpson's-paradox signal).
+    simpson: bool,
+    /// Strata in which the pattern holds (sorted task tags).
+    strata: Vec<String>,
 }
 
 /// Classify one similar edge pair into at most one relation.
@@ -431,7 +534,10 @@ mod tests {
         // from = the failed attempt, to = the successful refinement
         assert_eq!(p[0].from_text, "use ttl cache for sessions");
         assert_eq!(p[0].to_text, "use ttl cache for tokens");
-        assert!((p[0].confidence - 0.6 * 0.85).abs() < 1e-9);
+        // Single stratum (only "auth") → confounded: confidence halved.
+        assert!((p[0].confidence - 0.6 * 0.85 * 0.5).abs() < 1e-9);
+        assert_eq!(p[0].confounded, Some(true));
+        assert_eq!(p[0].strata_count, Some(1));
     }
 
     #[test]

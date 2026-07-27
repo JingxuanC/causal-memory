@@ -5,6 +5,63 @@ All notable changes to causal-memory are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - Unreleased
+
+### Added
+- BM25 keyword retrieval replaces LIKE as the default ranking for text
+  queries (`search_causal_bm25`): token-overlap ranking, so word order and
+  phrasing differences no longer zero out hits; the embedding/semantic path
+  is unchanged and BM25 is its fallback
+- LoCoMo evaluation harness with a frozen-protocol baseline (runs 1-5:
+  temporal grounding, BM25 lift to 65.0% overall / 74.4% hit rate,
+  abstention-aware answerer at 94.4%)
+- Schema v5: stratified-replication fields on `meta_causal_edges`
+  (`strata_count` / `strata` / `confounded` / `simpson`; NULL = untested)
+- Stratified causal discovery (pattern miner upgrade, honest stand-in for a
+  PC-style CI test): candidate patterns are grouped by decision-token
+  signature and promoted at full confidence only when they hold in ≥ 2
+  distinct task_tag strata; single-stratum patterns are marked `confounded`
+  at half confidence, and direction flips across strata are flagged `simpson`
+  (both surface in `search_patterns` output); re-mining upgrades/downgrades
+  existing conclusions
+- `intervention_query` stratified adjustment (engineering backdoor check):
+  per-task_tag terminal-outcome distribution vs pooled, explicit Simpson's
+  paradox warning when they disagree, optional `task_tag` filter parameter
+- Sleep reactivation is now real consolidation, not just a report: replay
+  priority feeds downscaling (protected edges decay at half rate with a
+  lenient GC threshold — retention ∝ priority × recency × confidence), and
+  replayed edges are marked via `last_accessed_at`, forming a cross-cycle
+  replay → consolidate → survive feedback loop
+- `counterfactual_query` MCP tool (10 tools total): contrastive/empirical
+  counterfactual — compares recorded outcome distributions of a decision vs
+  an alternative (semantic seeding with BM25 fallback), with a fixed
+  disclaimer that this is NOT a Pearl Rung-3 SCM counterfactual
+- `reconstruct_lesson` MCP tool: reconstructive retrieval (Schacter 2007) —
+  Markov-blanket causal subgraph (new `store::markov_blanket`) serialized as
+  ≤120-char stubs, LLM narrative reconstruction when configured
+  (`llm::reconstruct_narrative`), and optional multi-sample calibration
+  (`calibrate >= 2` independent reconstructions + token-Jaccard agreement,
+  low agreement flags unreliable memories); degrades to stubs-only without
+  an LLM
+- `causal-memory export` / `import` subcommands for cross-agent causal
+  sharing (insights/11 §8.5): JSONL with `format_version: 1`, chunk/edge/
+  meta_edge records, best-effort secret redaction (sk-…, Bearer, password
+  assignments, private-key headers; `--no-redact` to disable), filters
+  (task-tag / min-confidence / since / include-invalidated), idempotent
+  import keyed on (from_text, to_text, relation, event_time) with
+  FNV-1a(text) chunk ids, `--dry-run` and `--task-tag` override
+- `causal-memory bench-compaction`: reproducible harness for the
+  compaction-degradation experiment — seeded deterministic scenario
+  generator, independent session per compression depth, keyword-scored gold
+  QA (no LLM judge), markdown report (`bench-results-<timestamp>.md`);
+  compaction prompt lives in `benches/compaction_prompt.txt`
+
+### Fixed
+- `embed.rs` / `llm.rs` HTTP clients now have an explicit 8s timeout —
+  previously an unreachable endpoint hung the synchronous `record_decision`
+  tool path until the 60s MCP tool timeout, even though the edge was already
+  written (failure still falls back silently, per the zero-intrusion contract)
+
 ## [0.8.0] - 2026-07-27
 
 ### Added

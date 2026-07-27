@@ -4,13 +4,19 @@
 //! compressed replay; Diekelmann & Born 2010 sleep consolidation):
 //!
 //! 1. **Reactivation** — score every valid edge for replay priority
-//!    (failures, user feedback, contradicted edges first). Pure computation.
+//!    (failures, user feedback, contradicted or recently accessed edges
+//!    first). Replay here means *re-evaluation*, not playback (Schapiro
+//!    2017): the scores feed stage 3, where high-priority edges are
+//!    protected (halved decay, lenient GC), and replayed edges are marked
+//!    (`last_accessed_at`) so the next cycle can see they were consolidated.
 //! 2. **Generalization** — merge redundant duplicate edges, then run the
 //!    Phase-3 pattern miner to distil meta edges (hippocampus → neocortex).
 //! 3. **Downscaling** — synaptic homeostasis: exponential confidence decay by
 //!    age, an access-based boost for recently used edges, and garbage
 //!    collection (soft-invalidation) of edges that fell below threshold.
-//!    `user_feedback` edges are never garbage-collected.
+//!    `user_feedback` edges are never garbage-collected; replay-protected
+//!    edges (stage 1) decay at half rate and use a lower GC threshold —
+//!    retention ∝ priority × recency × confidence, not age alone.
 //! 4. **REM integration** — cross-domain transfer: link meta edges whose
 //!    patterns are similar but live in disjoint task tags.
 //!
@@ -44,6 +50,16 @@ pub struct ConsolidateConfig {
     pub confidence_cap: f64,
     /// Soft-invalidate edges below this confidence after decay+boost (stage 3).
     pub gc_threshold: f64,
+    /// Replay-priority score at/above which an edge is protected (stage 1→3).
+    /// Default 1.0: reached by failure lessons (conf ≥ 0.5 + 0.5), most
+    /// user_feedback edges, and high-confidence contradicted edges.
+    pub replay_protect_score: f64,
+    /// Decay-days divisor for replay-protected edges (stage 3): 2.0 = half-rate
+    /// decay.
+    pub replay_decay_divisor: f64,
+    /// GC threshold for replay-protected edges (stage 3), more lenient than
+    /// `gc_threshold`.
+    pub replay_gc_threshold: f64,
     /// Pattern-miner configuration, reused for stages 2 and 4.
     pub miner: MinerConfig,
 }
@@ -56,6 +72,9 @@ impl Default for ConsolidateConfig {
             access_boost_window_days: 7,
             confidence_cap: 0.95,
             gc_threshold: 0.2,
+            replay_protect_score: 1.0,
+            replay_decay_divisor: 2.0,
+            replay_gc_threshold: 0.1,
             miner: MinerConfig::default(),
         }
     }
@@ -77,6 +96,10 @@ pub struct ReactivationEntry {
 pub struct ConsolidateReport {
     /// Stage 1: replay-priority queue, score-descending, top 20.
     pub reactivated: Vec<ReactivationEntry>,
+    /// Stage 1 write-back: replay-protected edges marked with
+    /// `last_accessed_at = now` (decay halved + lenient GC this cycle, and
+    /// visible as "replayed" to the next cycle).
+    pub replayed: usize,
     /// Stage 2a: redundant duplicate edges merged away.
     pub merged_edges: usize,
     /// Stage 2b: pattern-miner result.
@@ -107,8 +130,14 @@ pub fn consolidate(
         ..Default::default()
     };
 
-    // ── Stage 1: Reactivation (pure computation, never writes) ──────────
-    report.reactivated = score_reactivation(store, config)?;
+    // ── Stage 1: Reactivation (score → protect in stage 3 → write back) ──
+    let scored = score_reactivation(store, config, now)?;
+    let protected: HashSet<i64> = scored
+        .iter()
+        .filter(|e| e.score >= config.replay_protect_score)
+        .map(|e| e.edge_id)
+        .collect();
+    report.reactivated = scored.into_iter().take(20).collect();
 
     // ── Stage 2: Generalization ─────────────────────────────────────────
     report.merged_edges = merge_redundant_edges(store, dry_run, now)?;
@@ -121,7 +150,12 @@ pub fn consolidate(
     };
 
     // ── Stage 3: Downscaling (decay + access boost + GC) ────────────────
-    downscale(store, config, dry_run, now, &mut report)?;
+    downscale(store, config, dry_run, now, &protected, &mut report)?;
+
+    // ── Stage 1 write-back: mark replay-protected edges as replayed ─────
+    // Runs AFTER downscale so this cycle's access-boost math still sees the
+    // pre-replay `last_accessed_at`; the mark takes effect next cycle.
+    report.replayed = replay_writeback(store, &protected, dry_run, now)?;
 
     // ── Stage 4: REM integration (cross-domain transfer) ────────────────
     report.rem_transfers = rem_integrate(store, config, dry_run, &meta_before)?;
@@ -135,14 +169,20 @@ pub fn consolidate(
 ///       + 0.5 if the outcome is a clear failure (emotional salience)
 ///       + 0.3 if discovered by user feedback (high reward)
 ///       + 0.2 if a similar decision elsewhere has a contradicting outcome
+///       + 0.2 if recently accessed (replayed by read paths or a previous
+///         sleep cycle — the consolidation feedback loop)
 ///
-/// Returns the top 20, score-descending (ties broken by edge id).
+/// Returns ALL edges, score-descending (ties broken by edge id); the caller
+/// truncates for the report and derives the protected set (score ≥
+/// `config.replay_protect_score`) for stage 3.
 fn score_reactivation(
     store: &CausalStore,
     config: &ConsolidateConfig,
+    now: i64,
 ) -> Result<Vec<ReactivationEntry>> {
     let edges = store.all_valid_edges()?;
     let tokens: Vec<Vec<String>> = edges.iter().map(|e| tokenize(&e.decision_text)).collect();
+    let window_secs = i64::from(config.access_boost_window_days) * SECS_PER_DAY as i64;
 
     // Flag edges that participate in a contradiction pair.
     let mut contradicted = vec![false; edges.len()];
@@ -178,6 +218,15 @@ fn score_reactivation(
                 score += 0.2;
                 reasons.push("contradicted elsewhere (+0.2)".to_string());
             }
+            if e.last_accessed_at
+                .is_some_and(|last| now - last <= window_secs)
+            {
+                score += 0.2;
+                reasons.push("recently accessed (+0.2)".to_string());
+            }
+            if score >= config.replay_protect_score {
+                reasons.push("replay-protected (half decay, lenient GC)".to_string());
+            }
             ReactivationEntry {
                 edge_id: e.edge_id,
                 decision_text: e.decision_text.clone(),
@@ -193,7 +242,6 @@ fn score_reactivation(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.edge_id.cmp(&b.edge_id))
     });
-    entries.truncate(20);
     Ok(entries)
 }
 
@@ -245,11 +293,17 @@ fn merge_redundant_edges(store: &CausalStore, dry_run: bool, now: i64) -> Result
 }
 
 /// Stage 3: per-edge decay, access boost, and garbage collection.
+///
+/// `protected` is stage 1's replay-priority set: those edges decay at half
+/// rate (`replay_decay_divisor`) and are GC'd only below the more lenient
+/// `replay_gc_threshold` — replay is re-evaluation, so a lesson the cycle
+/// just replayed is harder to forget.
 fn downscale(
     store: &CausalStore,
     config: &ConsolidateConfig,
     dry_run: bool,
     now: i64,
+    protected: &HashSet<i64>,
     report: &mut ConsolidateReport,
 ) -> Result<()> {
     // Re-fetch: stage 2a may have invalidated some edges.
@@ -257,13 +311,19 @@ fn downscale(
     let window_secs = i64::from(config.access_boost_window_days) * SECS_PER_DAY as i64;
 
     for e in &edges {
+        let is_protected = protected.contains(&e.edge_id);
         let mut new_conf = e.confidence;
         let mut changed = false;
 
         // Decay only edges at least one full day old; same-day edges are untouched.
         let days = (now - e.discovered_at) as f64 / SECS_PER_DAY;
         if days >= 1.0 {
-            new_conf *= config.decay_per_day.powf(days);
+            let effective_days = if is_protected {
+                days / config.replay_decay_divisor
+            } else {
+                days
+            };
+            new_conf *= config.decay_per_day.powf(effective_days);
             report.decayed += 1;
             changed = true;
         }
@@ -277,8 +337,14 @@ fn downscale(
             }
         }
 
-        // GC: user_feedback edges are pinned and never collected.
-        let collect = new_conf < config.gc_threshold && e.discovered_by != "user_feedback";
+        // GC: user_feedback edges are pinned and never collected; replay-
+        // protected edges use the more lenient threshold.
+        let threshold = if is_protected {
+            config.replay_gc_threshold
+        } else {
+            config.gc_threshold
+        };
+        let collect = new_conf < threshold && e.discovered_by != "user_feedback";
         if collect {
             report.gc_invalidated += 1;
         }
@@ -302,6 +368,34 @@ fn downscale(
         })?;
     }
     Ok(())
+}
+
+/// Stage 1 write-back: mark replay-protected edges with
+/// `last_accessed_at = now`, so "was replayed" is visible to the next sleep
+/// cycle (replayed → recently accessed → higher priority → more likely to
+/// survive). Returns the number of edges marked.
+fn replay_writeback(
+    store: &CausalStore,
+    protected: &HashSet<i64>,
+    dry_run: bool,
+    now: i64,
+) -> Result<usize> {
+    if dry_run || protected.is_empty() {
+        return Ok(0);
+    }
+    let mut marked = 0;
+    for &edge_id in protected {
+        // Edges merged away in stage 2a or GC'd in stage 3 are skipped by the
+        // valid_to guard.
+        let n = store.with_conn(|conn| {
+            Ok(conn.execute(
+                "UPDATE causal_edges SET last_accessed_at = ?1 WHERE id = ?2 AND valid_to IS NULL",
+                rusqlite::params![now, edge_id],
+            )?)
+        })?;
+        marked += n;
+    }
+    Ok(marked)
 }
 
 /// Snapshot of valid meta edges: id → discovered_at. Used to tell which meta
@@ -891,5 +985,178 @@ mod tests {
                 "edge {id} should carry the contradiction reason: {entry:?}"
             );
         }
+    }
+
+    // ── Stage 1→3: replay protection & write-back ────────────────────────
+
+    #[test]
+    fn test_replay_protected_edges_decay_at_half_rate() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // Failure lesson: score 0.5 + 0.5 = 1.0 → replay-protected.
+        let protected_id = insert_edge(
+            &store,
+            "skip migration backup",
+            "data loss error",
+            0.5,
+            "rule",
+            Some("db"),
+            NOW - 10 * DAY,
+            None,
+        );
+        // Same confidence and age, but a success: score 0.5 → not protected.
+        let plain_id = insert_edge(
+            &store,
+            "add index to users table",
+            "query success fast",
+            0.5,
+            "rule",
+            Some("db"),
+            NOW - 10 * DAY,
+            None,
+        );
+
+        let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+
+        // Protected: decay over 10/2 = 5 days. Plain: full 10 days.
+        let expected_protected = 0.5 * 0.99_f64.powi(5);
+        let expected_plain = 0.5 * 0.99_f64.powi(10);
+        assert!(
+            (edge_conf(&store, protected_id) - expected_protected).abs() < 1e-9,
+            "protected edge decays at half rate: got {}",
+            edge_conf(&store, protected_id)
+        );
+        assert!(
+            (edge_conf(&store, plain_id) - expected_plain).abs() < 1e-9,
+            "unprotected edge decays at full rate: got {}",
+            edge_conf(&store, plain_id)
+        );
+        assert_eq!(report.decayed, 2);
+        assert_eq!(report.boosted, 0, "write-back happens after downscale");
+
+        // Write-back: only the replayed edge is marked, with this cycle's time.
+        assert_eq!(report.replayed, 1);
+        let protected_edge = store.get_edge(protected_id).unwrap().unwrap();
+        assert_eq!(protected_edge.last_accessed_at, Some(NOW));
+        assert!(protected_edge
+            .decision_text
+            .contains("skip migration backup"));
+        let plain_edge = store.get_edge(plain_id).unwrap().unwrap();
+        assert_eq!(plain_edge.last_accessed_at, None, "not replayed → unmarked");
+    }
+
+    #[test]
+    fn test_replay_protected_gc_threshold_more_lenient() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // Protected failure edge: 0.5 * 0.99^(200/2) ≈ 0.183 — below the
+        // normal GC threshold (0.2) but above the protected one (0.1).
+        let protected_id = insert_edge(
+            &store,
+            "skip migration backup",
+            "data loss error",
+            0.5,
+            "rule",
+            Some("db"),
+            NOW - 200 * DAY,
+            None,
+        );
+        // Same age and confidence, unprotected: 0.5 * 0.99^200 ≈ 0.067 → GC'd.
+        let plain_id = insert_edge(
+            &store,
+            "add index to users table",
+            "query success fast",
+            0.5,
+            "rule",
+            Some("db"),
+            NOW - 200 * DAY,
+            None,
+        );
+
+        let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+        assert!(
+            edge_valid(&store, protected_id),
+            "replay-protected edge survives below the normal GC threshold"
+        );
+        assert!(
+            !edge_valid(&store, plain_id),
+            "unprotected edge at the same confidence is collected"
+        );
+        assert_eq!(report.gc_invalidated, 1);
+    }
+
+    #[test]
+    fn test_replay_feedback_loop_across_cycles() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let protected_id = insert_edge(
+            &store,
+            "skip migration backup",
+            "data loss error",
+            0.6,
+            "rule",
+            Some("db"),
+            NOW - 2 * DAY,
+            None,
+        );
+        let control_id = insert_edge(
+            &store,
+            "add index to users table",
+            "query success fast",
+            0.6,
+            "rule",
+            Some("db"),
+            NOW - 2 * DAY,
+            None,
+        );
+
+        // Cycle 1: protected edge decays halved (2/2 = 1 day) and is marked.
+        let report1 = consolidate(&store, &default_config(), false, NOW).unwrap();
+        assert!((edge_conf(&store, protected_id) - 0.6 * 0.99_f64).abs() < 1e-9);
+        assert!((edge_conf(&store, control_id) - 0.6 * 0.99_f64.powi(2)).abs() < 1e-9);
+        assert_eq!(report1.replayed, 1);
+        assert_eq!(report1.boosted, 0);
+
+        // Cycle 2 (one day later): the mark makes the edge "recently
+        // accessed" → access boost on top of halved decay (3/2 = 1.5 days).
+        let report2 = consolidate(&store, &default_config(), false, NOW + DAY).unwrap();
+        let expected = (0.6 * 0.99_f64 * 0.99_f64.powf(1.5) + 0.05).min(0.95);
+        assert!(
+            (edge_conf(&store, protected_id) - expected).abs() < 1e-9,
+            "replayed edge gets boost + half decay: got {}, expected {expected}",
+            edge_conf(&store, protected_id)
+        );
+        // Control: full 3-day decay, no boost.
+        assert!(
+            (edge_conf(&store, control_id) - 0.6 * 0.99_f64.powi(2) * 0.99_f64.powi(3)).abs()
+                < 1e-9
+        );
+        assert!(
+            edge_conf(&store, protected_id) > edge_conf(&store, control_id),
+            "replay → consolidate → survives better"
+        );
+        assert_eq!(report2.boosted, 1);
+        assert_eq!(report2.replayed, 1);
+        let edge = store.get_edge(protected_id).unwrap().unwrap();
+        assert_eq!(edge.last_accessed_at, Some(NOW + DAY));
+    }
+
+    #[test]
+    fn test_dry_run_does_not_mark_replayed() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let id = insert_edge(
+            &store,
+            "skip migration backup",
+            "data loss error",
+            0.5,
+            "rule",
+            Some("db"),
+            NOW - 10 * DAY,
+            None,
+        );
+        let report = consolidate(&store, &default_config(), true, NOW).unwrap();
+        // Decay is still reported (halved), but nothing is written or marked.
+        assert_eq!(report.decayed, 1);
+        assert_eq!(report.replayed, 0);
+        let edge = store.get_edge(id).unwrap().unwrap();
+        assert!((edge.confidence - 0.5).abs() < 1e-12);
+        assert_eq!(edge.last_accessed_at, None);
     }
 }

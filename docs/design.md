@@ -70,7 +70,7 @@ Not all causal links are equally certain. Per [insights/11 §3 step three](https
 
 Search returns results ordered by confidence — high-confidence lessons surface first.
 
-### Why 8 tools (and no more)
+### Why 10 tools (and no more)
 
 The MCP surface is intentionally minimal — every tool must earn its place by
 covering a distinct moment in the agent's decision loop:
@@ -87,8 +87,13 @@ covering a distinct moment in the agent's decision loop:
   prompt so the agent knows what experience it holds without searching
 - `intervention_query` — Pearl Rung-2 path: predict the likely outcome of an
   action *before* taking it, from similar past actions
+- `counterfactual_query` — comparison path: choosing *between two concrete
+  options*, weigh their recorded track records (contrastive/empirical, not
+  SCM counterfactual)
+- `reconstruct_lesson` — distillation path: turn a past episode into a
+  *transferable* narrative lesson instead of raw records
 
-More tools would mean more decisions for the agent: "which tool do I call?" That cognitive overhead reduces usage. Per [insights/14 §2.2](https://github.com/JingxuanC/agent-teardown/blob/main/insights/14-on-deep-digging.md): "complete-looking is the enemy of depth" — and in tool design, "feature-rich is the enemy of used." Each of the eight maps to one unambiguous call moment; anything further would overlap.
+More tools would mean more decisions for the agent: "which tool do I call?" That cognitive overhead reduces usage. Per [insights/14 §2.2](https://github.com/JingxuanC/agent-teardown/blob/main/insights/14-on-deep-digging.md): "complete-looking is the enemy of depth" — and in tool design, "feature-rich is the enemy of used." Each of the ten maps to one unambiguous call moment; anything further would overlap.
 
 ### Why MCP
 
@@ -104,7 +109,7 @@ This is the same pattern Mem0's OpenMemory uses — memory-as-MCP-tool. We diffe
 |---|---|
 | Replace Mem0/Zep/Letta | Causal memory is **complementary** to flat/temporal/self-managed memory |
 | Modify agent's context | We're a side table, not a context replacement |
-| Rung-3 counterfactuals | Practically impossible for agents ([insights/11](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md)); we only prepare the data structures |
+| Rung-3 **SCM** counterfactuals | Structural-causal-model reasoning is practically impossible for agents ([insights/11](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md)); we ship only the contrastive/empirical subset (`counterfactual_query` over recorded alternatives) |
 
 ## Mechanisms added since v0.4
 
@@ -159,8 +164,10 @@ experience do I hold?" at zero search cost; the pointer texts feed
 
 `intervention_query` is Pearl Rung 2 ("doing", not "seeing"): before taking
 an action, it looks up outcomes of similar past actions and returns predicted
-effects with causal paths and confidence, labeled safe / warning / danger.
-Rung 3 (counterfactuals) stays out of scope — see the table above.
+effects with causal paths and confidence, labeled safe / warning / danger,
+with a task_tag-stratified adjustment that warns when the pooled estimate is
+confounded. Rung 3 in the SCM sense stays out of scope (see the table above);
+the contrastive/empirical subset ships as `counterfactual_query`.
 
 ### Semantic retrieval with keyword fallback
 
@@ -192,6 +199,68 @@ polarity under a conservative rule — only negative-old + positive-new
 auto-invalidates, mixed/neutral never trigger on either side. NULL polarity
 everywhere falls back to the exact pre-v4 heuristic behavior;
 `causal-memory polarity` backfills legacy rows on demand.
+
+### Stratified causal discovery (engineering CI test)
+
+The pattern miner originally promoted any similar decision pair to a meta
+edge — including patterns that only hold inside one task_tag (a classic
+confound). Since v5, candidate pairs are grouped by their shared
+decision-token signature and a pattern is promoted at full confidence only
+when it holds in ≥ 2 distinct strata (a stratified replication test — the
+honest engineering stand-in for PC-style conditional independence, Spirtes
+2000). Single-stratum patterns are kept but marked `confounded` at half
+confidence ("only seen in task_tag=X, may be domain-specific"), and groups
+whose outcome direction flips between strata are flagged `simpson`. Re-mining
+re-tests and upgrades/downgrades existing conclusions.
+
+### Stratified intervention queries
+
+`intervention_query` pooled all similar past actions into one confidence —
+but task_tag is an obvious confounder (the same action can have opposite
+outcome distributions in different task types). The handler now reports the
+terminal-outcome distribution per stratum alongside the pooled one (stored
+polarity first, heuristic fallback) and prints an explicit Simpson's-paradox
+warning when the pooled majority and the stratum majority disagree ("pooled
+estimate likely confounded"). An optional `task_tag` parameter restricts the
+displayed chains to one stratum.
+
+### Write-time replay consolidation
+
+Sleep stage 1 (reactivation) used to be a pure report — scores computed,
+printed, discarded. Replay is now re-evaluation, per Schapiro 2017: the
+priority scores feed stage 3 (downscaling), where replay-protected edges
+decay at half rate and use a lenient GC threshold (retention ∝ priority ×
+recency × confidence, not age alone), and replayed edges are marked via
+`last_accessed_at` after downscaling — so the next cycle sees them as
+recently accessed, closing a replay → consolidate → survive feedback loop.
+Recently accessed edges also earn a replay-priority bonus, and a
+`recently accessed` reason appears in the top-N report.
+
+### Contrastive counterfactuals & reconstructive retrieval
+
+`counterfactual_query` implements the honest engineering subset of Rung 3:
+given a decision and an alternative, it retrieves recorded episodes similar
+to each (semantic seeding with LIKE fallback) and compares their outcome
+distributions — every output carries the disclaimer that this is a
+contrastive/empirical counterfactual, not an SCM one. `reconstruct_lesson`
+implements Schacter-style reconstructive retrieval: it fetches the Markov
+blanket around seeded edges (parents, children, co-parents, size-capped) as
+compact stubs, lets an LLM reconstruct a coherent lesson narrative from them,
+and optionally runs multi-sample calibration (N independent reconstructions;
+low token-Jaccard agreement flags unreliable memories, the engineering form
+of insights/13 §2.5 multi-agent calibration).
+
+### Cross-agent sharing & reproducible benchmarking
+
+`causal-memory export` / `import` share causal memory between agents
+(insights/11 §8.5): a versioned JSONL format (chunks + edges + meta edges),
+best-effort secret redaction on export, and idempotent import keyed on
+content — (from_text, to_text, relation, event_time) for edges, FNV-1a(text)
+for chunk ids — so cross-database ids never collide and re-importing is a
+no-op. `causal-memory bench-compaction` turns the papers/02 compaction
+experiment into a public harness: a seeded deterministic scenario generator,
+an independent session per compression depth, keyword-scored gold QA (no
+LLM judge in the loop), and a markdown report replicating the paper's table.
 
 ## Theoretical foundation
 

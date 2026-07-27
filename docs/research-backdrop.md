@@ -53,7 +53,7 @@ Key finding: **causal information decays faster than expected under text compact
 
 **Key idea**: The hippocampus resolves temporal ambiguity via **compressed replay** during rest — not faithful playback, but structured re-evaluation.
 
-**Design connection**: v0.4 offline consolidation cycle ("sleep") is directly inspired by this. Replay detects contradictions, merges redundant chains, and updates `meta_causal_edges`.
+**Design connection**: The offline consolidation cycle ("sleep") is directly inspired by this — and since v0.9 the replay is real re-evaluation, not playback: reactivation scores feed downscaling (protected edges decay at half rate with lenient GC) and replayed edges are marked via `last_accessed_at`, closing a replay → consolidate → survive feedback loop across cycles.
 
 **Deep dive**: [`neuroscience/hippocampus-temporal.md`](research/neuroscience/hippocampus-temporal.md)
 
@@ -89,7 +89,7 @@ Key finding: **causal information decays faster than expected under text compact
 
 **Key idea**: Humans determine causal responsibility by running **mental simulations** of counterfactual worlds — "if I hadn't done X, would Y still have happened?"
 
-**Design connection**: `trace_cause_chain` is a partial implementation of this. Future v0.5+ could add full counterfactual queries ("if I had used channels instead of mutexes...").
+**Design connection**: `counterfactual_query` (v0.9) implements the honest engineering subset: a **contrastive/empirical** counterfactual that compares recorded outcomes of a decision vs an alternative in similar past situations — explicitly not an SCM simulation of an unobserved world.
 
 **Deep dive**: [`cognitive-psychology/counterfactual-simulation.md`](research/cognitive-psychology/counterfactual-simulation.md)
 
@@ -97,7 +97,7 @@ Key finding: **causal information decays faster than expected under text compact
 
 **Key idea**: Memory is not playback — it's **reconstruction**. The hippocampus stores "construction blueprints," not raw footage. Every retrieval reassembles stored components.
 
-**Design connection**: This is the theoretical basis for **reconstructive retrieval** (v1.1+). Instead of returning raw edges, the system retrieves a causal subgraph and generates a coherent "lessons learned" narrative.
+**Design connection**: Implemented (v0.9) as `reconstruct_lesson`: instead of returning raw edges, the system retrieves the Markov-blanket causal subgraph and the LLM reconstructs a coherent "lessons learned" narrative from compact stubs. The optional `calibrate=N` mode generates N independent reconstructions and flags disagreement as unreliable memory.
 
 **Deep dive**: [`cognitive-psychology/reconstructive-memory.md`](research/cognitive-psychology/reconstructive-memory.md)
 
@@ -137,7 +137,7 @@ Key finding: **causal information decays faster than expected under text compact
 
 **Key idea**: The **ladder of causation** — three levels: association (seeing), intervention (doing), counterfactual (imagining). Each strictly more powerful.
 
-**Design connection**: v0.2 is Rung 1 (`search_causal`). v0.5 roadmap includes Rung 2 (intervention queries) and Rung 3 (counterfactual reasoning). Pearl provides the formal target.
+**Design connection**: Rung 1 is `search_causal`. Rung 2 is fully implemented: `intervention_query` predicts effects of similar past actions, with a task_tag-stratified adjustment that warns when the pooled estimate is confounded. Rung 3 ships as the contrastive/empirical engineering subset (`counterfactual_query`); the SCM form stays out of scope. Pearl provides the formal target.
 
 **Deep dive**: [`causal-inference/pearl-causality.md`](research/causal-inference/pearl-causality.md)
 
@@ -145,7 +145,7 @@ Key finding: **causal information decays faster than expected under text compact
 
 **Key idea**: Automated causal discovery from observational data via conditional independence testing.
 
-**Design connection**: The v0.3 `meta_causal_edges` activation is inspired by PC. We will mine cross-task patterns from accumulated causal edges using similar constraint-based methods.
+**Design connection**: The miner's `meta_causal_edges` activation was inspired by PC; since v5 it runs a real (engineering-grade) stratified test: a pattern is promoted only when it replicates in ≥ 2 distinct task_tag strata, single-stratum patterns are marked `confounded`, and direction flips across strata are flagged `simpson` — a stratified replication stand-in for conditional independence testing, not the full algorithm.
 
 **Deep dive**: [`causal-inference/pc-algorithm.md`](research/causal-inference/pc-algorithm.md)
 

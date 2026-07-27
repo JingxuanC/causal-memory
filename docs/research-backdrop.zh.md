@@ -53,7 +53,7 @@
 
 **核心观点**：海马体通过休息期间的**压缩重放**来解决时间模糊性——不是忠实的回放，而是结构化的重新评估。
 
-**设计关联**：v0.4 离线巩固周期（"睡眠"）直接受此启发。重放检测矛盾、合并冗余链、更新 `meta_causal_edges`。
+**设计关联**：离线巩固周期（"睡眠"）直接受此启发。v0.9 起重放真正落地为「重估」：重放优先级高的边在衰减阶段获得保护（半速衰减、宽松 GC 阈值），且重放写回 `last_accessed_at`，形成「重放→巩固→更易存活」的跨周期反馈回路。
 
 **深度阅读**：[zh/neuroscience/hippocampus-temporal.md](zh/neuroscience/hippocampus-temporal.md)
 
@@ -89,7 +89,7 @@
 
 **核心观点**：人类通过运行反事实世界的**心理模拟**来确定因果责任——「如果我当时没做 X，Y 还会发生吗？」
 
-**设计关联**：`trace_cause_chain` 是这一机制的部分实现。未来的 v0.5+ 可能添加完整的反事实查询。
+**设计关联**：`trace_cause_chain` 是回溯式部分实现。v0.9 新增 `counterfactual_query`——对比式经验反事实（对比已记录的替代决策在相似情境下的结果），输出中明确标注它不是 Pearl Rung-3 的 SCM 反事实。
 
 **深度阅读**：[zh/cognitive-psychology/counterfactual-simulation.md](zh/cognitive-psychology/counterfactual-simulation.md)
 
@@ -97,7 +97,7 @@
 
 **核心观点**：记忆不是回放——而是**重构**。海马体存储的是「构造蓝图」，不是原始录像。每次提取都会重新组装。
 
-**设计关联**：这是 v1.1+ **重构式检索**的理论基础。系统不再返回原始边，而是检索因果子图并生成连贯的「经验教训」叙事。
+**设计关联**：这是**重构式检索**的理论基础，v0.9 已实现为 `reconstruct_lesson`：系统检索因果子图（Markov blanket：父+子+共父），由 LLM 生成连贯的「经验教训」叙事；`calibrate≥2` 时生成多段独立叙事并测量一致性，低一致性标记底层记忆可能不可靠。
 
 **深度阅读**：[zh/cognitive-psychology/reconstructive-memory.md](zh/cognitive-psychology/reconstructive-memory.md)
 
@@ -137,7 +137,7 @@
 
 **核心观点**：**因果梯级**——三个层级：关联（观察）、干预（行动）、反事实（想象）。每一级严格强于前一级。
 
-**设计关联**：v0.2 处于第一级（`search_causal`）。v0.5 路线图包括第二级（干预查询）和第三级（反事实推理）。Pearl 提供了形式化目标。
+**设计关联**：第一级 `search_causal`、第二级 `intervention_query`（含 task_tag 分层调整与 Simpson 悖论警告）均已实现；第三级以对比式工程版（`counterfactual_query`）落地，SCM 意义上的反事实明确不做。
 
 **深度阅读**：[zh/causal-inference/pearl-causality.md](zh/causal-inference/pearl-causality.md)
 
@@ -145,7 +145,7 @@
 
 **核心观点**：通过条件独立性检验，从观测数据中自动发现因果结构。
 
-**设计关联**：v0.3 `meta_causal_edges` 的激活受此启发。我们将使用类似的约束基方法从累积的因果边中挖掘跨任务模式。
+**设计关联**：`meta_causal_edges` 的模式挖掘受此启发。v0.9（schema v5）起升级为真实的分层复现检验：模式须至少在 2 个 task_tag 分层中独立成立才能晋升，单分层模式标记 `confounded`，分层间极性相反触发 Simpson 悖论警告——仍是 PC 的工程替代而非完整 PC，但有了真正的条件化检验。
 
 **深度阅读**：[zh/causal-inference/pc-algorithm.md](zh/causal-inference/pc-algorithm.md)
 

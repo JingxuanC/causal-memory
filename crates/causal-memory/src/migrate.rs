@@ -15,6 +15,9 @@
 //!   the `edge_embeddings` table, and meta-edge indexes.
 //! - v4: adds `outcome_polarity` to `causal_edges` (write-time LLM/heuristic
 //!   judgment: positive / negative / mixed / neutral; NULL for legacy rows).
+//! - v5: adds stratified-replication fields to `meta_causal_edges`
+//!   (`strata_count` / `strata` / `confounded` / `simpson`; NULL = not yet
+//!   tested by the miner).
 
 use std::collections::HashSet;
 
@@ -24,7 +27,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 4;
+pub const SCHEMA_VERSION: u32 = 5;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -49,6 +52,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     if version < 4 {
         migrate_to_v4(&tx)?;
     }
+    if version < 5 {
+        migrate_to_v5(&tx)?;
+    }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
     tx.execute_batch(CAUSAL_SCHEMA_SQL)?;
@@ -71,7 +77,14 @@ fn detect_version(conn: &Connection) -> Result<u32> {
     }
     let cols = table_columns(conn, "causal_edges")?;
     if cols.contains("outcome_polarity") {
-        Ok(4)
+        // v4 or v5: v5 added the stratification columns to meta_causal_edges.
+        if table_exists(conn, "meta_causal_edges")?
+            && table_columns(conn, "meta_causal_edges")?.contains("confounded")
+        {
+            Ok(5)
+        } else {
+            Ok(4)
+        }
     } else if cols.contains("access_count") {
         Ok(3)
     } else if cols.contains("event_time") {
@@ -180,6 +193,39 @@ fn migrate_to_v4(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v4 → v5: stratified-replication fields on meta edges. Existing rows stay
+/// NULL (= not yet tested); the next miner run re-tests and fills them.
+fn migrate_to_v5(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "meta_causal_edges")? {
+        // Created with the new columns by CAUSAL_SCHEMA_SQL below.
+        return Ok(());
+    }
+    let cols = table_columns(conn, "meta_causal_edges")?;
+    for (col, ddl) in [
+        (
+            "strata_count",
+            "ALTER TABLE meta_causal_edges ADD COLUMN strata_count INTEGER",
+        ),
+        (
+            "strata",
+            "ALTER TABLE meta_causal_edges ADD COLUMN strata TEXT",
+        ),
+        (
+            "confounded",
+            "ALTER TABLE meta_causal_edges ADD COLUMN confounded INTEGER",
+        ),
+        (
+            "simpson",
+            "ALTER TABLE meta_causal_edges ADD COLUMN simpson INTEGER",
+        ),
+    ] {
+        if !cols.contains(col) {
+            conn.execute_batch(ddl)?;
+        }
+    }
+    Ok(())
+}
+
 fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -249,7 +295,7 @@ mod tests {
         let conn = build_v1_db();
         migrate(&conn).unwrap();
 
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
 
         let cols = table_columns(&conn, "causal_edges").unwrap();
         for col in [
@@ -339,7 +385,7 @@ mod tests {
         .unwrap();
 
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
 
         let edge_cols = table_columns(&conn, "causal_edges").unwrap();
         for col in [
@@ -386,7 +432,7 @@ mod tests {
         migrate(&conn).unwrap();
         migrate(&conn).unwrap();
 
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
         let snapshot: Vec<(i64, i64, i64, i64)> = conn
             .prepare(
                 "SELECT id, event_time, discovered_at, access_count FROM causal_edges ORDER BY id",
@@ -400,16 +446,20 @@ mod tests {
     }
 
     #[test]
-    fn test_fresh_db_is_v4() {
+    fn test_fresh_db_is_v5() {
         let store = CausalStore::open_in_memory().unwrap();
         store
             .with_conn(|conn| {
-                assert_eq!(user_version(conn), 4);
+                assert_eq!(user_version(conn), 5);
                 assert!(table_exists(conn, "edge_embeddings")?);
                 let cols = table_columns(conn, "causal_edges")?;
                 assert!(cols.contains("access_count"));
                 assert!(cols.contains("last_accessed_at"));
                 assert!(cols.contains("outcome_polarity"));
+                let meta_cols = table_columns(conn, "meta_causal_edges")?;
+                for col in ["strata_count", "strata", "confounded", "simpson"] {
+                    assert!(meta_cols.contains(col), "meta_causal_edges missing {col}");
+                }
                 Ok(())
             })
             .unwrap();
@@ -433,7 +483,7 @@ mod tests {
         .unwrap();
 
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
 
         let cols = table_columns(&conn, "causal_edges").unwrap();
         assert!(cols.contains("outcome_polarity"));
@@ -461,7 +511,7 @@ mod tests {
 
         // Idempotent.
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 4);
+        assert_eq!(user_version(&conn), 5);
         let polarity: Option<String> = conn
             .query_row(
                 "SELECT outcome_polarity FROM causal_edges WHERE id = 1",
@@ -470,6 +520,48 @@ mod tests {
             )
             .unwrap();
         assert_eq!(polarity.as_deref(), Some("mixed"));
+    }
+
+    /// v4 → v5: a DB at the v4 shape (marker set, no stratification columns)
+    /// gains them on `meta_causal_edges` with NULL on existing rows;
+    /// re-running is a no-op.
+    #[test]
+    fn test_migrate_v4_to_v5() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(CAUSAL_SCHEMA_SQL).unwrap();
+        // Roll the v5 columns back out to simulate a real v4 DB.
+        conn.execute_batch(
+            "ALTER TABLE meta_causal_edges DROP COLUMN strata_count;
+             ALTER TABLE meta_causal_edges DROP COLUMN strata;
+             ALTER TABLE meta_causal_edges DROP COLUMN confounded;
+             ALTER TABLE meta_causal_edges DROP COLUMN simpson;
+             PRAGMA user_version = 4;
+             INSERT INTO meta_causal_edges (from_id, to_id, relation, pattern, confidence, discovered_at)
+             VALUES ('d1', 'd2', 'similar_to', 'legacy pattern', 0.6, 1000);",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), 5);
+
+        let cols = table_columns(&conn, "meta_causal_edges").unwrap();
+        for col in ["strata_count", "strata", "confounded", "simpson"] {
+            assert!(cols.contains(col), "missing column {col}");
+        }
+        // Existing rows stay NULL (= untested), data intact.
+        let (pattern, confounded): (String, Option<i64>) = conn
+            .query_row(
+                "SELECT pattern, confounded FROM meta_causal_edges WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pattern, "legacy pattern");
+        assert_eq!(confounded, None);
+
+        // Idempotent.
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), 5);
     }
 
     #[test]

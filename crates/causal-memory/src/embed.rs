@@ -14,6 +14,12 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+/// HTTP timeout for the embedding endpoint. The record path calls this
+/// synchronously inside an MCP tool handler (60s tool timeout): 8s is long
+/// enough for slow endpoints, short enough that an unreachable one fails fast
+/// and the caller falls back instead of hanging until the tool times out.
+const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
 /// Configuration for the embedding endpoint. Read from environment variables.
 #[derive(Debug, Clone)]
 pub struct EmbedConfig {
@@ -84,7 +90,10 @@ impl Embedder {
     pub fn new(config: EmbedConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(HTTP_TIMEOUT)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 

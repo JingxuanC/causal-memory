@@ -10,6 +10,12 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+/// HTTP timeout for the LLM endpoint. The record path calls this
+/// synchronously inside an MCP tool handler (60s tool timeout): 8s is long
+/// enough for slow models, short enough that an unreachable endpoint fails
+/// fast and the caller falls back to the heuristic instead of hanging.
+const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
 const CAUSAL_JUDGE_PROMPT: &str = r#"You are judging whether a decision-outcome pair is worth remembering as a LESSON for future similar tasks.
 
 A lesson worth remembering has these properties:
@@ -44,6 +50,16 @@ Categories:
 
 Respond with ONLY a JSON object:
 {"polarity": "positive|negative|mixed|neutral"}"#;
+
+const RECONSTRUCT_PROMPT: &str = r#"You are reconstructing a LESSON from an agent's causal memory.
+
+You are given a subgraph of causal edges (decision → outcome, with relation, confidence, and polarity) around a topic. Write one short, coherent narrative (3-6 sentences) that distils the lesson these edges teach.
+
+Rules:
+- Base every claim ONLY on the given edges — do not invent facts, decisions, or outcomes beyond them.
+- When an edge is central to the lesson, mention its confidence (e.g. "high confidence").
+- If edges conflict, say so instead of picking one silently.
+- Write in the same language as the edges."#;
 
 #[derive(Debug, Serialize)]
 struct ChatRequest {
@@ -121,7 +137,7 @@ pub async fn judge_causality(
         outcome.chars().take(500).collect::<String>()
     );
 
-    let content = chat(config, CAUSAL_JUDGE_PROMPT, &user_msg).await?;
+    let content = chat(config, CAUSAL_JUDGE_PROMPT, &user_msg, 100, 0.0).await?;
     let judgment: CausalJudgment = serde_json::from_str(&content)
         .map_err(|e| anyhow::anyhow!("Failed to parse LLM judgment: {e}\nRaw: {content}"))?;
 
@@ -139,7 +155,7 @@ pub async fn judge_polarity(config: &LlmConfig, decision: &str, outcome: &str) -
         outcome.chars().take(500).collect::<String>()
     );
 
-    let content = chat(config, POLARITY_JUDGE_PROMPT, &user_msg).await?;
+    let content = chat(config, POLARITY_JUDGE_PROMPT, &user_msg, 100, 0.0).await?;
     let judgment: PolarityJudgment = serde_json::from_str(&content)
         .map_err(|e| anyhow::anyhow!("Failed to parse LLM polarity: {e}\nRaw: {content}"))?;
 
@@ -149,9 +165,30 @@ pub async fn judge_polarity(config: &LlmConfig, decision: &str, outcome: &str) -
     }
 }
 
+/// Reconstruct a lesson narrative from a causal subgraph (reconstructive
+/// retrieval, Schacter 2007): the caller supplies compact edge stubs and the
+/// LLM retells the lesson instead of the raw records being returned.
+/// `temperature` > 0 is used by the calibration path (multiple independent
+/// reconstructions); the base narrative passes 0.0.
+pub async fn reconstruct_narrative(
+    config: &LlmConfig,
+    query: &str,
+    stubs: &str,
+    temperature: f32,
+) -> Result<String> {
+    let user_msg = format!("Topic: {query}\n\nCausal edges:\n{stubs}");
+    chat(config, RECONSTRUCT_PROMPT, &user_msg, 400, temperature).await
+}
+
 /// Shared chat-completions call: POSTs system+user messages, returns the
 /// reply content with any markdown code fence stripped.
-async fn chat(config: &LlmConfig, system_prompt: &str, user_msg: &str) -> Result<String> {
+pub async fn chat(
+    config: &LlmConfig,
+    system_prompt: &str,
+    user_msg: &str,
+    max_tokens: u32,
+    temperature: f32,
+) -> Result<String> {
     let req = ChatRequest {
         model: config.model.clone(),
         messages: vec![
@@ -164,11 +201,14 @@ async fn chat(config: &LlmConfig, system_prompt: &str, user_msg: &str) -> Result
                 content: user_msg.into(),
             },
         ],
-        max_tokens: 100,
-        temperature: 0.0,
+        max_tokens,
+        temperature,
     };
 
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
     let url = format!("{}/chat/completions", config.api_base.trim_end_matches('/'));
 
     let resp = client

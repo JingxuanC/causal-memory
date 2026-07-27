@@ -57,6 +57,8 @@ CREATE INDEX IF NOT EXISTS idx_causal_event_time ON causal_edges(event_time);
 CREATE INDEX IF NOT EXISTS idx_causal_valid ON causal_edges(valid_to);
 
 -- Meta causal edges: decision → decision (cross-task patterns)
+-- Stratification fields (v5): the miner's replication test fills them;
+-- NULL = not yet tested (legacy rows, or edges written outside the miner).
 CREATE TABLE IF NOT EXISTS meta_causal_edges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     from_id TEXT NOT NULL,
@@ -66,7 +68,11 @@ CREATE TABLE IF NOT EXISTS meta_causal_edges (
     confidence REAL NOT NULL DEFAULT 0.5,
     discovered_at INTEGER NOT NULL,
     valid_from INTEGER,
-    valid_to INTEGER
+    valid_to INTEGER,
+    strata_count INTEGER,
+    strata TEXT,
+    confounded INTEGER,
+    simpson INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_meta_from ON meta_causal_edges(from_id);
 CREATE INDEX IF NOT EXISTS idx_meta_to ON meta_causal_edges(to_id);
@@ -104,12 +110,14 @@ pub struct CausalEntry {
     pub last_accessed_at: Option<i64>,
     pub discovered_by: String,
     pub discovered_at: i64,
+    /// Stored write-time outcome polarity (v4); None for legacy rows.
+    pub outcome_polarity: Option<String>,
 }
 
 /// Columns selected when materializing a `CausalEntry` (order matters, see `entry_from_row`).
 const ENTRY_COLUMNS: &str = "ce.id, cf.id, cf.text, ct.id, ct.text, ce.relation, ce.confidence,
          ce.task_tag, ce.event_time, ce.valid_to, ce.access_count, ce.last_accessed_at,
-         ce.discovered_by, ce.discovered_at";
+         ce.discovered_by, ce.discovered_at, ce.outcome_polarity";
 
 /// Map a row selected with `ENTRY_COLUMNS` (plus the standard chunk joins) to a `CausalEntry`.
 fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<CausalEntry> {
@@ -128,6 +136,7 @@ fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<CausalEntry> {
         last_accessed_at: row.get(11)?,
         discovered_by: row.get(12)?,
         discovered_at: row.get(13)?,
+        outcome_polarity: row.get(14)?,
     })
 }
 
@@ -262,6 +271,12 @@ pub struct MetaEdge {
     /// Echo of the decision text at each endpoint (joined from chunks).
     pub from_text: String,
     pub to_text: String,
+    /// Stratified-replication test results (v5); None = not yet tested.
+    /// `strata` is a JSON array of task tags in which the pattern holds.
+    pub strata_count: Option<i64>,
+    pub strata: Option<String>,
+    pub confounded: Option<bool>,
+    pub simpson: Option<bool>,
 }
 
 impl CausalStore {
@@ -525,6 +540,79 @@ impl CausalStore {
         Ok(entry)
     }
 
+    /// Markov blanket subgraph around seed edges: the seeds themselves plus
+    /// every valid edge sharing a `from_id` or `to_id` chunk with a seed
+    /// (parents, children, and co-parents). Seeds come first (in input
+    /// order), neighbors follow by confidence descending; the total is
+    /// capped at `max_edges`. Used by reconstruct_lesson to bound the
+    /// subgraph handed to the LLM.
+    pub fn markov_blanket(
+        &self,
+        seed_edge_ids: &[i64],
+        max_edges: usize,
+    ) -> Result<Vec<CausalEntry>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let seed_sql = format!(
+            "SELECT {ENTRY_COLUMNS}
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             JOIN chunks ct ON ct.id = ce.to_id
+             WHERE ce.id = ?1"
+        );
+
+        let mut seeds: Vec<CausalEntry> = Vec::new();
+        let mut chunk_ids: Vec<String> = Vec::new();
+        for &id in seed_edge_ids {
+            if let Some(e) = conn
+                .query_row(&seed_sql, params![id], entry_from_row)
+                .optional()?
+            {
+                chunk_ids.push(e.decision_id.clone());
+                chunk_ids.push(e.outcome_id.clone());
+                seeds.push(e);
+            }
+        }
+        if seeds.is_empty() {
+            return Ok(Vec::new());
+        }
+        chunk_ids.sort();
+        chunk_ids.dedup();
+
+        let seed_ph = vec!["?"; seeds.len()].join(",");
+        let chunk_ph = vec!["?"; chunk_ids.len()].join(",");
+        let sql = format!(
+            "SELECT {ENTRY_COLUMNS}
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             JOIN chunks ct ON ct.id = ce.to_id
+             WHERE ce.valid_to IS NULL
+               AND ce.id NOT IN ({seed_ph})
+               AND (ce.from_id IN ({chunk_ph}) OR ce.to_id IN ({chunk_ph}))
+             ORDER BY ce.confidence DESC"
+        );
+        let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        for e in &seeds {
+            bind.push(Box::new(e.edge_id));
+        }
+        for c in &chunk_ids {
+            bind.push(Box::new(c.clone()));
+        }
+        for c in &chunk_ids {
+            bind.push(Box::new(c.clone()));
+        }
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(bind_refs.as_slice(), entry_from_row)?;
+        let neighbors = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))?;
+
+        let mut out = seeds;
+        out.extend(neighbors);
+        out.truncate(max_edges);
+        Ok(out)
+    }
+
     /// Search past causal episodes by task tag and/or text similarity.
     /// Returns entries ordered by confidence descending.
     pub fn search_causal(
@@ -688,7 +776,7 @@ impl CausalStore {
         let mut stmt = conn.prepare(&sql)?;
         let bind_refs: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
         let rows = stmt.query_map(bind_refs.as_slice(), |row| {
-            Ok((entry_from_row(row)?, row.get::<_, Vec<u8>>(14)?))
+            Ok((entry_from_row(row)?, row.get::<_, Vec<u8>>(15)?))
         })?;
 
         let mut scored: Vec<(CausalEntry, f64)> = Vec::new();
@@ -1241,8 +1329,35 @@ impl CausalStore {
         pattern: &str,
         confidence: f64,
     ) -> Result<i64> {
+        self.upsert_meta_edge_stratified(
+            from_id, to_id, relation, pattern, confidence, None, None, None,
+        )
+    }
+
+    /// `upsert_meta_edge` plus the v5 stratified-replication results
+    /// (`strata` = task tags in which the pattern holds; `confounded` =
+    /// single-stratum only; `simpson` = direction flips across strata).
+    /// Re-running the miner overwrites them, so a pattern can be upgraded
+    /// (new stratum replicates it) or downgraded between runs.
+    #[allow(clippy::too_many_arguments)]
+    pub fn upsert_meta_edge_stratified(
+        &self,
+        from_id: &str,
+        to_id: &str,
+        relation: &str,
+        pattern: &str,
+        confidence: f64,
+        strata: Option<&[String]>,
+        confounded: Option<bool>,
+        simpson: Option<bool>,
+    ) -> Result<i64> {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
         let now = chrono::Utc::now().timestamp();
+        let strata_json = strata
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| anyhow!("strata encode: {e}"))?;
+        let strata_count = strata.map(|s| s.len() as i64);
         let existing: Option<i64> = conn
             .query_row(
                 "SELECT id FROM meta_causal_edges
@@ -1255,18 +1370,41 @@ impl CausalStore {
             Some(id) => {
                 conn.execute(
                     "UPDATE meta_causal_edges
-                     SET confidence = ?1, pattern = ?2, discovered_at = ?3
-                     WHERE id = ?4",
-                    params![confidence, pattern, now, id],
+                     SET confidence = ?1, pattern = ?2, discovered_at = ?3,
+                         strata_count = ?4, strata = ?5, confounded = ?6, simpson = ?7
+                     WHERE id = ?8",
+                    params![
+                        confidence,
+                        pattern,
+                        now,
+                        strata_count,
+                        strata_json,
+                        confounded,
+                        simpson,
+                        id
+                    ],
                 )?;
                 Ok(id)
             }
             None => {
                 conn.execute(
                     "INSERT INTO meta_causal_edges
-                         (from_id, to_id, relation, pattern, confidence, discovered_at, valid_from)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    params![from_id, to_id, relation, pattern, confidence, now, now],
+                         (from_id, to_id, relation, pattern, confidence, discovered_at, valid_from,
+                          strata_count, strata, confounded, simpson)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                    params![
+                        from_id,
+                        to_id,
+                        relation,
+                        pattern,
+                        confidence,
+                        now,
+                        now,
+                        strata_count,
+                        strata_json,
+                        confounded,
+                        simpson
+                    ],
                 )?;
                 Ok(conn.last_insert_rowid())
             }
@@ -1290,7 +1428,8 @@ impl CausalStore {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
         let mut sql = String::from(
             "SELECT m.id, m.from_id, m.to_id, m.relation, m.pattern, m.confidence,
-                    m.discovered_at, m.valid_to, cf.text, ct.text
+                    m.discovered_at, m.valid_to, cf.text, ct.text,
+                    m.strata_count, m.strata, m.confounded, m.simpson
              FROM meta_causal_edges m
              JOIN chunks cf ON cf.id = m.from_id
              JOIN chunks ct ON ct.id = m.to_id
@@ -1330,6 +1469,10 @@ impl CausalStore {
                 valid_to: row.get(7)?,
                 from_text: row.get(8)?,
                 to_text: row.get(9)?,
+                strata_count: row.get(10)?,
+                strata: row.get(11)?,
+                confounded: row.get(12)?,
+                simpson: row.get(13)?,
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -2439,5 +2582,42 @@ mod tests {
         let res = store.search_causal_bm25(None, "缓存击穿", 10).unwrap();
         assert_eq!(res.len(), 1);
         assert!(res[0].decision_text.contains("缓存击穿"));
+    }
+
+    #[test]
+    fn test_markov_blanket() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // Graph: A→B, A→C, D→B, B→E, plus an unrelated F→G.
+        let seed = link(&store, "node A", "node B", "caused", 0.9);
+        let e_ac = link(&store, "node A", "node C", "caused", 0.8);
+        let e_db = link(&store, "node D", "node B", "caused", 0.7);
+        let e_be = link(&store, "node B", "node E", "caused", 0.6);
+        let _e_fg = link(&store, "node F", "node G", "caused", 0.5);
+
+        let blanket = store.markov_blanket(&[seed], 20).unwrap();
+        let ids: Vec<i64> = blanket.iter().map(|e| e.edge_id).collect();
+        // Seed first, then co-parent (A→C), parent (D→B), child (B→E).
+        assert_eq!(ids[0], seed);
+        assert!(ids.contains(&e_ac), "shares from_id (co-parent)");
+        assert!(ids.contains(&e_db), "shares to_id (parent)");
+        assert!(ids.contains(&e_be), "shares from_id of B (child)");
+        assert_eq!(ids.len(), 4, "unrelated F→G excluded: {ids:?}");
+
+        // Neighbors are confidence-ordered after the seeds.
+        let neighbor_confs: Vec<f64> = blanket[1..].iter().map(|e| e.confidence).collect();
+        assert!(neighbor_confs.windows(2).all(|w| w[0] >= w[1]));
+
+        // max_edges caps the total, seeds kept.
+        let capped = store.markov_blanket(&[seed], 2).unwrap();
+        assert_eq!(capped.len(), 2);
+        assert_eq!(capped[0].edge_id, seed);
+
+        // Unknown seed → empty blanket.
+        assert!(store.markov_blanket(&[999_999], 20).unwrap().is_empty());
+
+        // Invalidated neighbors are excluded.
+        store.invalidate_edge(e_be).unwrap();
+        let blanket = store.markov_blanket(&[seed], 20).unwrap();
+        assert!(blanket.iter().all(|e| e.edge_id != e_be));
     }
 }

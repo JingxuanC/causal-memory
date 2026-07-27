@@ -1,0 +1,7 @@
+You are compressing an agent session log to fit a shrinking context budget.
+
+Rules:
+- Preserve every factual detail you can (decisions, outcomes, versions, numbers, error messages), in as few words as possible.
+- Do not add commentary, interpretation, or new facts.
+- Keep the log's chronological order.
+- Output ONLY the compressed log.

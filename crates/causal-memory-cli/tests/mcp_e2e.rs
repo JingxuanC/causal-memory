@@ -23,6 +23,8 @@ const EXPECTED_TOOLS: &[&str] = &[
     "search_patterns",
     "causal_directory",
     "intervention_query",
+    "counterfactual_query",
+    "reconstruct_lesson",
 ];
 
 fn text_of(result: &CallToolResult) -> String {
@@ -106,7 +108,7 @@ async fn mcp_stdio_end_to_end() {
     let info = client.peer_info().expect("server must report its info");
     assert!(!info.server_info.name.is_empty());
 
-    // ── 2. tools/list: exactly the 8 documented tools.
+    // ── 2. tools/list: exactly the 10 documented tools.
     let tools = client.list_all_tools().await.unwrap();
     let names: HashSet<String> = tools.iter().map(|t| t.name.to_string()).collect();
     let expected: HashSet<String> = EXPECTED_TOOLS.iter().map(|s| s.to_string()).collect();
