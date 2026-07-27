@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "causal-memory-bench"
 path = "../../benches/bench_retrieval.rs"
 
+[[bin]]
+name = "causal-memory-locomo"
+path = "../../benches/locomo/main.rs"
+
 [dependencies]
 causal-memory.workspace = true
 rmcp.workspace = true
@@ -28,6 +32,8 @@ rusqlite.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
+reqwest.workspace = true
+futures.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

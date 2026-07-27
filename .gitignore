@@ -3,3 +3,5 @@ target/
 # Isolated Rust toolchain (local install for building, not part of the repo)
 .rustup/
 .cargo/
+benches/locomo/data/
+benches/locomo/results/*.jsonl

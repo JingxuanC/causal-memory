@@ -22,6 +22,12 @@ This happens because **causal information is the most fragile type under text co
 
 The causal table doesn't decay because it lives outside the agent's context window — compaction cannot touch it. See [`docs/design.md`](docs/design.md) and the [full benchmark writeup](https://github.com/JingxuanC/agent-teardown/blob/main/spike/grok-causal-memory/bench-RESULTS.md).
 
+## Benchmarks
+
+**LoCoMo** (1,986 questions, deepseek-chat answerer + judge, frozen protocol): overall **52.6%** · cats 1–4 **40.8%** · adversarial abstention **93.3%** — full methodology, per-category results, and measured failure analysis in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md). Honest reading: keyword retrieval is the bottleneck for factual chit-chat QA (that's Mem0/Zep's home turf, not ours); abstention — not hallucinating when memory has no answer — is where this system is strong.
+
+**Compaction survival** (the experiment this system is designed for): see the table above — causal-table recall stays at 100% where text recall collapses.
+
 ## What it does
 
 Eight MCP tools. Small surface area is the point.
@@ -136,13 +142,13 @@ Existing databases are upgraded automatically on open (schema v3); run
 - ✅ **Dual-system memory**: offline pattern miner distils meta edges (`similar_to` / `repeated` / `contradicts` / `refines`)
 - ✅ **Offline consolidation ("sleep") cycle** with four phases
 - ✅ **L0 causal directory** + **Rung-2 intervention queries**
-- ✅ 73 tests (70 unit + 3 e2e suites: migration / pipeline / MCP stdio)
+- ✅ 79 tests (unit + e2e suites: migration / pipeline / MCP stdio + benchmark harness)
 
 What's not done yet (honest):
 
 - ❌ Python/TS bindings (Rust binary only)
 - ❌ HTTP transport (MCP stdio only)
-- ❌ LongMemEval benchmark integration
+- ❌ LongMemEval benchmark integration (LoCoMo done — see [Benchmarks](#benchmarks))
 - ❌ Cross-agent sharing protocol
 - ❌ Reconstructive retrieval (causal subgraph → LLM narrative)
 - ❌ Rung 3 counterfactuals — **explicitly out of scope by design**: per

@@ -95,6 +95,8 @@ dependencies = [
  "anyhow",
  "causal-memory",
  "chrono",
+ "futures",
+ "reqwest",
  "rmcp",
  "rusqlite",
  "schemars 0.8.22",
