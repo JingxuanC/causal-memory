@@ -1,0 +1,68 @@
+{
+  "run_id": "20260727_175219",
+  "date": "2026-07-27T17:54:16.800064+00:00",
+  "git_commit": "0f6e5bd",
+  "model": "deepseek-chat",
+  "judge_model": "deepseek-chat",
+  "temperature": 0.0,
+  "topk": 10,
+  "data": "benches/longmemeval/data/longmemeval_s_cleaned.json",
+  "qtype_filter": null,
+  "total_questions": 500,
+  "correct": 309,
+  "incorrect": 191,
+  "error": 0,
+  "accuracy": 0.618,
+  "evidence_hit_rate": 0.844,
+  "per_question_type": {
+    "knowledge-update": {
+      "total": 78,
+      "correct": 60,
+      "incorrect": 18,
+      "error": 0,
+      "accuracy": 0.7692307692307693
+    },
+    "multi-session": {
+      "total": 133,
+      "correct": 43,
+      "incorrect": 90,
+      "error": 0,
+      "accuracy": 0.3233082706766917
+    },
+    "single-session-assistant": {
+      "total": 56,
+      "correct": 54,
+      "incorrect": 2,
+      "error": 0,
+      "accuracy": 0.9642857142857143
+    },
+    "single-session-preference": {
+      "total": 30,
+      "correct": 7,
+      "incorrect": 23,
+      "error": 0,
+      "accuracy": 0.23333333333333334
+    },
+    "single-session-user": {
+      "total": 70,
+      "correct": 63,
+      "incorrect": 7,
+      "error": 0,
+      "accuracy": 0.9
+    },
+    "temporal-reasoning": {
+      "total": 133,
+      "correct": 82,
+      "incorrect": 51,
+      "error": 0,
+      "accuracy": 0.6165413533834586
+    }
+  },
+  "abstention": {
+    "total": 30,
+    "correct": 29,
+    "incorrect": 1,
+    "error": 0,
+    "accuracy": 0.9666666666666667
+  }
+}
