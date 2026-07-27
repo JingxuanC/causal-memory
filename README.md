@@ -28,7 +28,7 @@ The causal table doesn't decay because it lives outside the agent's context wind
 
 **LongMemEval** (500 questions, official judge templates): overall **61.8%** · knowledge-update **76.9%** · abstention **96.7%** (29/30) — methodology and per-type analysis in [`docs/benchmarks/longmemeval.md`](docs/benchmarks/longmemeval.md).
 
-**Compaction survival** (the experiment this system is designed for): see the table above — causal-table recall stays at 100% where text recall collapses.
+**Compaction survival** (the experiment this system is designed for): LoCoMo sessions compressed 5× before QA — text-only memory collapses 65.0% → **44.5%**; text + never-compacted causal edges holds at **65.3%** (+20.8pp rescue, indistinguishable from zero compaction). Full data in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md#compaction-survival-run-20260727_174000-k--5).
 
 ## What it does
 

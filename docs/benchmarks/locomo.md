@@ -178,3 +178,29 @@ after 5 compactions while the causal table stays at 100%). That experiment
 now exists: `causal-memory-locomo compact --compact 5` replays LoCoMo with
 sessions compressed k times, contrasting text-only memory (condition A)
 against text + un-compacted causal edges (condition B).
+
+## Compaction survival (run 20260727_174000, k = 5)
+
+Every session compressed 5 times by an LLM before QA; the causal edges are
+extracted from the *original* text and never compacted (they live outside
+the context window — that is the architecture).
+
+| Category | A: text-only | B: text + causal | B − A |
+|---|---|---|---|
+| 1 single-hop | 23.0% | 23.4% | +0.4pp |
+| 2 temporal | 23.7% | 52.6% | **+28.9pp** |
+| 3 multi-hop | 25.0% | 20.8% | −4.2pp |
+| 4 open-domain | 36.6% | 75.3% | **+38.7pp** |
+| 5 adversarial | 91.9% | 91.5% | −0.4pp |
+| **overall** | **44.5%** | **65.3%** | **+20.8pp** |
+
+Read: five compactions collapse text-only memory from 65.0% (uncompressed
+run 3) to 44.5%. Adding the never-compacted causal edges brings the system
+back to 65.3% — **statistically indistinguishable from having no
+compaction at all**. Temporal and open-domain questions benefit most: dates
+and facts survive verbatim in edge text. cat 3 (multi-hop) is the one
+regression (small n=96) — compressed text plus flat adjacent-turn edges
+does not help cross-session synthesis; a real decision-extractor (not
+adjacent-turn pairing) is the fix.
+
+This is the experiment the system is designed to win, and it did.
