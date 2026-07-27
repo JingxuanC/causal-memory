@@ -5,7 +5,7 @@
 > Memory frameworks today (Mem0, Zep, Letta, OpenViking, MemOS) store *what* happened. `causal-memory` stores *why* — the causal link between a decision and its outcome. This is the slice every other memory layer misses.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Status: v0.7.0](https://img.shields.io/badge/status-v0.7.0--alpha-orange.svg)](#status)
+[![Status: v0.7.0](https://img.shields.io/badge/status-v0.8.0--alpha-orange.svg)](#status)
 
 ## Why
 
@@ -129,7 +129,7 @@ Existing databases are upgraded automatically on open (schema v3); run
 
 ## Status
 
-**v0.7.0 — alpha.** What works:
+**v0.8.0 — alpha.** What works:
 
 - ✅ Eight MCP tools (record / search / trace / chain-trace / invalidate / patterns / L0 directory / intervention)
 - ✅ SQLite persistence with CHECK constraints + idempotent schema migrations (v4)
