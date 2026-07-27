@@ -26,6 +26,8 @@ The causal table doesn't decay because it lives outside the agent's context wind
 
 **LoCoMo** (1,986 questions, deepseek-chat answerer + judge, frozen protocol): overall **65.0%** · cats 1–4 **59.4%** · evidence hit rate **74.4%** (BM25) · adversarial abstention **84.3%** — three controlled runs with full methodology and failure analysis in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md). Honest reading: factual chit-chat QA is Mem0/Zep's home turf, not ours — but abstention behavior and per-run engineering deltas are documented openly, and the compaction-survival experiment below is the one this system is designed to win.
 
+**LongMemEval** (500 questions, official judge templates): overall **61.8%** · knowledge-update **76.9%** · abstention **96.7%** (29/30) — methodology and per-type analysis in [`docs/benchmarks/longmemeval.md`](docs/benchmarks/longmemeval.md).
+
 **Compaction survival** (the experiment this system is designed for): see the table above — causal-table recall stays at 100% where text recall collapses.
 
 ## What it does
