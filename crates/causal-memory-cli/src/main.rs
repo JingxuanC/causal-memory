@@ -422,6 +422,12 @@ fn run_sleep(args: &[String]) -> anyhow::Result<()> {
         report.mine_report.contradicts,
         report.mine_report.refines
     );
+    println!(
+        "  pruned: trivial/self={} too-short={} capped={}",
+        report.mine_report.skipped_self,
+        report.mine_report.skipped_short,
+        report.mine_report.capped
+    );
 
     println!("\n③ Downscaling:");
     println!("  decayed:        {}", report.decayed);

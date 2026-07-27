@@ -3,12 +3,16 @@
 //! pattern mining, and invalidation.
 //!
 //! Fixture narrative (tests/fixtures/session/):
-//!   1. `cargo build`            → error E0433 (module not found)    [failure]
-//!   2. write src/foo.rs         → file written                      [success]
-//!   3. `cargo build`            → error E0425 (typo `intit`)        [failure]
-//!   4. search_replace src/foo.rs → updated                          [success]
-//!   5. `cargo build`            → build succeeded                   [success]
-//!   6. view_file                → (not decision-worthy, skipped)
+//!   1. `cargo build app verbose color`   → error E0433 (module not found) [failure]
+//!   2. write src/foo.rs                  → file written                   [success]
+//!   3. `cargo build app verbose plain`   → error E0425 (typo `intit`)     [failure]
+//!   4. search_replace src/foo.rs         → updated                        [success]
+//!   5. `cargo build app verbose release` → build succeeded                [success]
+//!   6. view_file                         → (not decision-worthy, skipped)
+//!
+//! The three build commands share 4/6 content tokens (Jaccard ≈ 0.667), so the
+//! pruned pattern miner still links them; the write/search_replace pair is
+//! tool-name boilerplate over identical 3-token paths and is correctly skipped.
 //!
 //! The two failures each sit 100s before a follow-up decision, so the
 //! ChainLinker's temporal strategy bridges them (failure outcome → next
@@ -126,7 +130,7 @@ fn pipeline_end_to_end() {
 
     // ── 5. Pattern mining ────────────────────────────────────────────────
     // The fixture is designed to mine at least:
-    //   similar_to(build#1, build#2)  — identical decision texts
+    //   similar_to(build#1, build#2)  — 4/6 content-token overlap, both failed
     //   refines(build#N → build#3)    — same task, failure → later success
     let mine = PatternMiner::new(&store, MinerConfig::default())
         .mine()

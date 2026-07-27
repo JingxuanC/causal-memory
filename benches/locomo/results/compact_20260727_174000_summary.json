@@ -1,0 +1,130 @@
+{
+  "run_id": "20260727_174000",
+  "date": "2026-07-27T18:21:10.949904+00:00",
+  "git_commit": "c00446b",
+  "model": "deepseek-chat",
+  "temperature": 0.0,
+  "compact_prompt_version": "compact-v1-third",
+  "compact_system_prompt": "You are a lossy conversation compactor. Compress the conversation text you are given into a summary that is at most one third of its original length. Preserve key facts, decisions, and dates. Output only the summary, no preamble.",
+  "compact_k": 5,
+  "topk": 10,
+  "data": "benches/locomo/data/locomo10.json",
+  "conversations": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "cache_dir": "benches/locomo/results/cache",
+  "compression_errors": [],
+  "conditions": {
+    "A_text_only": {
+      "label": "text-only: k-times compressed session summaries",
+      "chunks": 272,
+      "edges": 262,
+      "total_questions": 1986,
+      "correct": 883,
+      "incorrect": 1103,
+      "error": 0,
+      "accuracy": 0.4446122860020141,
+      "per_category": {
+        "1": {
+          "total": 282,
+          "correct": 65,
+          "incorrect": 217,
+          "error": 0,
+          "accuracy": 0.23049645390070922
+        },
+        "2": {
+          "total": 321,
+          "correct": 76,
+          "incorrect": 245,
+          "error": 0,
+          "accuracy": 0.2367601246105919
+        },
+        "3": {
+          "total": 96,
+          "correct": 24,
+          "incorrect": 72,
+          "error": 0,
+          "accuracy": 0.25
+        },
+        "4": {
+          "total": 841,
+          "correct": 308,
+          "incorrect": 533,
+          "error": 0,
+          "accuracy": 0.36623067776456597
+        },
+        "5": {
+          "total": 446,
+          "correct": 410,
+          "incorrect": 36,
+          "error": 0,
+          "accuracy": 0.9192825112107623
+        }
+      }
+    },
+    "B_text_plus_causal": {
+      "label": "k-times compressed text + causal edges over original uncompressed turns",
+      "chunks": 272,
+      "edges": 5872,
+      "total_questions": 1986,
+      "correct": 1296,
+      "incorrect": 690,
+      "error": 0,
+      "accuracy": 0.6525679758308157,
+      "per_category": {
+        "1": {
+          "total": 282,
+          "correct": 66,
+          "incorrect": 216,
+          "error": 0,
+          "accuracy": 0.23404255319148937
+        },
+        "2": {
+          "total": 321,
+          "correct": 169,
+          "incorrect": 152,
+          "error": 0,
+          "accuracy": 0.5264797507788161
+        },
+        "3": {
+          "total": 96,
+          "correct": 20,
+          "incorrect": 76,
+          "error": 0,
+          "accuracy": 0.20833333333333334
+        },
+        "4": {
+          "total": 841,
+          "correct": 633,
+          "incorrect": 208,
+          "error": 0,
+          "accuracy": 0.7526753864447087
+        },
+        "5": {
+          "total": 446,
+          "correct": 408,
+          "incorrect": 38,
+          "error": 0,
+          "accuracy": 0.9147982062780269
+        }
+      }
+    }
+  },
+  "delta_per_category": {
+    "1": 0.003546099290780147,
+    "2": 0.2897196261682242,
+    "3": -0.04166666666666666,
+    "4": 0.3864447086801427,
+    "5": -0.004484304932735439
+  },
+  "delta_overall": 0.20795568982880164
+}

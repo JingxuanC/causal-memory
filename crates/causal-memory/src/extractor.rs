@@ -19,7 +19,8 @@ use serde::Deserialize;
 use crate::store::CausalStore;
 
 /// Minimum tool name to treat as a "decision worth recording".
-const DECISION_WORTHY_TOOLS: &[&str] = &[
+/// Also used by the pattern miner to strip tool-name boilerplate tokens.
+pub(crate) const DECISION_WORTHY_TOOLS: &[&str] = &[
     "write",
     "search_replace",
     "run_terminal_command",

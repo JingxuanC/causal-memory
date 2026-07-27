@@ -31,7 +31,9 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 
-use crate::patterns::{jaccard, tokenize, MineReport, MinerConfig, PatternMiner};
+use crate::patterns::{
+    boilerplate_tokens, content_tokens, jaccard, tokenize, MineReport, MinerConfig, PatternMiner,
+};
 use crate::store::{outcome_polarity, outcomes_contradict, CausalStore};
 
 /// Seconds per day, for age/window math.
@@ -432,10 +434,13 @@ struct MetaNode {
 ///
 /// Compare this round's new/refreshed meta edges against all valid meta
 /// edges; when two have similar patterns (Jaccard over their endpoint
-/// decision texts ≥ miner threshold) but disjoint task tags, link their
-/// central decisions with a `similar_to` meta edge marked as a cross-domain
-/// transfer. Only new-vs-existing pairs are compared to avoid an all-pairs
-/// blowup on every run.
+/// decision texts ≥ miner threshold) but **disjoint, non-empty task tags** —
+/// cross-domain transfer is only written when the two sides verifiably live in
+/// different tasks — link their central decisions with a `similar_to` meta
+/// edge marked as a cross-domain transfer. Only new-vs-existing pairs are
+/// compared to avoid an all-pairs blowup on every run. Accepted transfers are
+/// capped like the miner: top-N per central decision and `max_pairs` overall
+/// (highest similarity first).
 fn rem_integrate(
     store: &CausalStore,
     config: &ConsolidateConfig,
@@ -447,7 +452,9 @@ fn rem_integrate(
         return Ok(0);
     }
 
-    // Build nodes with task tags and tokens.
+    // Build nodes with task tags and tokens (tool-name boilerplate stripped,
+    // same as the miner, so short tool-call patterns don't inflate Jaccard).
+    let boilerplate = boilerplate_tokens();
     let mut nodes: Vec<MetaNode> = Vec::with_capacity(meta.len());
     for m in &meta {
         let task_tags = store.with_conn(|conn| {
@@ -469,7 +476,7 @@ fn rem_integrate(
             from_id: m.from_id.clone(),
             from_text: m.from_text.clone(),
             discovered_at: m.discovered_at,
-            tokens: tokenize(&format!("{} {}", m.from_text, m.to_text)),
+            tokens: content_tokens(&format!("{} {}", m.from_text, m.to_text), &boilerplate),
             task_tags,
         });
     }
@@ -491,13 +498,19 @@ fn rem_integrate(
         .map(|m| (m.from_id.clone(), m.to_id.clone()))
         .collect();
 
-    let mut transfers = 0;
+    // Collect candidate transfers, then accept greedily under the same caps as
+    // the miner (top-N per decision, max_pairs overall, similarity first).
+    let mut candidates: Vec<(usize, usize, f64)> = Vec::new();
     for (i, a) in nodes.iter().enumerate() {
         if !is_new(a) {
             continue;
         }
-        for b in nodes.iter().skip(i + 1) {
-            if a.task_tags.is_empty()
+        for (j, b) in nodes.iter().enumerate().skip(i + 1) {
+            // Never link a decision to itself (two meta edges can share a
+            // central decision), and require both sides to carry task tags
+            // that are provably different (non-empty and disjoint).
+            if a.from_id == b.from_id
+                || a.task_tags.is_empty()
                 || b.task_tags.is_empty()
                 || !a.task_tags.is_disjoint(&b.task_tags)
             {
@@ -512,14 +525,38 @@ fn rem_integrate(
             if existing.contains(&pair_f) || existing.contains(&pair_r) {
                 continue;
             }
-            transfers += 1;
-            if !dry_run {
-                let pattern = format!(
-                    "cross-domain transfer: \"{}\" ↔ \"{}\" (相似模式跨任务迁移)",
-                    a.from_text, b.from_text
-                );
-                store.upsert_meta_edge(&a.from_id, &b.from_id, "similar_to", &pattern, sim)?;
-            }
+            candidates.push((i, j, sim));
+        }
+    }
+
+    candidates.sort_by(|&(ai, bi, asim), &(ci, di, bsim)| {
+        bsim.partial_cmp(&asim)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(ai.cmp(&ci))
+            .then(bi.cmp(&di))
+    });
+    let mut per_decision: HashMap<&str, usize> = HashMap::new();
+    let mut transfers = 0;
+    for (ai, bi, sim) in candidates {
+        let a = &nodes[ai];
+        let b = &nodes[bi];
+        if transfers >= config.miner.max_pairs
+            || per_decision.get(a.from_id.as_str()).copied().unwrap_or(0)
+                >= config.miner.max_pairs_per_decision
+            || per_decision.get(b.from_id.as_str()).copied().unwrap_or(0)
+                >= config.miner.max_pairs_per_decision
+        {
+            continue;
+        }
+        transfers += 1;
+        *per_decision.entry(a.from_id.as_str()).or_default() += 1;
+        *per_decision.entry(b.from_id.as_str()).or_default() += 1;
+        if !dry_run {
+            let pattern = format!(
+                "cross-domain transfer: \"{}\" ↔ \"{}\" (相似模式跨任务迁移)",
+                a.from_text, b.from_text
+            );
+            store.upsert_meta_edge(&a.from_id, &b.from_id, "similar_to", &pattern, sim)?;
         }
     }
     Ok(transfers)
@@ -763,12 +800,15 @@ mod tests {
     #[test]
     fn test_rem_cross_domain_transfer() {
         let store = CausalStore::open_in_memory().unwrap();
-        // Two pattern pairs with identical shape but fully disjoint task tags:
+        // Two pattern pairs with similar shape but fully disjoint task tags:
         // (A,B) mine into meta edge M1 over tags {t1,t2};
         // (C,D) mine into meta edge M2 over tags {t3,t4}.
+        // Texts are built for the default miner bar (≥4 content tokens,
+        // Jaccard ≥ 0.65): within a pair the overlap is 4/6 ≈ 0.667; the two
+        // meta edges' combined texts overlap 5/7 ≈ 0.714.
         insert_edge(
             &store,
-            "use redis for cache",
+            "use redis cache layer alpha",
             "deploy success",
             0.8,
             "rule",
@@ -778,7 +818,7 @@ mod tests {
         );
         insert_edge(
             &store,
-            "use redis for session",
+            "use redis cache layer beta",
             "rollout success",
             0.8,
             "rule",
@@ -788,7 +828,7 @@ mod tests {
         );
         insert_edge(
             &store,
-            "use redis for cache",
+            "use redis cache pool alpha",
             "deploy success",
             0.8,
             "rule",
@@ -798,7 +838,7 @@ mod tests {
         );
         insert_edge(
             &store,
-            "use redis for session",
+            "use redis cache pool beta",
             "rollout success",
             0.8,
             "rule",
@@ -817,6 +857,63 @@ mod tests {
             .unwrap();
         assert!(!transfer.is_empty());
         assert_eq!(transfer[0].relation, "similar_to");
+    }
+
+    #[test]
+    fn test_rem_same_task_tag_no_transfer() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // Same shape as the cross-domain test, but the two pattern pairs share
+        // task tag t2 → tags are not disjoint → no transfer may be written.
+        insert_edge(
+            &store,
+            "use redis cache layer alpha",
+            "deploy success",
+            0.8,
+            "rule",
+            Some("t1"),
+            NOW,
+            None,
+        );
+        insert_edge(
+            &store,
+            "use redis cache layer beta",
+            "rollout success",
+            0.8,
+            "rule",
+            Some("t2"),
+            NOW,
+            None,
+        );
+        insert_edge(
+            &store,
+            "use redis cache pool alpha",
+            "deploy success",
+            0.8,
+            "rule",
+            Some("t2"),
+            NOW,
+            None,
+        );
+        insert_edge(
+            &store,
+            "use redis cache pool beta",
+            "rollout success",
+            0.8,
+            "rule",
+            Some("t3"),
+            NOW,
+            None,
+        );
+
+        let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+        assert_eq!(
+            report.rem_transfers, 0,
+            "overlapping task tags must block transfer: {report:?}"
+        );
+        let transfer = store
+            .search_patterns(Some("cross-domain transfer"), None, 10)
+            .unwrap();
+        assert!(transfer.is_empty());
     }
 
     // ── dry run ──────────────────────────────────────────────────────────
@@ -959,7 +1056,7 @@ mod tests {
         // Similar decisions, opposite outcomes → both get +0.2.
         let a = insert_edge(
             &store,
-            "use global lock for cache",
+            "use global lock for cache data",
             "deadlock error under load",
             0.6,
             "rule",
@@ -969,7 +1066,7 @@ mod tests {
         );
         let b = insert_edge(
             &store,
-            "use global lock for queue",
+            "use global lock for queue data",
             "successfully fixed contention",
             0.6,
             "rule",
