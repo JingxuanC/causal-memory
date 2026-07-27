@@ -3,7 +3,7 @@
 Baseline evaluation of causal-memory on the [LoCoMo](https://github.com/snap-research/locomo)
 long-conversational-memory benchmark (`locomo10.json`: 10 conversations, 1,986 questions).
 
-**Headline (run 2): overall 57.8% (1,148/1,986) · cats 1–4: 48.6% (749/1,540) · adversarial abstention: 89.5% (399/446) · zero judge errors.**
+**Headline (run 3): overall 65.0% (1,290/1,986) · cats 1–4: 59.4% (915/1,540) · adversarial abstention: 84.3% (376/446) · zero judge errors.**
 
 This is an honest baseline, published with the same spirit as the v0.4.1 retrieval
 finding: causal-memory is a **causal layer**, not a general-purpose factual memory —
@@ -17,7 +17,7 @@ and this benchmark measures mostly the latter. See [Failure analysis](#failure-a
 | Git commit | `b76571f` (+ harness commit) |
 | Answerer model | `deepseek-chat`, temperature 0.0, max_tokens 200 |
 | Judge model | `deepseek-chat`, temperature 0.0 |
-| Retrieval | `search_causal` keyword LIKE + keyword fan-out fallback, top-k = 10 |
+| Retrieval | run 1–2: keyword LIKE + fan-out fallback · run 3: **BM25** (Okapi, k1=1.2, b=0.75, Robertson IDF) · top-k = 10 |
 | Ingest | one chunk per dialog turn (`[session date] speaker: text`), id = `dia_id`; consecutive cross-speaker turns linked by `caused` edges (confidence 0.4, temporal) |
 | Categories | 1 (single-hop), 2 (temporal), 3 (multi-hop), 4 (open-domain), 5 (adversarial) |
 | Run | 2026-07-27, single run, all 1,986 questions, 0 errors |
@@ -35,6 +35,19 @@ Per-question results: `benches/locomo/results/run_<ts>_conv<N>.jsonl`
 (gitignored); summary: `run_<ts>_summary.json`.
 
 ## Results
+
+### Run 3 — 20260727_155001 (commit `09d256d`, BM25 retrieval)
+
+| Category | n | Accuracy |
+|---|---|---|
+| 1 single-hop | 282 | 25.9% |
+| 2 temporal | 321 | 57.6% |
+| 3 multi-hop | 96 | 24.0% |
+| 4 open-domain | 841 | **75.4%** |
+| 5 adversarial | 446 | 84.3% |
+| **overall** | 1,986 | **65.0%** |
+| cats 1–4 (Genesys protocol) | 1,540 | **59.4%** |
+| evidence retrieval hit rate | — | **74.4%** |
 
 ### Run 2 — 20260727_151234 (commit `bea2201`, temporal-grounding prompt)
 
@@ -79,17 +92,32 @@ against the `[session_N YYYY-MM-DD]` chunk prefix).
 Context (published, different answerer models — not strictly comparable):
 Mem0 66.9 · Zep 75.14 · Genesys 85.55 (gpt-4o-mini answerer, cats 1–4).
 
+### Run 2 → Run 3: BM25 retrieval, controlled experiment
+
+DBs, prompts, models, top-k unchanged; the only delta is retrieval:
+LIKE substring + fan-out → Okapi BM25 (k1=1.2, b=0.75, Robertson IDF,
+pure-Rust `bm25.rs`, now the library's default keyword ranking).
+
+- **evidence hit rate: 61.2% → 74.4% (+13.2pp)** — BM25 did exactly what it
+  was built for. LIKE requires literal substring overlap; BM25 scores
+  unordered term matches with tf saturation and length normalization.
+- **overall: 57.8% → 65.0%; cats 1–4: 48.6% → 59.4%** — within ~7pp of
+  Mem0's published 66.9 (different answerer, not strictly comparable).
+- cat 4 (open-domain): 60.3% → 75.4% — biggest beneficiary.
+- **cat 5 (abstention): 89.5% → 84.3%** — the decline continues. This is now
+  a confirmed trend across three runs: *better retrieval → more
+  plausible-looking context → more committed answers on unanswerable
+  questions*. Retrieval quality and abstention are in real tension;
+  see failure analysis.
+
 ## Failure analysis
 
-Two distinct bottlenecks, measured rather than guessed:
+Three distinct bottlenecks, measured rather than guessed:
 
-1. **Retrieval (40% of questions).** Evidence hit rate is ~60% — for 2 in 5
-   questions the gold-evidence chunk never reaches the answerer. Keyword LIKE
-   retrieval is the ceiling here; this is exactly the v0.4.1 finding
-   (keyword retrieval ≈ causal retrieval on fresh data) restated at scale.
-   Fix path: embedding-based retrieval (`search_causal_semantic` is already
-   implemented — DeepSeek has no embeddings endpoint, so this needs a
-   second provider), BM25 ranking, hybrid fusion.
+1. **Retrieval (shrinking).** Evidence hit rate 60.2% → 74.4% after BM25.
+   Remaining ~26% misses: paraphrases with no term overlap (needs embeddings
+   — DeepSeek has no embeddings endpoint, so this needs a second provider),
+   multi-evidence questions where only part of the evidence is retrieved.
 
 2. ~~Temporal normalization~~ **(fixed in run 2).** Run 1's answerer echoed
    relative dates from the dialog ("yesterday", "next month") instead of
@@ -97,10 +125,18 @@ Two distinct bottlenecks, measured rather than guessed:
    "7 May 2023" vs predicted "Yesterday (2023-05-08)"). One prompt line
    demanding absolute dates took cat 2 from 20.2% to 49.8%.
 
-**Strength: adversarial abstention (89.5–93.3%).** When the information is
-not in memory, the system says so instead of hallucinating — the property
-that matters most for an agent memory layer you actually trust. Run 2 shows
-this is tensioned against answer eagerness and needs deliberate tuning.
+3. **Abstention erosion (the emergent finding of run 3).** Adversarial
+   accuracy fell monotonically across runs: 93.3% → 89.5% → 84.3% — as
+   retrieval got better, the answerer got bolder on questions it should
+   refuse. The system now retrieves *something* plausible for almost every
+   question, and plausible context invites hallucination. This is the next
+   thing to fix deliberately (abstention-aware prompting calibrated against
+   retrieval score, or a retrieval-confidence threshold below which the
+   prompt explicitly says "evidence is weak").
+
+**Strength remains: even eroded, 84.3% abstention is the property that
+matters most for an agent memory layer you actually trust** — and it is now
+documented as a tunable dial, not an accident.
 
 ## What this benchmark does not measure
 

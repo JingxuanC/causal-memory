@@ -168,8 +168,12 @@ Causal retrieval is still task + confidence first. But when an
 OpenAI-compatible embedding endpoint is configured (`CAUSAL_MEMORY_EMBED_*`,
 falling back to `CAUSAL_MEMORY_LLM_*`), edges get vector embeddings and
 `search_causal` ranks by cosine similarity (`src/embed.rs`). Unconfigured →
-silent fallback to keyword LIKE. This mirrors the LLM-judge contract:
-zero-invasive default, capability upgrade when configured.
+silent fallback to **BM25** (`src/bm25.rs`: Okapi BM25, k1=1.2, b=0.75,
+Robertson IDF, per-task IDF scope, pure Rust, zero dependencies — replaced
+plain LIKE after the LoCoMo benchmark showed substring matching capped
+evidence hit rate at ~60%; BM25 lifts it to ~74%). This mirrors the
+LLM-judge contract: zero-invasive default, capability upgrade when
+configured.
 
 ### Write-time outcome polarity (LLM judge + heuristic fallback)
 

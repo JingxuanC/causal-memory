@@ -24,7 +24,7 @@ The causal table doesn't decay because it lives outside the agent's context wind
 
 ## Benchmarks
 
-**LoCoMo** (1,986 questions, deepseek-chat answerer + judge, frozen protocol): overall **57.8%** · cats 1–4 **48.6%** · temporal category 20%→50% after one prompt fix · adversarial abstention **89.5%** — full methodology, both runs, and measured failure analysis in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md). Honest reading: keyword retrieval is the bottleneck for factual chit-chat QA (that's Mem0/Zep's home turf, not ours); abstention — not hallucinating when memory has no answer — is where this system is strong.
+**LoCoMo** (1,986 questions, deepseek-chat answerer + judge, frozen protocol): overall **65.0%** · cats 1–4 **59.4%** · evidence hit rate **74.4%** (BM25) · adversarial abstention **84.3%** — three controlled runs with full methodology and failure analysis in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md). Honest reading: factual chit-chat QA is Mem0/Zep's home turf, not ours — but abstention behavior and per-run engineering deltas are documented openly, and the compaction-survival experiment below is the one this system is designed to win.
 
 **Compaction survival** (the experiment this system is designed for): see the table above — causal-table recall stays at 100% where text recall collapses.
 
@@ -35,7 +35,7 @@ Eight MCP tools. Small surface area is the point.
 | Tool | When to call | What it does |
 |---|---|---|
 | `record_decision` | After completing an action | Logs `decision → outcome` as a causal edge with task tag + confidence; auto-invalidates contradicted older edges for the same decision |
-| `search_causal` | Before a non-trivial decision | Retrieves past causal episodes by task or text; ranks by embedding cosine similarity when configured, keyword LIKE otherwise |
+| `search_causal` | Before a non-trivial decision | Retrieves past causal episodes by task or text; ranks by embedding cosine similarity when configured, BM25 otherwise |
 | `trace_cause` | When something fails (simple) | Single-hop reverse: which decision caused this outcome |
 | `trace_cause_chain` | When something fails (deep) | Multi-hop backward traversal through the causal graph |
 | `invalidate_decision` | When a recorded lesson turns out wrong | Soft-invalidates the edge (`valid_to` set) — hidden from search/trace, kept for audit |
@@ -110,7 +110,7 @@ causal-memory sleep             # run it (once per day — NOT idempotent)
 
 ## Semantic search
 
-Optional embeddings rank `search_causal` by cosine similarity instead of LIKE
+Optional embeddings rank `search_causal` by cosine similarity instead of BM25
 matching. Any OpenAI-compatible `/v1/embeddings` endpoint works:
 
 ```bash
