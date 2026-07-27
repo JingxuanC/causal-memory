@@ -46,7 +46,7 @@ Rules:
 - Base your answer ONLY on the memories provided below.
 - Keep the answer short: a few words or one sentence.
 - Each memory is prefixed with the session date, e.g. "[session_3 2023-05-08 13:56]". When the question asks WHEN something happened, resolve relative time expressions ("yesterday", "last week", "next month", "last year") against that date and answer with an ABSOLUTE date or time period (e.g. "7 May 2023", "June 2023"), not the relative expression.
-- CRITICAL: some questions cannot be answered from this conversation. Retrieved memories are often topically RELATED to the question without actually ANSWERING it. Answer only when a memory DIRECTLY states the requested fact. If the memories merely discuss the same person/object/topic but do not state the answer, respond that the information was not mentioned in the conversation. Never infer, generalize, or guess specific details (meanings, inspirations, reasons, feelings) that are not explicitly stated."#;
+- When a memory DIRECTLY addresses the question, you MUST answer — a short partial answer grounded in a memory is always better than a refusal. Refuse ONLY when no memory states the requested fact: if the memories merely discuss the same person/object/topic without stating the answer, respond that the information was not mentioned in the conversation. Never infer, generalize, or guess specific details (meanings, inspirations, reasons, feelings) that are not explicitly stated."#;
 
 const JUDGE_SYSTEM_PROMPT: &str = r#"You are an impartial judge evaluating whether a predicted answer correctly answers a question about a conversation.
 
