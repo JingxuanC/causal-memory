@@ -7,11 +7,18 @@
 //!
 //! Subcommands:
 //!   causal-memory-locomo run --data benches/locomo/data/locomo10.json [options]
+//!   causal-memory-locomo compact --data benches/locomo/data/locomo10.json [options]
+//!
+//! `compact` is the "compressed LoCoMo" experiment (see compact.rs): text-only
+//! memory after k iterative compactions (condition A) vs the same compressed
+//! text plus causal edges over the ORIGINAL uncompressed turns (condition B).
 //!
 //! Env:
 //!   DEEPSEEK_API_KEY        (required; or CAUSAL_MEMORY_LLM_KEY)
 //!   LOCOMO_LLM_API          (default: https://api.deepseek.com/v1)
 //!   LOCOMO_LLM_MODEL        (default: deepseek-chat, used for answer + judge)
+
+mod compact;
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -55,8 +62,9 @@ Respond with ONLY a JSON object (no markdown, no extra text):
 
 fn usage() {
     eprintln!("Usage: causal-memory-locomo run --data <locomo10.json> [options]");
+    eprintln!("       causal-memory-locomo compact --data <locomo10.json> [options]");
     eprintln!();
-    eprintln!("Options:");
+    eprintln!("run options:");
     eprintln!("  --data PATH         LoCoMo dataset JSON (required)");
     eprintln!("  --conv N            run only conversation index N");
     eprintln!("  --all               run all conversations (default)");
@@ -66,6 +74,9 @@ fn usage() {
     eprintln!("  --out DIR           results dir (default: benches/locomo/results)");
     eprintln!("  --topk N            retrieved memories per question (default: 10)");
     eprintln!("  --concurrency N     parallel questions (default: 8)");
+    eprintln!();
+    eprintln!("compact options: --data PATH (required) [--conv N] [--compact K] (default 5)");
+    eprintln!("  [--limit Q] [--concurrency N] [--out DIR] (default benches/locomo/results)");
     eprintln!();
     eprintln!("Env: DEEPSEEK_API_KEY (required), LOCOMO_LLM_API, LOCOMO_LLM_MODEL");
     eprintln!();
@@ -208,6 +219,18 @@ fn format_ts(ts: i64) -> String {
         .unwrap_or_else(|| "unknown-time".to_string())
 }
 
+/// Chunk text for a single turn: "[session_N <date>] speaker: text". Shared by
+/// the plain ingest path and the compact experiment's uncompressed edges.
+fn turn_chunk_text(session_number: u32, ts: i64, speaker: &str, text: &str) -> String {
+    format!(
+        "[session_{} {}] {}: {}",
+        session_number,
+        format_ts(ts),
+        speaker,
+        text
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Ingest
 // ---------------------------------------------------------------------------
@@ -249,13 +272,7 @@ fn ingest_conversation(store: &CausalStore, conv: &LocomoConversation) -> Result
 
         for (idx, turn) in session.turns.iter().enumerate() {
             let ts = turn_event_time(base, idx);
-            let chunk_text = format!(
-                "[session_{} {}] {}: {}",
-                session.number,
-                format_ts(ts),
-                turn.speaker,
-                turn.text
-            );
+            let chunk_text = turn_chunk_text(session.number, ts, &turn.speaker, &turn.text);
             store.with_conn(|c| {
                 c.execute(
                     "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
@@ -778,6 +795,35 @@ async fn answer_question(
     }
 }
 
+/// Answer + judge a batch of questions against one store, in parallel.
+/// Shared by `run` and the compact experiment's QA phase.
+async fn answer_all(
+    cfg: &LlmConfig,
+    store: &CausalStore,
+    conv_idx: usize,
+    qas: Vec<Qa>,
+    topk: usize,
+    concurrency: usize,
+) -> Vec<ResultRow> {
+    let done = Arc::new(AtomicUsize::new(0));
+    futures::stream::iter(qas.into_iter().map(|qa| {
+        let cfg = cfg.clone();
+        let store = store.clone();
+        let done = done.clone();
+        async move {
+            let row = answer_question(&cfg, &store, conv_idx, &qa, topk).await;
+            let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+            if d.is_multiple_of(50) {
+                eprintln!("conv {conv_idx}: {d} questions done");
+            }
+            row
+        }
+    }))
+    .buffer_unordered(concurrency)
+    .collect()
+    .await
+}
+
 async fn run(args: Args) -> Result<()> {
     let cfg = LlmConfig::from_env()?;
     eprintln!("LLM: {} @ {}", cfg.model, cfg.api_base);
@@ -829,24 +875,8 @@ async fn run(args: Args) -> Result<()> {
         }
         eprintln!("conv {conv_idx}: {} questions", qas.len());
 
-        let done = Arc::new(AtomicUsize::new(0));
-        let rows: Vec<ResultRow> = futures::stream::iter(qas.into_iter().map(|qa| {
-            let cfg = cfg.clone();
-            let store = store.clone();
-            let done = done.clone();
-            let topk = args.topk;
-            async move {
-                let row = answer_question(&cfg, &store, conv_idx, &qa, topk).await;
-                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if d.is_multiple_of(50) {
-                    eprintln!("conv {conv_idx}: {d} questions done");
-                }
-                row
-            }
-        }))
-        .buffer_unordered(args.concurrency)
-        .collect()
-        .await;
+        let rows: Vec<ResultRow> =
+            answer_all(&cfg, &store, conv_idx, qas, args.topk, args.concurrency).await;
 
         let jsonl_path = args
             .out_dir
@@ -912,6 +942,11 @@ async fn run(args: Args) -> Result<()> {
 
 fn main() -> Result<()> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv.first().map(String::as_str) == Some("compact") {
+        let args = compact::parse_args(&argv)?;
+        let rt = tokio::runtime::Runtime::new()?;
+        return rt.block_on(compact::run(args));
+    }
     match parse_args(&argv)? {
         None => {
             usage();

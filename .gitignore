@@ -5,3 +5,4 @@ target/
 .cargo/
 benches/locomo/data/
 benches/locomo/results/*.jsonl
+benches/locomo/results/cache/

@@ -3,7 +3,7 @@
 Baseline evaluation of causal-memory on the [LoCoMo](https://github.com/snap-research/locomo)
 long-conversational-memory benchmark (`locomo10.json`: 10 conversations, 1,986 questions).
 
-**Headline (run 3): overall 65.0% (1,290/1,986) · cats 1–4: 59.4% (915/1,540) · adversarial abstention: 84.3% (376/446) · zero judge errors.**
+**Headline (run 5, adopted prompt): overall 64.2% (1,275/1,986) · cats 1–4: 56.3% · adversarial abstention: 91.5% · zero judge errors. Best raw QA: run 3 at 65.0% / 59.4%.**
 
 This is an honest baseline, published with the same spirit as the v0.4.1 retrieval
 finding: causal-memory is a **causal layer**, not a general-purpose factual memory —
@@ -35,6 +35,27 @@ Per-question results: `benches/locomo/results/run_<ts>_conv<N>.jsonl`
 (gitignored); summary: `run_<ts>_summary.json`.
 
 ## Results
+
+### Run 5 — 20260727_165556 (commit `a40ae4d`→`360543f`, balanced prompt — **adopted**)
+
+| Category | n | Accuracy |
+|---|---|---|
+| 1 single-hop | 282 | 24.1% |
+| 2 temporal | 321 | 49.2% |
+| 3 multi-hop | 96 | 19.8% |
+| 4 open-domain | 841 | 74.0% |
+| 5 adversarial | 446 | **91.5%** |
+| **overall** | 1,986 | **64.2%** |
+| cats 1–4 | 1,540 | **56.3%** |
+| evidence retrieval hit rate | — | 74.4% |
+
+### Run 4 — 20260727_162401 (abstention-max prompt, overshot)
+
+| Category | n | Accuracy |
+|---|---|---|
+| 5 adversarial | 446 | 94.4% |
+| cats 1–4 | 1,540 | 51.8% (over-refusal) |
+| **overall** | 1,986 | 61.3% |
 
 ### Run 3 — 20260727_155001 (commit `09d256d`, BM25 retrieval)
 
@@ -110,6 +131,17 @@ pure-Rust `bm25.rs`, now the library's default keyword ranking).
   questions*. Retrieval quality and abstention are in real tension;
   see failure analysis.
 
+### Run 3 → Run 4 → Run 5: the abstention dial, three controlled prompts
+
+- Run 4 (abstention-max: "answer only when a memory DIRECTLY states the
+  fact"): cat 5 84.3% → **94.4%**, but cats 1–4 −7.6pp — the model started
+  refusing answerable questions (cat 3 fell to 13.5%).
+- Run 5 (balanced: keep the direct-evidence rule + "a memory that directly
+  addresses the question MUST be answered — a partial answer beats a
+  refusal"): **cat 5 91.5% with cats 1–4 back to 56.3%** (vs run 3's
+  84.3% / 59.4%). Run 5's prompt is the adopted production default:
+  abstention within 3pp of the max at ~95% of the best cats 1–4 score.
+
 ## Failure analysis
 
 Three distinct bottlenecks, measured rather than guessed:
@@ -125,24 +157,24 @@ Three distinct bottlenecks, measured rather than guessed:
    "7 May 2023" vs predicted "Yesterday (2023-05-08)"). One prompt line
    demanding absolute dates took cat 2 from 20.2% to 49.8%.
 
-3. **Abstention erosion (the emergent finding of run 3).** Adversarial
-   accuracy fell monotonically across runs: 93.3% → 89.5% → 84.3% — as
-   retrieval got better, the answerer got bolder on questions it should
-   refuse. The system now retrieves *something* plausible for almost every
-   question, and plausible context invites hallucination. This is the next
-   thing to fix deliberately (abstention-aware prompting calibrated against
-   retrieval score, or a retrieval-confidence threshold below which the
-   prompt explicitly says "evidence is weak").
+3. **Abstention erosion (the emergent finding of run 3, addressed in run 5).**
+   Adversarial accuracy fell monotonically across runs 1–3: 93.3% → 89.5% →
+   84.3% — as retrieval got better, the answerer got bolder on questions it
+   should refuse. The system retrieves *something* plausible for almost
+   every question, and plausible context invites hallucination. Run 5's
+   balanced prompt (direct-evidence rule + must-answer counterweight)
+   recovered abstention to 91.5% at ~95% of the best cats 1–4 score.
 
-**Strength remains: even eroded, 84.3% abstention is the property that
-matters most for an agent memory layer you actually trust** — and it is now
-documented as a tunable dial, not an accident.
+**Strength: adversarial abstention is the property that matters most for an
+agent memory layer you actually trust** — and it is now a documented,
+tunable dial rather than an accident.
 
 ## What this benchmark does not measure
 
 LoCoMo tests factual recall from chit-chat. It does not test the thing
 causal-memory is built for: **survival of decision→outcome structure across
 context compaction** (see `docs/design.md` — text recall degrades to 45%
-after 5 compactions while the causal table stays at 100%). A compaction-aware
-variant of this benchmark (compress sessions k times before QA) is future
-work — that is the experiment this system is designed to win.
+after 5 compactions while the causal table stays at 100%). That experiment
+now exists: `causal-memory-locomo compact --compact 5` replays LoCoMo with
+sessions compressed k times, contrasting text-only memory (condition A)
+against text + un-compacted causal edges (condition B).
