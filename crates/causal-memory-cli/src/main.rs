@@ -54,6 +54,22 @@ fn main() -> anyhow::Result<()> {
         return run_link();
     }
 
+    // Subcommand: sleep [--db <PATH>] [--dry-run] — offline consolidation cycle
+    if args.len() >= 2 && args[1] == "sleep" {
+        return run_sleep(&args[2..]);
+    }
+
+    // Subcommand: migrate [--db <PATH>] — explicit schema migration check
+    if args.len() >= 2 && args[1] == "migrate" {
+        return run_migrate(&args[2..]);
+    }
+
+    // Subcommand: embed [--db <PATH>] [--limit N] — backfill edge embeddings
+    if args.len() >= 2 && args[1] == "embed" {
+        let rt = tokio::runtime::Runtime::new()?;
+        return rt.block_on(run_embed(&args[2..]));
+    }
+
     // Default: MCP server mode
     run_mcp_server()
 }
@@ -296,5 +312,210 @@ fn run_link() -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+/// Parse `--db <PATH>` / `--dry-run` style flags for the sleep/migrate subcommands.
+struct DbFlags {
+    db: PathBuf,
+    dry_run: bool,
+}
+
+fn parse_db_flags(args: &[String], usage: &str) -> anyhow::Result<DbFlags> {
+    let mut db: Option<PathBuf> = None;
+    let mut dry_run = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--db" => {
+                i += 1;
+                let Some(path) = args.get(i) else {
+                    anyhow::bail!("--db requires a path\n{usage}");
+                };
+                db = Some(PathBuf::from(path));
+            }
+            "--dry-run" => dry_run = true,
+            other => anyhow::bail!("unknown flag: {other}\n{usage}"),
+        }
+        i += 1;
+    }
+    Ok(DbFlags {
+        db: db.unwrap_or_else(get_db_path),
+        dry_run,
+    })
+}
+
+fn run_sleep(args: &[String]) -> anyhow::Result<()> {
+    use causal_memory::consolidate::{consolidate, ConsolidateConfig};
+
+    let flags = parse_db_flags(args, "Usage: causal-memory sleep [--db <PATH>] [--dry-run]")?;
+    if let Some(parent) = flags.db.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let store = CausalStore::open(&flags.db)?;
+    let now = chrono::Utc::now().timestamp();
+    let report = consolidate(&store, &ConsolidateConfig::default(), flags.dry_run, now)?;
+
+    println!(
+        "=== Sleep Consolidation Report{} ===",
+        if report.dry_run { " (DRY RUN)" } else { "" }
+    );
+    println!("DB: {}\n", flags.db.display());
+
+    println!(
+        "① Reactivation (replay priority, top {}):",
+        report.reactivated.len().min(10)
+    );
+    for (i, entry) in report.reactivated.iter().take(10).enumerate() {
+        let snippet: String = entry.decision_text.chars().take(60).collect();
+        println!(
+            "  {}. [edge {}] score {:.2} — {}",
+            i + 1,
+            entry.edge_id,
+            entry.score,
+            snippet
+        );
+        println!("     ({})", entry.reasons.join(", "));
+    }
+    if report.reactivated.is_empty() {
+        println!("  (no valid edges)");
+    }
+
+    println!("\n② Generalization:");
+    println!("  redundant edges merged: {}", report.merged_edges);
+    println!(
+        "  patterns mined: similar_to={} repeated={} contradicts={} refines={}",
+        report.mine_report.similar_to,
+        report.mine_report.repeated,
+        report.mine_report.contradicts,
+        report.mine_report.refines
+    );
+
+    println!("\n③ Downscaling:");
+    println!("  decayed:        {}", report.decayed);
+    println!("  access-boosted: {}", report.boosted);
+    println!("  GC invalidated: {}", report.gc_invalidated);
+
+    println!("\n④ REM integration:");
+    println!("  cross-domain transfers: {}", report.rem_transfers);
+
+    if report.dry_run {
+        println!("\n(dry run — no changes were written)");
+    }
+    Ok(())
+}
+
+fn run_migrate(args: &[String]) -> anyhow::Result<()> {
+    let flags = parse_db_flags(args, "Usage: causal-memory migrate [--db <PATH>]")?;
+    if let Some(parent) = flags.db.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    // Open a raw connection so we can show user_version before/after the
+    // migration that CausalStore::open would otherwise run silently.
+    let conn = rusqlite::Connection::open(&flags.db)?;
+    let before: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    causal_memory::migrate::migrate(&conn)?;
+    let after: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+
+    println!("=== Schema migration ===");
+    println!("DB: {}", flags.db.display());
+    println!("user_version before: {before}");
+    println!("user_version after:  {after}");
+    if before == after {
+        println!("(already up to date)");
+    }
+    Ok(())
+}
+
+/// Backfill embeddings for valid edges that don't have one yet.
+async fn run_embed(args: &[String]) -> anyhow::Result<()> {
+    use causal_memory::embed::{EmbedConfig, Embedder};
+
+    let mut db: Option<PathBuf> = None;
+    let mut limit: usize = 100;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--db" => {
+                i += 1;
+                let Some(path) = args.get(i) else {
+                    anyhow::bail!("--db requires a path\nUsage: causal-memory embed [--db <PATH>] [--limit N]");
+                };
+                db = Some(PathBuf::from(path));
+            }
+            "--limit" => {
+                i += 1;
+                let Some(n) = args.get(i) else {
+                    anyhow::bail!("--limit requires a number\nUsage: causal-memory embed [--db <PATH>] [--limit N]");
+                };
+                limit = n
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("--limit must be a positive integer, got: {n}"))?;
+            }
+            other => {
+                anyhow::bail!(
+                    "unknown flag: {other}\nUsage: causal-memory embed [--db <PATH>] [--limit N]"
+                )
+            }
+        }
+        i += 1;
+    }
+
+    let config = match EmbedConfig::from_env() {
+        Some(c) => c,
+        None => {
+            eprintln!("Embedding not configured. Set:");
+            eprintln!("  CAUSAL_MEMORY_EMBED_API   (default: CAUSAL_MEMORY_LLM_API)");
+            eprintln!("  CAUSAL_MEMORY_EMBED_KEY   (default: CAUSAL_MEMORY_LLM_KEY)");
+            eprintln!("  CAUSAL_MEMORY_EMBED_MODEL (default: text-embedding-3-small)");
+            std::process::exit(1);
+        }
+    };
+    println!("Embedder: {} @ {}", config.model, config.api_base);
+    let embedder = Embedder::new(config);
+
+    let db_path = db.unwrap_or_else(get_db_path);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let store = CausalStore::open(&db_path)?;
+
+    let pending = store.edges_without_embedding(limit)?;
+    if pending.is_empty() {
+        println!("No valid edges missing embeddings. Nothing to do.");
+        return Ok(());
+    }
+    println!("Embedding {} edge(s)...\n", pending.len());
+
+    let total = pending.len();
+    let mut success = 0usize;
+    let mut failed = 0usize;
+    for (idx, (edge_id, text)) in pending.iter().enumerate() {
+        match embedder.embed(text).await {
+            Ok(vec) => match store.put_embedding(*edge_id, embedder.model(), &vec) {
+                Ok(()) => {
+                    success += 1;
+                    println!("[{}/{}] edge {} ✓", idx + 1, total, edge_id);
+                }
+                Err(e) => {
+                    failed += 1;
+                    println!(
+                        "[{}/{}] edge {} DB write failed: {e}",
+                        idx + 1,
+                        total,
+                        edge_id
+                    );
+                }
+            },
+            Err(e) => {
+                failed += 1;
+                println!("[{}/{}] edge {} embed failed: {e}", idx + 1, total, edge_id);
+            }
+        }
+    }
+
+    println!("\n=== Embed backfill complete ===");
+    println!("  success: {success}");
+    println!("  failed:  {failed}");
     Ok(())
 }

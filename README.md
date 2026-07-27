@@ -5,7 +5,7 @@
 > Memory frameworks today (Mem0, Zep, Letta, OpenViking, MemOS) store *what* happened. `causal-memory` stores *why* — the causal link between a decision and its outcome. This is the slice every other memory layer misses.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Status: v0.2.0](https://img.shields.io/badge/status-v0.2.0--alpha-orange.svg)](#status)
+[![Status: v0.7.0](https://img.shields.io/badge/status-v0.7.0--alpha-orange.svg)](#status)
 
 ## Why
 
@@ -24,14 +24,18 @@ The causal table doesn't decay because it lives outside the agent's context wind
 
 ## What it does
 
-Four MCP tools. Small surface area is the point.
+Eight MCP tools. Small surface area is the point.
 
 | Tool | When to call | What it does |
 |---|---|---|
-| `record_decision` | After completing an action | Logs `decision → outcome` as a causal edge with task tag + confidence |
-| `search_causal` | Before a non-trivial decision | Retrieves past causal episodes by task or text, ordered by confidence |
+| `record_decision` | After completing an action | Logs `decision → outcome` as a causal edge with task tag + confidence; auto-invalidates contradicted older edges for the same decision |
+| `search_causal` | Before a non-trivial decision | Retrieves past causal episodes by task or text; ranks by embedding cosine similarity when configured, keyword LIKE otherwise |
 | `trace_cause` | When something fails (simple) | Single-hop reverse: which decision caused this outcome |
 | `trace_cause_chain` | When something fails (deep) | Multi-hop backward traversal through the causal graph |
+| `invalidate_decision` | When a recorded lesson turns out wrong | Soft-invalidates the edge (`valid_to` set) — hidden from search/trace, kept for audit |
+| `search_patterns` | To recall cross-task lessons | Searches mined meta edges: `similar_to` / `repeated` / `contradicts` / `refines` |
+| `causal_directory` | Pinned in the system prompt | L0 compact pointer list of recent decisions so the agent always knows what experience it holds |
+| `intervention_query` | Before taking an action | Pearl Rung-2: predicts what outcomes similar past actions caused, labeled safe / warning / danger |
 
 **Multi-hop example**: "service crashed" ← "OOM" ← "cache had no TTL" ← "Redis configured without expiry". `trace_cause` finds the first hop. `trace_cause_chain` walks the full chain.
 
@@ -87,25 +91,64 @@ Agent ←(MCP stdio)→ causal-memory → SQLite (causal_edges table)
 
 The `causal_edges` table is never compacted — it's outside the agent's context window. That's the entire point: text compaction cannot destroy what it cannot reach.
 
+## Sleep consolidation
+
+An offline "sleep" cycle (reactivation → generalization → downscaling → REM
+integration) that decays stale confidence, garbage-collects low-value edges,
+merges duplicates, and mines cross-task patterns:
+
+```bash
+causal-memory sleep --dry-run   # preview what would change
+causal-memory sleep             # run it (once per day — NOT idempotent)
+```
+
+## Semantic search
+
+Optional embeddings rank `search_causal` by cosine similarity instead of LIKE
+matching. Any OpenAI-compatible `/v1/embeddings` endpoint works:
+
+```bash
+export CAUSAL_MEMORY_EMBED_API=https://api.openai.com/v1   # default: CAUSAL_MEMORY_LLM_API
+export CAUSAL_MEMORY_EMBED_KEY=sk-...                      # default: CAUSAL_MEMORY_LLM_KEY
+export CAUSAL_MEMORY_EMBED_MODEL=text-embedding-3-small    # optional
+
+causal-memory embed            # backfill embeddings for existing edges
+causal-memory embed --limit 50 # partial backfill
+```
+
+Unconfigured → automatic fallback to keyword search. Zero-invasive by default.
+
+Existing databases are upgraded automatically on open (schema v3); run
+`causal-memory migrate` for an explicit check.
+
 ## Status
 
-**v0.2.0 — alpha.** What works:
+**v0.7.0 — alpha.** What works:
 
-- ✅ Four MCP tools (record / search / single-hop trace / **multi-hop chain trace**)
-- ✅ SQLite persistence with CHECK constraints
+- ✅ Eight MCP tools (record / search / trace / chain-trace / invalidate / patterns / L0 directory / intervention)
+- ✅ SQLite persistence with CHECK constraints + idempotent schema migrations (v3)
 - ✅ **Parameterized queries** (no SQL injection risk)
 - ✅ Confidence levels (temporal / rule / llm_inferred / user_feedback)
-- ✅ Task-aware retrieval
+- ✅ Task-aware retrieval + optional **semantic (embedding) retrieval** with keyword fallback
 - ✅ **Multi-hop backward traversal** via recursive CTE
 - ✅ Rule-based **decision auto-extractor** for grok-build session logs
+- ✅ **Invalidation**: manual (`invalidate_decision`) + automatic contradiction short-circuit
+- ✅ **Dual-system memory**: offline pattern miner distils meta edges (`similar_to` / `repeated` / `contradicts` / `refines`)
+- ✅ **Offline consolidation ("sleep") cycle** with four phases
+- ✅ **L0 causal directory** + **Rung-2 intervention queries**
+- ✅ 63 tests (60 unit + 3 e2e suites: migration / pipeline / MCP stdio)
 
 What's not done yet (honest):
 
-- ❌ Semantic / vector search (LIKE only for now)
 - ❌ Python/TS bindings (Rust binary only)
+- ❌ HTTP transport (MCP stdio only)
 - ❌ LongMemEval benchmark integration
 - ❌ Cross-agent sharing protocol
-- ❌ Offline consolidation ("sleep") cycle
+- ❌ Reconstructive retrieval (causal subgraph → LLM narrative)
+- ❌ Rung 3 counterfactuals — **explicitly out of scope by design**: per
+  [insights/11](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md),
+  counterfactual reasoning is practically impossible for agents; we only
+  prepare the data structures (temporal validity windows), we do not build it
 - ❌ Not yet wired into a production agent end-to-end
 
 Roadmap: see [docs/roadmap.md](docs/roadmap.md).

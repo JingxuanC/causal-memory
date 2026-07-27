@@ -1,0 +1,6 @@
+{"type":"session_start","ts":"2026-07-20T10:00:00Z"}
+{"type":"tool_completed","tool_name":"run_terminal_command","outcome":"error","ts":"2026-07-20T10:00:00Z"}
+{"type":"tool_completed","tool_name":"write","outcome":"success","ts":"2026-07-20T10:01:40Z"}
+{"type":"tool_completed","tool_name":"run_terminal_command","outcome":"error","ts":"2026-07-20T10:03:20Z"}
+{"type":"tool_completed","tool_name":"search_replace","outcome":"success","ts":"2026-07-20T10:05:00Z"}
+{"type":"tool_completed","tool_name":"run_terminal_command","outcome":"success","ts":"2026-07-20T10:06:40Z"}

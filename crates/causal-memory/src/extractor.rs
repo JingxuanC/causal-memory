@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn test_infer_causal_confidence_failure() {
         // Failure + content relation → high confidence rule
-        let (r, c, s) = DecisionExtractor::infer_causal_confidence(
+        let (_, c, s) = DecisionExtractor::infer_causal_confidence(
             "run_terminal_command(cargo build)",
             "error: cargo build failed",
             Some("error"),
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_infer_causal_confidence_success_related() {
-        let (r, c, s) = DecisionExtractor::infer_causal_confidence(
+        let (_, c, _) = DecisionExtractor::infer_causal_confidence(
             "write(src/main.rs)",
             "The file src/main.rs has been written",
             Some("success"),
@@ -567,7 +567,7 @@ mod tests {
     #[test]
     fn test_infer_causal_confidence_generic_success() {
         // "ok" doesn't relate to search_replace specifically → temporal
-        let (r, c, s) = DecisionExtractor::infer_causal_confidence(
+        let (_, c, s) = DecisionExtractor::infer_causal_confidence(
             "search_replace(README.md)",
             "ok",
             Some("success"),

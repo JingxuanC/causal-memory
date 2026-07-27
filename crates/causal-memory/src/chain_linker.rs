@@ -23,9 +23,6 @@
 //! This is the missing piece that makes trace_cause_chain actually find
 //! multi-hop chains instead of stopping at 1 hop.
 
-use std::collections::HashMap;
-use std::path::Path;
-
 use anyhow::Result;
 use serde::Deserialize;
 
@@ -43,6 +40,7 @@ pub struct LinkStats {
 
 /// One flat edge loaded from the store, enriched with text for matching.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // edge_id/task_tag/confidence loaded for future strategies
 struct FlatEdge {
     edge_id: i64,
     from_id: String,
@@ -55,6 +53,7 @@ struct FlatEdge {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // reserved for chat-log import (later phase)
 struct ChatEntry {
     #[serde(rename = "type")]
     entry_type: String,
@@ -65,6 +64,7 @@ struct ChatEntry {
 }
 
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // reserved for chat-log import (later phase)
 struct ToolCallEntry {
     id: String,
     name: String,

@@ -1,5 +1,9 @@
 pub mod chain_linker;
+pub mod consolidate;
+pub mod embed;
 pub mod extractor;
 pub mod llm;
+pub mod migrate;
+pub mod patterns;
 pub mod reasoning_extractor;
 pub mod store;

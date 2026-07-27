@@ -5,6 +5,79 @@ All notable changes to causal-memory are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-27
+
+### Added
+- Schema migration mechanism (`src/migrate.rs`): `PRAGMA user_version`-driven,
+  idempotent, transactional migrations with a `table_info` fallback probe for
+  pre-marker v0.6 DBs; `causal-memory migrate` subcommand
+- Schema v3: `access_count` / `last_accessed_at` access tracking on
+  `causal_edges`, `edge_embeddings` table, meta-edge indexes
+- `invalidate_decision` MCP tool + automatic contradiction short-circuit:
+  recording a new outcome that contradicts an existing edge for the same
+  decision soft-invalidates the old edge (`valid_to` set, kept for audit)
+- Dual-system memory (`src/patterns.rs`): offline pattern miner distils
+  `similar_to` / `repeated` / `contradicts` / `refines` meta edges into
+  `meta_causal_edges` (Jaccard over tokenized decision text + outcome
+  polarity); `search_patterns` MCP tool
+- Sleep consolidation (`src/consolidate.rs`), a four-phase offline cycle —
+  reactivation scoring, generalization (dedup + pattern mining), synaptic
+  downscaling (age decay, access boost, GC; `user_feedback` edges immune),
+  REM cross-domain integration; `causal-memory sleep [--dry-run]` subcommand
+- `causal_directory` MCP tool — L0 compact pointer list of recent decisions,
+  meant to be pinned in the agent's system prompt
+- `intervention_query` MCP tool — Pearl Rung-2: query what outcomes similar
+  past actions caused before acting; returns predicted effects with causal
+  paths labeled safe / warning / danger
+- Semantic retrieval (`src/embed.rs`): optional OpenAI-compatible embeddings
+  (`CAUSAL_MEMORY_EMBED_*`, falls back to `CAUSAL_MEMORY_LLM_*`) rank
+  `search_causal` by cosine similarity, with automatic keyword fallback when
+  unconfigured; `causal-memory embed` backfill subcommand
+- MCP tool surface grows 4 → 8: `record_decision`, `search_causal`,
+  `trace_cause`, `trace_cause_chain`, `invalidate_decision`,
+  `search_patterns`, `causal_directory`, `intervention_query`
+- 3 e2e test suites: migration (`migration_e2e.rs`), extraction→link→trace→
+  sleep→mine→invalidate pipeline (`pipeline_e2e.rs`), MCP stdio round-trip
+  (`mcp_e2e.rs`); 63 tests total (60 unit + 3 e2e)
+
+### Fixed
+- `migrate`: v0/v1 DBs carrying a legacy `created_at` column now backfill
+  `event_time` / `discovered_at` from it and drop the column cleanly
+- `migrate`: pre-v0.6 DBs with a bare `meta_causal_edges` table (no
+  `discovered_at` / `valid_from` / `valid_to`) are now patched
+  column-by-column — previously the v3 meta indexes failed to build on them
+- Outcome polarity word boundaries: English success signals are matched on
+  word boundaries (patterns.rs tokenize style), so "unresolved" no longer
+  hits "resolved"; when failure and success signals co-occur, success wins
+  ("deadlock resolved" is a success — the failure word names the fixed
+  problem)
+
+## [0.6.0] - 2026-07-27
+
+### Added
+- Proper temporal schema (commit `0e3ad67`): `causal_edges` gains
+  `event_time` (when the decision/outcome happened), `discovered_at` (when
+  the edge was written), and `valid_to` (NULL = still valid);
+  `meta_causal_edges` gains `discovered_at` / `valid_from` / `valid_to`
+- All search/trace queries filter `valid_to IS NULL`; `trace_cause_chain`
+  CTE walks only currently-valid edges
+- `record_decision_at` accepts an explicit `event_time`; chain linker orders
+  by `event_time`
+
+## [0.5.0] - 2026-07-27
+
+### Added
+- Chain linker (`src/chain_linker.rs`, commit `e396e19`): post-processing
+  pass that bridges flat edges into multi-hop chains (temporal+failure,
+  text-overlap, temporal-adjacent strategies); `causal-memory link`
+  subcommand
+
+### Fixed
+- Extractor now reads real timestamps from `events.jsonl` (was: `now()` for
+  every edge, which made the chain linker's temporal ordering never match)
+- `trace_cause_chain` CTE ordering: `WHERE depth >= 2 ORDER BY depth DESC`
+  so deepest multi-hop chains surface first (was: 1-hop chains dominated)
+
 ## [0.4.1] - 2026-07-26
 
 ### Added

@@ -1,51 +1,54 @@
 # Roadmap
 
-## v0.1.0 — alpha (current)
+## v0.7.0 — alpha (current)
 
-- ✅ Three MCP tools (record_decision / search_causal / trace_cause)
-- ✅ SQLite persistence with CHECK constraints
-- ✅ Confidence levels (temporal / rule / llm_inferred / user_feedback)
-- ✅ Task-aware retrieval
-- ✅ CLAUDE.md integration template
+- ✅ Eight MCP tools: `record_decision` / `search_causal` / `trace_cause` /
+  `trace_cause_chain` / `invalidate_decision` / `search_patterns` /
+  `causal_directory` / `intervention_query`
+- ✅ SQLite persistence with CHECK constraints + idempotent schema migrations (v3)
+- ✅ Temporal schema: `event_time` / `discovered_at` / `valid_to` on all edges
+- ✅ Invalidation: manual tool + automatic contradiction short-circuit on `record_decision`
+- ✅ Dual-system memory: offline pattern miner distils meta edges
+  (`similar_to` / `repeated` / `contradicts` / `refines`)
+- ✅ Sleep consolidation: four-phase offline cycle (reactivation →
+  generalization → downscaling → REM integration), `causal-memory sleep`
+- ✅ L0 causal directory for system-prompt pinning
+- ✅ Pearl Rung-2 intervention queries (predict outcomes of similar past actions)
+- ✅ Semantic retrieval: OpenAI-compatible embeddings + cosine ranking,
+  keyword LIKE fallback; `causal-memory embed` backfill
+- ✅ Multi-hop chain linker + recursive-CTE trace
+- ✅ Rule-based decision auto-extractor + LLM judge / reasoning extractor
+- ✅ 63 tests (60 unit + 3 e2e suites)
 
-## v0.2.0 — decision auto-extractor
+## v0.8 — candidates
 
-**Goal**: agent no longer needs to manually call `record_decision`. Background process extracts decisions from wire logs / event streams / chat history.
+- [ ] Semantic retrieval upgrades: vector index (brute-force cosine does not
+  scale), hybrid ranking (keyword + vector + confidence)
+- [ ] Meta-edge invalidation tool (meta edges are currently mined but cannot
+  be revoked individually)
+- [ ] Conflict detection via LLM judge: replace the signal-word polarity
+  heuristic in contradiction detection with the existing LLM-judge path
 
-- [ ] Rule-based decision extractor (wire log Op types → decision events)
-- [ ] Confidence booster (background job: temporal → rule / llm_inferred)
-- [ ] End-to-end test with a real agent session
-
-## v0.3.0 — Python bindings + broader reach
-
-- [ ] PyO3 bindings (`pip install causal-memory`)
-- [ ] TypeScript/Node bindings (for Cursor / Claude Code ecosystem)
-- [ ] MCP HTTP transport (beyond stdio, for remote agents)
-
-## v0.4.0 — benchmark & validation
-
-- [ ] LongMemEval integration (compare with Mem0 / Zep / Letta head-to-head)
-- [ ] Multi-session causal retention study (does causal table still hold at k=200?)
-- [ ] Public benchmark report
-
-## v0.5.0 — cross-agent sharing
-
-- [ ] Causal graph export/import format (JSON)
-- [ ] Translation layer for cross-task causal abstraction (insights/11 §8.5)
-- [ ] Selective sharing (private vs shareable causal edges)
-
-## v1.0.0 — production ready
+## v1.0 — engineering hardening
 
 - [ ] Multi-tenant support
-- [ ] Backup / restore / migration tools
+- [ ] Backup / restore tooling
 - [ ] Observability (Prometheus metrics, OpenTelemetry traces)
-- [ ] Hardened security review
 - [ ] Stable API guarantee
+- [ ] Python/TS bindings + MCP HTTP transport
+- [ ] LongMemEval benchmark integration + public report
 
-## Beyond v1 — research directions
+## v1.1 — research directions
 
 These are open questions, not commitments:
 
-- **Reconstructive retrieval** ([insights/13](https://github.com/JingxuanC/agent-teardown/blob/main/insights/13-reconstructive-memory.md)): instead of returning stored text, return fragments and let the agent's LLM reconstruct — natural task-awareness, lower token cost
+- **Reconstructive retrieval** ([insights/13](https://github.com/JingxuanC/agent-teardown/blob/main/insights/13-reconstructive-memory.md)): return a causal subgraph and let the agent's LLM reconstruct a narrative — natural task-awareness, lower token cost
 - **Multi-agent calibration** ([insights/13 §2.5](https://github.com/JingxuanC/agent-teardown/blob/main/insights/13-reconstructive-memory.md)): multiple agents independently reconstruct, discrepancies flag unreliable memories
-- **Causal inference beyond Pearl rung 1** ([insights/11 §4](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md)): intervention and counterfactual queries
+- **Cross-agent causal sharing**: export/import format, selective sharing, cross-task abstraction translation (insights/11 §8.5)
+
+## Explicitly out of scope
+
+- **Rung 3 counterfactuals** ("what would have happened if…"): per
+  [insights/11](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md),
+  counterfactual reasoning is practically impossible for agents. We only
+  prepare the data structures (temporal validity windows) — we do not build it.

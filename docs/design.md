@@ -70,15 +70,25 @@ Not all causal links are equally certain. Per [insights/11 §3 step three](https
 
 Search returns results ordered by confidence — high-confidence lessons surface first.
 
-### Why 3 tools (not more)
+### Why 8 tools (and no more)
 
-The MCP surface is intentionally minimal:
+The MCP surface is intentionally minimal — every tool must earn its place by
+covering a distinct moment in the agent's decision loop:
 
-- `record_decision` — write path (after action)
+- `record_decision` — write path (after action); also runs the contradiction
+  short-circuit that auto-invalidates falsified older edges
 - `search_causal` — read path (before action)
-- `trace_cause` — diagnostic path (after failure)
+- `trace_cause` — diagnostic path, single hop (after failure)
+- `trace_cause_chain` — diagnostic path, multi-hop root cause
+- `invalidate_decision` — correction path (a recorded lesson turns out wrong)
+- `search_patterns` — meta path: cross-task lessons distilled by the offline
+  miner, not raw episodes
+- `causal_directory` — L0 path: a compact pointer list pinned in the system
+  prompt so the agent knows what experience it holds without searching
+- `intervention_query` — Pearl Rung-2 path: predict the likely outcome of an
+  action *before* taking it, from similar past actions
 
-More tools would mean more decisions for the agent: "which tool do I call?" That cognitive overhead reduces usage. Per [insights/14 §2.2](https://github.com/JingxuanC/agent-teardown/blob/main/insights/14-on-deep-digging.md): "complete-looking is the enemy of depth" — and in tool design, "feature-rich is the enemy of used."
+More tools would mean more decisions for the agent: "which tool do I call?" That cognitive overhead reduces usage. Per [insights/14 §2.2](https://github.com/JingxuanC/agent-teardown/blob/main/insights/14-on-deep-digging.md): "complete-looking is the enemy of depth" — and in tool design, "feature-rich is the enemy of used." Each of the eight maps to one unambiguous call moment; anything further would overlap.
 
 ### Why MCP
 
@@ -93,9 +103,73 @@ This is the same pattern Mem0's OpenMemory uses — memory-as-MCP-tool. We diffe
 | Don't | Why |
 |---|---|
 | Replace Mem0/Zep/Letta | Causal memory is **complementary** to flat/temporal/self-managed memory |
-| Vector embedding search | Vector search is for semantic similarity; causal retrieval uses task + confidence, not cosine |
-| Auto-extract decisions (v0.1) | Manual `record_decision` is more reliable; auto-extraction is v0.2 |
 | Modify agent's context | We're a side table, not a context replacement |
+| Rung-3 counterfactuals | Practically impossible for agents ([insights/11](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md)); we only prepare the data structures |
+
+## Mechanisms added since v0.4
+
+### Schema migrations
+
+The store version-marks the DB with `PRAGMA user_version` and migrates
+idempotently in a single transaction (`src/migrate.rs`, current: v3). A
+`table_info` probe handles pre-marker v0.6 DBs; legacy columns (e.g.
+`created_at`) are backfilled into the temporal columns and dropped. Opening
+any older DB upgrades it automatically; `causal-memory migrate` runs an
+explicit check.
+
+### Temporal validity & invalidation
+
+Every edge carries `event_time` (when it happened), `discovered_at` (when we
+learned it), and `valid_to` (NULL = still valid). Invalidation is always
+soft: the edge disappears from search/trace but stays in the DB for audit.
+Two paths set it: the `invalidate_decision` tool (manual correction), and the
+contradiction short-circuit inside `record_decision` — when a new outcome for
+the same decision falsifies an existing edge (rule-based polarity check), the
+old edge is invalidated automatically.
+
+### Dual-system memory (meta layer activated)
+
+`meta_causal_edges` existed since v0.1 but was empty until the offline
+pattern miner (`src/patterns.rs`) activated it: similar decisions across
+tasks are distilled into `similar_to` / `repeated` / `contradicts` /
+`refines` meta edges (Jaccard similarity over tokenized decision text +
+outcome polarity). Raw `causal_edges` are the fast episodic system; meta
+edges are the slow semantic system — the agent's "abstracted lessons",
+queryable via `search_patterns`.
+
+### Sleep consolidation
+
+An offline cycle (`src/consolidate.rs`, `causal-memory sleep`) modeled on the
+memory-consolidation literature, in four phases: **reactivation** (score
+edges for replay priority — failures and user feedback first),
+**generalization** (merge duplicates, run the pattern miner), **downscaling**
+(exponential confidence decay by age, access-based boost, garbage collection
+of sub-threshold edges; `user_feedback` edges are never GC'd), and **REM
+integration** (link similar patterns across disjoint task tags). Designed to
+run once per day; not idempotent by design.
+
+### L0 causal directory
+
+`causal_directory` returns a compact one-line-pointer list of recent
+decisions, meant to be pinned in the agent's system prompt. It answers "what
+experience do I hold?" at zero search cost; the pointer texts feed
+`trace_cause` / `search_causal` / `intervention_query` for full details.
+
+### Rung-2 intervention queries
+
+`intervention_query` is Pearl Rung 2 ("doing", not "seeing"): before taking
+an action, it looks up outcomes of similar past actions and returns predicted
+effects with causal paths and confidence, labeled safe / warning / danger.
+Rung 3 (counterfactuals) stays out of scope — see the table above.
+
+### Semantic retrieval with keyword fallback
+
+Causal retrieval is still task + confidence first. But when an
+OpenAI-compatible embedding endpoint is configured (`CAUSAL_MEMORY_EMBED_*`,
+falling back to `CAUSAL_MEMORY_LLM_*`), edges get vector embeddings and
+`search_causal` ranks by cosine similarity (`src/embed.rs`). Unconfigured →
+silent fallback to keyword LIKE. This mirrors the LLM-judge contract:
+zero-invasive default, capability upgrade when configured.
 
 ## Theoretical foundation
 

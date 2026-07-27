@@ -15,11 +15,13 @@ sessions.
 library selection, deployment strategy):
 
 1. Call `search_causal` with the relevant `task_tag` to check past lessons
-2. If past experience is relevant, incorporate it into your approach
+2. For risky or irreversible actions, also call `intervention_query` to see
+   what outcomes similar past actions caused (safe / warning / danger)
+3. If past experience is relevant, incorporate it into your approach
 
 ### After acting on a decision and observing the result:
 
-3. Call `record_decision` with:
+4. Call `record_decision` with:
    - `decision`: what you decided
    - `outcome`: what actually happened
    - `relation`: caused / enabled / prevented / no_effect
@@ -28,7 +30,13 @@ library selection, deployment strategy):
 
 ### When something fails unexpectedly:
 
-4. Call `trace_cause` with a description of what went wrong
+5. Call `trace_cause` with a description of what went wrong; use
+   `trace_cause_chain` when the root cause is more than one hop away
+
+### When a recorded lesson turns out to be wrong:
+
+6. Call `invalidate_decision` so the falsified edge stops surfacing in
+   future searches (it stays in the DB for audit)
 
 **Do NOT ask the user before searching or recording — do it proactively.**
 **Especially record surprising outcomes — those are the most valuable lessons.**

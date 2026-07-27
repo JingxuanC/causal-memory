@@ -21,3 +21,6 @@ reqwest.workspace = true
 [lib]
 name = "causal_memory"
 path = "src/lib.rs"
+
+[dev-dependencies]
+tempfile = "3"

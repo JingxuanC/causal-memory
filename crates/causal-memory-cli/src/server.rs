@@ -1,4 +1,4 @@
-//! MCP server handler — exposes 4 tools for causal memory.
+//! MCP server handler — exposes 8 tools for causal memory.
 //!
 //! Tools:
 //! - record_decision: agent calls after completing an action, to log
@@ -9,13 +9,23 @@
 //!   decision could have caused it (single-hop reverse lookup).
 //! - trace_cause_chain: agent calls for deep failure analysis, to follow
 //!   multi-hop causal chains backward through the decision graph.
+//! - invalidate_decision: agent/user calls to soft-invalidate a wrong lesson
+//!   (sets valid_to; the edge stays in the DB for audit).
+//! - search_patterns: agent calls to query mined cross-task patterns
+//!   (meta-causal edges: similar_to / repeated / contradicts / refines).
+//! - causal_directory: L0 compact directory of recent decisions, intended
+//!   to be pinned in the agent system prompt (insights/13 §1.2).
+//! - intervention_query: Pearl Rung-2 intervention — agent calls BEFORE
+//!   acting, to predict what similar past actions caused (forward multi-hop).
 
 use rmcp::{
     handler::server::wrapper::Parameters, schemars, tool, tool_handler, tool_router, ServerHandler,
 };
+use rusqlite::OptionalExtension;
 use serde::Deserialize;
 
-use causal_memory::store::CausalStore;
+use causal_memory::embed::{EmbedConfig, Embedder};
+use causal_memory::store::{outcome_polarity, CausalStore};
 
 pub struct CausalMemoryServer {
     store: CausalStore,
@@ -24,6 +34,19 @@ pub struct CausalMemoryServer {
 impl CausalMemoryServer {
     pub fn new(store: CausalStore) -> Self {
         Self { store }
+    }
+}
+
+/// Run an async embed call from a sync tool handler.
+/// The MCP server runs inside a multi-thread tokio runtime (see main.rs), so
+/// bridge with block_in_place; fall back to a throwaway runtime when no
+/// runtime context exists (defensive — not expected in production).
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
+        Err(_) => tokio::runtime::Runtime::new()
+            .expect("failed to create tokio runtime")
+            .block_on(fut),
     }
 }
 
@@ -87,6 +110,49 @@ pub struct TraceCauseChainParams {
     pub limit: Option<usize>,
 }
 
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct InvalidateDecisionParams {
+    /// The edge_id of the causal edge to invalidate
+    #[schemars(description = "ID of the causal edge to invalidate")]
+    pub edge_id: i64,
+    /// Why this lesson is wrong (echoed back for confirmation; not persisted)
+    #[schemars(description = "Reason for invalidation (optional, for confirmation only)")]
+    pub reason: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct SearchPatternsParams {
+    /// Text to match against pattern summaries or the decisions at either end
+    #[schemars(description = "Text to match against patterns or endpoint decisions")]
+    pub query: Option<String>,
+    /// Only patterns where at least one endpoint decision belongs to this task
+    #[schemars(description = "Task category filter (matches either endpoint)")]
+    pub task_tag: Option<String>,
+    /// Max number of results (default 10)
+    #[schemars(description = "Maximum results to return (default 10)")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct CausalDirectoryParams {
+    /// Max directory entries (default 20)
+    #[schemars(description = "Maximum directory entries to return (default 20)")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct InterventionQueryParams {
+    /// The action you are about to take
+    #[schemars(description = "Description of the action you are about to take")]
+    pub action: String,
+    /// Maximum chain depth (default 3)
+    #[schemars(description = "Maximum hops to trace forward (default 3)")]
+    pub max_depth: Option<usize>,
+    /// Max predicted-effect chains to return (default 5)
+    #[schemars(description = "Maximum predicted-effect chains to return (default 5)")]
+    pub limit: Option<usize>,
+}
+
 // ─── Tool implementations ─────────────────────────────────────────────────
 
 #[tool_router]
@@ -115,15 +181,41 @@ impl CausalMemoryServer {
             confidence,
             source,
         ) {
-            Ok(id) => format!(
-                "✅ Recorded: [{}] \"{}\" →({})→ \"{}\" (confidence: {:.2}, id: {})",
-                params.task_tag,
-                &params.decision[..params.decision.len().min(60)],
-                params.relation,
-                &params.outcome[..params.outcome.len().min(60)],
-                confidence,
-                id
-            ),
+            Ok(id) => {
+                // Phase 6: opportunistically embed the new edge so semantic
+                // search finds it. Silent on any failure — embedding must never
+                // block recording; the `causal-memory embed` CLI backfills
+                // anything missed.
+                if let Some(embedder) = EmbedConfig::from_env().map(Embedder::new) {
+                    let text = format!("{} {}", params.decision, params.outcome);
+                    if let Ok(vec) = block_on(embedder.embed(&text)) {
+                        // record_decision returns the decision chunk id; resolve
+                        // the edge id (chunk ids are unique per record).
+                        let edge_id = self.store.with_conn(|conn| {
+                            Ok(conn
+                                .query_row(
+                                    "SELECT id FROM causal_edges WHERE from_id = ?1
+                                     ORDER BY id DESC LIMIT 1",
+                                    rusqlite::params![&id],
+                                    |r| r.get::<_, i64>(0),
+                                )
+                                .optional()?)
+                        });
+                        if let Ok(Some(eid)) = edge_id {
+                            let _ = self.store.put_embedding(eid, embedder.model(), &vec);
+                        }
+                    }
+                }
+                format!(
+                    "✅ Recorded: [{}] \"{}\" →({})→ \"{}\" (confidence: {:.2}, id: {})",
+                    params.task_tag,
+                    &params.decision[..params.decision.len().min(60)],
+                    params.relation,
+                    &params.outcome[..params.outcome.len().min(60)],
+                    confidence,
+                    id
+                )
+            }
             Err(e) => format!("❌ Failed to record: {e}"),
         }
     }
@@ -134,7 +226,45 @@ impl CausalMemoryServer {
     )]
     fn search_causal(&self, Parameters(params): Parameters<SearchCausalParams>) -> String {
         let limit = params.limit.unwrap_or(5);
+        // Semantic retrieval is meaningless for tag-only browsing (no query text).
+        let query = params.query.as_deref().filter(|q| !q.trim().is_empty());
 
+        // Semantic path: embed the query and cosine-rank edge embeddings.
+        // Requires a configured embedding endpoint; any failure falls back to
+        // the keyword path below (identical to the pre-Phase-6 behavior).
+        if let Some(query) = query {
+            if let Some(embedder) = EmbedConfig::from_env().map(Embedder::new) {
+                let semantic = block_on(embedder.embed(query)).ok().and_then(|vec| {
+                    self.store
+                        .search_causal_semantic(&vec, params.task_tag.as_deref(), limit)
+                        .ok()
+                });
+                if let Some(results) = semantic {
+                    if results.is_empty() {
+                        return "[semantic] 📭 No past causal episodes found matching your query."
+                            .to_string();
+                    }
+                    let mut out =
+                        format!("[semantic] Found {} past episode(s):\n\n", results.len());
+                    for (i, (entry, sim)) in results.iter().enumerate() {
+                        out.push_str(&format!(
+                            "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   similarity: {:.0}%, confidence: {:.0}%\n\n",
+                            i + 1,
+                            entry.task_tag.as_deref().unwrap_or("untagged"),
+                            entry.decision_text,
+                            entry.relation,
+                            entry.outcome_text,
+                            sim * 100.0,
+                            entry.confidence * 100.0,
+                        ));
+                    }
+                    return out;
+                }
+                // embed or semantic search failed — fall through to keyword.
+            }
+        }
+
+        // Keyword (LIKE) path — original behavior.
         let results = match self
             .store
             .search_causal(params.task_tag.as_deref(), params.query.as_deref())
@@ -144,12 +274,12 @@ impl CausalMemoryServer {
         };
 
         if results.is_empty() {
-            return "📭 No past causal episodes found matching your query.".to_string();
+            return "[keyword] 📭 No past causal episodes found matching your query.".to_string();
         }
 
         let count = results.len().min(limit);
         let mut out = format!(
-            "Found {} past episode(s) (showing {}):\n\n",
+            "[keyword] Found {} past episode(s) (showing {}):\n\n",
             results.len(),
             count
         );
@@ -249,8 +379,175 @@ impl CausalMemoryServer {
         out
     }
 
+    #[tool(
+        name = "invalidate_decision",
+        description = "Mark a past causal lesson as wrong (soft-invalidate). The edge is hidden from all future search/trace results but kept in the database for audit. Use when you or the user discover that a recorded decision→outcome link was incorrect."
+    )]
+    fn invalidate_decision(
+        &self,
+        Parameters(params): Parameters<InvalidateDecisionParams>,
+    ) -> String {
+        let edge = match self.store.get_edge(params.edge_id) {
+            Ok(Some(e)) => e,
+            Ok(None) => return format!("❌ Edge #{} not found.", params.edge_id),
+            Err(e) => return format!("❌ Lookup failed: {e}"),
+        };
+
+        if edge.valid_to.is_some() {
+            return format!(
+                "❌ Edge #{} was already invalidated: \"{}\" →({})→ \"{}\"",
+                params.edge_id, edge.decision_text, edge.relation, edge.outcome_text,
+            );
+        }
+
+        match self.store.invalidate_edge(params.edge_id) {
+            Ok(true) => {
+                let reason = params
+                    .reason
+                    .as_deref()
+                    .map(|r| format!(" (reason: {r})"))
+                    .unwrap_or_default();
+                format!(
+                    "✅ Invalidated edge #{}: \"{}\" →({})→ \"{}\"{reason}. It will no longer appear in search/trace results, but is kept for audit.",
+                    params.edge_id, edge.decision_text, edge.relation, edge.outcome_text,
+                )
+            }
+            Ok(false) => format!("❌ Edge #{} could not be invalidated.", params.edge_id),
+            Err(e) => format!("❌ Invalidate failed: {e}"),
+        }
+    }
+
+    #[tool(
+        name = "search_patterns",
+        description = "Search mined cross-task patterns (meta-causal edges): decisions that are similar_to each other, repeated across tasks, contradicts each other, or refines an earlier failed attempt. Use this to recall abstracted lessons that span multiple task domains."
+    )]
+    fn search_patterns(&self, Parameters(params): Parameters<SearchPatternsParams>) -> String {
+        let limit = params.limit.unwrap_or(10);
+
+        let results = match self.store.search_patterns(
+            params.query.as_deref(),
+            params.task_tag.as_deref(),
+            limit,
+        ) {
+            Ok(r) => r,
+            Err(e) => return format!("❌ Pattern search failed: {e}"),
+        };
+
+        if results.is_empty() {
+            return "📭 No cross-task patterns found matching your query.".to_string();
+        }
+
+        let mut out = format!("Found {} cross-task pattern(s):\n\n", results.len());
+        for (i, edge) in results.iter().enumerate() {
+            let label = match edge.relation.as_str() {
+                "similar_to" => "🔗 similar_to",
+                "repeated" => "🔁 repeated",
+                "contradicts" => "⚡ contradicts",
+                "refines" => "🔧 refines",
+                other => other,
+            };
+            let pattern = edge.pattern.as_deref().unwrap_or("");
+            out.push_str(&format!(
+                "{}. \"{}\" --[{label}]--> \"{}\"\n   {pattern}\n   confidence: {:.0}%\n\n",
+                i + 1,
+                edge.from_text,
+                edge.to_text,
+                edge.confidence * 100.0,
+            ));
+        }
+        out
+    }
+
+    #[tool(
+        name = "causal_directory",
+        description = "L0 directory of your recent decisions and their outcomes — a compact pointer list meant to be pinned in the agent's system prompt so it always knows what past experience it holds. Entries are one-line pointers; use trace_cause / search_causal / intervention_query with the decision texts for full details."
+    )]
+    fn causal_directory(&self, Parameters(params): Parameters<CausalDirectoryParams>) -> String {
+        let limit = params.limit.unwrap_or(20);
+        let body = self.recent_decisions_directory(limit);
+        if body.is_empty() {
+            return "📭 No decisions recorded yet — the causal memory directory is empty."
+                .to_string();
+        }
+        format!(
+            "{body}\nUse trace_cause/search_causal/intervention_query with these decision texts for details.\n"
+        )
+    }
+
+    #[tool(
+        name = "intervention_query",
+        description = "Pearl Rung-2 intervention: BEFORE taking an action, query what outcomes similar past actions caused. Returns predicted effects with causal paths and confidence, labeled safe/warning/danger."
+    )]
+    fn intervention_query(
+        &self,
+        Parameters(params): Parameters<InterventionQueryParams>,
+    ) -> String {
+        let max_depth = params.max_depth.unwrap_or(3);
+        let limit = params.limit.unwrap_or(5);
+        // Internal pruning floor: lower than trace_cause_chain's 0.5 default
+        // because forward chains multiply confidence per hop and would prune
+        // away realistic 2-3 hop predictions at 0.5.
+        let min_confidence = 0.3;
+
+        let chains = match self
+            .store
+            .trace_effect_chain(&params.action, max_depth, min_confidence)
+        {
+            Ok(c) => c,
+            Err(e) => return format!("❌ Intervention query failed: {e}"),
+        };
+
+        if chains.is_empty() {
+            return format!(
+                "📭 No precedent found for \"{}\" — absence of evidence is not evidence of safety. Proceed with caution, and record the outcome afterward with record_decision.",
+                params.action
+            );
+        }
+
+        let show = chains.len().min(limit);
+        let mut out = format!(
+            "Predicted effect(s) of \"{}\" — {} chain(s) (showing {}, max_depth={}):\n\n",
+            params.action,
+            chains.len(),
+            show,
+            max_depth
+        );
+
+        for (i, chain) in chains.iter().take(limit).enumerate() {
+            let terminal = chain.last();
+            let has_prevented = chain.iter().any(|h| h.relation == "prevented");
+            let label = match terminal.map(|h| outcome_polarity(&h.outcome_text)) {
+                // A failure that a `prevented` edge along the path blocked
+                // before: downgrade DANGER → UNKNOWN.
+                Some(Some(false)) if has_prevented => {
+                    "ℹ️ UNKNOWN (failure outcome, but a prevented edge on this path blocked it before)"
+                }
+                Some(Some(false)) => "⚠️ DANGER",
+                Some(Some(true)) => "✅ SAFE",
+                _ => "ℹ️ UNKNOWN",
+            };
+            out.push_str(&format!(
+                "Chain {} {} (chain confidence: {:.0}%):\n",
+                i + 1,
+                label,
+                terminal.map(|h| h.chain_confidence * 100.0).unwrap_or(0.0)
+            ));
+            for hop in chain {
+                out.push_str(&format!(
+                    "  hop {}: \"{}\"\n         →({})→ \"{}\"\n         edge confidence: {:.0}%\n",
+                    hop.hop,
+                    hop.decision_text,
+                    hop.relation,
+                    hop.outcome_text,
+                    hop.confidence * 100.0,
+                ));
+            }
+            out.push('\n');
+        }
+        out
+    }
+
     /// Get recent decisions for system prompt (L0 directory, per insights/13 §1.2).
-    #[allow(dead_code)]
     pub fn recent_decisions_directory(&self, limit: usize) -> String {
         match self.store.recent_decisions(limit) {
             Ok(entries) if entries.is_empty() => String::new(),
