@@ -565,7 +565,77 @@ impl CausalStore {
         Ok(entries)
     }
 
-    /// Write/overwrite the embedding of an edge (edge_id FK → causal_edges).
+    /// BM25 keyword retrieval over valid edges (`valid_to IS NULL`).
+    ///
+    /// Each edge's document is `decision_text + " " + outcome_text`, tokenized
+    /// with `patterns::tokenize` (English words minus stop words, Chinese
+    /// bigrams). With `task_tag` set, the candidate set is filtered FIRST and
+    /// the index is built only over that task's edges, so IDF statistics are
+    /// computed within the task domain rather than diluted across all tasks.
+    /// Returns up to `limit` entries ordered by BM25 score descending.
+    ///
+    /// Implementation note: the index is rebuilt per query in memory. Edge
+    /// counts are in the hundreds-to-thousands range, so rebuild + full scan
+    /// costs well under a millisecond — a persisted index (or FTS5) is
+    /// deliberately not introduced at this scale, mirroring the brute-force
+    /// rationale of `search_causal_semantic`.
+    ///
+    /// An empty query (no tokens after tokenization, e.g. stop-words-only)
+    /// falls back to the plain task_tag listing of `search_causal`, truncated
+    /// to `limit`. Access tracking is recorded like all other read paths.
+    pub fn search_causal_bm25(
+        &self,
+        task_tag: Option<&str>,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<CausalEntry>> {
+        let query_tokens = crate::patterns::tokenize(query);
+        if query_tokens.is_empty() {
+            let mut entries = self.search_causal(task_tag, None)?;
+            entries.truncate(limit);
+            return Ok(entries);
+        }
+
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let mut sql = format!(
+            "SELECT {ENTRY_COLUMNS}
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             JOIN chunks ct ON ct.id = ce.to_id
+             WHERE ce.valid_to IS NULL"
+        );
+        let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(tag) = task_tag {
+            sql.push_str(" AND ce.task_tag = ?");
+            bind.push(Box::new(tag.to_string()));
+        }
+        sql.push_str(" ORDER BY ce.id");
+
+        let mut stmt = conn.prepare(&sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), entry_from_row)?;
+        let candidates: Vec<CausalEntry> = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))?;
+
+        let index = crate::bm25::Bm25Index::build(candidates.iter().map(|e| {
+            (
+                e.edge_id.to_string(),
+                crate::patterns::tokenize(&format!("{} {}", e.decision_text, e.outcome_text)),
+            )
+        }));
+        let scored = index.search(&query_tokens, limit);
+
+        let by_id: std::collections::HashMap<i64, CausalEntry> =
+            candidates.into_iter().map(|e| (e.edge_id, e)).collect();
+        let entries: Vec<CausalEntry> = scored
+            .iter()
+            .filter_map(|(key, _)| key.parse::<i64>().ok())
+            .filter_map(|id| by_id.get(&id).cloned())
+            .collect();
+        Self::record_access(&conn, entries.iter().map(|e| e.edge_id))?;
+        Ok(entries)
+    }
     pub fn put_embedding(&self, edge_id: i64, model: &str, vector: &[f32]) -> Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
         conn.execute(
@@ -2199,5 +2269,175 @@ mod tests {
             "mixed → kept"
         );
         assert!(store.get_edge(2).unwrap().unwrap().valid_to.is_some());
+    }
+
+    // ── search_causal_bm25 ───────────────────────────────────────────────
+
+    /// Three caching edges + one unrelated edge, all valid.
+    fn bm25_store() -> CausalStore {
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .record_decision(
+                "cache stampede protection with Redis",
+                "stampede stopped, hit ratio recovered",
+                "caused",
+                Some("caching"),
+                0.9,
+                "rule",
+            )
+            .unwrap();
+        store
+            .record_decision(
+                "used Redis mutex lock",
+                "deadlock under load",
+                "caused",
+                Some("caching"),
+                0.8,
+                "rule",
+            )
+            .unwrap();
+        store
+            .record_decision(
+                "added cache TTL to Redis",
+                "memory grew bounded again",
+                "caused",
+                Some("caching"),
+                0.85,
+                "rule",
+            )
+            .unwrap();
+        store
+            .record_decision(
+                "rewrote parser in rust",
+                "build success",
+                "caused",
+                Some("compiler"),
+                0.95,
+                "rule",
+            )
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn test_bm25_beats_like_on_word_order() {
+        // The LoCoMo failure case: LIKE on the full question string can never
+        // match a doc whose words appear in a different order ("Redis cache
+        // stampede" vs "cache stampede protection with Redis"); BM25 does.
+        let store = bm25_store();
+        assert!(store
+            .search_causal(None, Some("Redis cache stampede"))
+            .unwrap()
+            .is_empty());
+        let res = store
+            .search_causal_bm25(None, "Redis cache stampede", 10)
+            .unwrap();
+        assert!(!res.is_empty());
+        assert_eq!(
+            res[0].decision_text, "cache stampede protection with Redis",
+            "the 3-term doc must outrank the 2-term docs"
+        );
+        // The unrelated compiler edge must not appear.
+        assert!(res.iter().all(|e| e.task_tag.as_deref() == Some("caching")));
+    }
+
+    #[test]
+    fn test_bm25_task_tag_filter_scopes_idf() {
+        let store = bm25_store();
+        let res = store
+            .search_causal_bm25(Some("compiler"), "redis cache stampede build", 10)
+            .unwrap();
+        assert_eq!(res.len(), 1, "task filter must exclude caching edges");
+        assert_eq!(res[0].task_tag.as_deref(), Some("compiler"));
+        // An unknown tag → empty candidate set → empty result, not an error.
+        assert!(store
+            .search_causal_bm25(Some("nope"), "redis", 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_bm25_limit_and_score_order() {
+        let store = bm25_store();
+        let res = store.search_causal_bm25(None, "redis", 2).unwrap();
+        assert_eq!(res.len(), 2, "limit truncates the ranked list");
+        let full = store.search_causal_bm25(None, "redis", 10).unwrap();
+        assert!(full.len() >= 2);
+        assert_eq!(
+            res.iter().map(|e| e.edge_id).collect::<Vec<_>>(),
+            full[..2].iter().map(|e| e.edge_id).collect::<Vec<_>>(),
+            "limit must keep the top of the same ranking"
+        );
+    }
+
+    #[test]
+    fn test_bm25_excludes_invalidated_and_tracks_access() {
+        let store = bm25_store();
+        let hit = store
+            .search_causal_bm25(None, "cache stampede", 10)
+            .unwrap();
+        assert!(!hit.is_empty());
+        let top_id = hit[0].edge_id;
+
+        // record_access: every returned edge gets access_count + 1.
+        let before = store.get_edge(top_id).unwrap().unwrap().access_count;
+        store
+            .search_causal_bm25(None, "cache stampede", 10)
+            .unwrap();
+        let after = store.get_edge(top_id).unwrap().unwrap();
+        assert_eq!(after.access_count, before + 1);
+        assert!(after.last_accessed_at.is_some());
+
+        // Invalidated edges no longer participate in the index.
+        store.invalidate_edge(top_id).unwrap();
+        let res = store
+            .search_causal_bm25(None, "cache stampede", 10)
+            .unwrap();
+        assert!(res.iter().all(|e| e.edge_id != top_id));
+    }
+
+    #[test]
+    fn test_bm25_oov_and_empty_query_fallback() {
+        let store = bm25_store();
+        // All query terms out-of-vocabulary → empty (not an error).
+        assert!(store
+            .search_causal_bm25(None, "zzzxqqq", 10)
+            .unwrap()
+            .is_empty());
+        // Empty / stop-words-only query → plain task_tag listing fallback.
+        let res = store.search_causal_bm25(Some("caching"), "", 10).unwrap();
+        assert_eq!(res.len(), 3);
+        let res = store
+            .search_causal_bm25(Some("caching"), "the a an", 2)
+            .unwrap();
+        assert_eq!(res.len(), 2, "fallback respects limit");
+    }
+
+    #[test]
+    fn test_bm25_chinese_bigrams() {
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .record_decision(
+                "用Redis做缓存防止缓存击穿",
+                "缓存命中率恢复成功",
+                "caused",
+                Some("caching"),
+                0.9,
+                "rule",
+            )
+            .unwrap();
+        store
+            .record_decision(
+                "重写数据库连接池",
+                "连接耗尽错误消失",
+                "caused",
+                Some("db"),
+                0.8,
+                "rule",
+            )
+            .unwrap();
+        let res = store.search_causal_bm25(None, "缓存击穿", 10).unwrap();
+        assert_eq!(res.len(), 1);
+        assert!(res[0].decision_text.contains("缓存击穿"));
     }
 }

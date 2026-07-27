@@ -13,7 +13,7 @@
 //!   LOCOMO_LLM_API          (default: https://api.deepseek.com/v1)
 //!   LOCOMO_LLM_MODEL        (default: deepseek-chat, used for answer + judge)
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -300,60 +300,16 @@ fn ingest_conversation(store: &CausalStore, conv: &LocomoConversation) -> Result
 // Retrieval
 // ---------------------------------------------------------------------------
 
-/// Minimal English stopword list for the keyword fan-out fallback.
-const STOPWORDS: &[&str] = &[
-    "what", "when", "where", "which", "who", "whom", "whose", "why", "how", "does", "did", "do",
-    "is", "are", "was", "were", "the", "a", "an", "of", "to", "in", "on", "for", "with", "and",
-    "or", "that", "this", "it", "its", "his", "her", "their", "they", "them", "he", "she", "you",
-    "your", "have", "has", "had", "been", "be", "about", "would", "could", "should", "there",
-    "any", "some", "many", "much", "from", "into", "over", "after", "before", "between",
-];
-
-/// Extract content keywords from a question for the fan-out retrieval path.
-fn question_keywords(question: &str) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for tok in question.split(|c: char| !c.is_alphanumeric()) {
-        let t = tok.to_lowercase();
-        if t.len() >= 3 && !STOPWORDS.contains(&t.as_str()) && seen.insert(t.clone()) {
-            out.push(t);
-        }
-    }
-    out
-}
-
-/// Retrieve candidate causal entries for a question.
+/// Retrieve candidate causal entries for a question (run 3: BM25).
 ///
-/// Primary path: `search_causal(None, Some(question))` (LIKE on the full
-/// question). Natural-language questions almost never appear verbatim in
-/// turn text, so when that yields nothing we fall back to a keyword fan-out:
-/// each content word is LIKE-searched and entries are ranked by keyword-hit
-/// count, then confidence. Entries are truncated to `topk`.
+/// Single path: `search_causal_bm25(None, question, topk)` — the question is
+/// tokenized and BM25-ranked against all valid edges (decision + outcome
+/// text). This replaces the run-2 logic (whole-question LIKE, then a keyword
+/// fan-out of per-word LIKE ranked by hit count): natural-language questions
+/// almost never appear verbatim in turn text, and the fan-out had no IDF or
+/// length normalization — BM25 fixes both while staying dependency-free.
 fn retrieve(store: &CausalStore, question: &str, topk: usize) -> Result<Vec<CausalEntry>> {
-    let direct = store.search_causal(None, Some(question))?;
-    if !direct.is_empty() {
-        let mut direct = direct;
-        direct.truncate(topk);
-        return Ok(direct);
-    }
-
-    let mut hits: HashMap<i64, (CausalEntry, usize)> = HashMap::new();
-    for kw in question_keywords(question).into_iter().take(10) {
-        for entry in store.search_causal(None, Some(&kw))?.into_iter().take(50) {
-            hits.entry(entry.edge_id)
-                .and_modify(|(_, n)| *n += 1)
-                .or_insert((entry, 1));
-        }
-    }
-    let mut scored: Vec<(CausalEntry, usize)> = hits.into_values().collect();
-    scored.sort_by(|a, b| {
-        b.1.cmp(&a.1).then(
-            b.0.confidence
-                .partial_cmp(&a.0.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal),
-        )
-    });
-    Ok(scored.into_iter().take(topk).map(|(e, _)| e).collect())
+    store.search_causal_bm25(None, question, topk)
 }
 
 /// Chunk ids covered by the retrieval result (decision + outcome endpoints).
@@ -1145,10 +1101,28 @@ mod tests {
     }
 
     #[test]
-    fn keywords_skip_stopwords() {
-        let kws = question_keywords("When did Caroline go to the LGBTQ support group?");
-        assert!(kws.contains(&"caroline".to_string()));
-        assert!(kws.contains(&"lgbtq".to_string()));
-        assert!(!kws.iter().any(|k| k == "the" || k == "did"));
+    fn retrieve_uses_bm25_word_order_invariant() {
+        // Regression for the LoCoMo failure mode: the same content words in a
+        // different order must still retrieve the edge (LIKE could not).
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .record_decision_at(
+                "[session_1 2023-05-08 13:56] caroline: I went to the LGBTQ support group",
+                "[session_1 2023-05-08 13:56] melanie: that is wonderful",
+                "caused",
+                None,
+                0.4,
+                "temporal",
+                1000,
+            )
+            .unwrap();
+        let res = retrieve(
+            &store,
+            "When did Caroline go to the LGBTQ support group?",
+            10,
+        )
+        .unwrap();
+        assert_eq!(res.len(), 1, "BM25 must rank the evidence edge");
+        assert!(res[0].decision_text.contains("support group"));
     }
 }
