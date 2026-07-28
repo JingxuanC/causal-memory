@@ -4,11 +4,11 @@ The first behavioral test of causal-memory on a third-party agent benchmark:
 does attaching causal memory change what an agent *does*, not just what it
 *retains*?
 
-**Headline (paired tasks, n=39): control 89.7% → memory 97.4% pass rate.
-Memory flipped 4 tasks from fail to pass vs 1 flipped back (+3 net), at the
-cost of +2 MCP calls per task (+23% LLM cost). Directionally positive;
-not yet statistically significant (binomial p ≈ 0.19) — needs a second
-domain and more repetitions.**
+**Headline (paired tasks, two domains, n=67): control 94.0% → memory 97.0%
+pass rate (+3.0pp). Memory flipped 4 tasks from fail to pass vs 2 flipped
+back, at the cost of +2 MCP calls per task (+23% LLM cost). Directionally
+positive across both domains; not yet statistically significant
+(McNemar p ≈ 0.34) — baseline strength (94%) compresses headroom.**
 
 ## Setup
 
@@ -58,6 +58,29 @@ live: e.g. task 1's system prompt contained task 0's recorded strategy
 4. deepseek-chat's airline baseline (~90%) is much stronger than the
    gpt-4o numbers in the τ² paper (~50%) — headroom for memory gains is
    compressed; the 4 flipped tasks are the interesting tail.
+
+## Replication: retail domain (tasks 0–49)
+
+| | Control | Memory |
+|---|---|---|
+| Passed (raw) | 29/50 | 28/50 |
+| Task-specific crashes (excluded) | 21 | 21 |
+| **Passed (paired, n=28)** | **28/28 = 100%** | **27/28 = 96.4%** |
+
+Retail added no evidence either way: the paired subset is saturated
+(control 100%, one flip against memory). The 21 crash tasks are **the same
+tasks in both conditions** (20/22 overlap, litellm `InternalServerError`
+on DeepSeek — a benchmark×model compatibility issue, systematically
+excluding the harder/longer tasks and biasing the paired subset toward
+easy ones).
+
+**Merged across domains (paired n=67): control 94.0% vs memory 97.0%
+(+3.0pp), flips 4-vs-2, McNemar p = 0.344.** Direction consistent, still
+not significant. The binding constraint is baseline strength: at a 94%
+baseline there is almost no headroom. A replication with a weaker model
+(67% baseline in the independent trap-world ablation showed memory halving
+the repeat-mistake rate, 33% vs 67%) is the discriminative design — see
+`benches/agent/results/` for that parallel experiment.
 
 ## What this establishes (and what it doesn't)
 
