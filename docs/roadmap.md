@@ -67,6 +67,9 @@ explosion (17,496 → 119 edges, 26.5s → 0.8s).
 
 Benchmark-driven:
 
+- [ ] **Memora benchmark** (arXiv:2604.20006) — the only weekly→quarterly
+  memory eval with an explicit *forgetting* dimension; the natural next
+  stage for the compaction-survival claim after LoCoMo k=5
 - [ ] **Multi-session retrieval** (LongMemEval's 32.3%): query decomposition
   or iterative retrieval for cross-session synthesis; higher top-k for
   multi-evidence questions

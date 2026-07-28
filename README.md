@@ -90,6 +90,8 @@ Then copy [`CLAUDE.md`](CLAUDE.md) into your project's system prompt to activate
 
 **causal-memory is complementary, not competitive.** A complete 7×24 agent may need Mem0 (preferences) + Zep (state) + causal-memory (lessons). This layer fills the causal slice nobody else covers.
 
+The 2026 agent-memory landscape is splitting into three routes — cloud-API (Mem0), filesystem (Letta's "Filesystem is All You Need"), temporal graph (Zep). causal-memory is a **fourth route: the causal graph** — not entity relations, not files, but `decision → outcome` edges. Note the honest tension: Letta's plain-files agent scores 74% on LoCoMo — above our 65% and Zep's 63.8%. Benchmarks measure factual recall, not causality; our ground is compaction survival ([+20.8pp rescue](docs/benchmarks/locomo.md#compaction-survival-run-20260727_174000-k--5)) and behavioral reuse ([τ²-bench](docs/benchmarks/tau2-airline.md)), where files alone have nothing to offer.
+
 ## Data path
 
 - Default: `~/.local/share/causal-memory/causal.db`

@@ -111,7 +111,10 @@ against the `[session_N YYYY-MM-DD]` chunk prefix).
   abstention back without losing the temporal gain is open work.
 
 Context (published, different answerer models — not strictly comparable):
-Mem0 66.9 · Zep 75.14 · Genesys 85.55 (gpt-4o-mini answerer, cats 1–4).
+Mem0 66.9 · Zep 75.14 · Genesys 85.55 (gpt-4o-mini answerer, cats 1–4) ·
+**Letta plain-files agent 74.0** (2026-07 — a filesystem with no graph at
+all beats most structured systems on this benchmark; evidence that LoCoMo
+rewards recall volume, not structure).
 
 ### Run 2 → Run 3: BM25 retrieval, controlled experiment
 
