@@ -55,12 +55,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   generator, independent session per compression depth, keyword-scored gold
   QA (no LLM judge), markdown report (`bench-results-<timestamp>.md`);
   compaction prompt lives in `benches/compaction_prompt.txt`
+- `causal-memory bench-agent`: end-to-end trap-world ablation — the same
+  LLM agent solves seeded trap-family tasks with (B) vs without (A) causal
+  memory attached. Measured with glm-4-plus (seed 42): repeat-mistake rate
+  **67% (A) vs 33% (B)**, post-search first-action hit rate 57%, both groups
+  6/6 solved; results and full transcripts archived in
+  `benches/agent/results/`. Debugging the harness surfaced and fixed three
+  real issues: the record_memory observation was indistinguishable from the
+  agent's self-echo (now a numbered `recorded: …` receipt), agents recorded
+  imagined results without ever acting (harness now hard-blocks record
+  before any real command observation), and search/record spirals (capped
+  at 2 searches / 1 record per task); the action parser also learned to take
+  the first balanced JSON object (LLMs emit record+finish in one reply)
 
 ### Fixed
 - `embed.rs` / `llm.rs` HTTP clients now have an explicit 8s timeout —
   previously an unreachable endpoint hung the synchronous `record_decision`
   tool path until the 60s MCP tool timeout, even though the edge was already
-  written (failure still falls back silently, per the zero-intrusion contract)
+  written (failure still falls back silently, per the zero-intrusion contract).
+  The timeout is overridable via `CAUSAL_MEMORY_HTTP_TIMEOUT_SECS` for
+  long-context callers (benches)
 
 ## [0.8.0] - 2026-07-27
 

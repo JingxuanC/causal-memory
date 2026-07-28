@@ -10,11 +10,30 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-/// HTTP timeout for the LLM endpoint. The record path calls this
-/// synchronously inside an MCP tool handler (60s tool timeout): 8s is long
+/// HTTP timeout for the LLM endpoint. Default 8s: the record path calls this
+/// synchronously inside an MCP tool handler (60s tool timeout), so 8s is long
 /// enough for slow models, short enough that an unreachable endpoint fails
-/// fast and the caller falls back to the heuristic instead of hanging.
-const HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+/// fast and the caller falls back instead of hanging. Long-running callers
+/// (bench agent loops with growing transcripts) override it via
+/// CAUSAL_MEMORY_HTTP_TIMEOUT_SECS.
+const DEFAULT_HTTP_TIMEOUT_SECS: u64 = 8;
+
+/// Pure parsing, split from env access so tests never mutate process env
+/// (env writes race under `cargo test`'s parallel harness).
+fn timeout_secs(env_value: Option<&str>) -> u64 {
+    env_value
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_HTTP_TIMEOUT_SECS)
+}
+
+fn http_timeout() -> std::time::Duration {
+    std::time::Duration::from_secs(timeout_secs(
+        std::env::var("CAUSAL_MEMORY_HTTP_TIMEOUT_SECS")
+            .ok()
+            .as_deref(),
+    ))
+}
 
 const CAUSAL_JUDGE_PROMPT: &str = r#"You are judging whether a decision-outcome pair is worth remembering as a LESSON for future similar tasks.
 
@@ -206,7 +225,7 @@ pub async fn chat(
     };
 
     let client = reqwest::Client::builder()
-        .timeout(HTTP_TIMEOUT)
+        .timeout(http_timeout())
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
     let url = format!("{}/chat/completions", config.api_base.trim_end_matches('/'));
@@ -244,4 +263,17 @@ pub async fn chat(
     };
 
     Ok(json_str.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_timeout_secs() {
+        assert_eq!(timeout_secs(None), 8, "default keeps the MCP-path behavior");
+        assert_eq!(timeout_secs(Some("60")), 60);
+        assert_eq!(timeout_secs(Some("0")), 8, "zero is invalid → default");
+        assert_eq!(timeout_secs(Some("abc")), 8, "unparseable → default");
+    }
 }

@@ -8,3 +8,6 @@ benches/locomo/results/*.jsonl
 benches/locomo/results/cache/
 benches/longmemeval/data/
 benches/longmemeval/results/*.jsonl
+# bench-compaction writes to CWD by default; archived runs belong under benches/
+/bench-results-*.md
+/bench-agent-*.md

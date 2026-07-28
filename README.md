@@ -30,6 +30,8 @@ The causal table doesn't decay because it lives outside the agent's context wind
 
 **Compaction survival** (the experiment this system is designed for): LoCoMo sessions compressed 5× before QA — text-only memory collapses 65.0% → **44.5%**; text + never-compacted causal edges holds at **65.3%** (+20.8pp rescue, indistinguishable from zero compaction). Full data in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md#compaction-survival-run-20260727_174000-k--5).
 
+**Agent ablation** (end-to-end, `causal-memory bench-agent --tasks 6 --steps 12 --condition both`): the same LLM agent (glm-4-plus) solves seeded trap-family tasks with vs without causal memory. Repeat-mistake rate on 2nd+ trap exposures: **67% without memory → 33% with memory** (both groups 6/6 solved; post-search first-action hit rate 57%). Reading: the memory tax is ~1 extra step per task; the payoff is not re-stepping into a trap you already fell into. Raw results + full transcripts in [`benches/agent/results/`](benches/agent/results/).
+
 ## What it does
 
 Ten MCP tools. Small surface area is the point.
@@ -154,6 +156,13 @@ causal-memory bench-compaction --compressions 5 --seed 42
 # prints the recall table and writes bench-results-<timestamp>.md
 ```
 
+Run the end-to-end agent ablation (same LLM, with vs without causal memory):
+
+```bash
+causal-memory bench-agent --tasks 6 --steps 12 --condition both --seed 42
+# writes benches/agent/results/bench-agent-{results,transcript-*}-<timestamp>.md
+```
+
 ## Status
 
 **v0.9.0 — alpha.** What works:
@@ -174,7 +183,7 @@ causal-memory bench-compaction --compressions 5 --seed 42
 - ✅ **Contrastive counterfactuals** (`counterfactual_query`) + **reconstructive retrieval** (`reconstruct_lesson` with optional calibration)
 - ✅ **Cross-agent sharing** (`export` / `import`, redacted + idempotent)
 - ✅ **Benchmarks**: LoCoMo harness (see [Benchmarks](#benchmarks)) + reproducible `bench-compaction`
-- ✅ 118 tests (115 unit + 3 e2e suites: migration / pipeline / MCP stdio)
+- ✅ 144 tests (141 unit + 3 e2e suites: migration / pipeline / MCP stdio)
 
 What's not done yet (honest):
 

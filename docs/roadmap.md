@@ -32,7 +32,7 @@ Core capabilities (all shipped, all tested):
 - Retrieval: BM25 default + optional embeddings with cosine ranking
 - Cross-agent sharing: `causal-memory export` / `import` (JSONL, idempotent,
   best-effort redaction)
-- 138 tests (unit + e2e: migration / pipeline / MCP stdio)
+- 144 tests (unit + e2e: migration / pipeline / MCP stdio)
 
 ## Benchmarks (frozen protocols, all published in docs/benchmarks/)
 
@@ -41,6 +41,7 @@ Core capabilities (all shipped, all tested):
 | LoCoMo (1,986 q) | overall 64.2% (adopted prompt) · abstention 91.5% | 5 controlled runs; raw-QA best 65.0% |
 | LongMemEval (500 q) | overall 61.8% · knowledge-update 76.9% · **abstention 96.7%** | multi-session 32.3% is the known gap |
 | **Compaction survival (k=5)** | text-only 44.5% vs text+causal **65.3%** | causal edges fully offset 5 compactions (+20.8pp) |
+| **Agent ablation (trap world)** | repeat-mistake 67% (no memory) → **33%** (with memory) | glm-4-plus, seed 42, both 6/6 solved; post-search hit 57% |
 
 Dogfooding: wired as MCP server into a live agent (kimi CLI), seeded with
 948 real edges extracted from the development session of this project;

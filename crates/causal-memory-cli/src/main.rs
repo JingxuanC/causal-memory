@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use causal_memory::{extractor::DecisionExtractor, store::CausalStore};
 use rusqlite::OptionalExtension;
 mod bench;
+mod bench_agent;
 mod server;
 use server::CausalMemoryServer;
 
@@ -92,6 +93,12 @@ fn main() -> anyhow::Result<()> {
     if args.len() >= 2 && args[1] == "bench-compaction" {
         let rt = tokio::runtime::Runtime::new()?;
         return rt.block_on(bench::run(&args[2..]));
+    }
+
+    // Subcommand: bench-agent — end-to-end ablation with/without causal memory
+    if args.len() >= 2 && args[1] == "bench-agent" {
+        let rt = tokio::runtime::Runtime::new()?;
+        return rt.block_on(bench_agent::run(&args[2..]));
     }
 
     // Default: MCP server mode
