@@ -212,12 +212,10 @@ impl CausalGraph {
         graph.node_sparse_code = nodes.iter().map(|n| simhash(&n.text)).collect();
         graph.node_task_tag = nodes.iter().map(|n| n.task_tag.clone()).collect();
 
-        // Build forward adjacency list
-        let mut adj: Vec<Vec<(u32, f32, f32, Relation, bool, u32)>> = vec![Vec::new(); nodes.len()];
-        // Tuple: (target, raw_weight, value, relation, valid, forward_edge_idx)
+        // Build forward adjacency list (no fwd_idx yet — CSR index assigned during CSR build)
+        let mut adj: Vec<Vec<(u32, f32, f32, Relation, bool)>> = vec![Vec::new(); nodes.len()];
 
-        for (edge_idx, edge) in edges.iter().enumerate() {
-            // O(1) lookup instead of O(N) scan
+        for edge in edges.iter() {
             let from = graph.node_id_to_idx.get(&edge.from_id);
             let to = graph.node_id_to_idx.get(&edge.to_id);
             if let (Some(&from_idx), Some(&to_idx)) = (from, to) {
@@ -227,43 +225,49 @@ impl CausalGraph {
                     edge.weight * edge.relation.spread_coeff(),
                     edge.relation,
                     edge.valid,
-                    edge_idx as u32,
                 ));
             }
         }
 
-        // Build forward CSR
+        // Build forward CSR, simultaneously accumulating reverse adjacency
+        // with the CORRECT CSR edge index (not input array index).
+        // Bug fix: fwd_idx must be the CSR position (= col_idx.len() before push),
+        // not the input edges[] position. Input order ≠ CSR order when edges
+        // from different source nodes are interleaved (which from_store() always
+        // produces via ORDER BY event_time).
+        let mut adj_rev: Vec<Vec<(u32, f32, u32)>> = vec![Vec::new(); nodes.len()];
+        // rev tuple: (source_node, value, csr_edge_index)
+
         graph.row_ptr = Vec::with_capacity(nodes.len() + 1);
         graph.row_ptr.push(0);
-        for node_edges in &adj {
+        for (node_idx, node_edges) in adj.iter().enumerate() {
             let prev = *graph.row_ptr.last().unwrap();
             graph.row_ptr.push(prev + node_edges.len() as u32);
-            for &(target, raw_w, val, rel, valid, _fwd_idx) in node_edges {
+            for &(target, raw_w, val, rel, valid) in node_edges {
+                // CSR index for this edge = current length of col_idx (before push)
+                let csr_edge_idx = graph.col_idx.len() as u32;
+
                 graph.col_idx.push(target);
                 graph.values.push(val);
                 graph.raw_weights.push(raw_w);
                 graph.edge_relations.push(rel);
                 graph.edge_valid.push(valid);
+
+                // Record in reverse adjacency with the CSR index
+                adj_rev[target as usize].push((node_idx as u32, val, csr_edge_idx));
             }
         }
 
-        // Build reverse CSR with mapping back to forward edge index
-        let mut adj_rev: Vec<Vec<(u32, f32, u32)>> = vec![Vec::new(); nodes.len()];
-        for (i, node_edges) in adj.iter().enumerate() {
-            for &(target, _raw_w, val, _rel, _valid, fwd_idx) in node_edges {
-                adj_rev[target as usize].push((i as u32, val, fwd_idx));
-            }
-        }
-
+        // Build reverse CSR from adj_rev (indices are already correct CSR positions)
         graph.row_ptr_rev = Vec::with_capacity(nodes.len() + 1);
         graph.row_ptr_rev.push(0);
         for node_edges in &adj_rev {
             let prev = *graph.row_ptr_rev.last().unwrap();
             graph.row_ptr_rev.push(prev + node_edges.len() as u32);
-            for &(target, val, fwd_idx) in node_edges {
+            for &(target, val, csr_idx) in node_edges {
                 graph.col_idx_rev.push(target);
                 graph.values_rev.push(val);
-                graph.rev_to_fwd_idx.push(fwd_idx);
+                graph.rev_to_fwd_idx.push(csr_idx);
             }
         }
 
@@ -360,13 +364,10 @@ impl CausalGraph {
     /// `reverse = false`: forward (decision → outcome)
     /// `reverse = true`:  backward (outcome → decision, for trace_cause)
     ///
-    /// Merge rule (design deviation #7, resolved):
-    /// Uses signed max: if new activation is more positive, keep it.
-    /// This means a weak positive (0.2) beats a strong negative (-0.5) at the
-    /// same node, because positive means "causally linked" and negative means
-    /// "inhibited". A node that is both caused AND prevented by different paths
-    /// should show the dominant signal. Using signed max keeps the causal
-    /// direction clearer than absolute-value max.
+    /// Merge rule: uses absolute-value max (|new| > |old| → replace). This
+    /// allows negative activations from prevented edges to replace zero
+    /// (which signed-max could not: -0.126 > 0.0 is false). A node receiving
+    /// both caused (+) and prevented (-) signals shows whichever is stronger.
     pub fn spreading_activation(
         &mut self,
         query: &str,
@@ -1307,11 +1308,15 @@ mod tests {
 
     #[test]
     fn test_reverse_skips_invalid_edges() {
-        // Bug fix #1: reverse spread should skip invalidated edges
+        // Bug fix #1: reverse spread should skip invalidated edges.
+        // Input order deliberately differs from CSR order: edges from
+        // different source nodes are interleaved (as from_store produces
+        // via ORDER BY event_time). This would break if rev_to_fwd_idx
+        // stored input array indices instead of CSR indices.
         let nodes = vec![
             NodeData {
-                id: "d".into(),
-                text: "old decision".into(),
+                id: "a".into(),
+                text: "alpha decision".into(),
                 event_time: 0,
                 q_value: 0.5,
                 replay_count: 0,
@@ -1319,8 +1324,8 @@ mod tests {
                 task_tag: None,
             },
             NodeData {
-                id: "o".into(),
-                text: "old outcome".into(),
+                id: "b".into(),
+                text: "bravo outcome".into(),
                 event_time: 1,
                 q_value: 0.5,
                 replay_count: 0,
@@ -1328,8 +1333,8 @@ mod tests {
                 task_tag: None,
             },
             NodeData {
-                id: "d2".into(),
-                text: "new decision".into(),
+                id: "c".into(),
+                text: "charlie outcome".into(),
                 event_time: 2,
                 q_value: 0.5,
                 replay_count: 0,
@@ -1337,8 +1342,8 @@ mod tests {
                 task_tag: None,
             },
             NodeData {
-                id: "o2".into(),
-                text: "new outcome".into(),
+                id: "d".into(),
+                text: "delta decision".into(),
                 event_time: 3,
                 q_value: 0.5,
                 replay_count: 0,
@@ -1346,38 +1351,41 @@ mod tests {
                 task_tag: None,
             },
         ];
+        // Input order: d→c first (valid), then a→b (invalid).
+        // CSR order by source node index: a→b is CSR idx 0 (invalid),
+        // d→c is CSR idx 1 (valid). If rev_to_fwd_idx stored input indices,
+        // reverse[d→c] would map to input idx 0, but edge_valid[0] is the
+        // a→b invalid edge — the valid d→c edge would be wrongly skipped.
         let edges = vec![
-            // d→o is INVALID (already forgotten)
             EdgeData {
                 from_id: "d".into(),
-                to_id: "o".into(),
-                relation: Relation::Caused,
-                weight: 0.9,
-                valid: false,
-            },
-            // d2→o2 is VALID
-            EdgeData {
-                from_id: "d2".into(),
-                to_id: "o2".into(),
+                to_id: "c".into(),
                 relation: Relation::Caused,
                 weight: 0.9,
                 valid: true,
             },
+            EdgeData {
+                from_id: "a".into(),
+                to_id: "b".into(),
+                relation: Relation::Caused,
+                weight: 0.9,
+                valid: false,
+            },
         ];
         let mut graph = CausalGraph::build(&nodes, &edges);
 
-        // Reverse search from "old outcome" — should NOT find "old decision" (edge invalid)
-        let results = graph.spreading_activation("old outcome", None, true);
+        // Reverse from "bravo" (b) — edge a→b is INVALID → a must NOT activate
+        let results_b = graph.spreading_activation("bravo", None, true);
         assert!(
-            !results.iter().any(|r| r.text.contains("old decision")),
-            "Invalidated edge should not propagate in reverse"
+            !results_b.iter().any(|r| r.text.contains("alpha")),
+            "Invalidated edge a→b should not propagate in reverse to a"
         );
 
-        // Reverse search from "new outcome" — SHOULD find "new decision"
-        let results2 = graph.spreading_activation("new outcome", None, true);
+        // Reverse from "charlie" (c) — edge d→c is VALID → d SHOULD activate
+        let results_c = graph.spreading_activation("charlie", None, true);
         assert!(
-            results2.iter().any(|r| r.text.contains("new decision")),
-            "Valid edge should propagate in reverse"
+            results_c.iter().any(|r| r.text.contains("delta")),
+            "Valid edge d→c should propagate in reverse to d"
         );
     }
 
