@@ -31,15 +31,72 @@ use rusqlite::OptionalExtension;
 use serde::Deserialize;
 
 use causal_memory::embed::{EmbedConfig, Embedder};
+use causal_memory::hippocampus::CausalGraph;
 use causal_memory::store::{outcome_polarity, CausalStore, ChainHop};
+use std::sync::Mutex;
 
 pub struct CausalMemoryServer {
     store: CausalStore,
+    graph: Mutex<Option<CausalGraph>>,
 }
 
 impl CausalMemoryServer {
     pub fn new(store: CausalStore) -> Self {
-        Self { store }
+        // Load the hippocampus graph from the store on startup.
+        let graph = CausalGraph::from_store(&store).ok();
+        Self {
+            store,
+            graph: Mutex::new(graph),
+        }
+    }
+
+    /// Reload the hippocampus graph from the store (after new data is written).
+    fn reload_graph(&self) {
+        if let Ok(g) = CausalGraph::from_store(&self.store) {
+            if let Ok(mut guard) = self.graph.lock() {
+                *guard = Some(g);
+            }
+        }
+    }
+
+    /// Try spreading activation search on the hippocampus graph.
+    /// Returns None if graph is empty, missing, or finds nothing.
+    fn hippocampus_search(
+        &self,
+        query: &str,
+        task_tag: Option<&str>,
+        reverse: bool,
+        limit: usize,
+    ) -> Option<String> {
+        let mut guard = self.graph.lock().ok()?;
+        let graph = guard.as_mut()?;
+        if graph.num_nodes() == 0 {
+            return None;
+        }
+
+        let results = graph.spreading_activation(query, task_tag, reverse);
+        if results.is_empty() {
+            return None;
+        }
+
+        let count = results.len().min(limit);
+        let direction = if reverse { "reverse" } else { "forward" };
+        let mut out = format!(
+            "[hippocampus/{direction}] Activated {}/{} nodes via spreading activation:\n\n",
+            count,
+            results.len()
+        );
+        for (i, r) in results.iter().take(limit).enumerate() {
+            let sign = if r.activation > 0.0 { "+" } else { "-" };
+            out.push_str(&format!(
+                "{}. [{:.0}%{}] \"{}\"\n",
+                i + 1,
+                r.activation.abs() * 100.0,
+                sign,
+                truncate_chars(&r.text, 80),
+            ));
+        }
+        Some(out)
     }
 }
 
@@ -502,7 +559,7 @@ impl CausalMemoryServer {
         // make readers fall back to the heuristic anyway.
         let polarity = judge_outcome_polarity(&params.decision, &params.outcome);
 
-        match self.store.record_decision_full(
+        let result = match self.store.record_decision_full(
             &params.decision,
             &params.outcome,
             &params.relation,
@@ -549,17 +606,21 @@ impl CausalMemoryServer {
                     }
                 }
                 format!(
-                    "✅ Recorded: [{}] \"{}\" →({})→ \"{}\" (confidence: {:.2}, id: {})",
+                    "✅ Recorded: [{}] {} →({})→ {} (confidence: {:.2}, id: {})",
                     params.task_tag,
-                    &params.decision[..params.decision.len().min(60)],
+                    truncate_chars(&params.decision, 60),
                     params.relation,
-                    &params.outcome[..params.outcome.len().min(60)],
+                    truncate_chars(&params.outcome, 60),
                     confidence,
                     id
                 )
             }
             Err(e) => format!("❌ Failed to record: {e}"),
-        }
+        };
+        // After recording, rebuild the hippocampus graph so the new edge is
+        // immediately available for spreading activation queries.
+        self.reload_graph();
+        result
     }
 
     #[tool(
@@ -568,28 +629,38 @@ impl CausalMemoryServer {
     )]
     fn search_causal(&self, Parameters(params): Parameters<SearchCausalParams>) -> String {
         let limit = params.limit.unwrap_or(5);
-        // Semantic retrieval is meaningless for tag-only browsing (no query text).
-        let query = params.query.as_deref().filter(|q| !q.trim().is_empty());
 
-        // Semantic path: embed the query and cosine-rank edge embeddings.
-        // Requires a configured embedding endpoint; any failure falls back to
-        // the BM25 path below.
-        if let Some(query) = query {
+        // ── Hippocampus path: spreading activation (联想检索) ──
+        // The graph does associative retrieval: from seed matches, activation
+        // spreads along causal edges to related memories that keyword search
+        // would miss. Falls through to BM25/semantic if graph is unavailable
+        // or finds nothing.
+        if let Some(query) = params.query.as_deref().filter(|q| !q.trim().is_empty()) {
+            if let Some(hippo_result) =
+                self.hippocampus_search(query, params.task_tag.as_deref(), false, limit)
+            {
+                return hippo_result;
+            }
+
+            // ── Semantic path: embed + cosine ──
+            // Requires a configured embedding endpoint; any failure falls back to
+            // the BM25 path below.
             if let Some(embedder) = EmbedConfig::from_env().map(Embedder::new) {
-                let semantic = block_on(embedder.embed(query)).ok().and_then(|vec| {
-                    self.store
-                        .search_causal_semantic(&vec, params.task_tag.as_deref(), limit)
-                        .ok()
-                });
-                if let Some(results) = semantic {
-                    if results.is_empty() {
-                        return "[semantic] 📭 No past causal episodes found matching your query."
+                if let Some(embedder) = EmbedConfig::from_env().map(Embedder::new) {
+                    let semantic = block_on(embedder.embed(query)).ok().and_then(|vec| {
+                        self.store
+                            .search_causal_semantic(&vec, params.task_tag.as_deref(), limit)
+                            .ok()
+                    });
+                    if let Some(results) = semantic {
+                        if results.is_empty() {
+                            return "[semantic] 📭 No past causal episodes found matching your query."
                             .to_string();
-                    }
-                    let mut out =
-                        format!("[semantic] Found {} past episode(s):\n\n", results.len());
-                    for (i, (entry, sim)) in results.iter().enumerate() {
-                        out.push_str(&format!(
+                        }
+                        let mut out =
+                            format!("[semantic] Found {} past episode(s):\n\n", results.len());
+                        for (i, (entry, sim)) in results.iter().enumerate() {
+                            out.push_str(&format!(
                             "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   similarity: {:.0}%, confidence: {:.0}%\n\n",
                             i + 1,
                             entry.task_tag.as_deref().unwrap_or("untagged"),
@@ -599,40 +670,42 @@ impl CausalMemoryServer {
                             sim * 100.0,
                             entry.confidence * 100.0,
                         ));
+                        }
+                        return out;
                     }
-                    return out;
+                    // embed or semantic search failed — fall through to BM25.
                 }
-                // embed or semantic search failed — fall through to BM25.
-            }
 
-            // BM25 keyword path: query present but no usable embedder. Unlike
-            // the old LIKE substring match, BM25 ranks by token overlap, so
-            // word order and phrasing differences no longer zero out hits.
-            let results =
-                match self
-                    .store
-                    .search_causal_bm25(params.task_tag.as_deref(), query, limit)
-                {
-                    Ok(r) => r,
-                    Err(e) => return format!("❌ Search failed: {e}"),
-                };
-            if results.is_empty() {
-                return "[bm25] 📭 No past causal episodes found matching your query.".to_string();
+                // BM25 keyword path: query present but no usable embedder. Unlike
+                // the old LIKE substring match, BM25 ranks by token overlap, so
+                // word order and phrasing differences no longer zero out hits.
+                let results =
+                    match self
+                        .store
+                        .search_causal_bm25(params.task_tag.as_deref(), query, limit)
+                    {
+                        Ok(r) => r,
+                        Err(e) => return format!("❌ Search failed: {e}"),
+                    };
+                if results.is_empty() {
+                    return "[bm25] 📭 No past causal episodes found matching your query."
+                        .to_string();
+                }
+                let mut out = format!("[bm25] Found {} past episode(s):\n\n", results.len());
+                for (i, entry) in results.iter().enumerate() {
+                    out.push_str(&format!(
+                        "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n\n",
+                        i + 1,
+                        entry.task_tag.as_deref().unwrap_or("untagged"),
+                        entry.decision_text,
+                        entry.relation,
+                        entry.outcome_text,
+                        entry.confidence * 100.0,
+                    ));
+                }
+                return out;
             }
-            let mut out = format!("[bm25] Found {} past episode(s):\n\n", results.len());
-            for (i, entry) in results.iter().enumerate() {
-                out.push_str(&format!(
-                    "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n\n",
-                    i + 1,
-                    entry.task_tag.as_deref().unwrap_or("untagged"),
-                    entry.decision_text,
-                    entry.relation,
-                    entry.outcome_text,
-                    entry.confidence * 100.0,
-                ));
-            }
-            return out;
-        }
+        } // end hippocampus if let Some(query) block
 
         // Tag-only browsing (no query text) — original LIKE/listing path.
         let results = match self
@@ -672,6 +745,18 @@ impl CausalMemoryServer {
         description = "When something went wrong, trace back which past decision could have caused it. Use for post-mortem analysis. Provide a description of the bad outcome."
     )]
     fn trace_cause(&self, Parameters(params): Parameters<TraceCauseParams>) -> String {
+        // ── Hippocampus path: reverse spreading activation ──
+        // Walk backward from the outcome through the causal graph to find
+        // which decisions could have caused it. Activation spreads along
+        // reverse causal edges, surfacing decisions that keyword search
+        // would miss (e.g., a decision phrased differently from the query).
+        if let Some(hippo_result) =
+            self.hippocampus_search(&params.outcome_description, None, true, 5)
+        {
+            return hippo_result;
+        }
+
+        // ── SQL fallback: single-hop reverse lookup ──
         match self.store.trace_cause(&params.outcome_description) {
             Ok(results) if results.is_empty() => {
                 "📭 No past decisions found that match this outcome.".to_string()
