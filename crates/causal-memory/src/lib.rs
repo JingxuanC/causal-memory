@@ -3,6 +3,7 @@ pub mod chain_linker;
 pub mod consolidate;
 pub mod embed;
 pub mod extractor;
+pub mod hippocampus;
 pub mod llm;
 pub mod migrate;
 pub mod patterns;
