@@ -11,3 +11,4 @@ benches/longmemeval/results/*.jsonl
 # bench-compaction writes to CWD by default; archived runs belong under benches/
 /bench-results-*.md
 /bench-agent-*.md
+benches/memora/results/*.jsonl

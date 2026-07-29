@@ -24,6 +24,10 @@ path = "../../benches/locomo/main.rs"
 name = "causal-memory-longmemeval"
 path = "../../benches/longmemeval/main.rs"
 
+[[bin]]
+name = "causal-memory-memora"
+path = "../../benches/memora/main.rs"
+
 [dependencies]
 causal-memory.workspace = true
 rmcp.workspace = true
