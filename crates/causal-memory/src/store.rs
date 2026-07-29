@@ -93,6 +93,146 @@ pub struct CausalStore {
     conn: Arc<Mutex<Connection>>,
 }
 
+/// Result of `CausalStore::record_distilled`.
+#[derive(Debug, Clone)]
+pub struct RecordDistilledOutcome {
+    /// The (new or pre-existing duplicate) distilled chunk id.
+    pub chunk_id: String,
+    /// Edge id of the new self-edge; None when `duplicate`.
+    pub edge_id: Option<i64>,
+    /// True when the same distilled text was already stored (idempotent skip).
+    pub duplicate: bool,
+    /// Edges soft-invalidated via `supersedes` matching (all candidates at
+    /// or above the similarity threshold, not just the best one).
+    pub invalidated_edge_ids: Vec<i64>,
+}
+
+/// Minimum containment similarity between a `supersedes` hint and an existing
+/// chunk's tokens for the older edge to be soft-invalidated. 0.5 = at least
+/// half of the smaller token set is shared.
+pub const SUPERSEDES_SIM_THRESHOLD: f64 = 0.5;
+
+/// Minimum shared-token count for a supersedes match, on top of
+/// `SUPERSEDES_SIM_THRESHOLD`. Guards against one/two-token hints
+/// ("books", "music") nuking every chunk that happens to contain the word:
+/// with the min-denominator containment metric a single shared token already
+/// scores 1.0.
+pub const SUPERSEDES_MIN_SHARED_TOKENS: usize = 2;
+
+/// Retraction markers (case-insensitive, substring match): a memory whose
+/// text contains one of these RECORDS a retraction rather than stating a
+/// current fact ("User no longer likes X", "Removed X from the list",
+/// "Cancelled/superseded: X"). Two uses:
+/// 1. write time — when the distiller left `supersedes` empty but the item
+///    text announces a retraction, the item's own text becomes the kill
+///    hint (the LLM forgets the field surprisingly often, and every miss
+///    leaves the outdated fact retrievable: Memora weekly round-2 FAA).
+/// 2. candidacy — retraction records are never supersedes TARGETS: they
+///    share their whole retraction vocabulary ("no longer likes music")
+///    with later hints, and killing one spawns a nonsense double negation
+///    ("Cancelled/superseded: User no longer likes Bonobo ...") that
+///    actively resurrects the dead fact in answers.
+pub const RETRACTION_MARKERS: [&str; 10] = [
+    "no longer",
+    "not anymore",
+    "removed",
+    "deleted",
+    "cancelled",
+    "canceled",
+    "completed",
+    "moved on",
+    " over ",
+    "instead of",
+];
+
+/// True when `text` records a retraction (see `RETRACTION_MARKERS`) or is a
+/// negation memory spawned by guard 3.
+pub fn is_retraction_record(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    RETRACTION_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// Containment (overlap-coefficient) similarity: |a ∩ b| / min(|a|, |b|).
+/// Chosen over Jaccard because supersedes hints are keyword-style and much
+/// shorter than the chunk text — Jaccard would punish the length mismatch
+/// and miss clear matches. Returns 0.0 when either side is empty.
+fn containment_similarity(a: &[String], b: &[String]) -> f64 {
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+    let set_a: std::collections::HashSet<&String> = a.iter().collect();
+    let set_b: std::collections::HashSet<&String> = b.iter().collect();
+    let inter = set_a.intersection(&set_b).count() as f64;
+    inter / set_a.len().min(set_b.len()) as f64
+}
+
+/// Extract absolute date tokens (YYYY-MM-DD) from text. Powers the
+/// supersedes same-fact guard: when the new item and a kill candidate
+/// mention the SAME absolute date, the new item is almost always a
+/// restatement/confirmation of that dated fact, not a retraction of it —
+/// e.g. "rescheduled to 06-10" followed by "confirmed 06-10" describes one
+/// appointment, and invalidating the first wipes the whole calendar chain
+/// (Memora weekly round-1 finding). Dates are validated by chrono, so
+/// arbitrary 10-char digit runs do not count.
+///
+/// The leading bracket prefix ("[2025-06-05] " on distilled chunks,
+/// "[session_12 2025-06-03] " on raw turn chunks) is stripped first: it is
+/// the RECORD date, not content. Without stripping, a same-day retraction
+/// ("likes 2010s music" -> later that day "no longer likes 2010s music")
+/// would be exempted by the shared record date and the outdated item could
+/// never be killed (Memora weekly round-2 finding).
+fn date_tokens(text: &str) -> std::collections::HashSet<String> {
+    let text = strip_bracket_prefix(text);
+    let bytes = text.as_bytes();
+    let mut out = std::collections::HashSet::new();
+    if bytes.len() < 10 {
+        return out;
+    }
+    for i in 0..=(bytes.len() - 10) {
+        let w = &bytes[i..i + 10];
+        if !(w[0].is_ascii_digit()
+            && w[1].is_ascii_digit()
+            && w[2].is_ascii_digit()
+            && w[3].is_ascii_digit()
+            && w[4] == b'-'
+            && w[5].is_ascii_digit()
+            && w[6].is_ascii_digit()
+            && w[7] == b'-'
+            && w[8].is_ascii_digit()
+            && w[9].is_ascii_digit())
+        {
+            continue;
+        }
+        // Boundary check: not embedded in a longer digit run.
+        if i > 0 && bytes[i - 1].is_ascii_digit() {
+            continue;
+        }
+        if i + 10 < bytes.len() && bytes[i + 10].is_ascii_digit() {
+            continue;
+        }
+        let s = &text[i..i + 10];
+        if chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok() {
+            out.insert(s.to_string());
+        }
+    }
+    out
+}
+
+/// Drop a leading "[...] " bracket prefix (the record-date stamp every
+/// stored chunk carries: "[2025-06-05] " on distilled items,
+/// "[session_12 2025-06-03] " on raw turns). Only the FIRST bracket is
+/// removed — later brackets are content.
+fn strip_bracket_prefix(text: &str) -> &str {
+    let text = text.trim_start();
+    if !text.starts_with('[') {
+        return text;
+    }
+    match text.find("] ") {
+        Some(end) => text[end + 2..].trim_start(),
+        None => text,
+    }
+}
+
 /// A causal retrieval result returned to the agent.
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct CausalEntry {
@@ -427,6 +567,229 @@ impl CausalStore {
             }
         }
         Ok(invalidated)
+    }
+
+    /// Record one distilled memory item (see `crate::distill`).
+    ///
+    /// Every item becomes ONE chunk whose text carries a `[YYYY-MM-DD]` date
+    /// prefix (event_time parsed from `item.date`; current time when the
+    /// item has no valid date) plus ONE self-referential `caused` edge —
+    /// the edge exists so the item is visible to the edge-based read paths
+    /// (`search_causal_bm25` etc.), and it is a self-edge so retrieval
+    /// surfaces the item text exactly once (a separate "recorded" outcome
+    /// chunk would show up as a second, content-free line).
+    ///
+    /// Idempotent: an identical distilled chunk text already present is
+    /// returned as a duplicate without inserting anything.
+    ///
+    /// `supersedes`: tokenizes the hint and scores it against the decision
+    /// text of every other valid edge in scope (same `task_tag` when given,
+    /// event_time not later than the new item's) by containment similarity
+    /// |intersection| / min(|a|, |b|) — robust for the keyword-style hints
+    /// the distiller emits. Three guards (Memora weekly round-2):
+    /// 1. KILL-ALL: EVERY candidate at or above `SUPERSEDES_SIM_THRESHOLD`
+    ///    (and sharing ≥ `SUPERSEDES_MIN_SHARED_TOKENS` tokens with the
+    ///    hint) is soft-invalidated — an outdated fact scattered over
+    ///    several chunks must not survive via the non-best copies.
+    /// 2. SAME-FACT EXEMPTION: a candidate mentioning the same absolute
+    ///    date (YYYY-MM-DD) as the new item is kept — restating one dated
+    ///    fact ("rescheduled to 06-10" → "confirmed 06-10") is not a
+    ///    retraction, and killing it wipes whole calendar chains.
+    /// 3. NEGATION MEMORY: each invalidated entry spawns a new valid
+    ///    `Event` memory "[date] Cancelled/superseded: <old text>" so
+    ///    answers can say "this was cancelled" instead of "no such thing".
+    pub fn record_distilled(
+        &self,
+        item: &crate::distill::MemoryItem,
+        task_tag: Option<&str>,
+    ) -> Result<RecordDistilledOutcome> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let now = chrono::Utc::now().timestamp();
+        let date_str = item.date.clone().unwrap_or_else(|| {
+            chrono::DateTime::from_timestamp(now, 0)
+                .map(|dt| dt.format("%Y-%m-%d").to_string())
+                .unwrap_or_default()
+        });
+        let event_time = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
+            .ok()
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .map(|dt| dt.and_utc().timestamp())
+            .unwrap_or(now);
+        let text = format!("[{date_str}] {}", item.text.trim());
+
+        // Idempotency: same distilled text already stored -> return existing.
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT id FROM chunks WHERE id LIKE 'distill:%' AND text = ?1 LIMIT 1",
+                params![&text],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(chunk_id) = existing {
+            return Ok(RecordDistilledOutcome {
+                chunk_id,
+                edge_id: None,
+                duplicate: true,
+                invalidated_edge_ids: Vec::new(),
+            });
+        }
+
+        let confidence = match item.kind {
+            crate::distill::ItemKind::Lesson => 0.7,
+            _ => 0.6,
+        };
+        let (chunk_id, edge_id) =
+            Self::insert_distilled_chunk(&conn, &text, event_time, now, confidence, task_tag)?;
+
+        // Effective kill hint: the LLM's `supersedes` field when given,
+        // otherwise — when the item text itself announces a retraction
+        // ("no longer likes X", "removed X", ...) — the item's own text.
+        // The distiller forgets `supersedes` surprisingly often, and every
+        // miss leaves the outdated fact valid and retrievable.
+        let hint = item
+            .supersedes
+            .clone()
+            .or_else(|| is_retraction_record(&item.text).then(|| item.text.clone()));
+        let invalidated_edge_ids = match &hint {
+            Some(hint) => {
+                let killed = Self::invalidate_superseded(
+                    &conn, hint, task_tag, &chunk_id, &text, event_time, now,
+                )?;
+                // Guard 3 — negation memory: invalidated entries must not
+                // silently vanish. Record one retrievable Event memory per
+                // killed entry stating it is void, dated like the new item.
+                // (Killed entries are never retraction records themselves —
+                // those are excluded from candidacy — so this never writes
+                // a self-cancelling double negation.)
+                for (_, old_text) in &killed {
+                    let summary: String = old_text.chars().take(200).collect();
+                    let neg_text = format!("[{date_str}] Cancelled/superseded: {summary}");
+                    Self::insert_distilled_chunk(&conn, &neg_text, event_time, now, 0.6, task_tag)?;
+                }
+                killed.into_iter().map(|(edge_id, _)| edge_id).collect()
+            }
+            None => Vec::new(),
+        };
+
+        Ok(RecordDistilledOutcome {
+            chunk_id,
+            edge_id: Some(edge_id),
+            duplicate: false,
+            invalidated_edge_ids,
+        })
+    }
+
+    /// Insert one distilled chunk plus its self-referential `caused` edge.
+    /// Shared by `record_distilled` (the item itself) and the negation
+    /// memories spawned for invalidated entries. Returns (chunk_id, edge_id).
+    fn insert_distilled_chunk(
+        conn: &Connection,
+        text: &str,
+        event_time: i64,
+        now: i64,
+        confidence: f64,
+        task_tag: Option<&str>,
+    ) -> Result<(String, i64)> {
+        let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let chunk_id = format!("distill:{event_time}:{seq}");
+        conn.execute(
+            "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
+            params![&chunk_id, text, event_time],
+        )?;
+        conn.execute(
+            "INSERT INTO causal_edges
+             (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
+             VALUES (?1, ?1, 'caused', ?2, 'distill', ?3, ?4, ?5)",
+            params![&chunk_id, confidence, event_time, now, task_tag],
+        )?;
+        Ok((chunk_id, conn.last_insert_rowid()))
+    }
+
+    /// Find every valid in-scope edge whose decision text matches the
+    /// supersedes hint (containment similarity over tokens) at or above
+    /// `SUPERSEDES_SIM_THRESHOLD` and soft-invalidate ALL of them. Returns
+    /// the (edge id, decision text) pairs actually invalidated — the caller
+    /// turns each into a negation memory.
+    ///
+    /// Guards (learned from the Memora weekly run, where bare containment
+    /// over-fired): hint and candidate must share at least
+    /// `SUPERSEDES_MIN_SHARED_TOKENS` tokens; the candidate's event_time
+    /// must not be later than the new item's (a supersedes hint always
+    /// points backward in time); and a candidate sharing an absolute
+    /// YYYY-MM-DD date token with the new item's text is EXEMPT — that
+    /// pairing is a restatement of the same dated fact, not a retraction.
+    /// Retraction records (negation memories, "no longer likes X", "removed
+    /// X", ...) are never candidates: they share the retraction vocabulary
+    /// with every later hint, and retracting a retraction notice produces
+    /// nonsense double negations that resurrect dead facts.
+    /// Pure-digit hint tokens ("2025", "06") are dropped: full-text auto
+    /// hints carry the item's date, and date tokens alone would bridge to
+    /// every same-day chunk.
+    fn invalidate_superseded(
+        conn: &Connection,
+        hint: &str,
+        task_tag: Option<&str>,
+        exclude_chunk_id: &str,
+        new_item_text: &str,
+        item_event_time: i64,
+        now: i64,
+    ) -> Result<Vec<(i64, String)>> {
+        let hint_tokens: Vec<String> = crate::patterns::tokenize(hint)
+            .into_iter()
+            .filter(|t| !t.chars().all(|c| c.is_ascii_digit()))
+            .collect();
+        if hint_tokens.len() < SUPERSEDES_MIN_SHARED_TOKENS {
+            return Ok(Vec::new());
+        }
+        let new_dates = date_tokens(new_item_text);
+        let mut sql = String::from(
+            "SELECT ce.id, cf.text
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             WHERE ce.valid_to IS NULL AND cf.id != ?1 AND ce.event_time <= ?2",
+        );
+        let mut bind: Vec<Box<dyn rusqlite::ToSql>> = vec![
+            Box::new(exclude_chunk_id.to_string()),
+            Box::new(item_event_time),
+        ];
+        if let Some(tag) = task_tag {
+            sql.push_str(" AND ce.task_tag = ?");
+            bind.push(Box::new(tag.to_string()));
+        }
+        let mut stmt = conn.prepare(&sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let hint_set: std::collections::HashSet<&String> = hint_tokens.iter().collect();
+        let mut killed: Vec<(i64, String)> = Vec::new();
+        for row in rows {
+            let (edge_id, text) = row.map_err(|e| anyhow!("Query failed: {e}"))?;
+            // Retraction records are never kill targets (double negation).
+            if is_retraction_record(&text) {
+                continue;
+            }
+            // Same-fact exemption: shared absolute date => restatement.
+            if !new_dates.is_empty() && !date_tokens(&text).is_disjoint(&new_dates) {
+                continue;
+            }
+            let cand_tokens = crate::patterns::tokenize(&text);
+            let shared = cand_tokens.iter().filter(|t| hint_set.contains(t)).count();
+            if shared < SUPERSEDES_MIN_SHARED_TOKENS {
+                continue;
+            }
+            let sim = containment_similarity(&hint_tokens, &cand_tokens);
+            if sim >= SUPERSEDES_SIM_THRESHOLD {
+                killed.push((edge_id, text));
+            }
+        }
+        for (edge_id, _) in &killed {
+            conn.execute(
+                "UPDATE causal_edges SET valid_to = ?1 WHERE id = ?2 AND valid_to IS NULL",
+                params![now, edge_id],
+            )?;
+        }
+        Ok(killed)
     }
 
     /// Semantic extension of the contradiction short-circuit: soft-invalidate
@@ -2619,5 +2982,663 @@ mod tests {
         store.invalidate_edge(e_be).unwrap();
         let blanket = store.markov_blanket(&[seed], 20).unwrap();
         assert!(blanket.iter().all(|e| e.edge_id != e_be));
+    }
+
+    // -- record_distilled --
+
+    fn item(
+        kind: crate::distill::ItemKind,
+        text: &str,
+        date: &str,
+        supersedes: Option<&str>,
+    ) -> crate::distill::MemoryItem {
+        crate::distill::MemoryItem {
+            kind,
+            text: text.to_string(),
+            date: Some(date.to_string()),
+            supersedes: supersedes.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn test_record_distilled_basic() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let out = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Preference,
+                    "The user prefers Vim keybindings.",
+                    "2025-06-03",
+                    None,
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        assert!(!out.duplicate);
+        let edge_id = out.edge_id.expect("new item must create an edge");
+        assert!(out.invalidated_edge_ids.is_empty());
+
+        let edge = store.get_edge(edge_id).unwrap().unwrap();
+        // Chunk text carries the [date] prefix; self-edge keeps retrieval to
+        // one line per item.
+        assert_eq!(
+            edge.decision_text,
+            "[2025-06-03] The user prefers Vim keybindings."
+        );
+        assert_eq!(edge.decision_id, edge.outcome_id);
+        assert_eq!(edge.task_tag.as_deref(), Some("p1"));
+        assert_eq!(edge.event_time, 1_748_908_800); // 2025-06-03T00:00:00Z
+        assert_eq!(edge.discovered_by, "distill");
+
+        // Visible to BM25 (the bench retrieval path).
+        let hits = store
+            .search_causal_bm25(Some("p1"), "Vim keybindings", 10)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].edge_id, edge_id);
+    }
+
+    #[test]
+    fn test_record_distilled_idempotent() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let it = item(
+            crate::distill::ItemKind::Fact,
+            "The user works as a software engineer.",
+            "2025-06-03",
+            None,
+        );
+        let first = store.record_distilled(&it, Some("p1")).unwrap();
+        let second = store.record_distilled(&it, Some("p1")).unwrap();
+        assert!(second.duplicate);
+        assert_eq!(first.chunk_id, second.chunk_id);
+        assert_eq!(second.edge_id, None);
+        assert_eq!(store.count_edges().unwrap(), 1, "no duplicate edge");
+    }
+
+    #[test]
+    fn test_record_distilled_supersedes_invalidates_old() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let old = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user added Buy groceries to their todo list.",
+                    "2025-06-01",
+                    None,
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        let old_edge_id = old.edge_id.unwrap();
+
+        let new = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user completed the Buy groceries todo.",
+                    "2025-06-05",
+                    Some("Buy groceries todo"),
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        assert_eq!(new.invalidated_edge_ids, vec![old_edge_id]);
+
+        // Old edge is soft-invalidated: gone from BM25, auditable via get_edge.
+        let old_edge = store.get_edge(old_edge_id).unwrap().unwrap();
+        assert!(old_edge.valid_to.is_some());
+        let hits = store
+            .search_causal_bm25(Some("p1"), "groceries todo", 10)
+            .unwrap();
+        // Two valid hits now: the new item and the negation memory spawned
+        // for the killed entry (guard 3) — the invalidated original is gone.
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().any(|h| h.decision_text.contains("completed")));
+        assert!(hits
+            .iter()
+            .any(|h| h.decision_text.contains("Cancelled/superseded")));
+        assert!(hits.iter().all(|h| h.edge_id != old_edge_id));
+    }
+
+    #[test]
+    fn test_record_distilled_supersedes_below_threshold_keeps_old() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let old = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Preference,
+                    "The user prefers Vim keybindings.",
+                    "2025-06-01",
+                    None,
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        let new = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user booked a flight to Berlin.",
+                    "2025-06-05",
+                    Some("flight Berlin booking"), // unrelated hint
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        assert!(new.invalidated_edge_ids.is_empty());
+        let old_edge = store.get_edge(old.edge_id.unwrap()).unwrap().unwrap();
+        assert!(old_edge.valid_to.is_none());
+    }
+
+    #[test]
+    fn test_record_distilled_supersedes_scoped_to_task_tag() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // Same text under another persona must not be invalidated.
+        let other = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user added Buy groceries to their todo list.",
+                    "2025-06-01",
+                    None,
+                ),
+                Some("p2"),
+            )
+            .unwrap();
+        let new = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user completed the Buy groceries todo.",
+                    "2025-06-05",
+                    Some("Buy groceries todo"),
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        assert!(new.invalidated_edge_ids.is_empty());
+        assert!(store
+            .get_edge(other.edge_id.unwrap())
+            .unwrap()
+            .unwrap()
+            .valid_to
+            .is_none());
+    }
+
+    #[test]
+    fn test_record_distilled_supersedes_guards() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // One-token hint: even though containment would score 1.0, the
+        // shared-token guard must prevent invalidation.
+        let old = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Preference,
+                    "The user likes space opera books.",
+                    "2025-06-01",
+                    None,
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        let new = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Preference,
+                    "The user now prefers hard sci-fi books.",
+                    "2025-06-05",
+                    Some("books"),
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        assert!(
+            new.invalidated_edge_ids.is_empty(),
+            "one-token hint must not invalidate"
+        );
+        assert!(store
+            .get_edge(old.edge_id.unwrap())
+            .unwrap()
+            .unwrap()
+            .valid_to
+            .is_none());
+
+        // Future-dated candidate: a supersedes hint must not invalidate an
+        // edge NEWER than the item carrying the hint.
+        let store = CausalStore::open_in_memory().unwrap();
+        let future = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user rescheduled the mechanic visit to 2025-06-10.",
+                    "2025-06-04",
+                    None,
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        let new = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user scheduled a mechanic visit for 2025-06-15.",
+                    "2025-06-01",
+                    Some("mechanic visit scheduled"),
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        assert!(
+            new.invalidated_edge_ids.is_empty(),
+            "must not invalidate an edge newer than the item"
+        );
+        assert!(store
+            .get_edge(future.edge_id.unwrap())
+            .unwrap()
+            .unwrap()
+            .valid_to
+            .is_none());
+    }
+
+    #[test]
+    fn test_record_distilled_missing_date_uses_now() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let it = crate::distill::MemoryItem {
+            kind: crate::distill::ItemKind::Fact,
+            text: "Undated fact.".into(),
+            date: None,
+            supersedes: None,
+        };
+        let out = store.record_distilled(&it, None).unwrap();
+        let edge = store.get_edge(out.edge_id.unwrap()).unwrap().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        assert!((edge.event_time - now).abs() < 86_400);
+        assert!(edge.decision_text.starts_with('['));
+    }
+
+    #[test]
+    fn test_record_distilled_supersedes_kills_all_matches() {
+        // Guard 1 (kill-all): an outdated fact scattered over SEVERAL chunks
+        // must lose every matching copy, not just the best one — otherwise
+        // the survivors still get retrieved and answered (Memora round-1
+        // "single-point invalidation residue" failure).
+        let store = CausalStore::open_in_memory().unwrap();
+        let old1 = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user scheduled a dentist appointment for 2025-07-01.",
+                    "2025-06-01",
+                    None,
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        let old2 = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "Reminder noted: dentist appointment on 2025-07-01 needs insurance card.",
+                    "2025-06-03",
+                    None,
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        let new = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user cancelled the dentist appointment entirely.",
+                    "2025-06-20",
+                    Some("dentist appointment reminder scheduled"),
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        let mut killed = new.invalidated_edge_ids.clone();
+        killed.sort_unstable();
+        let mut expected = vec![old1.edge_id.unwrap(), old2.edge_id.unwrap()];
+        expected.sort_unstable();
+        assert_eq!(killed, expected, "ALL matches must be invalidated");
+        for eid in expected {
+            assert!(store.get_edge(eid).unwrap().unwrap().valid_to.is_some());
+        }
+        // One negation memory per killed entry.
+        let neg = store
+            .search_causal_bm25(Some("p1"), "cancelled superseded dentist", 10)
+            .unwrap();
+        assert_eq!(
+            neg.iter()
+                .filter(|h| h.decision_text.contains("Cancelled/superseded"))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn test_record_distilled_supersedes_same_date_exempt() {
+        // Guard 2 (same-fact exemption): the Memora weekly calendar chain —
+        // "scheduled 06-15" -> "rescheduled to 06-10" -> "confirmed 06-10".
+        // The confirmation must NOT kill the reschedule: both mention
+        // 2025-06-10, i.e. they are the same fact restated, while the
+        // original 06-15 scheduling (a different date) is a real retraction
+        // target and must still die.
+        let store = CausalStore::open_in_memory().unwrap();
+        let scheduled = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user scheduled a mechanic visit for 2025-06-15.",
+                    "2025-06-01",
+                    None,
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        let rescheduled = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user rescheduled the mechanic visit to 2025-06-10.",
+                    "2025-06-04",
+                    Some("mechanic visit scheduled"),
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        // The reschedule kills the original 06-15 appointment (different
+        // date tokens -> a true retraction).
+        assert_eq!(
+            rescheduled.invalidated_edge_ids,
+            vec![scheduled.edge_id.unwrap()]
+        );
+
+        let confirmed = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user confirmed the mechanic visit on 2025-06-10.",
+                    "2025-06-06",
+                    Some("mechanic visit scheduled"),
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        // Shared date 2025-06-10 -> restatement, NOT a retraction: the
+        // rescheduled entry survives.
+        assert!(
+            confirmed.invalidated_edge_ids.is_empty(),
+            "same-date restatement must not invalidate"
+        );
+        assert!(store
+            .get_edge(rescheduled.edge_id.unwrap())
+            .unwrap()
+            .unwrap()
+            .valid_to
+            .is_none());
+        let hits = store
+            .search_causal_bm25(Some("p1"), "mechanic visit", 10)
+            .unwrap();
+        assert!(hits.iter().any(|h| h.decision_text.contains("rescheduled")));
+        assert!(hits.iter().any(|h| h.decision_text.contains("confirmed")));
+        assert!(!hits
+            .iter()
+            .any(|h| h.decision_text.contains("for 2025-06-15")
+                && !h.decision_text.contains("Cancelled/superseded")));
+    }
+
+    #[test]
+    fn test_record_distilled_supersedes_same_day_retraction_still_kills() {
+        // The record-date prefix must NOT activate the same-fact exemption:
+        // a preference stated and retracted on the SAME day ("likes 2010s
+        // music" -> "no longer likes 2010s music", both 2025-06-05) is a
+        // true retraction. Only CONTENT dates count for the exemption.
+        let store = CausalStore::open_in_memory().unwrap();
+        let old = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Preference,
+                    "User likes music from the 2010s, especially electronic pop.",
+                    "2025-06-05",
+                    None,
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        let new = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Preference,
+                    "User no longer likes music from the 2010s as of 2025-06-05.",
+                    "2025-06-05",
+                    Some("likes music 2010s"),
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        assert_eq!(
+            new.invalidated_edge_ids,
+            vec![old.edge_id.unwrap()],
+            "same RECORD date must not exempt a true retraction"
+        );
+    }
+
+    #[test]
+    fn test_record_distilled_auto_supersedes_without_hint() {
+        // Auto-hint fallback: the distiller left `supersedes` empty, but the
+        // item text announces a retraction ("no longer ...") — the item's
+        // own text becomes the kill hint and the outdated item dies.
+        let store = CausalStore::open_in_memory().unwrap();
+        let old = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Preference,
+                    "User likes music from the 2010s, especially electronic pop.",
+                    "2025-06-05",
+                    None,
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        let new = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Preference,
+                    "User no longer likes music from the 2010s as of 2025-06-05.",
+                    "2025-06-05",
+                    None, // <-- no LLM hint; retraction markers take over
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        assert_eq!(
+            new.invalidated_edge_ids,
+            vec![old.edge_id.unwrap()],
+            "retraction-marked item must auto-supersede without an LLM hint"
+        );
+    }
+
+    #[test]
+    fn test_retraction_records_are_never_kill_targets() {
+        // Two retractions sharing vocabulary ("no longer likes music") must
+        // NOT kill each other — retracting a retraction spawns a nonsense
+        // double negation ("Cancelled/superseded: User no longer likes
+        // Bonobo ...") that resurrects the dead fact (Memora round-2b).
+        let store = CausalStore::open_in_memory().unwrap();
+        let bonobo = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Preference,
+                    "User no longer likes Bonobo's music as of 2025-06-02.",
+                    "2025-06-02",
+                    None,
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        let new = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Preference,
+                    "User no longer likes music from the 2010s as of 2025-06-05.",
+                    "2025-06-05",
+                    Some("no longer likes music"),
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        assert!(
+            new.invalidated_edge_ids.is_empty(),
+            "retraction records must be exempt from supersedes kills"
+        );
+        assert!(store
+            .get_edge(bonobo.edge_id.unwrap())
+            .unwrap()
+            .unwrap()
+            .valid_to
+            .is_none());
+        // And no double-negation memory was written.
+        let hits = store
+            .search_causal_bm25(Some("p1"), "cancelled superseded bonobo", 10)
+            .unwrap();
+        assert!(hits
+            .iter()
+            .all(|h| !h.decision_text.contains("Cancelled/superseded")));
+    }
+
+    #[test]
+    fn test_supersedes_hint_digit_tokens_ignored() {
+        // Date tokens inside a hint must not bridge to same-day chunks:
+        // without digit filtering, hint "... 2025-06-05" shares 2025/06/05
+        // with EVERY chunk recorded that day (the record prefix tokenizes
+        // to digits) and containment over-fires.
+        let store = CausalStore::open_in_memory().unwrap();
+        let old = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user bought groceries and milk.",
+                    "2025-06-05",
+                    None,
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        let new = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user removed the obsolete entry from the document.",
+                    "2025-06-05",
+                    Some("removed obsolete entry 2025-06-05"),
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        assert!(
+            new.invalidated_edge_ids.is_empty(),
+            "date digits alone must not make a chunk a kill candidate"
+        );
+        assert!(store
+            .get_edge(old.edge_id.unwrap())
+            .unwrap()
+            .unwrap()
+            .valid_to
+            .is_none());
+    }
+
+    #[test]
+    fn test_record_distilled_negation_memory_retrievable() {
+        // Guard 3 (negation memory): a killed entry leaves behind a valid,
+        // retrievable Event memory marked "Cancelled/superseded" so the
+        // answer side can say "this was cancelled" instead of "no such
+        // thing". task_tag is inherited from the new item's scope.
+        let store = CausalStore::open_in_memory().unwrap();
+        let old = store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user added Buy groceries to their todo list.",
+                    "2025-06-01",
+                    None,
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        store
+            .record_distilled(
+                &item(
+                    crate::distill::ItemKind::Event,
+                    "The user completed the Buy groceries todo.",
+                    "2025-06-05",
+                    Some("Buy groceries todo"),
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+
+        let hits = store
+            .search_causal_bm25(Some("p1"), "cancelled groceries", 10)
+            .unwrap();
+        let neg = hits
+            .iter()
+            .find(|h| h.decision_text.contains("Cancelled/superseded"))
+            .expect("negation memory must be retrievable");
+        assert_eq!(
+            neg.decision_text,
+            "[2025-06-05] Cancelled/superseded: [2025-06-01] The user added \
+             Buy groceries to their todo list."
+        );
+        // It is an ordinary valid edge in the same task_tag scope.
+        let neg_edge = store.get_edge(neg.edge_id).unwrap().unwrap();
+        assert!(neg_edge.valid_to.is_none());
+        assert_eq!(neg_edge.task_tag.as_deref(), Some("p1"));
+        assert_eq!(neg_edge.discovered_by, "distill");
+        // And it must not resurrect the killed edge.
+        assert!(store
+            .get_edge(old.edge_id.unwrap())
+            .unwrap()
+            .unwrap()
+            .valid_to
+            .is_some());
+    }
+
+    #[test]
+    fn test_date_tokens() {
+        // The leading bracket prefix is the RECORD date, not content — it is
+        // ignored so same-day retractions stay killable.
+        let dates = date_tokens("[2025-06-06] Confirmed the visit on 2025-06-10.");
+        assert_eq!(dates.len(), 1);
+        assert!(dates.contains("2025-06-10"));
+        // Raw-turn prefix form is stripped too.
+        let dates = date_tokens("[session_12 2025-06-03] user: see you on 2025-06-10");
+        assert_eq!(dates.len(), 1);
+        assert!(dates.contains("2025-06-10"));
+        // Without a bracket prefix, a standalone date counts.
+        assert!(date_tokens("moved to 2025-06-06 and 2025-06-10").len() == 2);
+        // Invalid calendar dates and embedded digit runs are rejected.
+        assert!(date_tokens("code 2025-13-45 and id 12025-06-01").is_empty());
+        assert!(date_tokens("no dates here").is_empty());
+        assert!(date_tokens("2025-06-0").is_empty());
+    }
+
+    #[test]
+    fn test_containment_similarity() {
+        let tok = |s: &str| crate::patterns::tokenize(s);
+        // Keyword hint fully contained in the longer chunk text -> 1.0.
+        assert_eq!(
+            containment_similarity(
+                &tok("buy groceries todo"),
+                &tok("the user added buy groceries to their todo list")
+            ),
+            1.0
+        );
+        // Partial overlap.
+        let sim = containment_similarity(&tok("groceries flight"), &tok("buy groceries todo"));
+        assert!((sim - 0.5).abs() < 1e-9);
+        // Disjoint / empty.
+        assert_eq!(containment_similarity(&tok("vim"), &tok("emacs")), 0.0);
+        assert_eq!(containment_similarity(&[], &tok("x")), 0.0);
     }
 }

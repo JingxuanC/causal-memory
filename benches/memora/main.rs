@@ -30,7 +30,7 @@
 //! Usage:
 //!   causal-memory-memora run --memora-root /path/to/memora --scale weekly \
 //!       [--persona NAME] [--limit N] [--db-dir DIR] [--out DIR] \
-//!       [--topk 10] [--concurrency 8]
+//!       [--topk 10] [--concurrency 8] [--ingest raw|distill]
 //!
 //! Env:
 //!   DEEPSEEK_API_KEY        (required; or CAUSAL_MEMORY_LLM_KEY)
@@ -49,6 +49,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use causal_memory::distill::Distiller;
 use causal_memory::store::{CausalEntry, CausalStore};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -80,6 +81,7 @@ Rules:
 - Be specific and reference actual items/preferences from memory. If the question asks for recommendations, suggest based on similar items the user likes in memory, and avoid items the user dislikes or has already consumed.
 - Each memory is prefixed with its session date, e.g. "[session_12 2025-06-03]". When the question contains relative time expressions ("this week", "last month", "recently"), resolve them against the memory dates and the Current Date given below, and answer with ABSOLUTE dates or periods.
 - When information was updated over time (items added and later removed, plans changed, preferences revised), always answer with the most recent state (latest session date). Do NOT mention items that, according to the memories, were deleted, cancelled, completed, or otherwise are no longer current — unless the user explicitly asks about history.
+- Memories may RECORD a removal or change as an event ("Removed X from the to-do list", "Cancelled/superseded: X", "no longer likes X", "prefers Y over X"). These mean X is NOT current: never include X when listing the user's current tasks, preferences, plans, or document fields, and do not mention X at all unless the user explicitly asks what changed.
 - When a memory DIRECTLY addresses the question, you MUST answer — a short partial answer grounded in a memory is better than a refusal. Refuse ONLY when no memory states the requested fact."#;
 
 /// Judge prompts, ported 1:1 from the official
@@ -118,6 +120,9 @@ fn usage() {
     eprintln!("  --out DIR           results dir (default: benches/memora/results)");
     eprintln!("  --topk N            retrieved memories per question (default: 10)");
     eprintln!("  --concurrency N     parallel questions (default: 8)");
+    eprintln!("  --ingest MODE       raw (default) | distill (LLM-distilled memory items;");
+    eprintln!("                      hybrid: light sessions distill-only, heavy sessions");
+    eprintln!("                      raw+distill dual write, separate *_distill.db)");
     eprintln!();
     eprintln!("Env: DEEPSEEK_API_KEY (required), LOCOMO_LLM_API, LOCOMO_LLM_MODEL");
     eprintln!();
@@ -393,58 +398,245 @@ fn ingest_persona(store: &CausalStore, persona: &str, sessions: &[MemoraSession]
 
     let mut written = 0usize;
     for session in sessions {
-        let base = session_base_time(session.session_id, &session.date);
-        for (t_idx, turn) in session.conversation.iter().enumerate() {
-            let ts = base + t_idx as i64; // +1s per turn keeps intra-session order
-            let id = chunk_id(persona, session.session_id, turn.turn);
-            let text = turn_chunk_text(
+        written += ingest_session_raw(store, persona, session)?;
+    }
+    Ok(written)
+}
+
+/// Raw-ingest one session: each turn becomes one chunk keyed
+/// `{persona}::{session_id:04}::{turn}`; consecutive turns of opposite
+/// speakers are linked with a low-confidence `caused` edge (temporal
+/// discovery) tagged `task_tag = persona`. Returns chunks written.
+fn ingest_session_raw(
+    store: &CausalStore,
+    persona: &str,
+    session: &MemoraSession,
+) -> Result<usize> {
+    let mut written = 0usize;
+    let base = session_base_time(session.session_id, &session.date);
+    for (t_idx, turn) in session.conversation.iter().enumerate() {
+        let ts = base + t_idx as i64; // +1s per turn keeps intra-session order
+        let id = chunk_id(persona, session.session_id, turn.turn);
+        let text = turn_chunk_text(
+            session.session_id,
+            &session.date,
+            &turn.speaker,
+            &turn.message,
+        );
+        store.with_conn(|c| {
+            c.execute(
+                "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
+                rusqlite::params![&id, &text, ts],
+            )?;
+            Ok(())
+        })?;
+
+        // Link each turn to the nearest preceding turn from the OTHER
+        // speaker (the turn it responds to); first turn gets no edge.
+        let prev_idx = session.conversation[..t_idx]
+            .iter()
+            .rposition(|t| t.speaker != turn.speaker);
+        if let Some(prev_idx) = prev_idx {
+            let prev_id = chunk_id(
+                persona,
                 session.session_id,
-                &session.date,
-                &turn.speaker,
-                &turn.message,
+                session.conversation[prev_idx].turn,
             );
             store.with_conn(|c| {
                 c.execute(
-                    "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
-                    rusqlite::params![&id, &text, ts],
+                    "INSERT INTO causal_edges
+                     (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                    rusqlite::params![
+                        &prev_id,
+                        &id,
+                        TURN_EDGE_RELATION,
+                        TURN_EDGE_CONFIDENCE,
+                        TURN_EDGE_DISCOVERED_BY,
+                        ts,
+                        ts,
+                        persona
+                    ],
                 )?;
                 Ok(())
             })?;
-
-            // Link each turn to the nearest preceding turn from the OTHER
-            // speaker (the turn it responds to); first turn gets no edge.
-            let prev_idx = session.conversation[..t_idx]
-                .iter()
-                .rposition(|t| t.speaker != turn.speaker);
-            if let Some(prev_idx) = prev_idx {
-                let prev_id = chunk_id(
-                    persona,
-                    session.session_id,
-                    session.conversation[prev_idx].turn,
-                );
-                store.with_conn(|c| {
-                    c.execute(
-                        "INSERT INTO causal_edges
-                         (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                        rusqlite::params![
-                            &prev_id,
-                            &id,
-                            TURN_EDGE_RELATION,
-                            TURN_EDGE_CONFIDENCE,
-                            TURN_EDGE_DISCOVERED_BY,
-                            ts,
-                            ts,
-                            persona
-                        ],
-                    )?;
-                    Ok(())
-                })?;
-            }
-            written += 1;
         }
+        written += 1;
     }
     Ok(written)
+}
+
+/// Ingest statistics for the distill pipeline (written into the run summary
+/// so the cost of distillation is auditable).
+#[derive(Debug, Default, Clone, Serialize)]
+struct DistillIngestStats {
+    sessions: usize,
+    sessions_distilled: usize,
+    /// Heavy sessions dual-written: raw turns AND distilled items.
+    sessions_dual_write: usize,
+    /// Light sessions the distiller judged memory-free; nothing was written
+    /// for them (round-1 dumped their raw turns into the DB, diluting BM25).
+    sessions_light_empty: usize,
+    /// Sessions where the LLM call failed; these were raw-ingested instead
+    /// so no data is lost.
+    sessions_fallback_raw: usize,
+    items_recorded: usize,
+    items_duplicate: usize,
+    /// Old edges soft-invalidated via supersedes matching.
+    superseded_invalidations: usize,
+    raw_chunks_written: usize,
+    llm_calls: usize,
+    /// True when a pre-existing distill DB was detected and ingest skipped.
+    skipped_existing: bool,
+}
+
+/// Hybrid-ingest thresholds (round-2 fix, both tunable):
+/// - a session whose WHOLE conversation is shorter than this many chars is
+///   "light" (chit-chat): distill-only, and an empty distillation writes
+///   NOTHING — round 1 raw-fell-back 79 such sessions (1,301 noise chunks)
+///   and BM25 for the 125 real distilled items drowned in them.
+const LIGHT_SESSION_TOTAL_CHARS: usize = 1500;
+/// - ...or whose average turn is shorter than this many chars. Catches
+///   many-turn small talk that clears the total-length bar.
+const LIGHT_SESSION_AVG_TURN_CHARS: usize = 80;
+
+/// Light (chit-chat) vs heavy (content) session classification for hybrid
+/// ingest. Light => distill only; heavy => raw + distill dual write (raw
+/// keeps the quantitative detail distillation would compress away, distill
+/// keeps a clean retrieval entry point).
+fn is_light_session(session: &MemoraSession) -> bool {
+    let total: usize = session.conversation.iter().map(|t| t.message.len()).sum();
+    if total < LIGHT_SESSION_TOTAL_CHARS {
+        return true;
+    }
+    let avg = total
+        .checked_div(session.conversation.len().max(1))
+        .unwrap_or(0);
+    avg < LIGHT_SESSION_AVG_TURN_CHARS
+}
+
+/// Distill-mode ingest: every session is distilled by the LLM into dated
+/// memory items (concurrency-limited, but recorded strictly in session
+/// order so a later session's `supersedes` always sees the earlier items).
+///
+/// Hybrid routing (round-2): LIGHT sessions (chit-chat) are distill-only —
+/// an empty distillation is the correct outcome and writes nothing, so raw
+/// noise no longer dilutes BM25. HEAVY sessions (long/detailed) are
+/// dual-written: raw turns (numbers and lists survive verbatim) plus the
+/// distilled items (clean retrieval entry points). LLM FAILURE always falls
+/// back to raw for that session — no conversation data is ever dropped.
+/// When no Distiller is configured at all, the whole persona falls back to
+/// raw.
+///
+/// Idempotent at the bench level: any pre-existing distill edges for this
+/// persona skip ingest entirely (item-level idempotency lives in
+/// `record_distilled`).
+async fn ingest_persona_distill(
+    store: &CausalStore,
+    distiller: Option<&Distiller>,
+    persona: &str,
+    sessions: &[MemoraSession],
+    concurrency: usize,
+) -> Result<DistillIngestStats> {
+    let mut stats = DistillIngestStats {
+        sessions: sessions.len(),
+        ..Default::default()
+    };
+
+    let existing: i64 = store.with_conn(|c| {
+        Ok(c.query_row(
+            "SELECT COUNT(*) FROM causal_edges WHERE task_tag = ?1 AND discovered_by = 'distill'",
+            rusqlite::params![persona],
+            |r| r.get(0),
+        )?)
+    })?;
+    if existing > 0 {
+        stats.skipped_existing = true;
+        return Ok(stats);
+    }
+
+    let Some(distiller) = distiller else {
+        eprintln!(
+            "warn: no Distiller configured (DEEPSEEK_API_KEY unset); raw-ingesting {persona}"
+        );
+        stats.raw_chunks_written = ingest_persona(store, persona, sessions)?;
+        stats.sessions_fallback_raw = sessions.len();
+        return Ok(stats);
+    };
+
+    // Distill sessions with bounded concurrency; `buffered` keeps results in
+    // session order for the sequential record phase below.
+    let futures = sessions.iter().map(|session| {
+        let turns: Vec<(String, String)> = session
+            .conversation
+            .iter()
+            .map(|t| {
+                let role = match t.speaker.as_str() {
+                    "user_agent" => "user",
+                    "ai_agent" => "assistant",
+                    other => other,
+                };
+                (role.to_string(), t.message.clone())
+            })
+            .collect();
+        let date = session.date.clone();
+        async move { (distiller.distill_session(&date, &turns).await, 1usize) }
+    });
+    let results: Vec<(Result<Vec<causal_memory::distill::MemoryItem>>, usize)> =
+        futures::stream::iter(futures)
+            .buffered(concurrency)
+            .collect()
+            .await;
+    stats.llm_calls = results.iter().map(|(_, n)| n).sum();
+
+    // Record strictly in session order.
+    for (session, (result, _)) in sessions.iter().zip(results) {
+        let light = is_light_session(session);
+        match result {
+            Ok(items) if !items.is_empty() => {
+                if !light {
+                    // Heavy session: dual write. Raw turns preserve the
+                    // quantitative detail (totals, prices, lists) that
+                    // distillation compresses away; distilled items stay
+                    // the clean retrieval entry points.
+                    stats.sessions_dual_write += 1;
+                    stats.raw_chunks_written += ingest_session_raw(store, persona, session)?;
+                }
+                stats.sessions_distilled += 1;
+                for it in &items {
+                    let out = store.record_distilled(it, Some(persona))?;
+                    if out.duplicate {
+                        stats.items_duplicate += 1;
+                    } else {
+                        stats.items_recorded += 1;
+                    }
+                    stats.superseded_invalidations += out.invalidated_edge_ids.len();
+                }
+            }
+            Ok(_) if light => {
+                // Chit-chat the distiller judged memory-free: that IS the
+                // correct outcome. Writing the raw turns anyway (round-1
+                // behavior) dumped ~1.3k noise chunks into the DB and
+                // diluted BM25 for the real items.
+                stats.sessions_light_empty += 1;
+            }
+            Ok(_) => {
+                // Heavy session with an empty distillation: keep the raw
+                // turns (evaluation questions can hinge on details the
+                // distiller dropped).
+                stats.raw_chunks_written += ingest_session_raw(store, persona, session)?;
+            }
+            Err(e) => {
+                eprintln!(
+                    "warn: distill failed for session {} ({e}); raw-ingesting it",
+                    session.session_id
+                );
+                stats.sessions_fallback_raw += 1;
+                stats.raw_chunks_written += ingest_session_raw(store, persona, session)?;
+            }
+        }
+    }
+    Ok(stats)
 }
 
 // ---------------------------------------------------------------------------
@@ -462,8 +654,42 @@ fn retrieve(
     store.search_causal_bm25(Some(persona), question, topk)
 }
 
+/// History-intent keywords: when the question explicitly asks about the
+/// past or about changes, retraction records ("Removed X", "no longer
+/// likes X", "Cancelled/superseded: X") are exactly the evidence needed
+/// and must stay in the prompt.
+const HISTORY_INTENT_MARKERS: [&str; 11] = [
+    "what changed",
+    "history",
+    "previously",
+    "used to",
+    "removed",
+    "deleted",
+    "cancelled",
+    "canceled",
+    "anymore",
+    "no longer",
+    "before",
+];
+
+/// True when the question asks about history/changes rather than current
+/// state.
+fn asks_about_history(question: &str) -> bool {
+    let lower = question.to_lowercase();
+    HISTORY_INTENT_MARKERS.iter().any(|m| lower.contains(m))
+}
+
 /// Memory lines for the answer prompt, deduplicated by chunk id.
-fn memory_lines(entries: &[CausalEntry]) -> String {
+///
+/// Round-2c FAA fix: for current-state questions, retraction RECORDS
+/// ("Removed X from the list", "User no longer likes X", negation
+/// memories) are filtered out. The Memora forgetting judge counts ANY
+/// mention of a deleted item — even "X was removed on 06-03" — as a
+/// failure, and deepseek kept volunteering those records whenever they
+/// were in context. They remain stored and retrievable; they are only
+/// withheld from the answer prompt unless the question asks about history.
+fn memory_lines(entries: &[CausalEntry], question: &str) -> String {
+    let history = asks_about_history(question);
     let mut seen = std::collections::HashSet::new();
     let mut lines = Vec::new();
     for e in entries {
@@ -471,7 +697,9 @@ fn memory_lines(entries: &[CausalEntry]) -> String {
             (&e.decision_id, &e.decision_text),
             (&e.outcome_id, &e.outcome_text),
         ] {
-            if seen.insert(id.clone()) {
+            if seen.insert(id.clone())
+                && (history || !causal_memory::store::is_retraction_record(text))
+            {
                 lines.push(format!("- {text}"));
             }
         }
@@ -783,7 +1011,7 @@ async fn answer_question(
     topk: usize,
 ) -> ResultRow {
     let retrieved = retrieve(store, persona, &q.question, topk).unwrap_or_default();
-    let memories = memory_lines(&retrieved);
+    let memories = memory_lines(&retrieved, &q.question);
     let memories_retrieved = retrieved.len();
 
     let base_row = |model_response: String, error: Option<String>| ResultRow {
@@ -908,6 +1136,9 @@ struct PersonaSummary {
     forgetting_absence_correct: usize,
     forgetting_absence_accuracy: Option<f64>,
     by_task_type: BTreeMap<String, TaskTypeStats>,
+    /// Distill-mode ingest statistics (None for raw ingest).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    distill_ingest: Option<DistillIngestStats>,
 }
 
 #[derive(Serialize)]
@@ -920,6 +1151,8 @@ struct Summary {
     judge_model: String,
     temperature: f32,
     topk: usize,
+    /// "raw" | "distill" — how sessions were ingested.
+    ingest: String,
     memora_root: String,
     /// Protocol note: the published Table 3 numbers use a 3-judge majority
     /// vote (openai/gpt-4.1, anthropic/claude-haiku-4.5, google/gemini-2.5-flash
@@ -1005,6 +1238,7 @@ fn aggregate_persona(persona: &str, rows: &[ResultRow]) -> PersonaSummary {
             .iter()
             .map(|(t, rs)| (t.clone(), task_stats(rs)))
             .collect(),
+        distill_ingest: None,
     }
 }
 
@@ -1032,6 +1266,9 @@ struct Args {
     out_dir: PathBuf,
     topk: usize,
     concurrency: usize,
+    /// "raw" (default) = every turn becomes a chunk; "distill" = LLM
+    /// distillation per session via `causal_memory::distill`.
+    ingest: String,
 }
 
 fn parse_args(argv: &[String]) -> Result<Option<Args>> {
@@ -1049,6 +1286,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
     let mut out_dir = PathBuf::from("benches/memora/results");
     let mut topk = 10usize;
     let mut concurrency = 8usize;
+    let mut ingest = "raw".to_string();
 
     let mut i = 1;
     let take = |i: &mut usize, flag: &str| -> Result<String> {
@@ -1067,6 +1305,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
             "--out" => out_dir = PathBuf::from(take(&mut i, "--out")?),
             "--topk" => topk = take(&mut i, "--topk")?.parse()?,
             "--concurrency" => concurrency = take(&mut i, "--concurrency")?.parse()?,
+            "--ingest" => ingest = take(&mut i, "--ingest")?,
             other => anyhow::bail!("unknown argument {other:?}"),
         }
         i += 1;
@@ -1075,6 +1314,9 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
     let scale = scale.ok_or_else(|| anyhow!("--scale is required"))?;
     if !["weekly", "monthly", "quarterly"].contains(&scale.as_str()) {
         anyhow::bail!("--scale must be weekly|monthly|quarterly, got {scale:?}");
+    }
+    if !["raw", "distill"].contains(&ingest.as_str()) {
+        anyhow::bail!("--ingest must be raw|distill, got {ingest:?}");
     }
     Ok(Some(Args {
         memora_root,
@@ -1085,11 +1327,13 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
         out_dir,
         topk,
         concurrency,
+        ingest,
     }))
 }
 
 async fn run_persona(
     cfg: &LlmConfig,
+    distiller: Option<&Distiller>,
     args: &Args,
     persona: &str,
     run_id: &str,
@@ -1107,16 +1351,53 @@ async fn run_persona(
         selected.len()
     );
 
-    let db_path = args.db_dir.join(&args.scale).join(format!("{persona}.db"));
+    // Distill runs get their own DB file so the raw baseline DB is never
+    // polluted and the two modes can be compared side by side.
+    let db_name = match args.ingest.as_str() {
+        "distill" => format!("{persona}_distill.db"),
+        _ => format!("{persona}.db"),
+    };
+    let db_path = args.db_dir.join(&args.scale).join(db_name);
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let store =
         CausalStore::open(&db_path).with_context(|| format!("opening {}", db_path.display()))?;
 
-    let n = ingest_persona(&store, persona, &sessions)
-        .with_context(|| format!("ingesting persona {persona}"))?;
-    eprintln!("ingest {persona}: {n} chunks");
+    let mut distill_stats = None;
+    match args.ingest.as_str() {
+        "distill" => {
+            let stats =
+                ingest_persona_distill(&store, distiller, persona, &sessions, args.concurrency)
+                    .await
+                    .with_context(|| format!("distill-ingesting persona {persona}"))?;
+            eprintln!(
+                "ingest {persona} (distill): {}/{} sessions distilled ({} dual-write, \
+                 {} light-empty dropped), {} fallback-raw, \
+                 {} items (+{} dup), {} superseded, {} LLM calls{}",
+                stats.sessions_distilled,
+                stats.sessions,
+                stats.sessions_dual_write,
+                stats.sessions_light_empty,
+                stats.sessions_fallback_raw,
+                stats.items_recorded,
+                stats.items_duplicate,
+                stats.superseded_invalidations,
+                stats.llm_calls,
+                if stats.skipped_existing {
+                    " [skipped: existing distill DB]"
+                } else {
+                    ""
+                },
+            );
+            distill_stats = Some(stats);
+        }
+        _ => {
+            let n = ingest_persona(&store, persona, &sessions)
+                .with_context(|| format!("ingesting persona {persona}"))?;
+            eprintln!("ingest {persona}: {n} chunks");
+        }
+    }
 
     let done = Arc::new(AtomicUsize::new(0));
     let total = selected.len();
@@ -1157,12 +1438,30 @@ async fn run_persona(
     std::fs::write(&jsonl_path, out)?;
     eprintln!("wrote {}", jsonl_path.display());
 
-    Ok(aggregate_persona(persona, &rows))
+    let mut summary = aggregate_persona(persona, &rows);
+    summary.distill_ingest = distill_stats;
+    Ok(summary)
 }
 
 async fn run(args: Args) -> Result<()> {
     let cfg = LlmConfig::from_env()?;
     eprintln!("LLM: {} @ {}", cfg.model, cfg.api_base);
+
+    // Distill mode: one extra LLM call per session, reusing the core
+    // `causal_memory::distill::Distiller` (its own env config; absent →
+    // per-session raw fallback inside ingest_persona_distill).
+    let distiller = match args.ingest.as_str() {
+        "distill" => {
+            let d = Distiller::from_env();
+            if d.is_none() {
+                eprintln!(
+                    "warn: Distiller::from_env() found no API key; falling back to raw ingest"
+                );
+            }
+            d
+        }
+        _ => None,
+    };
 
     let personas = match &args.persona {
         Some(p) => vec![p.clone()],
@@ -1177,7 +1476,7 @@ async fn run(args: Args) -> Result<()> {
     let run_id = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
     let mut persona_summaries = Vec::new();
     for persona in &personas {
-        let summary = run_persona(&cfg, &args, persona, &run_id).await?;
+        let summary = run_persona(&cfg, distiller.as_ref(), &args, persona, &run_id).await?;
         persona_summaries.push(summary);
     }
 
@@ -1190,6 +1489,7 @@ async fn run(args: Args) -> Result<()> {
         judge_model: cfg.model.clone(),
         temperature: LLM_TEMPERATURE,
         topk: args.topk,
+        ingest: args.ingest.clone(),
         memora_root: args.memora_root.display().to_string(),
         judge_protocol: "single-judge (deepseek-chat, temp=0); official Table 3 uses \
                          3-judge majority vote via OpenRouter — NOT directly comparable"
@@ -1213,6 +1513,12 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(args) => {
+            // Distilling a whole session needs more than the core default
+            // 8s HTTP timeout (which is tuned for the synchronous MCP path).
+            if args.ingest == "distill" && std::env::var("CAUSAL_MEMORY_HTTP_TIMEOUT_SECS").is_err()
+            {
+                std::env::set_var("CAUSAL_MEMORY_HTTP_TIMEOUT_SECS", "60");
+            }
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(run(args))
         }
@@ -1323,6 +1629,142 @@ mod tests {
     }
 
     // -- ingest --
+
+    #[test]
+    fn light_session_classification() {
+        // Short chit-chat: light (total < 1500 chars).
+        let light: MemoraSession = serde_json::from_str(tiny_session_json()).unwrap();
+        assert!(is_light_session(&light));
+
+        // Long content: heavy even though turns are few.
+        let heavy_json = r#"{
+            "session_id": 9, "operation": "add", "date": "2025-06-09",
+            "conversation": [
+                {"turn": 1, "speaker": "user_agent", "message": "LONG"},
+                {"turn": 2, "speaker": "ai_agent", "message": "LONG"}
+            ]
+        }"#;
+        let long_msg = "x".repeat(1200);
+        let heavy_text = heavy_json.replace("\"LONG\"", &format!("\"{long_msg}\""));
+        let heavy: MemoraSession = serde_json::from_str(&heavy_text).unwrap();
+        assert!(!is_light_session(&heavy), "2400 chars total => heavy");
+
+        // Many turns clearing the total bar but tiny on average: light.
+        let mut turns = String::new();
+        for i in 1..=20 {
+            if i > 1 {
+                turns.push(',');
+            }
+            // Exactly 79 chars: 20 turns x 79 = 1580 >= 1500 total, avg 79 < 80.
+            let msg = format!("{:79}", format!("small talk {i}"));
+            turns.push_str(&format!(
+                "{{\"turn\": {i}, \"speaker\": \"user_agent\", \"message\": \"{msg}\"}}"
+            ));
+        }
+        let many_json = format!(
+            "{{\"session_id\": 10, \"operation\": null, \"date\": \"2025-06-10\", \"conversation\": [{turns}]}}"
+        );
+        let many: MemoraSession = serde_json::from_str(&many_json).unwrap();
+        let total: usize = many.conversation.iter().map(|t| t.message.len()).sum();
+        assert!(
+            total >= LIGHT_SESSION_TOTAL_CHARS,
+            "fixture must clear total"
+        );
+        assert!(is_light_session(&many), "avg < 80 chars => light");
+
+        // Empty conversation: light (nothing to preserve anyway).
+        let empty: MemoraSession = serde_json::from_str(
+            r#"{"session_id": 11, "operation": null, "date": "2025-06-11", "conversation": []}"#,
+        )
+        .unwrap();
+        assert!(is_light_session(&empty));
+    }
+
+    #[test]
+    fn memory_lines_filter_retraction_records_unless_history_question() {
+        use causal_memory::distill::{ItemKind, MemoryItem};
+        let rec = |text: &str, date: &str| MemoryItem {
+            kind: ItemKind::Preference,
+            text: text.into(),
+            date: Some(date.into()),
+            supersedes: None,
+        };
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .record_distilled(
+                &rec(
+                    "User likes music from the 2010s, especially electronic pop.",
+                    "2025-06-05",
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        // Auto-supersedes (no hint): kills the outdated item, spawns a
+        // negation memory — both retraction records.
+        store
+            .record_distilled(
+                &rec(
+                    "User no longer likes music from the 2010s as of 2025-06-05.",
+                    "2025-06-05",
+                ),
+                Some("p1"),
+            )
+            .unwrap();
+        store
+            .record_distilled(
+                &rec("User now prefers upbeat electronic music.", "2025-06-06"),
+                Some("p1"),
+            )
+            .unwrap();
+
+        let entries = retrieve(&store, "p1", "music preference", 10).unwrap();
+
+        // Current-state question: retraction records withheld, current
+        // preference kept.
+        let lines = memory_lines(&entries, "What kind of music do I like?");
+        assert!(lines.contains("upbeat electronic"), "{lines}");
+        assert!(!lines.contains("no longer"), "{lines}");
+        assert!(!lines.contains("Cancelled/superseded"), "{lines}");
+
+        // History question: retraction records are the evidence — kept.
+        let lines = memory_lines(&entries, "What changed in my music taste?");
+        assert!(
+            lines.contains("no longer") || lines.contains("Cancelled/superseded"),
+            "{lines}"
+        );
+    }
+
+    #[test]
+    fn history_intent_detection() {
+        assert!(!asks_about_history(
+            "What tasks remain on my todo list this week?"
+        ));
+        assert!(!asks_about_history("Can you suggest me a movie?"));
+        assert!(asks_about_history("Which tasks were removed from my list?"));
+        assert!(asks_about_history("What changed in my music taste?"));
+        assert!(asks_about_history("What music did I previously like?"));
+    }
+
+    #[test]
+    fn distill_ingest_without_distiller_falls_back_to_raw() {
+        let session: MemoraSession = serde_json::from_str(tiny_session_json()).unwrap();
+        let store = CausalStore::open_in_memory().unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let stats = rt
+            .block_on(ingest_persona_distill(
+                &store,
+                None,
+                "p1",
+                std::slice::from_ref(&session),
+                4,
+            ))
+            .unwrap();
+        assert_eq!(stats.sessions_fallback_raw, 1);
+        assert_eq!(stats.raw_chunks_written, 4);
+        assert_eq!(stats.llm_calls, 0);
+        // Raw fallback produces the same turn edges as raw ingest.
+        assert_eq!(store.all_valid_edges().unwrap().len(), 3);
+    }
 
     #[test]
     fn ingest_writes_chunks_edges_and_is_idempotent() {

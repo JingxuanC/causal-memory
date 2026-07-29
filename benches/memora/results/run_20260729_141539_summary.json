@@ -1,0 +1,80 @@
+{
+  "run_id": "20260729_141539",
+  "date": "2026-07-29T14:16:38.116393+00:00",
+  "git_commit": "41340a7",
+  "scale": "weekly",
+  "model": "deepseek-chat",
+  "judge_model": "deepseek-chat",
+  "temperature": 0.0,
+  "topk": 10,
+  "ingest": "distill",
+  "memora_root": "/Users/hjx/project/memora",
+  "judge_protocol": "single-judge (deepseek-chat, temp=0); official Table 3 uses 3-judge majority vote via OpenRouter — NOT directly comparable",
+  "personas": [
+    {
+      "persona": "software_engineer",
+      "total_questions": 15,
+      "total_eval_questions": 71,
+      "overall_accuracy": 0.4647887323943662,
+      "fama": 19.936507936507937,
+      "memory_presence_total": 44,
+      "memory_presence_correct": 15,
+      "memory_presence_accuracy": 0.3409090909090909,
+      "forgetting_absence_total": 27,
+      "forgetting_absence_correct": 18,
+      "forgetting_absence_accuracy": 0.6666666666666666,
+      "by_task_type": {
+        "Reasoning": {
+          "total_questions": 5,
+          "total_eval_questions": 9,
+          "correct_count": 1,
+          "accuracy": 0.1111111111111111,
+          "memory_presence_total": 9,
+          "memory_presence_correct": 1,
+          "memory_presence_accuracy": 0.1111111111111111,
+          "forgetting_absence_total": 0,
+          "forgetting_absence_correct": 0,
+          "forgetting_absence_accuracy": null,
+          "fama": 6.666666666666667
+        },
+        "Recommending": {
+          "total_questions": 5,
+          "total_eval_questions": 26,
+          "correct_count": 15,
+          "accuracy": 0.5769230769230769,
+          "memory_presence_total": 15,
+          "memory_presence_correct": 9,
+          "memory_presence_accuracy": 0.6,
+          "forgetting_absence_total": 11,
+          "forgetting_absence_correct": 6,
+          "forgetting_absence_accuracy": 0.5454545454545454,
+          "fama": 37.142857142857146
+        },
+        "Remembering": {
+          "total_questions": 5,
+          "total_eval_questions": 36,
+          "correct_count": 17,
+          "accuracy": 0.4722222222222222,
+          "memory_presence_total": 20,
+          "memory_presence_correct": 5,
+          "memory_presence_accuracy": 0.25,
+          "forgetting_absence_total": 16,
+          "forgetting_absence_correct": 12,
+          "forgetting_absence_accuracy": 0.75,
+          "fama": 16.0
+        }
+      },
+      "distill_ingest": {
+        "sessions": 163,
+        "sessions_distilled": 84,
+        "sessions_fallback_raw": 79,
+        "items_recorded": 125,
+        "items_duplicate": 0,
+        "superseded_invalidations": 14,
+        "raw_chunks_written": 1301,
+        "llm_calls": 163,
+        "skipped_existing": false
+      }
+    }
+  ]
+}
