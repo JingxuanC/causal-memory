@@ -21,6 +21,11 @@
 
 ## Direction: complete memory system (planned phases)
 
+Full design: [docs/unified-memory-design.md](docs/unified-memory-design.md)
+(fact layer schema + 3 new MCP tools + LLM distill ingest + 4.5-day plan;
+§5.1 reconciles this direction with the OpenViking "stay a causal layer"
+argument — lightweight self-built fact layer, pluggable storage substrate).
+
 - [ ] **Fact/preference layer** — subject–predicate–object edges with validity
   intervals, reusing the existing contradiction/invalidation machinery
   ("user switched to pnpm" auto-invalidates "user uses npm"); embedding + BM25
@@ -38,6 +43,20 @@
   LongMemEval multi-session 32.3%)
 - [ ] **Q-value dynamics** — MemRL/MemQ-style dynamic utility replaces static
   confidence as the primary edge weight
+
+Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
+
+- [ ] **Triple-criterion GC** — prune only when structurally weak AND dormant
+  AND zero recent access (HeLa-Mem adaptive forgetting; avoids deleting old
+  but still-active edges)
+- [ ] **Flip-path marking** — tag results as direct-seed vs spreading-surfaced
+  so upper layers can do Top-k ∪ Top-m unions (HeLa-Mem dual-path retrieval)
+- [ ] **Layered loading + token budget** — L0 summary / L1 overview / L2 full
+  text on retrieval results (OpenViking pattern); strict `max_tokens` control
+- [ ] **Formal ablation** — ablate SWR / spreading / `prevented` once each and
+  quantify contributions (HeLa-Mem ablation analogue; strengthens the paper)
+- [ ] **Token-efficiency benchmark** — measure causal-memory token cost per
+  query, compare against OpenViking's 34–91% savings claim
 
 ## Current state — v0.9.0+ (main)
 
