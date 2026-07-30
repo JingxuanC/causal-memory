@@ -4,6 +4,7 @@ pub mod consolidate;
 pub mod distill;
 pub mod embed;
 pub mod extractor;
+pub mod hippocampus;
 pub mod llm;
 pub mod migrate;
 pub mod patterns;
