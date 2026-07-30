@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use causal_memory::distill::{Distiller, ItemKind};
 use causal_memory::store::{CausalEntry, CausalStore};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use futures::StreamExt;
@@ -74,6 +75,9 @@ fn usage() {
     eprintln!("  --out DIR           results dir (default: benches/locomo/results)");
     eprintln!("  --topk N            retrieved memories per question (default: 10)");
     eprintln!("  --concurrency N     parallel questions (default: 8)");
+    eprintln!("  --ingest MODE       raw (default) | distill (raw + LLM-distilled facts/");
+    eprintln!("                      episodes on top; separate *_distill.db)");
+    eprintln!("  --ingest-only       ingest (+ distill) and exit; skip QA");
     eprintln!();
     eprintln!("compact options: --data PATH (required) [--conv N] [--compact K] (default 5)");
     eprintln!("  [--limit Q] [--concurrency N] [--out DIR] (default benches/locomo/results)");
@@ -536,6 +540,157 @@ fn parse_judge_output(raw: &str) -> Option<(Verdict, String)> {
 }
 
 // ---------------------------------------------------------------------------
+// Distill-mode ingest
+// ---------------------------------------------------------------------------
+
+/// Ingest mode: `raw` (turn chunks + temporal edges only, the frozen-protocol
+/// baseline) or `distill` (raw PLUS an LLM distillation pass: facts → the
+/// fact layer, lessons/events → distilled causal edges). Distill runs use
+/// separate `*_distill.db` files so the raw baseline DBs stay intact.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum IngestMode {
+    Raw,
+    Distill,
+}
+
+impl IngestMode {
+    fn as_str(&self) -> &'static str {
+        match self {
+            IngestMode::Raw => "raw",
+            IngestMode::Distill => "distill",
+        }
+    }
+}
+
+/// Statistics of one conversation's distillation pass (auditable in the run
+/// summary, same discipline as the Memora harness).
+#[derive(Debug, Default, Clone, Serialize)]
+struct DistillStats {
+    sessions: usize,
+    llm_calls: usize,
+    facts_recorded: usize,
+    episodes_recorded: usize,
+    episodes_duplicate: usize,
+    facts_retired: usize,
+    superseded_invalidations: usize,
+    /// True when a pre-existing distill pass was detected and skipped.
+    skipped_existing: bool,
+}
+
+/// Session date as "YYYY-MM-DD" for the distiller (the raw LoCoMo
+/// `session_N_date_time` parses to a full timestamp; distill items carry
+/// only the date).
+fn session_date_str(session: &Session) -> String {
+    let base = session_base_time(session);
+    DateTime::from_timestamp(base, 0)
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .unwrap_or_default()
+}
+
+/// Distill every session of the conversation into the store.
+///
+/// Bounded-concurrency LLM calls, recorded strictly in session order so a
+/// later session's `supersedes` always sees the earlier items. Routing:
+/// Fact/Preference → the fact layer (`record_fact`, scope "user" — the DB is
+/// already per-conversation) with supersedes-driven retirement via
+/// `retire_facts_by_hint`; Lesson/Event → `record_distilled` (its own
+/// supersedes machinery soft-invalidates outdated edges). Raw turn chunks
+/// are always ingested as well (dual write): LoCoMo conversations are all
+/// detail-heavy, and the evidence-id protocol needs the raw chunks.
+///
+/// Idempotent at the conversation level: pre-existing distill edges skip the
+/// pass entirely (item-level idempotency lives in record_distilled /
+/// record_fact's upsert).
+async fn distill_conversation(
+    store: &CausalStore,
+    distiller: Option<&Distiller>,
+    conv: &LocomoConversation,
+    concurrency: usize,
+) -> Result<DistillStats> {
+    let sessions = conv.sessions()?;
+    let mut stats = DistillStats {
+        sessions: sessions.len(),
+        ..Default::default()
+    };
+
+    let existing: i64 = store.with_conn(|c| {
+        Ok(c.query_row(
+            "SELECT COUNT(*) FROM causal_edges WHERE discovered_by = 'distill'",
+            [],
+            |r| r.get(0),
+        )?)
+    })?;
+    if existing > 0 {
+        stats.skipped_existing = true;
+        return Ok(stats);
+    }
+
+    let Some(distiller) = distiller else {
+        eprintln!("warn: no Distiller configured (DEEPSEEK_API_KEY unset); skipping distill pass");
+        return Ok(stats);
+    };
+
+    let futures = sessions.iter().map(|session| {
+        let turns: Vec<(String, String)> = session
+            .turns
+            .iter()
+            .map(|t| (t.speaker.clone(), t.text.clone()))
+            .collect();
+        let date = session_date_str(session);
+        async move { distiller.distill_session(&date, &turns).await }
+    });
+    let results: Vec<Result<Vec<causal_memory::distill::MemoryItem>>> =
+        futures::stream::iter(futures)
+            .buffered(concurrency)
+            .collect()
+            .await;
+    stats.llm_calls = results.len();
+
+    // Record strictly in session order.
+    for (session, result) in sessions.iter().zip(results) {
+        let items = match result {
+            Ok(items) => items,
+            Err(e) => {
+                // Raw chunks for this session are already ingested, so no
+                // data is lost; the pass continues with the next session.
+                eprintln!(
+                    "warn: distill failed for session {} ({e}); raw chunks already cover it",
+                    session.number
+                );
+                continue;
+            }
+        };
+        for item in &items {
+            match item.kind {
+                ItemKind::Fact | ItemKind::Preference => {
+                    let kind = match item.kind {
+                        ItemKind::Fact => "fact",
+                        ItemKind::Preference => "preference",
+                        _ => unreachable!(),
+                    };
+                    store.record_fact(kind, &item.text, "user", "distill", 0.8)?;
+                    stats.facts_recorded += 1;
+                    if let Some(hint) = item.supersedes.as_deref() {
+                        stats.facts_retired +=
+                            store.retire_facts_by_hint(kind, "user", hint).unwrap_or(0);
+                    }
+                }
+                ItemKind::Lesson | ItemKind::Event => {
+                    let out = store.record_distilled(item, None)?;
+                    if out.duplicate {
+                        stats.episodes_duplicate += 1;
+                    } else {
+                        stats.episodes_recorded += 1;
+                    }
+                    stats.superseded_invalidations += out.invalidated_edge_ids.len();
+                }
+            }
+        }
+    }
+    Ok(stats)
+}
+
+// ---------------------------------------------------------------------------
 // Run
 // ---------------------------------------------------------------------------
 
@@ -548,6 +703,10 @@ struct Args {
     out_dir: PathBuf,
     topk: usize,
     concurrency: usize,
+    ingest: IngestMode,
+    /// Ingest (+ distill) only; skip the QA phase. Used to warm the
+    /// per-conversation distill DBs in cheap chunks before one full QA run.
+    ingest_only: bool,
 }
 
 fn parse_args(argv: &[String]) -> Result<Option<Args>> {
@@ -566,6 +725,8 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
     let mut out_dir = PathBuf::from("benches/locomo/results");
     let mut topk = 10usize;
     let mut concurrency = 8usize;
+    let mut ingest = IngestMode::Raw;
+    let mut ingest_only = false;
 
     let mut i = 1;
     let take = |i: &mut usize, flag: &str| -> Result<String> {
@@ -590,6 +751,14 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
             "--out" => out_dir = PathBuf::from(take(&mut i, "--out")?),
             "--topk" => topk = take(&mut i, "--topk")?.parse()?,
             "--concurrency" => concurrency = take(&mut i, "--concurrency")?.parse()?,
+            "--ingest" => {
+                ingest = match take(&mut i, "--ingest")?.as_str() {
+                    "raw" => IngestMode::Raw,
+                    "distill" => IngestMode::Distill,
+                    other => anyhow::bail!("bad --ingest {other:?}; expected raw|distill"),
+                }
+            }
+            "--ingest-only" => ingest_only = true,
             other => anyhow::bail!("unknown argument {other:?}"),
         }
         i += 1;
@@ -607,6 +776,8 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
         out_dir,
         topk,
         concurrency,
+        ingest,
+        ingest_only,
     }))
 }
 
@@ -642,6 +813,13 @@ struct Summary {
     judge_model: String,
     temperature: f32,
     topk: usize,
+    /// Ingest mode of this run ("raw" | "distill"); distill runs also query
+    /// the fact layer in the answer prompt (documented deviation from the
+    /// causal-only frozen protocol — that comparison is the point).
+    ingest: String,
+    /// Aggregated distillation-pass statistics (distill mode only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    distill_ingest: Option<DistillStats>,
     data: String,
     conversations: Vec<usize>,
     total_questions: usize,
@@ -709,6 +887,7 @@ async fn answer_question(
     conv_idx: usize,
     qa: &Qa,
     topk: usize,
+    with_facts: bool,
 ) -> ResultRow {
     let retrieved = retrieve(store, &qa.question, topk).unwrap_or_default();
     let retrieved_ids = retrieved_chunk_ids(&retrieved);
@@ -716,7 +895,24 @@ async fn answer_question(
         .evidence
         .iter()
         .any(|e| retrieved_ids.iter().any(|r| r == e));
-    let memories = memory_lines(&retrieved);
+    // Distill mode additionally queries the fact layer (BM25, same topk) and
+    // puts fact lines FIRST: they are the high-precision layer for the
+    // factual QA slice the causal-only baseline conceded. Evidence-hit stays
+    // computed from causal entries only (facts carry no dia_ids) — protocol
+    // unchanged.
+    let memories = if with_facts {
+        let facts = store
+            .search_facts_bm25(&qa.question, None, topk)
+            .unwrap_or_default();
+        let mut lines: Vec<String> = facts.iter().map(|f| format!("- {}", f.value)).collect();
+        let causal = memory_lines(&retrieved);
+        if !causal.is_empty() {
+            lines.push(causal);
+        }
+        lines.join("\n")
+    } else {
+        memory_lines(&retrieved)
+    };
     let memories = if memories.is_empty() {
         "(no memories retrieved)".to_string()
     } else {
@@ -804,6 +1000,7 @@ async fn answer_all(
     qas: Vec<Qa>,
     topk: usize,
     concurrency: usize,
+    with_facts: bool,
 ) -> Vec<ResultRow> {
     let done = Arc::new(AtomicUsize::new(0));
     futures::stream::iter(qas.into_iter().map(|qa| {
@@ -811,7 +1008,7 @@ async fn answer_all(
         let store = store.clone();
         let done = done.clone();
         async move {
-            let row = answer_question(&cfg, &store, conv_idx, &qa, topk).await;
+            let row = answer_question(&cfg, &store, conv_idx, &qa, topk, with_facts).await;
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d.is_multiple_of(50) {
                 eprintln!("conv {conv_idx}: {d} questions done");
@@ -853,16 +1050,53 @@ async fn run(args: Args) -> Result<()> {
     let mut overall = Acc::new();
     let mut per_cat: BTreeMap<u32, Acc> = BTreeMap::new();
     let mut ran_convs = Vec::new();
+    let mut distill_totals = DistillStats::default();
 
     for conv_idx in conv_indices {
         let conv = &conversations[conv_idx];
-        let db_path = args.db_dir.join(format!("conv_{conv_idx}.db"));
+        // Distill mode uses separate DB files so the raw baseline DBs (and
+        // their frozen-protocol results) stay intact and reproducible.
+        let db_path = match args.ingest {
+            IngestMode::Raw => args.db_dir.join(format!("conv_{conv_idx}.db")),
+            IngestMode::Distill => args.db_dir.join(format!("conv_{conv_idx}_distill.db")),
+        };
         let store = CausalStore::open(&db_path)
             .with_context(|| format!("opening {}", db_path.display()))?;
 
         let n = ingest_conversation(&store, conv)
             .with_context(|| format!("ingesting conversation {conv_idx}"))?;
         eprintln!("conv {conv_idx}: {n} chunks in {}", db_path.display());
+
+        let mut distill_stats = None;
+        if args.ingest == IngestMode::Distill {
+            let distiller = Distiller::from_env();
+            let stats = distill_conversation(&store, distiller.as_ref(), conv, args.concurrency)
+                .await
+                .with_context(|| format!("distilling conversation {conv_idx}"))?;
+            eprintln!(
+                "conv {conv_idx}: distill — {} sessions, {} facts ({} retired), {} episodes{}{}",
+                stats.sessions,
+                stats.facts_recorded,
+                stats.facts_retired,
+                stats.episodes_recorded,
+                if stats.skipped_existing {
+                    " (skipped: existing)"
+                } else {
+                    ""
+                },
+                if stats.superseded_invalidations > 0 {
+                    format!(", {} superseded", stats.superseded_invalidations)
+                } else {
+                    String::new()
+                },
+            );
+            distill_stats = Some(stats);
+        }
+
+        if args.ingest_only {
+            eprintln!("conv {conv_idx}: --ingest-only, skipping QA");
+            continue;
+        }
 
         let mut qas: Vec<Qa> = conv
             .qa
@@ -875,8 +1109,17 @@ async fn run(args: Args) -> Result<()> {
         }
         eprintln!("conv {conv_idx}: {} questions", qas.len());
 
-        let rows: Vec<ResultRow> =
-            answer_all(&cfg, &store, conv_idx, qas, args.topk, args.concurrency).await;
+        let with_facts = args.ingest == IngestMode::Distill;
+        let rows: Vec<ResultRow> = answer_all(
+            &cfg,
+            &store,
+            conv_idx,
+            qas,
+            args.topk,
+            args.concurrency,
+            with_facts,
+        )
+        .await;
 
         let jsonl_path = args
             .out_dir
@@ -894,6 +1137,20 @@ async fn run(args: Args) -> Result<()> {
         std::fs::write(&jsonl_path, out)?;
         eprintln!("conv {conv_idx}: wrote {}", jsonl_path.display());
         ran_convs.push(conv_idx);
+        if let Some(s) = distill_stats {
+            distill_totals.sessions += s.sessions;
+            distill_totals.llm_calls += s.llm_calls;
+            distill_totals.facts_recorded += s.facts_recorded;
+            distill_totals.episodes_recorded += s.episodes_recorded;
+            distill_totals.episodes_duplicate += s.episodes_duplicate;
+            distill_totals.facts_retired += s.facts_retired;
+            distill_totals.superseded_invalidations += s.superseded_invalidations;
+        }
+    }
+
+    if args.ingest_only {
+        eprintln!("--ingest-only: all conversations ingested, no QA run");
+        return Ok(());
     }
 
     let summary = Summary {
@@ -904,6 +1161,8 @@ async fn run(args: Args) -> Result<()> {
         judge_model: cfg.model.clone(),
         temperature: LLM_TEMPERATURE,
         topk: args.topk,
+        ingest: args.ingest.as_str().to_string(),
+        distill_ingest: (args.ingest == IngestMode::Distill).then_some(distill_totals),
         data: args.data.display().to_string(),
         conversations: ran_convs,
         total_questions: overall.total,

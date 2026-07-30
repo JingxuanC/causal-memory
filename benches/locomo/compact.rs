@@ -529,6 +529,7 @@ pub(crate) async fn run(args: CompactArgs) -> Result<()> {
             qas.clone(),
             COMPACT_TOPK,
             args.concurrency,
+            false, // compact experiment is causal/text-only; no fact layer
         )
         .await;
         write_rows(&args.out_dir, &run_id, conv_idx, "A", &rows_a)?;
@@ -552,6 +553,7 @@ pub(crate) async fn run(args: CompactArgs) -> Result<()> {
             qas,
             COMPACT_TOPK,
             args.concurrency,
+            false, // compact experiment is causal/text-only; no fact layer
         )
         .await;
         write_rows(&args.out_dir, &run_id, conv_idx, "B", &rows_b)?;

@@ -182,8 +182,8 @@ async fn run_distill(args: &[String]) -> anyhow::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let store = CausalStore::open(&db_path)?;
-    let embedder = causal_memory::embed::EmbedConfig::from_env()
-        .map(causal_memory::embed::Embedder::new);
+    let embedder =
+        causal_memory::embed::EmbedConfig::from_env().map(causal_memory::embed::Embedder::new);
 
     let mut total_facts = 0usize;
     let mut total_episodes = 0usize;
@@ -242,7 +242,8 @@ async fn run_distill(args: &[String]) -> anyhow::Result<()> {
                     };
                     total_facts += 1;
                     if let Some(hint) = item.supersedes.as_deref() {
-                        total_retired += retire_superseded_facts(&store, kind, "user", hint);
+                        total_retired +=
+                            store.retire_facts_by_hint(kind, "user", hint).unwrap_or(0);
                     }
                     // Opportunistic embedding (silent on failure).
                     if let Some(e) = &embedder {
@@ -317,62 +318,9 @@ fn load_session(path: &std::path::Path) -> anyhow::Result<(String, Vec<(String, 
         }
     }
     if skipped > 0 {
-        eprintln!(
-            "⚠️ {}: skipped {skipped} malformed turn(s)",
-            path.display()
-        );
+        eprintln!("⚠️ {}: skipped {skipped} malformed turn(s)", path.display());
     }
     Ok((date, turns))
-}
-
-/// Retire valid facts under (key, scope) whose value matches a supersedes
-/// hint. Ported from the edge layer's supersedes machinery
-/// (store::record_distilled), with its guards:
-/// - thresholds: containment ≥ 0.5 AND ≥ 2 shared tokens (SUPERSEDES_SIM_THRESHOLD
-///   / SUPERSEDES_MIN_SHARED_TOKENS), computed on DEDUPLICATED token sets
-/// - retraction records are never retirement TARGETS (a fact whose text
-///   announces a retraction, e.g. "no longer likes X", must not be killed by
-///   a later hint sharing that vocabulary — double-negation resurrection)
-///
-/// Returns the number retired.
-fn retire_superseded_facts(store: &CausalStore, key: &str, scope: &str, hint: &str) -> usize {
-    use std::collections::HashSet;
-    let hint_tokens: HashSet<String> = causal_memory::patterns::tokenize(hint).into_iter().collect();
-    if hint_tokens.len() < causal_memory::store::SUPERSEDES_MIN_SHARED_TOKENS {
-        return 0;
-    }
-    let Ok(candidates) = store.search_facts_bm25(hint, Some(scope), 10) else {
-        return 0;
-    };
-    let mut retired = 0;
-    for fact in candidates {
-        if fact.key != key {
-            continue;
-        }
-        // Guard: retraction records are never targets (edge-layer parity).
-        let lower = fact.value.to_lowercase();
-        if causal_memory::store::RETRACTION_MARKERS
-            .iter()
-            .any(|m| lower.contains(m))
-        {
-            continue;
-        }
-        let cand_tokens: HashSet<String> = causal_memory::patterns::tokenize(&fact.value)
-            .into_iter()
-            .collect();
-        let shared = hint_tokens.intersection(&cand_tokens).count();
-        if shared < causal_memory::store::SUPERSEDES_MIN_SHARED_TOKENS {
-            continue;
-        }
-        let denom = hint_tokens.len().min(cand_tokens.len());
-        if denom > 0
-            && shared as f64 / denom as f64 >= causal_memory::store::SUPERSEDES_SIM_THRESHOLD
-            && store.invalidate_fact(fact.id).unwrap_or(false)
-        {
-            retired += 1;
-        }
-    }
-    retired
 }
 
 async fn run_judge(args: &[String]) -> anyhow::Result<()> {
@@ -1826,7 +1774,13 @@ mod tests {
     fn test_retire_superseded_facts() {
         let store = CausalStore::open_in_memory().unwrap();
         store
-            .record_fact("preference", "user likes Bonobo coffee beans", "user", "distill", 0.8)
+            .record_fact(
+                "preference",
+                "user likes Bonobo coffee beans",
+                "user",
+                "distill",
+                0.8,
+            )
             .unwrap();
         store
             .record_fact("tech_stack", "Redis 7.2", "user", "distill", 0.8)
@@ -1834,8 +1788,9 @@ mod tests {
 
         // A supersedes hint naming the old preference retires it — the
         // unrelated fact is untouched.
-        let retired =
-            retire_superseded_facts(&store, "preference", "user", "Bonobo coffee beans");
+        let retired = store
+            .retire_facts_by_hint("preference", "user", "Bonobo coffee beans")
+            .unwrap();
         assert_eq!(retired, 1);
         let facts = store.list_facts(None, 10).unwrap();
         assert_eq!(facts.len(), 1);
@@ -1844,19 +1799,29 @@ mod tests {
         // Key isolation: a hint matching a fact under a DIFFERENT key
         // retires nothing.
         store
-            .record_fact("preference", "user likes PostgreSQL 16", "user", "distill", 0.8)
+            .record_fact(
+                "preference",
+                "user likes PostgreSQL 16",
+                "user",
+                "distill",
+                0.8,
+            )
             .unwrap();
-        let retired =
-            retire_superseded_facts(&store, "config", "user", "PostgreSQL 16");
+        let retired = store
+            .retire_facts_by_hint("config", "user", "PostgreSQL 16")
+            .unwrap();
         assert_eq!(retired, 0);
 
         // One-token or weak hints never nuke anything.
-        let retired = retire_superseded_facts(&store, "preference", "user", "PostgreSQL");
+        let retired = store
+            .retire_facts_by_hint("preference", "user", "PostgreSQL")
+            .unwrap();
         assert_eq!(retired, 0);
 
         // Scope isolation: session-scoped retire does not touch user facts.
-        let retired =
-            retire_superseded_facts(&store, "preference", "session", "PostgreSQL 16");
+        let retired = store
+            .retire_facts_by_hint("preference", "session", "PostgreSQL 16")
+            .unwrap();
         assert_eq!(retired, 0);
     }
 }

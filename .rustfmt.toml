@@ -4,5 +4,4 @@ edition = "2021"
 max_width = 100
 use_field_init_shorthand = true
 use_try_shorthand = true
-imports_granularity = "Crate"        # one use per crate, grouped
-group_imports = "StdExternalCrate"   # std → external → crate
+# NOTE: imports_granularity/group_imports are nightly-only; omitted for stable toolchain.

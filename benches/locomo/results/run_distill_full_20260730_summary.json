@@ -1,0 +1,56 @@
+{
+  "run_id": "distill_full_20260730",
+  "aggregated_from": [
+    "20260730_182024",
+    "20260730_182112",
+    "20260730_182133",
+    "20260730_182224",
+    "20260730_182305",
+    "20260730_182352",
+    "20260730_182420",
+    "20260730_182501",
+    "20260730_182538",
+    "20260730_182608"
+  ],
+  "model": "deepseek-chat",
+  "judge_model": "deepseek-chat",
+  "temperature": 0.0,
+  "topk": 10,
+  "ingest": "distill",
+  "data": "benches/locomo/data/locomo10.json",
+  "total_questions": 1986,
+  "correct": 1382,
+  "errors": 0,
+  "accuracy": 0.6959,
+  "evidence_hit_rate": 0.7165,
+  "per_category": {
+    "1": {
+      "total": 282,
+      "correct": 86,
+      "accuracy": 0.305
+    },
+    "2": {
+      "total": 321,
+      "correct": 195,
+      "accuracy": 0.6075
+    },
+    "3": {
+      "total": 96,
+      "correct": 30,
+      "accuracy": 0.3125
+    },
+    "4": {
+      "total": 841,
+      "correct": 661,
+      "accuracy": 0.786
+    },
+    "5": {
+      "total": 446,
+      "correct": 410,
+      "accuracy": 0.9193
+    }
+  },
+  "baseline_run": "run_20260727_165556",
+  "baseline_accuracy": 0.6419939577039275,
+  "baseline_evidence_hit_rate": 0.743705941591138
+}

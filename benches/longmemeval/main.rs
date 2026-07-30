@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use causal_memory::distill::{Distiller, ItemKind};
 use causal_memory::store::{CausalEntry, CausalStore};
 use chrono::NaiveDateTime;
 use futures::StreamExt;
@@ -96,6 +97,9 @@ fn usage() {
     eprintln!("  --out DIR           results dir (default: benches/longmemeval/results)");
     eprintln!("  --topk N            retrieved memories per question (default: 10)");
     eprintln!("  --concurrency N     parallel questions (default: 8)");
+    eprintln!("  --ingest MODE       raw (default) | distill (raw + LLM-distilled facts/");
+    eprintln!("                      episodes on top; separate longmemeval_distill.db)");
+    eprintln!("  --ingest-only       ingest (+ distill) and exit; skip QA");
     eprintln!();
     eprintln!("Env: DEEPSEEK_API_KEY (required), LOCOMO_LLM_API, LOCOMO_LLM_MODEL");
     eprintln!();
@@ -332,6 +336,165 @@ fn ingest_question(store: &CausalStore, q: &LmeQuestion) -> Result<(usize, Vec<S
         }
     }
     Ok((written, evidence))
+}
+
+// ---------------------------------------------------------------------------
+// Distill-mode ingest
+// ---------------------------------------------------------------------------
+
+/// Ingest mode: `raw` (turn chunks + temporal edges only, the baseline) or
+/// `distill` (raw PLUS an LLM distillation pass per haystack session:
+/// facts/preferences → the fact layer scoped to the question_id, lessons/
+/// events → distilled causal edges tagged question_id). Distill runs use a
+/// separate `longmemeval_distill.db` so the raw baseline DB stays intact.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum IngestMode {
+    Raw,
+    Distill,
+}
+
+impl IngestMode {
+    fn as_str(&self) -> &'static str {
+        match self {
+            IngestMode::Raw => "raw",
+            IngestMode::Distill => "distill",
+        }
+    }
+}
+
+/// Statistics of one question's distillation pass (auditable in the summary,
+/// same discipline as the Memora harness).
+#[derive(Debug, Default, Clone, Serialize)]
+struct DistillStats {
+    sessions: usize,
+    llm_calls: usize,
+    facts_recorded: usize,
+    episodes_recorded: usize,
+    episodes_duplicate: usize,
+    facts_retired: usize,
+    superseded_invalidations: usize,
+    /// True when a pre-existing distill pass was detected and skipped.
+    skipped_existing: bool,
+}
+
+/// Haystack session date as "YYYY-MM-DD" for the distiller (the raw
+/// haystack_dates entry parses to a full timestamp; distill items carry only
+/// the date; unparseable dates fall back to the synthetic per-index spacing).
+fn session_date_str(q: &LmeQuestion, s_idx: usize) -> String {
+    let ts = session_base_time(s_idx, q.haystack_dates.get(s_idx).map(String::as_str));
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .unwrap_or_default()
+}
+
+/// Distill every haystack session of one question into the store.
+///
+/// Bounded-concurrency LLM calls, recorded strictly in session order so a
+/// later session's `supersedes` always sees the earlier items. Routing:
+/// Fact/Preference → the fact layer (scope = question_id, so fact retrieval
+/// is hard-scoped to this haystack exactly like the edge retrieval) with
+/// supersedes-driven retirement via `retire_facts_by_hint`; Lesson/Event →
+/// `record_distilled` tagged question_id. Raw turn chunks are always
+/// ingested as well (dual write): 96% of haystack sessions are detail-heavy,
+/// and the evidence-id protocol needs the raw chunks.
+///
+/// Idempotent at the question level: pre-existing distill edges for this
+/// question_id skip the pass (item-level idempotency lives in
+/// record_distilled / record_fact's upsert).
+async fn distill_question(
+    store: &CausalStore,
+    distiller: Option<&Distiller>,
+    q: &LmeQuestion,
+    concurrency: usize,
+) -> Result<DistillStats> {
+    let mut stats = DistillStats {
+        sessions: q.haystack_sessions.len(),
+        ..Default::default()
+    };
+
+    let existing: i64 = store.with_conn(|c| {
+        Ok(c.query_row(
+            "SELECT COUNT(*) FROM causal_edges WHERE task_tag = ?1 AND discovered_by = 'distill'",
+            rusqlite::params![&q.question_id],
+            |r| r.get(0),
+        )?)
+    })?;
+    if existing > 0 {
+        stats.skipped_existing = true;
+        return Ok(stats);
+    }
+
+    let Some(distiller) = distiller else {
+        eprintln!("warn: no Distiller configured (DEEPSEEK_API_KEY unset); skipping distill pass");
+        return Ok(stats);
+    };
+
+    let futures = q
+        .haystack_sessions
+        .iter()
+        .enumerate()
+        .map(|(s_idx, session)| {
+            let date = session_date_str(q, s_idx);
+            let turns: Vec<(String, String)> = session
+                .iter()
+                .map(|t| (t.role.clone(), t.content.clone()))
+                .collect();
+            async move { distiller.distill_session(&date, &turns).await }
+        });
+    let results: Vec<Result<Vec<causal_memory::distill::MemoryItem>>> =
+        futures::stream::iter(futures)
+            .buffered(concurrency)
+            .collect()
+            .await;
+    stats.llm_calls = results.len();
+
+    // Record strictly in session order.
+    for (s_idx, result) in results.into_iter().enumerate() {
+        let items = match result {
+            Ok(items) => items,
+            Err(e) => {
+                // Raw chunks for this session are already ingested, so no
+                // data is lost; the pass continues with the next session.
+                eprintln!(
+                    "warn: distill failed for {} session {} ({e}); raw chunks already cover it",
+                    q.question_id,
+                    s_idx + 1
+                );
+                continue;
+            }
+        };
+        for item in &items {
+            match item.kind {
+                ItemKind::Fact | ItemKind::Preference => {
+                    let kind = match item.kind {
+                        ItemKind::Fact => "fact",
+                        ItemKind::Preference => "preference",
+                        _ => unreachable!(),
+                    };
+                    // v7 namespaced scope: hard-scopes fact retrieval to this
+                    // question's haystack, mirroring the edge task_tag filter.
+                    let fact_scope = format!("lme:{}", q.question_id);
+                    store.record_fact(kind, &item.text, &fact_scope, "distill", 0.8)?;
+                    stats.facts_recorded += 1;
+                    if let Some(hint) = item.supersedes.as_deref() {
+                        stats.facts_retired += store
+                            .retire_facts_by_hint(kind, &fact_scope, hint)
+                            .unwrap_or(0);
+                    }
+                }
+                ItemKind::Lesson | ItemKind::Event => {
+                    let out = store.record_distilled(item, Some(&q.question_id))?;
+                    if out.duplicate {
+                        stats.episodes_duplicate += 1;
+                    } else {
+                        stats.episodes_recorded += 1;
+                    }
+                    stats.superseded_invalidations += out.invalidated_edge_ids.len();
+                }
+            }
+        }
+    }
+    Ok(stats)
 }
 
 // ---------------------------------------------------------------------------
@@ -650,6 +813,10 @@ struct Args {
     out_dir: PathBuf,
     topk: usize,
     concurrency: usize,
+    ingest: IngestMode,
+    /// Ingest (+ distill) only; skip the QA phase. Used to warm the shared
+    /// distill DB in offset/limit chunks before one full QA run.
+    ingest_only: bool,
 }
 
 fn parse_args(argv: &[String]) -> Result<Option<Args>> {
@@ -667,6 +834,8 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
     let mut out_dir = PathBuf::from("benches/longmemeval/results");
     let mut topk = 10usize;
     let mut concurrency = 8usize;
+    let mut ingest = IngestMode::Raw;
+    let mut ingest_only = false;
 
     let mut i = 1;
     let take = |i: &mut usize, flag: &str| -> Result<String> {
@@ -685,6 +854,14 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
             "--out" => out_dir = PathBuf::from(take(&mut i, "--out")?),
             "--topk" => topk = take(&mut i, "--topk")?.parse()?,
             "--concurrency" => concurrency = take(&mut i, "--concurrency")?.parse()?,
+            "--ingest" => {
+                ingest = match take(&mut i, "--ingest")?.as_str() {
+                    "raw" => IngestMode::Raw,
+                    "distill" => IngestMode::Distill,
+                    other => anyhow::bail!("bad --ingest {other:?}; expected raw|distill"),
+                }
+            }
+            "--ingest-only" => ingest_only = true,
             other => anyhow::bail!("unknown argument {other:?}"),
         }
         i += 1;
@@ -699,6 +876,8 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
         out_dir,
         topk,
         concurrency,
+        ingest,
+        ingest_only,
     }))
 }
 
@@ -737,6 +916,13 @@ struct Summary {
     judge_model: String,
     temperature: f32,
     topk: usize,
+    /// Ingest mode of this run ("raw" | "distill"); distill runs also query
+    /// the fact layer in the answer prompt (documented deviation from the
+    /// causal-only protocol — that comparison is the point).
+    ingest: String,
+    /// Aggregated distillation-pass statistics (distill mode only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    distill_ingest: Option<DistillStats>,
     data: String,
     qtype_filter: Option<String>,
     total_questions: usize,
@@ -814,11 +1000,30 @@ async fn answer_question(
     q: &LmeQuestion,
     evidence_ids: Vec<String>,
     topk: usize,
+    with_facts: bool,
 ) -> ResultRow {
     let retrieved = retrieve(store, q, topk).unwrap_or_default();
     let retrieved_ids = retrieved_chunk_ids(&retrieved);
     let evidence_hit = retrieved_ids.iter().any(|r| evidence_ids.contains(r));
-    let memories = memory_lines(&retrieved);
+    // Distill mode additionally queries the fact layer (BM25, scoped to this
+    // question's haystack, same topk) and puts fact lines FIRST: they are
+    // the high-precision layer for the factual-recall slice the causal-only
+    // baseline conceded. Evidence-hit stays computed from causal entries
+    // only (facts carry no chunk ids) — protocol unchanged.
+    let memories = if with_facts {
+        let fact_scope = format!("lme:{}", q.question_id);
+        let facts = store
+            .search_facts_bm25(&q.question, Some(&fact_scope), topk)
+            .unwrap_or_default();
+        let mut lines: Vec<String> = facts.iter().map(|f| format!("- {}", f.value)).collect();
+        let causal = memory_lines(&retrieved);
+        if !causal.is_empty() {
+            lines.push(causal);
+        }
+        lines.join("\n")
+    } else {
+        memory_lines(&retrieved)
+    };
 
     let system = answer_system_prompt(&q.question_type);
     let answer_user = answer_user_prompt(q, &memories);
@@ -908,11 +1113,19 @@ async fn run(args: Args) -> Result<()> {
 
     std::fs::create_dir_all(&args.db_dir)?;
     std::fs::create_dir_all(&args.out_dir)?;
-    let db_path = args.db_dir.join("longmemeval.db");
+    // Distill mode uses a separate DB so the raw baseline stays intact.
+    let db_path = match args.ingest {
+        IngestMode::Raw => args.db_dir.join("longmemeval.db"),
+        IngestMode::Distill => args.db_dir.join("longmemeval_distill.db"),
+    };
     let store =
         CausalStore::open(&db_path).with_context(|| format!("opening {}", db_path.display()))?;
 
-    // Ingest phase (sequential, idempotent) before any answering.
+    // Ingest phase (sequential, idempotent) before any answering. Distill
+    // mode adds a per-question LLM distillation pass (also idempotent).
+    let distiller = Distiller::from_env().map(Arc::new);
+    let mut distill_totals = DistillStats::default();
+    let mut pending_distill: Vec<&LmeQuestion> = Vec::new();
     let mut evidence_by_qid: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for q in &selected {
         let (n, evidence) = ingest_question(&store, q)
@@ -923,13 +1136,68 @@ async fn run(args: Args) -> Result<()> {
             q.haystack_sessions.len(),
             evidence.len()
         );
+        if args.ingest == IngestMode::Distill {
+            pending_distill.push(*q);
+        }
         evidence_by_qid.insert(q.question_id.clone(), evidence);
+    }
+
+    // Distill phase: cross-question parallelism. Within one question,
+    // sessions are still distilled with bounded concurrency and recorded in
+    // strict session order (supersedes semantics); ACROSS questions there is
+    // no ordering dependency (separate task_tag / fact scopes), so questions
+    // are pipelined DISTILL_OUTER at a time. Total in-flight LLM calls ≈
+    // DISTILL_OUTER × per-question concurrency.
+    const DISTILL_OUTER: usize = 8;
+    if args.ingest == IngestMode::Distill && !pending_distill.is_empty() {
+        let per_q = (args.concurrency / DISTILL_OUTER).max(4);
+        let total_q = pending_distill.len();
+        let done_q = Arc::new(AtomicUsize::new(0));
+        let results: Vec<(String, Result<DistillStats>)> =
+            futures::stream::iter(pending_distill.iter().map(|q| {
+                let store = store.clone();
+                let distiller = distiller.clone();
+                let done_q = done_q.clone();
+                async move {
+                    let r = distill_question(&store, distiller.as_deref(), q, per_q).await;
+                    let d = done_q.fetch_add(1, Ordering::Relaxed) + 1;
+                    if d.is_multiple_of(10) || d == total_q {
+                        eprintln!("distill progress: {d}/{total_q} questions");
+                    }
+                    (q.question_id.clone(), r)
+                }
+            }))
+            .buffered(DISTILL_OUTER)
+            .collect()
+            .await;
+        for (qid, r) in results {
+            let stats = r.with_context(|| format!("distilling question {qid}"))?;
+            distill_totals.sessions += stats.sessions;
+            distill_totals.llm_calls += stats.llm_calls;
+            distill_totals.facts_recorded += stats.facts_recorded;
+            distill_totals.episodes_recorded += stats.episodes_recorded;
+            distill_totals.episodes_duplicate += stats.episodes_duplicate;
+            distill_totals.facts_retired += stats.facts_retired;
+            distill_totals.superseded_invalidations += stats.superseded_invalidations;
+        }
+    }
+
+    if args.ingest_only {
+        eprintln!(
+            "--ingest-only: {} questions ingested (distill: {} sessions, {} facts, {} episodes), no QA run",
+            selected.len(),
+            distill_totals.sessions,
+            distill_totals.facts_recorded,
+            distill_totals.episodes_recorded,
+        );
+        return Ok(());
     }
 
     // Answer + judge phase (parallel across questions).
     let run_id = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
     let done = Arc::new(AtomicUsize::new(0));
     let total = selected.len();
+    let with_facts = args.ingest == IngestMode::Distill;
     let rows: Vec<ResultRow> = futures::stream::iter(selected.iter().map(|q| {
         let cfg = cfg.clone();
         let store = store.clone();
@@ -939,7 +1207,7 @@ async fn run(args: Args) -> Result<()> {
             .cloned()
             .unwrap_or_default();
         async move {
-            let row = answer_question(&cfg, &store, q, evidence, args.topk).await;
+            let row = answer_question(&cfg, &store, q, evidence, args.topk, with_facts).await;
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d.is_multiple_of(25) || d == total {
                 eprintln!("{d}/{total} questions done");
@@ -979,6 +1247,8 @@ async fn run(args: Args) -> Result<()> {
         judge_model: cfg.model.clone(),
         temperature: LLM_TEMPERATURE,
         topk: args.topk,
+        ingest: args.ingest.as_str().to_string(),
+        distill_ingest: (args.ingest == IngestMode::Distill).then_some(distill_totals),
         data: args.data.display().to_string(),
         qtype_filter: args.qtype.clone(),
         total_questions: overall.total,

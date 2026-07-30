@@ -27,7 +27,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 6;
+pub const SCHEMA_VERSION: u32 = 7;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -57,6 +57,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 6 {
         migrate_to_v6(&tx)?;
+    }
+    if version < 7 {
+        migrate_to_v7(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -237,6 +240,44 @@ fn migrate_to_v6(_conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v6 → v7: widen the agent_facts scope CHECK. v6 allowed only the three
+/// canonical assistant scopes ('user','session','agent'); multi-tenant and
+/// benchmark deployments need arbitrary namespaced scopes ("tenant:acme",
+/// "lme:e47becba"). The new rule keeps typo protection for the canonical
+/// scopes and admits any colon-namespaced custom scope. SQLite cannot ALTER
+/// a CHECK, so the table is rebuilt; CAUSAL_SCHEMA_SQL recreates the indexes
+/// right after (and its agent_facts DDL carries the new CHECK for fresh DBs).
+fn migrate_to_v7(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "agent_facts")? {
+        // Fresh DB: created with the new CHECK by CAUSAL_SCHEMA_SQL below.
+        return Ok(());
+    }
+    conn.execute_batch(
+        "CREATE TABLE agent_facts_v7 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'user'
+                CHECK(scope IN ('user','session','agent') OR instr(scope, ':') > 1),
+            source TEXT NOT NULL DEFAULT 'agent',
+            confidence REAL NOT NULL DEFAULT 0.8,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            valid_to INTEGER,
+            embedding_model TEXT,
+            UNIQUE(key, value, scope)
+        );
+        INSERT INTO agent_facts_v7
+            (id, key, value, scope, source, confidence, created_at, updated_at, valid_to, embedding_model)
+        SELECT
+            id, key, value, scope, source, confidence, created_at, updated_at, valid_to, embedding_model
+        FROM agent_facts;
+        DROP TABLE agent_facts;
+        ALTER TABLE agent_facts_v7 RENAME TO agent_facts;",
+    )?;
+    Ok(())
+}
+
 fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -306,7 +347,7 @@ mod tests {
         let conn = build_v1_db();
         migrate(&conn).unwrap();
 
-        assert_eq!(user_version(&conn), 6);
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
 
         let cols = table_columns(&conn, "causal_edges").unwrap();
         for col in [
@@ -396,7 +437,7 @@ mod tests {
         .unwrap();
 
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 6);
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
 
         let edge_cols = table_columns(&conn, "causal_edges").unwrap();
         for col in [
@@ -443,7 +484,7 @@ mod tests {
         migrate(&conn).unwrap();
         migrate(&conn).unwrap();
 
-        assert_eq!(user_version(&conn), 6);
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
         let snapshot: Vec<(i64, i64, i64, i64)> = conn
             .prepare(
                 "SELECT id, event_time, discovered_at, access_count FROM causal_edges ORDER BY id",
@@ -461,7 +502,7 @@ mod tests {
         let store = CausalStore::open_in_memory().unwrap();
         store
             .with_conn(|conn| {
-                assert_eq!(user_version(conn), 6);
+                assert_eq!(user_version(conn), i64::from(SCHEMA_VERSION));
                 assert!(table_exists(conn, "edge_embeddings")?);
                 let cols = table_columns(conn, "causal_edges")?;
                 assert!(cols.contains("access_count"));
@@ -494,7 +535,7 @@ mod tests {
         .unwrap();
 
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 6);
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
 
         let cols = table_columns(&conn, "causal_edges").unwrap();
         assert!(cols.contains("outcome_polarity"));
@@ -522,7 +563,7 @@ mod tests {
 
         // Idempotent.
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 6);
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
         let polarity: Option<String> = conn
             .query_row(
                 "SELECT outcome_polarity FROM causal_edges WHERE id = 1",
@@ -553,7 +594,7 @@ mod tests {
         .unwrap();
 
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 6);
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
 
         let cols = table_columns(&conn, "meta_causal_edges").unwrap();
         for col in ["strata_count", "strata", "confounded", "simpson"] {
@@ -572,7 +613,7 @@ mod tests {
 
         // Idempotent.
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 6);
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
     }
 
     #[test]
@@ -636,7 +677,7 @@ mod tests {
         .unwrap();
 
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 6);
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
         assert!(table_exists(&conn, "agent_facts").unwrap());
         assert!(table_exists(&conn, "agent_facts_embeddings").unwrap());
 
@@ -652,10 +693,90 @@ mod tests {
              VALUES ('preference', 'TypeScript', 'user', 'agent', 0.8, 2, 2)",
             [],
         );
-        assert!(dup.is_err(), "duplicate (key, value, scope) must be rejected");
+        assert!(
+            dup.is_err(),
+            "duplicate (key, value, scope) must be rejected"
+        );
 
         // Idempotent.
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 6);
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
+    }
+
+    /// v6 → v7: a DB with the v6 strict scope CHECK is rebuilt with the
+    /// widened rule (canonical scopes OR colon-namespaced custom scopes);
+    /// existing rows and their ids are preserved; embeddings survive.
+    #[test]
+    fn test_migrate_v6_to_v7() {
+        let conn = Connection::open_in_memory().unwrap();
+        // The v6 DDL shape (strict scope CHECK), marked as v6.
+        conn.execute_batch(
+            "CREATE TABLE agent_facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'user' CHECK(scope IN ('user','session','agent')),
+                source TEXT NOT NULL DEFAULT 'agent',
+                confidence REAL NOT NULL DEFAULT 0.8,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                valid_to INTEGER,
+                embedding_model TEXT,
+                UNIQUE(key, value, scope)
+            );
+            INSERT INTO agent_facts (key, value, scope, source, confidence, created_at, updated_at)
+             VALUES ('preference', 'user likes pnpm', 'user', 'distill', 0.8, 1, 1);
+            INSERT INTO agent_facts (key, value, scope, source, confidence, created_at, updated_at)
+             VALUES ('fact', 'project uses Redis 7.2', 'session', 'distill', 0.8, 1, 1);
+            PRAGMA user_version = 6;",
+        )
+        .unwrap();
+        // A custom scope is rejected under the v6 CHECK.
+        let rejected = conn.execute(
+            "INSERT INTO agent_facts (key, value, scope, created_at, updated_at)
+             VALUES ('fact', 'x', 'lme:e47becba', 1, 1)",
+            [],
+        );
+        assert!(rejected.is_err(), "v6 CHECK must reject custom scopes");
+
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
+
+        // Data preserved (ids stable — agent_facts_embeddings references them).
+        let rows: Vec<(i64, String, String)> = conn
+            .prepare("SELECT id, key, value FROM agent_facts ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1, "preference");
+
+        // New rule: colon-namespaced scopes pass…
+        conn.execute(
+            "INSERT INTO agent_facts (key, value, scope, created_at, updated_at)
+             VALUES ('fact', 'haystack fact', 'lme:e47becba', 1, 1)",
+            [],
+        )
+        .unwrap();
+        // …canonical scopes still pass…
+        conn.execute(
+            "INSERT INTO agent_facts (key, value, scope, created_at, updated_at)
+             VALUES ('fact', 'y', 'agent', 1, 1)",
+            [],
+        )
+        .unwrap();
+        // …and bare typos are still rejected.
+        let typo = conn.execute(
+            "INSERT INTO agent_facts (key, value, scope, created_at, updated_at)
+             VALUES ('fact', 'z', 'usr', 1, 1)",
+            [],
+        );
+        assert!(typo.is_err(), "bare non-canonical scope must be rejected");
+
+        // Idempotent.
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
     }
 }
