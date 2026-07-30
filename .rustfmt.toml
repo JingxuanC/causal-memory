@@ -1,0 +1,8 @@
+# rustfmt config — per rust-skills lint-rustfmt-check.
+# Stable Rust supports these keys; we avoid nightly-only fields.
+edition = "2021"
+max_width = 100
+use_field_init_shorthand = true
+use_try_shorthand = true
+imports_granularity = "Crate"        # one use per crate, grouped
+group_imports = "StdExternalCrate"   # std → external → crate

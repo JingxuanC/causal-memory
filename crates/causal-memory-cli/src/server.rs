@@ -110,6 +110,7 @@ impl CausalMemoryServer {
 /// The MCP server runs inside a multi-thread tokio runtime (see main.rs), so
 /// bridge with block_in_place; fall back to a throwaway runtime when no
 /// runtime context exists (defensive — not expected in production).
+#[allow(clippy::expect_used, reason = "fallback runtime; failure is unrecoverable")]
 fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),

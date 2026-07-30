@@ -32,3 +32,29 @@ causal-memory = { path = "crates/causal-memory" }
 lto = true
 codegen-units = 1
 strip = true
+
+# ─── Workspace lints ───────────────────────────────────────────────────
+# Per rust-skills lint-workspace-lints: centralized enforcement so every
+# crate shares one quality bar. correctness/suspicious → deny (hard bugs),
+# style/complexity/perf → warn. unwrap_used → deny outside tests.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+# Correctness = outright bugs. Always deny.
+correctness = { level = "deny", priority = -1 }
+# Suspicious = likely bugs. Deny.
+suspicious = { level = "deny", priority = -1 }
+# Style/complexity/perf = quality. Warn, fixable.
+style = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }
+# Selective pedantic: high-signal lints only.
+redundant_clone = "warn"
+needless_pass_by_value = "warn"
+semicolon_if_nothing_returned = "warn"
+# unwrap/expect → panic in production. Warn (not deny) so the baseline
+# compiles; new code should avoid them and the count should trend down.
+# Tests override this per-target via #[allow] (tests use unwrap freely).
+unwrap_used = "warn"
+expect_used = "warn"

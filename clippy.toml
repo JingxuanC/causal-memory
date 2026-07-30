@@ -1,0 +1,14 @@
+# clippy.toml — fine-tune lint thresholds (per rust-skills lint-pedantic-selective).
+# These keys are stable and documented at:
+# https://rust-lang.github.io/rust-clippy/master/index.html
+
+# Functions longer than this get a `too_many_lines` warning.
+# store.rs MCP handlers are legitimately long; raise from default 100.
+too-many-lines-threshold = 150
+
+# More than this many arguments → `too_many_arguments`.
+# SQL-heavy store methods use 7-8 params (validated against test); raise from 7.
+too-many-arguments-threshold = 8
+
+# Single-character enum variant names are flagged; we don't use any, but
+# keep the default to catch accidental ones.

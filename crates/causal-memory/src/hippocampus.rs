@@ -243,8 +243,14 @@ impl CausalGraph {
 
         graph.row_ptr = Vec::with_capacity(nodes.len() + 1);
         graph.row_ptr.push(0);
+        // row_ptr invariant: seeded with 0 above, so .last() is always Some.
+        // Each iteration pushes exactly one entry, preserving the invariant.
         for (node_idx, node_edges) in adj.iter().enumerate() {
-            let prev = *graph.row_ptr.last().unwrap();
+            #[allow(clippy::expect_used, reason = "row_ptr invariant: seeded with 0")]
+            let prev = *graph
+                .row_ptr
+                .last()
+                .expect("row_ptr seeded with a 0 above");
             graph.row_ptr.push(prev + node_edges.len() as u32);
             for &(target, raw_w, val, rel, valid) in node_edges {
                 // CSR index for this edge = current length of col_idx (before push)
@@ -265,7 +271,11 @@ impl CausalGraph {
         graph.row_ptr_rev = Vec::with_capacity(nodes.len() + 1);
         graph.row_ptr_rev.push(0);
         for node_edges in &adj_rev {
-            let prev = *graph.row_ptr_rev.last().unwrap();
+            #[allow(clippy::expect_used, reason = "row_ptr_rev invariant: seeded with 0")]
+            let prev = *graph
+                .row_ptr_rev
+                .last()
+                .expect("row_ptr_rev seeded with a 0 above");
             graph.row_ptr_rev.push(prev + node_edges.len() as u32);
             for &(target, val, csr_idx) in node_edges {
                 graph.col_idx_rev.push(target);
@@ -431,7 +441,14 @@ impl CausalGraph {
             .collect();
 
         // Sort by absolute activation (strongest signal first, regardless of sign)
-        results.sort_by(|a, b| b.activation.abs().partial_cmp(&a.activation.abs()).unwrap());
+        // Sort by absolute activation descending (strongest first, regardless
+        // of sign). total_cmp handles NaN deterministically (NaN sorts last),
+        // so this never panics even if a future bug lets NaN leak in.
+        results.sort_by(|a, b| {
+            b.activation
+                .abs()
+                .total_cmp(&a.activation.abs())
+        });
         results
     }
 

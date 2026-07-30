@@ -90,11 +90,15 @@ CREATE TABLE IF NOT EXISTS edge_embeddings (
 -- "user prefers TypeScript" or "project uses Redis 7.2". Same soft-
 -- invalidation semantics as causal edges (valid_to NULL = still valid).
 -- UNIQUE(key, value, scope) makes re-recording an existing fact idempotent.
+-- Scope is one of the canonical assistant scopes (user/session/agent) or a
+-- colon-namespaced custom scope ("tenant:acme", "lme:e47becba") — the colon
+-- rule (v7) keeps typo protection for the canonical scopes while allowing
+-- multi-tenant and benchmark namespaces.
 CREATE TABLE IF NOT EXISTS agent_facts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     key TEXT NOT NULL,
     value TEXT NOT NULL,
-    scope TEXT NOT NULL DEFAULT 'user' CHECK(scope IN ('user','session','agent')),
+    scope TEXT NOT NULL DEFAULT 'user' CHECK(scope IN ('user','session','agent') OR instr(scope, ':') > 1),
     source TEXT NOT NULL DEFAULT 'agent',
     confidence REAL NOT NULL DEFAULT 0.8,
     created_at INTEGER NOT NULL,
@@ -979,6 +983,52 @@ impl CausalStore {
         Ok(n > 0)
     }
 
+    /// Retire valid facts under (key, scope) whose value matches a supersedes
+    /// hint. Fact-layer port of the edge layer's supersedes machinery
+    /// (record_distilled), with its guards:
+    /// - thresholds: containment ≥ SUPERSEDES_SIM_THRESHOLD AND ≥
+    ///   SUPERSEDES_MIN_SHARED_TOKENS shared tokens, computed on DEDUPLICATED
+    ///   token sets
+    /// - retraction records are never retirement TARGETS (a fact whose text
+    ///   announces a retraction, e.g. "no longer likes X", must not be killed
+    ///   by a later hint sharing that vocabulary — double-negation
+    ///   resurrection)
+    ///
+    /// Returns the number retired.
+    pub fn retire_facts_by_hint(&self, key: &str, scope: &str, hint: &str) -> Result<usize> {
+        let hint_tokens: std::collections::HashSet<String> =
+            crate::patterns::tokenize(hint).into_iter().collect();
+        if hint_tokens.len() < SUPERSEDES_MIN_SHARED_TOKENS {
+            return Ok(0);
+        }
+        let candidates = self.search_facts_bm25(hint, Some(scope), 10)?;
+        let mut retired = 0;
+        for fact in candidates {
+            if fact.key != key {
+                continue;
+            }
+            // Guard: retraction records are never targets (edge-layer parity).
+            let lower = fact.value.to_lowercase();
+            if RETRACTION_MARKERS.iter().any(|m| lower.contains(m)) {
+                continue;
+            }
+            let cand_tokens: std::collections::HashSet<String> =
+                crate::patterns::tokenize(&fact.value).into_iter().collect();
+            let shared = hint_tokens.intersection(&cand_tokens).count();
+            if shared < SUPERSEDES_MIN_SHARED_TOKENS {
+                continue;
+            }
+            let denom = hint_tokens.len().min(cand_tokens.len());
+            if denom > 0
+                && shared as f64 / denom as f64 >= SUPERSEDES_SIM_THRESHOLD
+                && self.invalidate_fact(fact.id)?
+            {
+                retired += 1;
+            }
+        }
+        Ok(retired)
+    }
+
     /// Record a fact AND retire conflicting values under the same
     /// (key, scope) atomically — one lock, one write batch. The
     /// "user switched to pnpm" flow: callers get the new fact id plus the
@@ -1701,7 +1751,7 @@ impl CausalStore {
         let pattern = format!("%{}%", decision_description);
         self.trace_effect_chain_impl(
             "JOIN chunks c ON c.id = ce.from_id WHERE c.text LIKE ?1",
-            vec![Box::new(pattern)],
+            &[Box::new(pattern)],
             max_depth,
             min_confidence,
         )
@@ -1725,11 +1775,11 @@ impl CausalStore {
             .collect::<Vec<_>>()
             .join(",");
         let anchor = format!("WHERE ce.from_id IN ({placeholders})");
-        let binds = decision_ids
+        let binds: Vec<Box<dyn rusqlite::ToSql>> = decision_ids
             .iter()
             .map(|id| Box::new(id.clone()) as Box<dyn rusqlite::ToSql>)
             .collect();
-        self.trace_effect_chain_impl(&anchor, binds, max_depth, min_confidence)
+        self.trace_effect_chain_impl(&anchor, &binds, max_depth, min_confidence)
     }
 
     /// Shared forward-walk implementation. `anchor` is the JOIN/WHERE fragment
@@ -1738,7 +1788,7 @@ impl CausalStore {
     fn trace_effect_chain_impl(
         &self,
         anchor: &str,
-        anchor_binds: Vec<Box<dyn rusqlite::ToSql>>,
+        anchor_binds: &[Box<dyn rusqlite::ToSql>],
         max_depth: usize,
         min_confidence: f64,
     ) -> Result<Vec<Vec<ChainHop>>> {
