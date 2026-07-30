@@ -150,10 +150,13 @@ impl Distiller {
             user_msg.push_str(&format!("{}: {}\n", speaker, message.trim()));
         }
 
-        // One immediate retry: distill runs over hundreds of sessions,
-        // transient 5xx blips should not degrade a session to raw ingest.
+        // Up to 3 attempts with 2s/4s backoff: distill runs over thousands
+        // of sessions at high concurrency, and rate-limit (429) bursts need
+        // real backoff, not a single immediate retry (a burst otherwise
+        // fails EVERY session of a question — and with log-and-continue
+        // recording, the question then looks "successfully empty").
         let mut last_err = anyhow::anyhow!("no attempt made");
-        for attempt in 0..2 {
+        for attempt in 0..3 {
             match llm::chat(
                 &self.config,
                 DISTILL_PROMPT,
@@ -166,8 +169,8 @@ impl Distiller {
                 Ok(raw) => return Ok(Self::parse_items(&raw, date)),
                 Err(e) => {
                     last_err = e;
-                    if attempt == 0 {
-                        continue;
+                    if attempt < 2 {
+                        tokio::time::sleep(std::time::Duration::from_secs(2 << attempt)).await;
                     }
                 }
             }

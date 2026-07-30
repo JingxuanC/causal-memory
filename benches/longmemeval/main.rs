@@ -398,9 +398,11 @@ fn session_date_str(q: &LmeQuestion, s_idx: usize) -> String {
 /// ingested as well (dual write): 96% of haystack sessions are detail-heavy,
 /// and the evidence-id protocol needs the raw chunks.
 ///
-/// Idempotent at the question level: pre-existing distill edges for this
-/// question_id skip the pass (item-level idempotency lives in
-/// record_distilled / record_fact's upsert).
+/// Idempotent at the question level via the `distill_done` marker table:
+/// the marker is written only after ALL of a question's sessions were
+/// recorded, so an interrupted question is redone cleanly on the next run
+/// (item-level idempotency lives in record_distilled / record_fact's
+/// upsert, so a redo is cheap and never double-writes).
 async fn distill_question(
     store: &CausalStore,
     distiller: Option<&Distiller>,
@@ -413,8 +415,15 @@ async fn distill_question(
     };
 
     let existing: i64 = store.with_conn(|c| {
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS distill_done (
+                qid TEXT PRIMARY KEY,
+                done_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
         Ok(c.query_row(
-            "SELECT COUNT(*) FROM causal_edges WHERE task_tag = ?1 AND discovered_by = 'distill'",
+            "SELECT COUNT(*) FROM distill_done WHERE qid = ?1",
             rusqlite::params![&q.question_id],
             |r| r.get(0),
         )?)
@@ -449,6 +458,7 @@ async fn distill_question(
     stats.llm_calls = results.len();
 
     // Record strictly in session order.
+    let mut sessions_failed = 0usize;
     for (s_idx, result) in results.into_iter().enumerate() {
         let items = match result {
             Ok(items) => items,
@@ -460,6 +470,7 @@ async fn distill_question(
                     q.question_id,
                     s_idx + 1
                 );
+                sessions_failed += 1;
                 continue;
             }
         };
@@ -494,6 +505,29 @@ async fn distill_question(
             }
         }
     }
+
+    // Completion marker: only written after ALL sessions of this question
+    // were processed. The skip check above keys on this table (not on "has
+    // any distill edges"), so a question interrupted mid-record is redone
+    // cleanly on the next run instead of being skipped half-written.
+    // EXCEPTION: if EVERY session's LLM call failed (rate-limit burst, API
+    // outage), the question produced nothing through no fault of its own —
+    // writing the marker would freeze it as "successfully empty" (found the
+    // hard way: 133 questions marked with zero data during a 429 storm).
+    if sessions_failed == stats.sessions && stats.sessions > 0 {
+        eprintln!(
+            "warn: ALL {} sessions of {} failed; NOT marking done (retry next run)",
+            stats.sessions, q.question_id
+        );
+        return Ok(stats);
+    }
+    store.with_conn(|c| {
+        c.execute(
+            "INSERT OR REPLACE INTO distill_done (qid, done_at) VALUES (?1, ?2)",
+            rusqlite::params![&q.question_id, chrono::Utc::now().timestamp()],
+        )?;
+        Ok(())
+    })?;
     Ok(stats)
 }
 

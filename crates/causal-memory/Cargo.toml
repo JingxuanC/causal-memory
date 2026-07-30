@@ -17,6 +17,7 @@ schemars.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 reqwest.workspace = true
+tokio = { workspace = true, features = ["time"] }
 
 [lib]
 name = "causal_memory"
