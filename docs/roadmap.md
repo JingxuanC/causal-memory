@@ -21,7 +21,10 @@
 
 ## Direction: complete memory system (planned phases)
 
-Full design: [docs/unified-memory-design.md](docs/unified-memory-design.md)
+Full design: [docs/complete-memory-system.md](docs/complete-memory-system.md)
+(**one graph, one engine, one loop** — all memory types as typed edges on a
+single graph; typed spreading activation; immutable consolidation loop) and
+[docs/unified-memory-design.md](docs/unified-memory-design.md)
 (fact layer schema + 3 new MCP tools + LLM distill ingest + 4.5-day plan;
 §5.1 reconciles this direction with the OpenViking "stay a causal layer"
 argument — lightweight self-built fact layer, pluggable storage substrate).
