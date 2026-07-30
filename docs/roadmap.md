@@ -1,10 +1,43 @@
 # Roadmap
 
-> Updated 2026-07-28: synced after the v0.9.0 merge — remote research-driven
-> features (stratified discovery, counterfactual_query, reconstruct_lesson)
-> plus local benchmark suite (LoCoMo runs 1–5, LongMemEval, compaction
-> survival) and the dogfooding miner fix. Previous numbering cleaned up:
-> v0.4–v0.7 below are *shipped history*, not future plans.
+> Updated 2026-07-30: **positioning shift — from causal layer to complete memory
+> system**. The causal layer was the beachhead, not the boundary. causal-memory
+> is growing into a complete agent memory system: fact/preference memory and
+> temporal state on the same causal-graph skeleton, sharing one
+> hippocampus-style engine (typed spreading activation + SWR consolidation).
+>
+> Triggers for the shift: OpenViking's 80–83% LoCoMo (the factual-recall
+> ceiling is an engineering problem, not a law of nature), HeLa-Mem (ACL 2026 —
+> Hebbian spreading activation, our closest academic competitor; it builds the
+> excitatory side, we own the inhibitory side via `prevented` negative spread),
+> and Anthropic's Dreams API (the industrial consolidation pattern: produce a
+> new store, never mutate the original).
+>
+> Previous update 2026-07-28: synced after the v0.9.0 merge — remote
+> research-driven features (stratified discovery, counterfactual_query,
+> reconstruct_lesson) plus local benchmark suite (LoCoMo runs 1–5, LongMemEval,
+> compaction survival) and the dogfooding miner fix. v0.4–v0.7 below are
+> *shipped history*, not future plans.
+
+## Direction: complete memory system (planned phases)
+
+- [ ] **Fact/preference layer** — subject–predicate–object edges with validity
+  intervals, reusing the existing contradiction/invalidation machinery
+  ("user switched to pnpm" auto-invalidates "user uses npm"); embedding + BM25
+  retrieval. Target: LoCoMo 65% → 75–80%
+- [ ] **Hebbian co-occurrence edges** — weak associative edges between
+  decisions co-active in the same session, weight ∝ co-occurrence (the
+  excitatory complement to `prevented` negative spread; absorbs HeLa-Mem's
+  core mechanism as a subset)
+- [ ] **SWR 2.0 / Dreams alignment** — consolidation produces a *new* store
+  (original untouched, auditable, rollback-able) + an `instructions`-style
+  focus parameter ("focus on causal lessons; ignore routine operations")
+- [ ] **Query routing + fusion retrieval** — query-type classifier routes to
+  fact / causal / temporal path, RRF fusion when ambiguous; iterative
+  retrieval with entity/time anchors for multi-session questions (targets
+  LongMemEval multi-session 32.3%)
+- [ ] **Q-value dynamics** — MemRL/MemQ-style dynamic utility replaces static
+  confidence as the primary edge weight
 
 ## Current state — v0.9.0+ (main)
 
@@ -92,6 +125,11 @@ Memory-quality:
 
 Ecosystem:
 
+- [ ] **Hermes Agent memory provider** — the first agent runtime with a
+  first-class memory plugin slot; no current provider stores causal edges.
+  Entry ticket: our benchmark suite (see
+  [docs/research/computational-ai/hermes-provider-ecosystem.md](docs/research/computational-ai/hermes-provider-ecosystem.md)).
+  Requires PyO3 bindings — reprioritized above HTTP transport
 - [ ] **L0 file injection**: generate `CAUSAL_MEMORY.md` (< 200 lines,
   pointer-style) for constant system-prompt pinning — proactive, vs the
   on-demand `causal_directory` tool
@@ -102,7 +140,8 @@ Ecosystem:
 
 ## v1.0 — engineering hardening
 
-- [ ] Python bindings (PyO3) / TS bindings
+- [ ] Python bindings (PyO3) — **first priority** (unblocks the Hermes
+  provider slot); TS bindings after
 - [ ] MCP HTTP transport
 - [ ] Multi-tenant support
 - [ ] Backup / restore tooling (migrations already done)
