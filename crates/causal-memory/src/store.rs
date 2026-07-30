@@ -503,9 +503,31 @@ impl CausalStore {
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let conn = Connection::open(path)?;
         crate::migrate::migrate(&conn)?;
+        Self::seed_id_counter(&conn);
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// Seed the process-global id counter from the DB. Generated chunk ids
+    /// embed a per-process sequence ("d<event_time><seq>", "distill:<ts>:<seq>")
+    /// that restarts at 0 on every process start — without seeding, a second
+    /// process writing to the same DB collides on the PRIMARY KEY (found via
+    /// chunked LongMemEval distill runs, where each chunk is a new process).
+    /// Seeding with the count of generated-id chunks keeps sequences
+    /// monotonic across sequential processes (single-writer assumption).
+    fn seed_id_counter(conn: &Connection) {
+        let generated: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM chunks
+                 WHERE id LIKE 'distill:%' OR id GLOB 'd[0-9]*' OR id GLOB 'o[0-9]*'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        // fetch_max: another store in the same process may already hold a
+        // higher counter (e.g. two stores on the same DB file).
+        ID_COUNTER.fetch_max(generated as u64 + 1, Ordering::Relaxed);
     }
 
     /// Record a decision and its outcome, creating the causal edge.
@@ -1138,11 +1160,12 @@ impl CausalStore {
         let rows = stmt.query_map(bind_refs.as_slice(), fact_from_row)?;
         let candidates: Vec<AgentFact> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
 
-        let index = crate::bm25::Bm25Index::build(
-            candidates
-                .iter()
-                .map(|f| (f.id.to_string(), crate::patterns::tokenize(&f.search_text()))),
-        );
+        let index = crate::bm25::Bm25Index::build(candidates.iter().map(|f| {
+            (
+                f.id.to_string(),
+                crate::patterns::tokenize(&f.search_text()),
+            )
+        }));
         let scored = index.search(&query_tokens, limit);
         let by_id: std::collections::HashMap<i64, AgentFact> =
             candidates.into_iter().map(|f| (f.id, f)).collect();
@@ -3815,6 +3838,47 @@ mod tests {
     }
 
     #[test]
+    fn test_generated_ids_survive_process_restart() {
+        // Regression (LongMemEval chunked distill): generated chunk ids embed
+        // a per-process sequence that restarts at 0 on process start. Without
+        // seeding at open, a second process writing to the same DB collides
+        // on the chunks PRIMARY KEY.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("t.db");
+        let item = |seq: usize| {
+            crate::distill::MemoryItem {
+                kind: crate::distill::ItemKind::Event,
+                text: format!("event number {seq}"),
+                date: Some("2025-06-05".to_string()),
+                supersedes: None,
+            }
+        };
+        {
+            let store = CausalStore::open(&db).unwrap();
+            store.record_distilled(&item(1), None).unwrap();
+            store.record_distilled(&item(2), None).unwrap();
+        } // process "restarts" (store dropped; ID_COUNTER is process-global
+          // and in a real restart returns to 0 — simulate by resetting).
+        ID_COUNTER.store(0, Ordering::Relaxed);
+        {
+            let store = CausalStore::open(&db).unwrap();
+            store
+                .record_distilled(&item(3), None)
+                .expect("second process must not collide on generated chunk ids");
+            let n: i64 = store
+                .with_conn(|c| {
+                    Ok(c.query_row(
+                        "SELECT COUNT(*) FROM chunks WHERE id LIKE 'distill:%'",
+                        [],
+                        |r| r.get(0),
+                    )?)
+                })
+                .unwrap();
+            assert_eq!(n, 3);
+        }
+    }
+
+    #[test]
     fn test_retraction_records_are_never_kill_targets() {
         // Two retractions sharing vocabulary ("no longer likes music") must
         // NOT kill each other — retracting a retraction spawns a nonsense
@@ -4103,10 +4167,22 @@ mod tests {
             .record_fact("tech_stack", "Redis 7.2 for caching", "user", "agent", 0.8)
             .unwrap();
         store
-            .record_fact("preference", "TypeScript over JavaScript", "user", "agent", 0.8)
+            .record_fact(
+                "preference",
+                "TypeScript over JavaScript",
+                "user",
+                "agent",
+                0.8,
+            )
             .unwrap();
         store
-            .record_fact("tech_stack", "PostgreSQL 16 primary store", "session", "agent", 0.8)
+            .record_fact(
+                "tech_stack",
+                "PostgreSQL 16 primary store",
+                "session",
+                "agent",
+                0.8,
+            )
             .unwrap();
 
         // Token-overlap ranking: "caching redis" hits the Redis fact first.
@@ -4146,12 +4222,14 @@ mod tests {
             .record_fact("tech_stack", "Redis 7.2", "user", "agent", 0.8)
             .unwrap();
         // Two orthogonal-ish toy vectors: a ≈ [1, 0], b ≈ [0, 1].
-        store.put_fact_embedding(a, "test-model", &[1.0, 0.01]).unwrap();
-        store.put_fact_embedding(b, "test-model", &[0.01, 1.0]).unwrap();
-
-        let hits = store
-            .search_facts_semantic(&[1.0, 0.0], None, 5)
+        store
+            .put_fact_embedding(a, "test-model", &[1.0, 0.01])
             .unwrap();
+        store
+            .put_fact_embedding(b, "test-model", &[0.01, 1.0])
+            .unwrap();
+
+        let hits = store.search_facts_semantic(&[1.0, 0.0], None, 5).unwrap();
         assert_eq!(hits.len(), 2);
         assert_eq!(hits[0].0.id, a, "closest vector must rank first");
         assert!(hits[0].1 > hits[1].1);
