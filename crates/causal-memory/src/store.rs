@@ -85,6 +85,36 @@ CREATE TABLE IF NOT EXISTS edge_embeddings (
     vector BLOB NOT NULL,
     created_at INTEGER NOT NULL
 );
+
+-- Agent facts (v6, unified-memory-design Phase 1): flat facts such as
+-- "user prefers TypeScript" or "project uses Redis 7.2". Same soft-
+-- invalidation semantics as causal edges (valid_to NULL = still valid).
+-- UNIQUE(key, value, scope) makes re-recording an existing fact idempotent.
+CREATE TABLE IF NOT EXISTS agent_facts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL,
+    value TEXT NOT NULL,
+    scope TEXT NOT NULL DEFAULT 'user' CHECK(scope IN ('user','session','agent')),
+    source TEXT NOT NULL DEFAULT 'agent',
+    confidence REAL NOT NULL DEFAULT 0.8,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    valid_to INTEGER,
+    embedding_model TEXT,
+    UNIQUE(key, value, scope)
+);
+CREATE INDEX IF NOT EXISTS idx_facts_key ON agent_facts(key);
+CREATE INDEX IF NOT EXISTS idx_facts_scope ON agent_facts(scope);
+CREATE INDEX IF NOT EXISTS idx_facts_valid ON agent_facts(valid_to);
+
+-- Fact embeddings for semantic retrieval (populated when an embedding
+-- endpoint is configured; mirrors edge_embeddings).
+CREATE TABLE IF NOT EXISTS agent_facts_embeddings (
+    fact_id INTEGER PRIMARY KEY REFERENCES agent_facts(id),
+    model TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    created_at INTEGER NOT NULL
+);
 "#;
 
 /// Thread-safe causal store backed by SQLite.
@@ -277,6 +307,42 @@ fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<CausalEntry> {
         discovered_by: row.get(12)?,
         discovered_at: row.get(13)?,
         outcome_polarity: row.get(14)?,
+    })
+}
+
+/// A flat agent fact ("user prefers TypeScript"), v6 fact layer.
+/// `valid_to` semantics mirror causal edges: None = still valid.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct AgentFact {
+    pub id: i64,
+    pub key: String,
+    pub value: String,
+    pub scope: String,
+    pub source: String,
+    pub confidence: f64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl AgentFact {
+    /// Text indexed for retrieval: key tokens plus value tokens.
+    pub fn search_text(&self) -> String {
+        format!("{} {}", self.key.replace('_', " "), self.value)
+    }
+}
+
+/// Map a row `(id, key, value, scope, source, confidence, created_at, updated_at)`
+/// to an `AgentFact` (order matters, same discipline as `entry_from_row`).
+fn fact_from_row(row: &rusqlite::Row) -> rusqlite::Result<AgentFact> {
+    Ok(AgentFact {
+        id: row.get(0)?,
+        key: row.get(1)?,
+        value: row.get(2)?,
+        scope: row.get(3)?,
+        source: row.get(4)?,
+        confidence: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
     })
 }
 
@@ -864,6 +930,245 @@ impl CausalStore {
             params![now, edge_id],
         )?;
         Ok(n > 0)
+    }
+
+    // ─── Agent facts (v6, unified-memory-design Phase 1) ───────────────────
+
+    /// Record a flat fact ("user prefers TypeScript"). Idempotent on
+    /// (key, value, scope): re-recording an existing valid fact refreshes
+    /// `updated_at` and `confidence`; re-recording a previously invalidated
+    /// fact revives it (valid_to back to NULL — the fact is true again).
+    /// Returns the fact id (new or existing).
+    pub fn record_fact(
+        &self,
+        key: &str,
+        value: &str,
+        scope: &str,
+        source: &str,
+        confidence: f64,
+    ) -> Result<i64> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO agent_facts (key, value, scope, source, confidence, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+             ON CONFLICT(key, value, scope) DO UPDATE SET
+                 updated_at = excluded.updated_at,
+                 confidence = excluded.confidence,
+                 source = excluded.source,
+                 valid_to = NULL",
+            params![key, value, scope, source, confidence.clamp(0.0, 1.0), now],
+        )?;
+        let id = conn.query_row(
+            "SELECT id FROM agent_facts WHERE key = ?1 AND value = ?2 AND scope = ?3",
+            params![key, value, scope],
+            |r| r.get(0),
+        )?;
+        Ok(id)
+    }
+
+    /// Soft-invalidate a fact: set valid_to = now. Returns true if a row was
+    /// actually invalidated; false if missing or already invalid (no-op).
+    pub fn invalidate_fact(&self, fact_id: i64) -> Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let now = chrono::Utc::now().timestamp();
+        let n = conn.execute(
+            "UPDATE agent_facts SET valid_to = ?1 WHERE id = ?2 AND valid_to IS NULL",
+            params![now, fact_id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Record a fact AND retire conflicting values under the same
+    /// (key, scope) atomically — one lock, one write batch. The
+    /// "user switched to pnpm" flow: callers get the new fact id plus the
+    /// number of outdated facts retired, with no window where old and new
+    /// values are both valid.
+    pub fn record_fact_replacing(
+        &self,
+        key: &str,
+        value: &str,
+        scope: &str,
+        source: &str,
+        confidence: f64,
+    ) -> Result<(i64, usize)> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "INSERT INTO agent_facts (key, value, scope, source, confidence, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+             ON CONFLICT(key, value, scope) DO UPDATE SET
+                 updated_at = excluded.updated_at,
+                 confidence = excluded.confidence,
+                 source = excluded.source,
+                 valid_to = NULL",
+            params![key, value, scope, source, confidence.clamp(0.0, 1.0), now],
+        )?;
+        let id = conn.query_row(
+            "SELECT id FROM agent_facts WHERE key = ?1 AND value = ?2 AND scope = ?3",
+            params![key, value, scope],
+            |r| r.get(0),
+        )?;
+        let retired = conn.execute(
+            "UPDATE agent_facts SET valid_to = ?1
+             WHERE key = ?2 AND scope = ?3 AND value != ?4 AND valid_to IS NULL",
+            params![now, key, scope, value],
+        )?;
+        Ok((id, retired))
+    }
+
+    /// Retire conflicting values for the same (key, scope): soft-invalidate
+    /// every valid fact under this key whose value differs from
+    /// `keep_value`. The "user switched to pnpm" path — record the new fact
+    /// first, then call this to retire the old value in the same write flow.
+    /// Returns the number of facts invalidated.
+    pub fn invalidate_other_facts_for_key(
+        &self,
+        key: &str,
+        scope: &str,
+        keep_value: &str,
+    ) -> Result<usize> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let now = chrono::Utc::now().timestamp();
+        let n = conn.execute(
+            "UPDATE agent_facts SET valid_to = ?1
+             WHERE key = ?2 AND scope = ?3 AND value != ?4 AND valid_to IS NULL",
+            params![now, key, scope, keep_value],
+        )?;
+        Ok(n)
+    }
+
+    /// List valid facts, optionally filtered by scope, newest first.
+    pub fn list_facts(&self, scope: Option<&str>, limit: usize) -> Result<Vec<AgentFact>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let mut sql = String::from(
+            "SELECT id, key, value, scope, source, confidence, created_at, updated_at
+             FROM agent_facts WHERE valid_to IS NULL",
+        );
+        let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(s) = scope {
+            sql.push_str(" AND scope = ?");
+            bind.push(Box::new(s.to_string()));
+        }
+        sql.push_str(" ORDER BY updated_at DESC LIMIT ?");
+        bind.push(Box::new(limit as i64));
+        let mut stmt = conn.prepare(&sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), fact_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// BM25 search over valid facts (tokens from "key value"), optional scope
+    /// filter. Same ranking discipline as search_causal_bm25: token overlap,
+    /// not substring, so phrasing differences don't zero out hits. An empty
+    /// query degrades to `list_facts`.
+    pub fn search_facts_bm25(
+        &self,
+        query: &str,
+        scope: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<AgentFact>> {
+        let query_tokens = crate::patterns::tokenize(query);
+        if query_tokens.is_empty() {
+            return self.list_facts(scope, limit);
+        }
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let mut sql = String::from(
+            "SELECT id, key, value, scope, source, confidence, created_at, updated_at
+             FROM agent_facts WHERE valid_to IS NULL",
+        );
+        let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(s) = scope {
+            sql.push_str(" AND scope = ?");
+            bind.push(Box::new(s.to_string()));
+        }
+        sql.push_str(" ORDER BY id");
+        let mut stmt = conn.prepare(&sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), fact_from_row)?;
+        let candidates: Vec<AgentFact> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let index = crate::bm25::Bm25Index::build(
+            candidates
+                .iter()
+                .map(|f| (f.id.to_string(), crate::patterns::tokenize(&f.search_text()))),
+        );
+        let scored = index.search(&query_tokens, limit);
+        let by_id: std::collections::HashMap<i64, AgentFact> =
+            candidates.into_iter().map(|f| (f.id, f)).collect();
+        Ok(scored
+            .iter()
+            .filter_map(|(key, _)| key.parse::<i64>().ok())
+            .filter_map(|id| by_id.get(&id).cloned())
+            .collect())
+    }
+
+    /// Store/replace the embedding of a fact (mirrors put_embedding for edges).
+    pub fn put_fact_embedding(&self, fact_id: i64, model: &str, vector: &[f32]) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        conn.execute(
+            "INSERT INTO agent_facts_embeddings (fact_id, model, vector, created_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(fact_id) DO UPDATE SET
+                 model = excluded.model,
+                 vector = excluded.vector,
+                 created_at = excluded.created_at",
+            params![
+                fact_id,
+                model,
+                crate::embed::vec_to_blob(vector),
+                chrono::Utc::now().timestamp()
+            ],
+        )?;
+        // Track which model produced the stored embedding (version management).
+        conn.execute(
+            "UPDATE agent_facts SET embedding_model = ?2 WHERE id = ?1",
+            params![fact_id, model],
+        )?;
+        Ok(())
+    }
+
+    /// Semantic fact search: cosine-rank `query_vec` against embeddings of
+    /// valid facts, optional scope filter. Brute-force scan — fact counts are
+    /// in the hundreds-to-thousands range, same argument as edge embeddings.
+    pub fn search_facts_semantic(
+        &self,
+        query_vec: &[f32],
+        scope: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<(AgentFact, f64)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let mut sql = String::from(
+            "SELECT f.id, f.key, f.value, f.scope, f.source, f.confidence,
+                    f.created_at, f.updated_at, e.vector
+             FROM agent_facts f
+             JOIN agent_facts_embeddings e ON e.fact_id = f.id
+             WHERE f.valid_to IS NULL",
+        );
+        let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(s) = scope {
+            sql.push_str(" AND f.scope = ?");
+            bind.push(Box::new(s.to_string()));
+        }
+        let mut stmt = conn.prepare(&sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), |r| {
+            Ok((fact_from_row(r)?, r.get::<_, Vec<u8>>(8)?))
+        })?;
+        let mut scored: Vec<(AgentFact, f64)> = rows
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter_map(|(fact, blob)| {
+                // Skip corrupt blobs (same pattern as search_causal_semantic);
+                // never return a 0%-similarity phantom hit.
+                let vec = crate::embed::blob_to_vec(&blob).ok()?;
+                let sim = crate::embed::cosine_similarity(query_vec, &vec);
+                Some((fact, sim))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+        Ok(scored)
     }
 
     /// Persist an LLM re-judged confidence on all valid edges originating
@@ -3640,5 +3945,177 @@ mod tests {
         // Disjoint / empty.
         assert_eq!(containment_similarity(&tok("vim"), &tok("emacs")), 0.0);
         assert_eq!(containment_similarity(&[], &tok("x")), 0.0);
+    }
+
+    // ─── Agent facts (v6) ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_record_fact_idempotent_and_revive() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let id1 = store
+            .record_fact("preference", "TypeScript", "user", "agent", 0.8)
+            .unwrap();
+        // Re-recording the same (key, value, scope) is idempotent: same id.
+        let id2 = store
+            .record_fact("preference", "TypeScript", "user", "agent", 0.9)
+            .unwrap();
+        assert_eq!(id1, id2);
+        assert_eq!(store.list_facts(None, 10).unwrap().len(), 1);
+        // Confidence refreshed by the second write.
+        assert!((store.list_facts(None, 10).unwrap()[0].confidence - 0.9).abs() < 1e-9);
+
+        // Invalidate, then re-record: the fact is revived (valid_to → NULL).
+        assert!(store.invalidate_fact(id1).unwrap());
+        assert!(store.list_facts(None, 10).unwrap().is_empty());
+        let id3 = store
+            .record_fact("preference", "TypeScript", "user", "agent", 0.85)
+            .unwrap();
+        assert_eq!(id3, id1);
+        assert_eq!(store.list_facts(None, 10).unwrap().len(), 1);
+
+        // Invalidating twice is a no-op.
+        assert!(store.invalidate_fact(id1).unwrap());
+        assert!(!store.invalidate_fact(id1).unwrap());
+    }
+
+    #[test]
+    fn test_invalidate_other_facts_for_key() {
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .record_fact("package_manager", "npm", "user", "agent", 0.8)
+            .unwrap();
+        let new_id = store
+            .record_fact("package_manager", "pnpm", "user", "agent", 0.9)
+            .unwrap();
+        // Different key is untouched.
+        store
+            .record_fact("preference", "TypeScript", "user", "agent", 0.8)
+            .unwrap();
+
+        let retired = store
+            .invalidate_other_facts_for_key("package_manager", "user", "pnpm")
+            .unwrap();
+        assert_eq!(retired, 1);
+
+        let facts = store.list_facts(None, 10).unwrap();
+        assert_eq!(facts.len(), 2);
+        assert!(facts.iter().any(|f| f.id == new_id && f.value == "pnpm"));
+        assert!(!facts.iter().any(|f| f.value == "npm"));
+
+        // Scope isolation: an 'agent'-scoped npm fact survives a 'user' retire.
+        store
+            .record_fact("package_manager", "npm", "agent", "agent", 0.8)
+            .unwrap();
+        let retired = store
+            .invalidate_other_facts_for_key("package_manager", "user", "pnpm")
+            .unwrap();
+        assert_eq!(retired, 0);
+        assert!(store
+            .list_facts(Some("agent"), 10)
+            .unwrap()
+            .iter()
+            .any(|f| f.value == "npm"));
+    }
+
+    #[test]
+    fn test_record_fact_replacing_atomic() {
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .record_fact("package_manager", "npm", "user", "agent", 0.8)
+            .unwrap();
+        store
+            .record_fact("package_manager", "yarn", "user", "agent", 0.8)
+            .unwrap();
+
+        // One call: records the new value AND retires every other value
+        // under the same key+scope.
+        let (id, retired) = store
+            .record_fact_replacing("package_manager", "pnpm", "user", "agent", 0.9)
+            .unwrap();
+        assert_eq!(retired, 2);
+
+        let facts = store.list_facts(Some("user"), 10).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].id, id);
+        assert_eq!(facts[0].value, "pnpm");
+
+        // Re-running with the same value retires nothing (idempotent).
+        let (_, retired) = store
+            .record_fact_replacing("package_manager", "pnpm", "user", "agent", 0.9)
+            .unwrap();
+        assert_eq!(retired, 0);
+    }
+
+    #[test]
+    fn test_search_facts_bm25_ranking_and_scope() {
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .record_fact("tech_stack", "Redis 7.2 for caching", "user", "agent", 0.8)
+            .unwrap();
+        store
+            .record_fact("preference", "TypeScript over JavaScript", "user", "agent", 0.8)
+            .unwrap();
+        store
+            .record_fact("tech_stack", "PostgreSQL 16 primary store", "session", "agent", 0.8)
+            .unwrap();
+
+        // Token-overlap ranking: "caching redis" hits the Redis fact first.
+        let hits = store.search_facts_bm25("caching redis", None, 5).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].value.contains("Redis"));
+
+        // Scope filter: session-scoped query only sees the session fact.
+        let hits = store
+            .search_facts_bm25("database store", Some("session"), 5)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].scope, "session");
+
+        // Invalidated facts are hidden from search.
+        let id = store
+            .record_fact("config", "legacy endpoint /api/v0", "user", "agent", 0.8)
+            .unwrap();
+        store.invalidate_fact(id).unwrap();
+        assert!(store
+            .search_facts_bm25("legacy endpoint", None, 5)
+            .unwrap()
+            .is_empty());
+
+        // Empty query degrades to list (no panic, deterministic).
+        let listed = store.search_facts_bm25("", None, 10).unwrap();
+        assert_eq!(listed.len(), store.list_facts(None, 10).unwrap().len());
+    }
+
+    #[test]
+    fn test_fact_embedding_semantic_search() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let a = store
+            .record_fact("preference", "TypeScript", "user", "agent", 0.8)
+            .unwrap();
+        let b = store
+            .record_fact("tech_stack", "Redis 7.2", "user", "agent", 0.8)
+            .unwrap();
+        // Two orthogonal-ish toy vectors: a ≈ [1, 0], b ≈ [0, 1].
+        store.put_fact_embedding(a, "test-model", &[1.0, 0.01]).unwrap();
+        store.put_fact_embedding(b, "test-model", &[0.01, 1.0]).unwrap();
+
+        let hits = store
+            .search_facts_semantic(&[1.0, 0.0], None, 5)
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0.id, a, "closest vector must rank first");
+        assert!(hits[0].1 > hits[1].1);
+
+        // embedding_model tracked for version management.
+        let model: String = store
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT embedding_model FROM agent_facts WHERE id = ?1",
+                    params![a],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(model, "test-model");
     }
 }

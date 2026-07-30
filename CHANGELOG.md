@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.0] - Unreleased
 
 ### Added
+- Fact layer (unified-memory-design Phase 1, schema v6): flat facts
+  ("user prefers TypeScript") alongside causal edges — `agent_facts` +
+  `agent_facts_embeddings` tables, idempotent upsert on (key, value, scope),
+  soft invalidation with revive-on-re-record, `replace_same_key` retirement
+  of outdated values ("user switched to pnpm" invalidates "user uses npm"),
+  BM25 default + optional embedding retrieval; new MCP tools `record_fact`
+  and `search_facts` (12 tools total)
 - BM25 keyword retrieval replaces LIKE as the default ranking for text
   queries (`search_causal_bm25`): token-overlap ranking, so word order and
   phrasing differences no longer zero out hits; the embedding/semantic path

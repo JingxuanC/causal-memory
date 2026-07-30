@@ -55,7 +55,15 @@ fn migration_from_v1_file_db() {
     store
         .with_conn(|conn| {
             let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-            assert_eq!(version, 5, "migrated to schema v5");
+            assert_eq!(version, 6, "migrated to schema v6");
+            // v6: the fact layer exists.
+            let facts_tables: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'
+                 AND name IN ('agent_facts', 'agent_facts_embeddings')",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(facts_tables, 2);
             // v4: the polarity column exists and legacy rows stay NULL
             // (read paths fall back to the signal-word heuristic).
             let null_polarity: i64 = conn.query_row(

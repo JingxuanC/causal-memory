@@ -278,13 +278,13 @@ agent-teardown 当日三篇深度分析提出了一个真实张力：OpenViking�
 
 ## 6. 实施计划
 
-### Phase 1：事实层 (2 天)
+### Phase 1：事实层 (2 天) — ✅ 已完成 2026-07-31
 
-- [ ] `agent_facts` + `agent_facts_embeddings` schema (store.rs)
-- [ ] `record_fact()` / `search_facts()` / `invalidate_fact()` store 方法
-- [ ] `record_fact` MCP 工具 (server.rs)
-- [ ] `search_facts` MCP 工具 (server.rs)
-- [ ] 单元测试
+- [x] `agent_facts` + `agent_facts_embeddings` schema (store.rs / migrate.rs v6)
+- [x] `record_fact()` / `search_facts_bm25()` / `search_facts_semantic()` / `invalidate_fact()` / `invalidate_other_facts_for_key()` / `list_facts()` store 方法
+- [x] `record_fact` MCP 工具 (server.rs, 含 `replace_same_key` 退休旧值)
+- [x] `search_facts` MCP 工具 (server.rs, 语义 → BM25 → 列表 三档降级)
+- [x] 单元测试 ×5 + migration v5→v6 测试 + mcp_e2e 全链路覆盖（212 tests 全绿）
 
 ### Phase 2：统一检索 (1 天)
 

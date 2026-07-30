@@ -430,6 +430,44 @@ pub struct SearchCausalParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
+#[schemars(description = "Parameters for recording a flat fact")]
+pub struct RecordFactParams {
+    /// Category of the fact (e.g., "preference", "tech_stack", "config", "project")
+    #[schemars(
+        description = "Fact category: 'preference', 'tech_stack', 'config', 'project', ..."
+    )]
+    pub key: String,
+    /// The fact content (e.g., "TypeScript", "Redis 7.2", "/api/v1/users")
+    #[schemars(description = "The fact itself")]
+    pub value: String,
+    /// Who this fact belongs to: user (default), session, or agent
+    #[schemars(description = "Scope: user (default), session, or agent")]
+    pub scope: Option<String>,
+    /// Confidence in this fact (default 0.8)
+    #[schemars(description = "Confidence 0.0-1.0 (default 0.8)")]
+    pub confidence: Option<f64>,
+    /// Retire other valid values under the same key+scope (e.g. user switched
+    /// package managers: record the new one, set this true to invalidate the old)
+    #[schemars(
+        description = "If true, invalidate other valid facts with the same key and scope"
+    )]
+    pub replace_same_key: Option<bool>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct SearchFactsParams {
+    /// Natural language query (e.g., "programming language preference")
+    #[schemars(description = "Text to match against fact keys and values")]
+    pub query: Option<String>,
+    /// Scope filter: user, session, or agent
+    #[schemars(description = "Only return facts of this scope")]
+    pub scope: Option<String>,
+    /// Max number of results (default 5)
+    #[schemars(description = "Maximum results to return (default 5)")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
 pub struct TraceCauseParams {
     /// Description of the bad outcome
     #[schemars(description = "Description of what went wrong")]
@@ -732,6 +770,157 @@ impl CausalMemoryServer {
                 entry.relation,
                 entry.outcome_text,
                 entry.confidence * 100.0,
+            ));
+        }
+        out
+    }
+
+    #[tool(
+        name = "record_fact",
+        description = "Record a flat fact for future retrieval: user preferences, tech stack, configuration, project facts. Use this for stable 'what is' information. Do NOT use it for causal relationships (decision → outcome lessons belong in record_decision). Re-recording the same fact is idempotent."
+    )]
+    fn record_fact(&self, Parameters(params): Parameters<RecordFactParams>) -> String {
+        let scope = params.scope.as_deref().unwrap_or("user");
+        if !matches!(scope, "user" | "session" | "agent") {
+            return format!(
+                "❌ Invalid scope '{scope}' — use one of: user, session, agent"
+            );
+        }
+        let confidence = params.confidence.unwrap_or(0.8);
+
+        // Optional same-key retirement runs atomically with the record
+        // (single lock, single write batch) — no window where old and new
+        // values are both valid.
+        let (fact_id, retired) = if params.replace_same_key == Some(true) {
+            match self.store.record_fact_replacing(
+                &params.key,
+                &params.value,
+                scope,
+                "agent",
+                confidence,
+            ) {
+                Ok(v) => v,
+                Err(e) => return format!("❌ Failed to record fact: {e}"),
+            }
+        } else {
+            match self.store.record_fact(
+                &params.key,
+                &params.value,
+                scope,
+                "agent",
+                confidence,
+            ) {
+                Ok(id) => (id, 0),
+                Err(e) => return format!("❌ Failed to record fact: {e}"),
+            }
+        };
+
+        // Opportunistic embedding (silent on any failure — must never block
+        // recording; a CLI backfill path can catch up later).
+        if let Some(embedder) = EmbedConfig::from_env().map(Embedder::new) {
+            let text = format!("{} {}", params.key.replace('_', " "), params.value);
+            if let Ok(vec) = block_on(embedder.embed(&text)) {
+                let _ = self
+                    .store
+                    .put_fact_embedding(fact_id, embedder.model(), &vec);
+            }
+        }
+
+        let mut out = format!(
+            "✅ Recorded fact: [{}] {} = \"{}\" (confidence: {:.2}, id: {})",
+            scope,
+            params.key,
+            truncate_chars(&params.value, 60),
+            confidence.clamp(0.0, 1.0),
+            fact_id
+        );
+        if retired > 0 {
+            out.push_str(&format!(
+                "\n🗑️ Retired {retired} outdated fact(s) under the same key."
+            ));
+        }
+        out
+    }
+
+    #[tool(
+        name = "search_facts",
+        description = "Search flat facts: user preferences, tech stack, configuration, project facts. Call this when you need 'what is' information. For causal lessons (decision → outcome), use search_causal instead. Without a query, lists the most recently updated facts."
+    )]
+    fn search_facts(&self, Parameters(params): Parameters<SearchFactsParams>) -> String {
+        let limit = params.limit.unwrap_or(5);
+        let scope = params.scope.as_deref();
+        if let Some(s) = scope {
+            if !matches!(s, "user" | "session" | "agent") {
+                return format!("❌ Invalid scope '{s}' — use one of: user, session, agent");
+            }
+        }
+
+        if let Some(query) = params.query.as_deref().filter(|q| !q.trim().is_empty()) {
+            // Semantic path: embed + cosine (requires a configured endpoint).
+            if let Some(embedder) = EmbedConfig::from_env().map(Embedder::new) {
+                let semantic = block_on(embedder.embed(query))
+                    .ok()
+                    .and_then(|vec| self.store.search_facts_semantic(&vec, scope, limit).ok());
+                // Only short-circuit on actual hits — an empty semantic
+                // result (e.g. facts written without embeddings) falls
+                // through to BM25 instead of falsely reporting "no facts".
+                if let Some(results) = semantic.filter(|r| !r.is_empty()) {
+                    let mut out = format!("[semantic] Found {} fact(s):\n\n", results.len());
+                    for (i, (fact, sim)) in results.iter().enumerate() {
+                        out.push_str(&format!(
+                            "{}. [{}] {} = \"{}\"\n   similarity: {:.0}%, confidence: {:.0}%\n\n",
+                            i + 1,
+                            fact.scope,
+                            fact.key,
+                            fact.value,
+                            sim * 100.0,
+                            fact.confidence * 100.0,
+                        ));
+                    }
+                    return out;
+                }
+                // embed failed or semantic found nothing — fall through to BM25.
+            }
+
+            // BM25 keyword path.
+            let results = match self.store.search_facts_bm25(query, scope, limit) {
+                Ok(r) => r,
+                Err(e) => return format!("❌ Fact search failed: {e}"),
+            };
+            if results.is_empty() {
+                return "[bm25] 📭 No facts found matching your query.".to_string();
+            }
+            let mut out = format!("[bm25] Found {} fact(s):\n\n", results.len());
+            for (i, fact) in results.iter().enumerate() {
+                out.push_str(&format!(
+                    "{}. [{}] {} = \"{}\" (confidence: {:.0}%)\n",
+                    i + 1,
+                    fact.scope,
+                    fact.key,
+                    fact.value,
+                    fact.confidence * 100.0,
+                ));
+            }
+            return out;
+        }
+
+        // No query: most recently updated facts.
+        let results = match self.store.list_facts(scope, limit) {
+            Ok(r) => r,
+            Err(e) => return format!("❌ Fact listing failed: {e}"),
+        };
+        if results.is_empty() {
+            return "[list] 📭 No facts recorded yet.".to_string();
+        }
+        let mut out = format!("[list] {} most recent fact(s):\n\n", results.len());
+        for (i, fact) in results.iter().enumerate() {
+            out.push_str(&format!(
+                "{}. [{}] {} = \"{}\" (confidence: {:.0}%)\n",
+                i + 1,
+                fact.scope,
+                fact.key,
+                fact.value,
+                fact.confidence * 100.0,
             ));
         }
         out

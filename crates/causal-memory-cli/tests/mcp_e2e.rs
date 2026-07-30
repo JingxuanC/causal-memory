@@ -17,6 +17,8 @@ use rmcp::ServiceExt;
 const EXPECTED_TOOLS: &[&str] = &[
     "record_decision",
     "search_causal",
+    "record_fact",
+    "search_facts",
     "trace_cause",
     "trace_cause_chain",
     "invalidate_decision",
@@ -108,7 +110,7 @@ async fn mcp_stdio_end_to_end() {
     let info = client.peer_info().expect("server must report its info");
     assert!(!info.server_info.name.is_empty());
 
-    // ── 2. tools/list: exactly the 10 documented tools.
+    // ── 2. tools/list: exactly the 12 documented tools.
     let tools = client.list_all_tools().await.unwrap();
     let names: HashSet<String> = tools.iter().map(|t| t.name.to_string()).collect();
     let expected: HashSet<String> = EXPECTED_TOOLS.iter().map(|s| s.to_string()).collect();
@@ -142,6 +144,52 @@ async fn mcp_stdio_end_to_end() {
         .await
         .unwrap();
     assert!(text_of(&r2).contains("✅"), "record #2: {}", text_of(&r2));
+
+    // ── 3b. fact layer: record_fact (with replace_same_key) + search_facts.
+    let f1 = client
+        .call_tool(
+            CallToolRequestParams::new("record_fact").with_arguments(args(serde_json::json!({
+                "key": "tech_stack",
+                "value": "Redis 7.2",
+                "scope": "user",
+                "confidence": 0.9
+            }))),
+        )
+        .await
+        .unwrap();
+    assert!(text_of(&f1).contains("✅"), "record_fact #1: {}", text_of(&f1));
+
+    // Switching values under the same key retires the old one.
+    let f2 = client
+        .call_tool(
+            CallToolRequestParams::new("record_fact").with_arguments(args(serde_json::json!({
+                "key": "tech_stack",
+                "value": "Redis 8.0",
+                "scope": "user",
+                "replace_same_key": true
+            }))),
+        )
+        .await
+        .unwrap();
+    assert!(
+        text_of(&f2).contains("Retired 1"),
+        "record_fact replace: {}",
+        text_of(&f2)
+    );
+
+    let s1 = client
+        .call_tool(
+            CallToolRequestParams::new("search_facts").with_arguments(args(serde_json::json!({
+                "query": "redis cache version"
+            }))),
+        )
+        .await
+        .unwrap();
+    assert!(
+        text_of(&s1).contains("Redis 8.0") && !text_of(&s1).contains("Redis 7.2"),
+        "search_facts sees the new value only: {}",
+        text_of(&s1)
+    );
 
     // ── 4. search_causal with task_tag filter — keyword fallback path.
     let r = client

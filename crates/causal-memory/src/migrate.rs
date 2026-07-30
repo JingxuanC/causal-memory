@@ -27,7 +27,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 5;
+pub const SCHEMA_VERSION: u32 = 6;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -54,6 +54,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 5 {
         migrate_to_v5(&tx)?;
+    }
+    if version < 6 {
+        migrate_to_v6(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -226,6 +229,14 @@ fn migrate_to_v5(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// v5 → v6: agent fact memory (unified-memory-design Phase 1). The tables are
+/// created by CAUSAL_SCHEMA_SQL (single source of truth for their DDL), which
+/// runs right after this in `migrate` for every upgrade path — so there is
+/// nothing to do here except keep the version gate for documentation value.
+fn migrate_to_v6(_conn: &Connection) -> Result<()> {
+    Ok(())
+}
+
 fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -295,7 +306,7 @@ mod tests {
         let conn = build_v1_db();
         migrate(&conn).unwrap();
 
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), 6);
 
         let cols = table_columns(&conn, "causal_edges").unwrap();
         for col in [
@@ -385,7 +396,7 @@ mod tests {
         .unwrap();
 
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), 6);
 
         let edge_cols = table_columns(&conn, "causal_edges").unwrap();
         for col in [
@@ -432,7 +443,7 @@ mod tests {
         migrate(&conn).unwrap();
         migrate(&conn).unwrap();
 
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), 6);
         let snapshot: Vec<(i64, i64, i64, i64)> = conn
             .prepare(
                 "SELECT id, event_time, discovered_at, access_count FROM causal_edges ORDER BY id",
@@ -450,7 +461,7 @@ mod tests {
         let store = CausalStore::open_in_memory().unwrap();
         store
             .with_conn(|conn| {
-                assert_eq!(user_version(conn), 5);
+                assert_eq!(user_version(conn), 6);
                 assert!(table_exists(conn, "edge_embeddings")?);
                 let cols = table_columns(conn, "causal_edges")?;
                 assert!(cols.contains("access_count"));
@@ -483,7 +494,7 @@ mod tests {
         .unwrap();
 
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), 6);
 
         let cols = table_columns(&conn, "causal_edges").unwrap();
         assert!(cols.contains("outcome_polarity"));
@@ -511,7 +522,7 @@ mod tests {
 
         // Idempotent.
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), 6);
         let polarity: Option<String> = conn
             .query_row(
                 "SELECT outcome_polarity FROM causal_edges WHERE id = 1",
@@ -542,7 +553,7 @@ mod tests {
         .unwrap();
 
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), 6);
 
         let cols = table_columns(&conn, "meta_causal_edges").unwrap();
         for col in ["strata_count", "strata", "confounded", "simpson"] {
@@ -561,7 +572,7 @@ mod tests {
 
         // Idempotent.
         migrate(&conn).unwrap();
-        assert_eq!(user_version(&conn), 5);
+        assert_eq!(user_version(&conn), 6);
     }
 
     #[test]
@@ -608,5 +619,43 @@ mod tests {
             })
             .unwrap();
         assert_eq!(count, 2);
+    }
+
+    /// v5 → v6: a DB at the v5 shape gains the fact-layer tables on migrate;
+    /// existing tables and data are untouched; re-running is a no-op.
+    #[test]
+    fn test_migrate_v5_to_v6() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(CAUSAL_SCHEMA_SQL).unwrap();
+        // Roll the fact tables back out to simulate a real v5 DB.
+        conn.execute_batch(
+            "DROP TABLE agent_facts_embeddings;
+             DROP TABLE agent_facts;
+             PRAGMA user_version = 5;",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), 6);
+        assert!(table_exists(&conn, "agent_facts").unwrap());
+        assert!(table_exists(&conn, "agent_facts_embeddings").unwrap());
+
+        // UNIQUE(key, value, scope) constraint is live.
+        conn.execute(
+            "INSERT INTO agent_facts (key, value, scope, source, confidence, created_at, updated_at)
+             VALUES ('preference', 'TypeScript', 'user', 'agent', 0.8, 1, 1)",
+            [],
+        )
+        .unwrap();
+        let dup = conn.execute(
+            "INSERT INTO agent_facts (key, value, scope, source, confidence, created_at, updated_at)
+             VALUES ('preference', 'TypeScript', 'user', 'agent', 0.8, 2, 2)",
+            [],
+        );
+        assert!(dup.is_err(), "duplicate (key, value, scope) must be rejected");
+
+        // Idempotent.
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), 6);
     }
 }

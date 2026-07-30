@@ -29,10 +29,12 @@ single graph; typed spreading activation; immutable consolidation loop) and
 §5.1 reconciles this direction with the OpenViking "stay a causal layer"
 argument — lightweight self-built fact layer, pluggable storage substrate).
 
-- [ ] **Fact/preference layer** — subject–predicate–object edges with validity
-  intervals, reusing the existing contradiction/invalidation machinery
-  ("user switched to pnpm" auto-invalidates "user uses npm"); embedding + BM25
-  retrieval. Target: LoCoMo 65% → 75–80%
+- [x] **Fact/preference layer** — ✅ shipped 2026-07-31 (schema v6):
+  `agent_facts` with scope + validity intervals, idempotent upsert,
+  same-key retirement (`replace_same_key`), BM25 + optional embedding
+  retrieval, `record_fact` / `search_facts` MCP tools. Remaining: unified
+  `search_memory` RRF fusion (Phase 2) and LLM distill ingest (Phase 3),
+  then LoCoMo rerun targeting 75–80%
 - [ ] **Hebbian co-occurrence edges** — weak associative edges between
   decisions co-active in the same session, weight ∝ co-occurrence (the
   excitatory complement to `prevented` negative spread; absorbs HeLa-Mem's
@@ -63,14 +65,18 @@ Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
 
 ## Current state — v0.9.0+ (main)
 
-**Ten MCP tools**: `record_decision` / `search_causal` / `trace_cause` /
-`trace_cause_chain` / `invalidate_decision` / `search_patterns` /
-`causal_directory` / `intervention_query` / `counterfactual_query` /
-`reconstruct_lesson`
+**Twelve MCP tools**: `record_decision` / `search_causal` / `record_fact` /
+`search_facts` / `trace_cause` / `trace_cause_chain` / `invalidate_decision` /
+`search_patterns` / `causal_directory` / `intervention_query` /
+`counterfactual_query` / `reconstruct_lesson`
 
 Core capabilities (all shipped, all tested):
 
-- Temporal schema (v5) + idempotent migrations; `valid_to` invalidation
+- **Fact layer** (2026-07-31, unified-memory-design Phase 1): `agent_facts`
+  table + embeddings (schema v6), idempotent upsert on (key, value, scope),
+  soft invalidation + same-key retirement (`replace_same_key`), BM25 +
+  optional semantic retrieval, revive-on-re-record
+- Temporal schema (v6) + idempotent migrations; `valid_to` invalidation
   (manual + contradiction short-circuit with write-time polarity)
 - Dual-system memory: meta-edge pattern miner with **stratified
   replication** (patterns must hold in ≥ 2 task_tag strata; `confounded` /
@@ -87,7 +93,7 @@ Core capabilities (all shipped, all tested):
 - Retrieval: BM25 default + optional embeddings with cosine ranking
 - Cross-agent sharing: `causal-memory export` / `import` (JSONL, idempotent,
   best-effort redaction)
-- 144 tests (unit + e2e: migration / pipeline / MCP stdio)
+- 213 tests (unit + e2e: migration / pipeline / MCP stdio)
 
 ## Benchmarks (frozen protocols, all published in docs/benchmarks/)
 
