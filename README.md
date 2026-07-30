@@ -1,8 +1,8 @@
 # causal-memory
 
-> **A causal memory layer for AI agents.** Records decisions and their outcomes as causal relationships, so agents learn from experience across sessions and survive compaction.
+> **A complete agent memory system with a causal core.** Facts and preferences, temporal state, and `decision → outcome` causal edges — one SQLite store, one hippocampus-style engine (typed spreading activation + SWR consolidation) — so agents recall *what* happened, *when* it was true, and *why* it worked.
 >
-> Memory frameworks today (Mem0, Zep, Letta, OpenViking, MemOS) store *what* happened. `causal-memory` stores *why* — the causal link between a decision and its outcome. This is the slice every other memory layer misses.
+> `causal-memory` started as the layer that stores *why* — the causal link every other framework (Mem0, Zep, Letta, OpenViking, MemOS) misses — and proved that slice survives compaction when text memory collapses. That layer is now the core of a full memory system: the causal graph stays the skeleton, and factual/temporal memory grows on the same neural-inspired machinery.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Status: v0.9.0](https://img.shields.io/badge/status-v0.9.0--alpha-orange.svg)](#status)
@@ -24,7 +24,7 @@ The causal table doesn't decay because it lives outside the agent's context wind
 
 ## Benchmarks
 
-**LoCoMo** (1,986 questions, deepseek-chat answerer + judge, frozen protocol): overall **65.0%** · cats 1–4 **59.4%** · evidence hit rate **74.4%** (BM25) · adversarial abstention **84.3%** — three controlled runs with full methodology and failure analysis in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md). Honest reading: factual chit-chat QA is Mem0/Zep's home turf, not ours — but abstention behavior and per-run engineering deltas are documented openly, and the compaction-survival experiment below is the one this system is designed to win.
+**LoCoMo** (1,986 questions, deepseek-chat answerer + judge, frozen protocol): overall **65.0%** · cats 1–4 **59.4%** · evidence hit rate **74.4%** (BM25) · adversarial abstention **84.3%** — three controlled runs with full methodology and failure analysis in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md). Honest reading: 65.0% is the **causal-layer-only baseline** — factual chit-chat QA is the slice this system historically conceded to Mem0/Zep (and to Letta's 74% / OpenViking's 80–83%). The fact/preference layer now on the roadmap targets that range natively, without giving up the causal differentiators below.
 
 **LongMemEval** (500 questions, official judge templates): overall **61.8%** · knowledge-update **76.9%** · abstention **96.7%** (29/30) — methodology and per-type analysis in [`docs/benchmarks/longmemeval.md`](docs/benchmarks/longmemeval.md).
 
@@ -88,9 +88,11 @@ Then copy [`CLAUDE.md`](CLAUDE.md) into your project's system prompt to activate
 | File system | Memory as virtual FS | Directory-based retrieval | OpenViking |
 | **Causal** | **Decision → outcome links** | **"Mutex lock caused deadlock"** | **causal-memory (this)** |
 
-**causal-memory is complementary, not competitive.** A complete 7×24 agent may need Mem0 (preferences) + Zep (state) + causal-memory (lessons). This layer fills the causal slice nobody else covers.
+causal-memory started in the last row. It is growing to cover the others — but with a different architecture: not separate stores per memory type, but **one graph with typed edges** (fact / state / causal / co-occurrence) processed by one engine.
 
-The 2026 agent-memory landscape is splitting into three routes — cloud-API (Mem0), filesystem (Letta's "Filesystem is All You Need"), temporal graph (Zep). causal-memory is a **fourth route: the causal graph** — not entity relations, not files, but `decision → outcome` edges. Note the honest tension: Letta's plain-files agent scores 74% on LoCoMo — above our 65% and Zep's 63.8%. Benchmarks measure factual recall, not causality; our ground is compaction survival ([+20.8pp rescue](docs/benchmarks/locomo.md#compaction-survival-run-20260727_174000-k--5)) and behavioral reuse ([τ²-bench](docs/benchmarks/tau2-airline.md)), where files alone have nothing to offer.
+**From slice to system.** The causal layer was the beachhead, not the destination. The compaction-survival experiment proved causal edges are the most compaction-resistant memory type; the hippocampus merge proved typed spreading activation works. The next step is the one the benchmarks keep demanding: factual and temporal memory on the same skeleton, so LoCoMo-style factual recall stops being a concession. What stays exclusive to this system: typed causal weights (`prevented` edges spread **negative** activation — no other system does inhibitory spread), compaction survival as a first-class benchmark, and consolidation modeled on sharp-wave ripples rather than text distillation.
+
+The 2026 agent-memory landscape now has cloud-API (Mem0), filesystem (Letta, OpenViking), temporal-graph (Zep), and associative (HeLa-Mem's Hebbian graph, ACL 2026) entrants. causal-memory's claim: **memory types should share one neural-inspired substrate** — hippocampal episodic traces consolidated into neocortical semantic patterns — rather than four independent stores glued together by the agent. HeLa-Mem builds the excitatory side (Hebbian co-activation); this system adds the inhibitory side (`prevented` negative spread). A complete memory needs both.
 
 ## Data path
 

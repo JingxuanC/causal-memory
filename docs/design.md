@@ -10,7 +10,7 @@ LLM agents are [stateless functions](https://github.com/JingxuanC/agent-teardown
 - They relearn the same lessons
 - They repeat the same mistakes
 
-This is not a memory problem in general — Mem0, Zep, Letta all address aspects of it. It's specifically a **causal memory** problem: the link between "I decided X" and "X caused Y" is the most fragile type of information under text compaction.
+Mem0, Zep, and Letta all address aspects of this problem — but the founding diagnosis was narrower and sharper: the link between "I decided X" and "X caused Y" is the most fragile type of information under text compaction. That diagnosis remains true, and it turned out to be the right **beachhead rather than the whole system**: the causal layer is now the core of a complete memory system (see [README — From slice to system](../README.md#how-its-different)).
 
 ## The empirical evidence
 
@@ -31,7 +31,7 @@ At k=5, textual recall is below 50% — the agent has lost most of its experienc
 
 ### What we store
 
-Two tables on top of any existing memory system:
+Two tables that started as an overlay on any existing memory system — now the core of a standalone store:
 
 ```sql
 -- Causal edges: decision → outcome
@@ -107,7 +107,7 @@ This is the same pattern Mem0's OpenMemory uses — memory-as-MCP-tool. We diffe
 
 | Don't | Why |
 |---|---|
-| Replace Mem0/Zep/Letta | Causal memory is **complementary** to flat/temporal/self-managed memory |
+| Keep fact/state memory in a separate store | No longer out of scope — the system is growing to cover factual and temporal memory natively on the same causal-graph skeleton (see README "From slice to system"); the exclusivity that remains is *how*, not *what*: one typed-edge graph and one hippocampus-style engine instead of per-type stores |
 | Modify agent's context | We're a side table, not a context replacement |
 | Rung-3 **SCM** counterfactuals | Structural-causal-model reasoning is practically impossible for agents ([insights/11](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md)); we ship only the contrastive/empirical subset (`counterfactual_query` over recorded alternatives) |
 

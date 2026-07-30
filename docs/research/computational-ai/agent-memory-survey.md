@@ -78,7 +78,7 @@ The survey notes that multi-agent systems (AutoGen, MetaGPT) each maintain separ
 
 This survey is our **primary evidence** that causal memory is a genuine gap, not a feature that existing systems "just haven't gotten around to yet." The authors explicitly state that no surveyed system stores causal relationships as a primary data structure.
 
-This justifies `causal-memory`'s existence as a **complementary layer**, not a competitor.
+This originally justified `causal-memory`'s existence as a complementary layer. As of v0.9+ the positioning has shifted: the gap this survey identified remains the **architectural center** of the system, but no longer its **boundary** — causal-memory is growing into a complete memory system with a causal core, covering factual and temporal memory on the same graph.
 
 ### 2. RAG vs. causal graph: architectural distinction
 

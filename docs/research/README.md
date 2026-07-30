@@ -27,7 +27,8 @@ docs/research/
 │   ├── README.md
 │   ├── agent-memory-survey.md ← Wang 2024: the causal memory gap
 │   ├── generative-agents.md ← Park 2023: memory stream + reflection
-│   └── system2-explicit-representation.md ← Goyal & Bengio 2022: explicit structure
+│   ├── system2-explicit-representation.md ← Goyal & Bengio 2022: explicit structure
+│   └── hermes-provider-ecosystem.md ← Hermes Agent 2026: memory provider slot ecosystem
 └── causal-inference/         ← Formal foundations
     ├── README.md
     ├── pearl-causality.md    ← Pearl 2009: the ladder of causation
