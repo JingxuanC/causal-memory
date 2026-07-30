@@ -646,21 +646,20 @@ impl CausalMemoryServer {
             // Requires a configured embedding endpoint; any failure falls back to
             // the BM25 path below.
             if let Some(embedder) = EmbedConfig::from_env().map(Embedder::new) {
-                if let Some(embedder) = EmbedConfig::from_env().map(Embedder::new) {
-                    let semantic = block_on(embedder.embed(query)).ok().and_then(|vec| {
-                        self.store
-                            .search_causal_semantic(&vec, params.task_tag.as_deref(), limit)
-                            .ok()
-                    });
-                    if let Some(results) = semantic {
-                        if results.is_empty() {
-                            return "[semantic] 📭 No past causal episodes found matching your query."
+                let semantic = block_on(embedder.embed(query)).ok().and_then(|vec| {
+                    self.store
+                        .search_causal_semantic(&vec, params.task_tag.as_deref(), limit)
+                        .ok()
+                });
+                if let Some(results) = semantic {
+                    if results.is_empty() {
+                        return "[semantic] 📭 No past causal episodes found matching your query."
                             .to_string();
-                        }
-                        let mut out =
-                            format!("[semantic] Found {} past episode(s):\n\n", results.len());
-                        for (i, (entry, sim)) in results.iter().enumerate() {
-                            out.push_str(&format!(
+                    }
+                    let mut out =
+                        format!("[semantic] Found {} past episode(s):\n\n", results.len());
+                    for (i, (entry, sim)) in results.iter().enumerate() {
+                        out.push_str(&format!(
                             "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   similarity: {:.0}%, confidence: {:.0}%\n\n",
                             i + 1,
                             entry.task_tag.as_deref().unwrap_or("untagged"),
@@ -670,41 +669,39 @@ impl CausalMemoryServer {
                             sim * 100.0,
                             entry.confidence * 100.0,
                         ));
-                        }
-                        return out;
                     }
-                    // embed or semantic search failed — fall through to BM25.
+                    return out;
                 }
-
-                // BM25 keyword path: query present but no usable embedder. Unlike
-                // the old LIKE substring match, BM25 ranks by token overlap, so
-                // word order and phrasing differences no longer zero out hits.
-                let results =
-                    match self
-                        .store
-                        .search_causal_bm25(params.task_tag.as_deref(), query, limit)
-                    {
-                        Ok(r) => r,
-                        Err(e) => return format!("❌ Search failed: {e}"),
-                    };
-                if results.is_empty() {
-                    return "[bm25] 📭 No past causal episodes found matching your query."
-                        .to_string();
-                }
-                let mut out = format!("[bm25] Found {} past episode(s):\n\n", results.len());
-                for (i, entry) in results.iter().enumerate() {
-                    out.push_str(&format!(
-                        "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n\n",
-                        i + 1,
-                        entry.task_tag.as_deref().unwrap_or("untagged"),
-                        entry.decision_text,
-                        entry.relation,
-                        entry.outcome_text,
-                        entry.confidence * 100.0,
-                    ));
-                }
-                return out;
+                // embed or semantic search failed — fall through to BM25.
             }
+
+            // BM25 keyword path: query present but no usable embedder. Unlike
+            // the old LIKE substring match, BM25 ranks by token overlap, so
+            // word order and phrasing differences no longer zero out hits.
+            let results =
+                match self
+                    .store
+                    .search_causal_bm25(params.task_tag.as_deref(), query, limit)
+                {
+                    Ok(r) => r,
+                    Err(e) => return format!("❌ Search failed: {e}"),
+                };
+            if results.is_empty() {
+                return "[bm25] 📭 No past causal episodes found matching your query.".to_string();
+            }
+            let mut out = format!("[bm25] Found {} past episode(s):\n\n", results.len());
+            for (i, entry) in results.iter().enumerate() {
+                out.push_str(&format!(
+                    "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n\n",
+                    i + 1,
+                    entry.task_tag.as_deref().unwrap_or("untagged"),
+                    entry.decision_text,
+                    entry.relation,
+                    entry.outcome_text,
+                    entry.confidence * 100.0,
+                ));
+            }
+            return out;
         } // end hippocampus if let Some(query) block
 
         // Tag-only browsing (no query text) — original LIKE/listing path.

@@ -23,6 +23,9 @@
 
 use std::collections::HashMap;
 
+/// Forward adjacency entry: (target_node, raw_weight, spread_value, relation, valid).
+type AdjEdge = (u32, f32, f32, Relation, bool);
+
 /// Causal relation type — determines spread coefficient.
 /// Inspired by neurotransmitter types:
 ///   Caused   = excitatory (glutamate) → strong positive spread
@@ -213,7 +216,7 @@ impl CausalGraph {
         graph.node_task_tag = nodes.iter().map(|n| n.task_tag.clone()).collect();
 
         // Build forward adjacency list (no fwd_idx yet — CSR index assigned during CSR build)
-        let mut adj: Vec<Vec<(u32, f32, f32, Relation, bool)>> = vec![Vec::new(); nodes.len()];
+        let mut adj: Vec<Vec<AdjEdge>> = vec![Vec::new(); nodes.len()];
 
         for edge in edges.iter() {
             let from = graph.node_id_to_idx.get(&edge.from_id);
@@ -301,8 +304,7 @@ impl CausalGraph {
     fn spread_step(&self, activations: &[f32], decay: f32) -> Vec<f32> {
         let mut new_act = vec![0.0_f32; self.num_nodes];
 
-        for i in 0..self.num_nodes {
-            let a = activations[i];
+        for (i, &a) in activations.iter().enumerate() {
             if a.abs() < self.threshold {
                 continue;
             }
@@ -332,8 +334,7 @@ impl CausalGraph {
     fn spread_step_rev(&self, activations: &[f32], decay: f32) -> Vec<f32> {
         let mut new_act = vec![0.0_f32; self.num_nodes];
 
-        for i in 0..self.num_nodes {
-            let a = activations[i];
+        for (i, &a) in activations.iter().enumerate() {
             if a.abs() < self.threshold {
                 continue;
             }
@@ -634,11 +635,11 @@ fn simhash(text: &str) -> u128 {
     let mut bits = [0_i32; 128];
     for token in text.to_lowercase().split_whitespace() {
         let hash = fnv1a_64(token);
-        for i in 0..64 {
+        for (i, bit) in bits[..64].iter_mut().enumerate() {
             if (hash >> i) & 1 == 1 {
-                bits[i] += 1;
+                *bit += 1;
             } else {
-                bits[i] -= 1;
+                *bit -= 1;
             }
         }
         let hash2 = fnv1a_64(&format!("{}#2", token));
@@ -651,8 +652,8 @@ fn simhash(text: &str) -> u128 {
         }
     }
     let mut result: u128 = 0;
-    for i in 0..128 {
-        if bits[i] > 0 {
+    for (i, bit) in bits.iter().enumerate() {
+        if *bit > 0 {
             result |= 1u128 << i;
         }
     }
@@ -688,7 +689,7 @@ fn text_jaccard_similarity(a: &str, b: &str) -> f32 {
 fn rand_seed() -> u64 {
     use std::cell::Cell;
     thread_local! {
-        static STATE: Cell<u64> = Cell::new(0x1234567890ABCDEF);
+        static STATE: Cell<u64> = const { Cell::new(0x1234567890ABCDEF) };
     }
     STATE.with(|s| {
         let mut x = s.get();
@@ -1121,8 +1122,8 @@ mod tests {
         assert_eq!(graph.num_valid_edges(), 3);
 
         // Run few replays — w1 unlikely to be seed with 10 nodes
+        // (completing without panic is what this exercises; counts are checked below)
         let stats = graph.swr_consolidate(5);
-        assert!(stats.forgotten >= 0, "GC should complete without panic");
 
         // The weak edge should likely be forgotten (w1 replay_count likely 0)
         // If random seed happened to replay w1, weight is still below threshold
