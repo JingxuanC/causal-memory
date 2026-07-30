@@ -19,6 +19,7 @@ const EXPECTED_TOOLS: &[&str] = &[
     "search_causal",
     "record_fact",
     "search_facts",
+    "search_memory",
     "trace_cause",
     "trace_cause_chain",
     "invalidate_decision",
@@ -110,7 +111,7 @@ async fn mcp_stdio_end_to_end() {
     let info = client.peer_info().expect("server must report its info");
     assert!(!info.server_info.name.is_empty());
 
-    // ── 2. tools/list: exactly the 12 documented tools.
+    // ── 2. tools/list: exactly the 13 documented tools.
     let tools = client.list_all_tools().await.unwrap();
     let names: HashSet<String> = tools.iter().map(|t| t.name.to_string()).collect();
     let expected: HashSet<String> = EXPECTED_TOOLS.iter().map(|s| s.to_string()).collect();
@@ -189,6 +190,53 @@ async fn mcp_stdio_end_to_end() {
         text_of(&s1).contains("Redis 8.0") && !text_of(&s1).contains("Redis 7.2"),
         "search_facts sees the new value only: {}",
         text_of(&s1)
+    );
+
+    // ── 3c. unified retrieval: search_memory fuses facts + causal layers.
+    // Query "redis" matches the fact (Redis 8.0) AND no causal lesson yet;
+    // query "backup" matches causal lessons only.
+    let u1 = client
+        .call_tool(
+            CallToolRequestParams::new("search_memory").with_arguments(args(serde_json::json!({
+                "query": "redis cache"
+            }))),
+        )
+        .await
+        .unwrap();
+    assert!(
+        text_of(&u1).contains("[unified/") && text_of(&u1).contains("Redis 8.0"),
+        "search_memory finds the fact: {}",
+        text_of(&u1)
+    );
+
+    let u2 = client
+        .call_tool(
+            CallToolRequestParams::new("search_memory").with_arguments(args(serde_json::json!({
+                "query": "backup migration"
+            }))),
+        )
+        .await
+        .unwrap();
+    assert!(
+        text_of(&u2).contains("Causal lessons") && text_of(&u2).contains("backup"),
+        "search_memory finds the causal lesson: {}",
+        text_of(&u2)
+    );
+
+    // Invalid scope is rejected, same as search_facts.
+    let u3 = client
+        .call_tool(
+            CallToolRequestParams::new("search_memory").with_arguments(args(serde_json::json!({
+                "query": "redis",
+                "scope": "usr"
+            }))),
+        )
+        .await
+        .unwrap();
+    assert!(
+        text_of(&u3).contains("Invalid scope"),
+        "search_memory validates scope: {}",
+        text_of(&u3)
     );
 
     // ── 4. search_causal with task_tag filter — keyword fallback path.

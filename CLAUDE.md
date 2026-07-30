@@ -14,7 +14,9 @@ sessions.
 ### Before any non-trivial decision (architecture choice, debugging approach,
 library selection, deployment strategy):
 
-1. Call `search_causal` with the relevant `task_tag` to check past lessons
+1. Call `search_memory` with your query — it searches facts AND causal
+   lessons at once (RRF-fused). If you know you need causal lessons
+   specifically, call `search_causal` with the relevant `task_tag`
 2. For risky or irreversible actions, also call `intervention_query` to see
    what outcomes similar past actions caused (safe / warning / danger)
 3. If past experience is relevant, incorporate it into your approach
@@ -28,14 +30,22 @@ library selection, deployment strategy):
    - `task_tag`: the task category
    - `confidence_source`: temporal / rule / llm_inferred / user_feedback
 
+### When you learn a stable fact (preference, tech stack, config):
+
+5. Call `record_fact` with `key` (category), `value` (the fact), and
+   `scope` (user / session / agent). If the fact replaces an older one
+   (e.g. the user switched package managers), set `replace_same_key: true`
+   to retire the outdated value. Retrieve later with `search_facts` or
+   `search_memory`.
+
 ### When something fails unexpectedly:
 
-5. Call `trace_cause` with a description of what went wrong; use
+6. Call `trace_cause` with a description of what went wrong; use
    `trace_cause_chain` when the root cause is more than one hop away
 
 ### When a recorded lesson turns out to be wrong:
 
-6. Call `invalidate_decision` so the falsified edge stops surfacing in
+7. Call `invalidate_decision` so the falsified edge stops surfacing in
    future searches (it stays in the DB for audit)
 
 **Do NOT ask the user before searching or recording — do it proactively.**

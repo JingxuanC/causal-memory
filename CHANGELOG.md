@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.0] - Unreleased
 
 ### Added
+- Unified retrieval (unified-memory-design Phase 2): `search_memory` MCP
+  tool — facts + causal lessons fused by Reciprocal Rank Fusion (RRF,
+  k=60) in one call; one query embedding serves both layers; cross-layer
+  agreement outranks single-layer rank-1 hits (13 tools total)
+- LLM distill ingest (unified-memory-design Phase 3): `causal-memory
+  distill <session.json|dir> [--dry-run]` — one LLM call per session routes
+  distilled facts/preferences → `agent_facts` (with supersedes-driven
+  retirement of outdated values) and lessons/events → the causal store's
+  existing `record_distilled` path
 - Fact layer (unified-memory-design Phase 1, schema v6): flat facts
   ("user prefers TypeScript") alongside causal edges — `agent_facts` +
   `agent_facts_embeddings` tables, idempotent upsert on (key, value, scope),

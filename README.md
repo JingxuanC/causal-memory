@@ -34,7 +34,7 @@ The causal table doesn't decay because it lives outside the agent's context wind
 
 ## What it does
 
-Twelve MCP tools. Small surface area is the point.
+Thirteen MCP tools. Small surface area is the point.
 
 | Tool | When to call | What it does |
 |---|---|---|
@@ -42,6 +42,7 @@ Twelve MCP tools. Small surface area is the point.
 | `search_causal` | Before a non-trivial decision | Retrieves past causal episodes by task or text; ranks by embedding cosine similarity when configured, BM25 otherwise |
 | `record_fact` | When learning a stable fact | Records flat facts (preferences / tech stack / config) with scope + confidence; idempotent on (key, value, scope), optional same-key retirement of outdated values |
 | `search_facts` | When you need "what is" info | Retrieves facts by semantic similarity when configured, BM25 otherwise; without a query, lists the most recently updated facts |
+| `search_memory` | When unsure which memory type | Unified retrieval: facts + causal lessons fused by Reciprocal Rank Fusion (RRF) into one ranked list |
 | `trace_cause` | When something fails (simple) | Single-hop reverse: which decision caused this outcome |
 | `trace_cause_chain` | When something fails (deep) | Multi-hop backward traversal through the causal graph |
 | `invalidate_decision` | When a recorded lesson turns out wrong | Soft-invalidates the edge (`valid_to` set) — hidden from search/trace, kept for audit |
@@ -173,9 +174,11 @@ causal-memory bench-agent --tasks 6 --steps 12 --condition both --seed 42
 
 **v0.9.0 — alpha.** What works:
 
-- ✅ Twelve MCP tools (record / search / facts / trace / chain-trace / invalidate / patterns / L0 directory / intervention / counterfactual / reconstruct)
+- ✅ Thirteen MCP tools (record / search / facts / unified / trace / chain-trace / invalidate / patterns / L0 directory / intervention / counterfactual / reconstruct)
 - ✅ SQLite persistence with CHECK constraints + idempotent schema migrations (v6)
 - ✅ **Fact layer** (`agent_facts`, unified-memory-design Phase 1): flat facts with scope + soft invalidation, idempotent upsert, same-key retirement, BM25 + optional embedding retrieval
+- ✅ **Unified retrieval** (`search_memory`, Phase 2): RRF fusion of facts + causal layers, one query embedding serving both
+- ✅ **LLM distill ingest** (`causal-memory distill <session.json|dir>`, Phase 3): one LLM call per session extracts facts → `agent_facts` (with supersedes retirement) + lessons/events → causal store
 - ✅ **Parameterized queries** (no SQL injection risk)
 - ✅ Confidence levels (temporal / rule / llm_inferred / user_feedback)
 - ✅ Task-aware retrieval + optional **semantic (embedding) retrieval** with keyword fallback
@@ -190,7 +193,7 @@ causal-memory bench-agent --tasks 6 --steps 12 --condition both --seed 42
 - ✅ **Contrastive counterfactuals** (`counterfactual_query`) + **reconstructive retrieval** (`reconstruct_lesson` with optional calibration)
 - ✅ **Cross-agent sharing** (`export` / `import`, redacted + idempotent)
 - ✅ **Benchmarks**: LoCoMo harness (see [Benchmarks](#benchmarks)) + reproducible `bench-compaction`
-- ✅ 213 tests (210 unit + 3 e2e suites: migration / pipeline / MCP stdio)
+- ✅ 218 tests (215 unit + 3 e2e suites: migration / pipeline / MCP stdio)
 
 What's not done yet (honest):
 

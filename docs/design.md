@@ -70,7 +70,7 @@ Not all causal links are equally certain. Per [insights/11 §3 step three](https
 
 Search returns results ordered by confidence — high-confidence lessons surface first.
 
-### Why 12 tools (and no more)
+### Why 13 tools (and no more)
 
 The MCP surface is intentionally minimal — every tool must earn its place by
 covering a distinct moment in the agent's decision loop:
@@ -81,6 +81,8 @@ covering a distinct moment in the agent's decision loop:
 - `record_fact` — fact write path: stable "what is" information
   (preferences / tech stack / config), idempotent on (key, value, scope)
 - `search_facts` — fact read path: semantic/BM25 fact retrieval
+- `search_memory` — unified read path: RRF-fused facts + causal lessons when
+  the agent doesn't know which layer holds the answer
 - `trace_cause` — diagnostic path, single hop (after failure)
 - `trace_cause_chain` — diagnostic path, multi-hop root cause
 - `invalidate_decision` — correction path (a recorded lesson turns out wrong)
@@ -96,7 +98,7 @@ covering a distinct moment in the agent's decision loop:
 - `reconstruct_lesson` — distillation path: turn a past episode into a
   *transferable* narrative lesson instead of raw records
 
-More tools would mean more decisions for the agent: "which tool do I call?" That cognitive overhead reduces usage. Per [insights/14 §2.2](https://github.com/JingxuanC/agent-teardown/blob/main/insights/14-on-deep-digging.md): "complete-looking is the enemy of depth" — and in tool design, "feature-rich is the enemy of used." Each of the twelve maps to one unambiguous call moment; anything further would overlap.
+More tools would mean more decisions for the agent: "which tool do I call?" That cognitive overhead reduces usage. Per [insights/14 §2.2](https://github.com/JingxuanC/agent-teardown/blob/main/insights/14-on-deep-digging.md): "complete-looking is the enemy of depth" — and in tool design, "feature-rich is the enemy of used." Each of the thirteen maps to one unambiguous call moment; anything further would overlap.
 
 ### Why MCP
 

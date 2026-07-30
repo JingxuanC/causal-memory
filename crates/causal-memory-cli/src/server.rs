@@ -1,10 +1,15 @@
-//! MCP server handler — exposes 10 tools for causal memory.
+//! MCP server handler — exposes 13 tools for unified agent memory.
 //!
 //! Tools:
 //! - record_decision: agent calls after completing an action, to log
 //!   the decision and its outcome as a causal edge.
 //! - search_causal: agent calls BEFORE a non-trivial decision, to check
 //!   past lessons in the same task domain.
+//! - record_fact: agent calls to record a flat fact (preference / tech
+//!   stack / config); idempotent, optional same-key retirement.
+//! - search_facts: agent calls to retrieve flat facts (semantic/BM25/list).
+//! - search_memory: unified retrieval — facts + causal lessons fused by
+//!   Reciprocal Rank Fusion (RRF) in one call.
 //! - trace_cause: agent calls when something fails, to find which past
 //!   decision could have caused it (single-hop reverse lookup).
 //! - trace_cause_chain: agent calls for deep failure analysis, to follow
@@ -32,7 +37,8 @@ use serde::Deserialize;
 
 use causal_memory::embed::{EmbedConfig, Embedder};
 use causal_memory::hippocampus::CausalGraph;
-use causal_memory::store::{outcome_polarity, CausalStore, ChainHop};
+use causal_memory::store::{outcome_polarity, AgentFact, CausalEntry, CausalStore, ChainHop};
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 pub struct CausalMemoryServer {
@@ -118,6 +124,33 @@ const INTERVENTION_MIN_SIMILARITY: f64 = 0.5;
 /// Cosine floor for the semantic contradiction scan on record (precision-
 /// oriented: only paraphrase-level duplicates of the same decision).
 const SEMANTIC_CONTRADICTION_MIN_SIMILARITY: f64 = 0.85;
+
+/// Reciprocal Rank Fusion constant (the RRF paper's standard value).
+const RRF_K: f64 = 60.0;
+
+/// Fuse two ranked key lists by Reciprocal Rank Fusion:
+/// `score(key) = Σ_lists 1 / (RRF_K + rank)` with 1-based ranks. A key
+/// present in both lists scores from both — cross-layer agreement floats to
+/// the top. Returns keys with fused scores, sorted descending; ties keep
+/// first-seen order (stable sort).
+fn rrf_fuse(a: &[String], b: &[String]) -> Vec<(String, f64)> {
+    let mut scores: Vec<(String, f64)> = Vec::new();
+    let add = |key: &str, rank: usize, scores: &mut Vec<(String, f64)>| {
+        let s = 1.0 / (RRF_K + rank as f64 + 1.0);
+        match scores.iter_mut().find(|(k, _)| k == key) {
+            Some((_, acc)) => *acc += s,
+            None => scores.push((key.to_string(), s)),
+        }
+    };
+    for (i, k) in a.iter().enumerate() {
+        add(k, i, &mut scores);
+    }
+    for (i, k) in b.iter().enumerate() {
+        add(k, i, &mut scores);
+    }
+    scores.sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
+    scores
+}
 
 /// Write-time outcome polarity: LLM judge when an LLM is configured, falling
 /// back to the signal-word heuristic on any failure or when unconfigured
@@ -464,6 +497,22 @@ pub struct SearchFactsParams {
     pub scope: Option<String>,
     /// Max number of results (default 5)
     #[schemars(description = "Maximum results to return (default 5)")]
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct SearchMemoryParams {
+    /// Natural language query (e.g., "Redis caching")
+    #[schemars(description = "Text matched against ALL memory layers at once")]
+    pub query: String,
+    /// Optional task filter for the causal layer (e.g., "concurrency")
+    #[schemars(description = "Task category filter applied to causal episodes")]
+    pub task_tag: Option<String>,
+    /// Optional scope filter for the fact layer: user, session, or agent
+    #[schemars(description = "Scope filter applied to facts")]
+    pub scope: Option<String>,
+    /// Max number of results (default 10)
+    #[schemars(description = "Maximum fused results to return (default 10)")]
     pub limit: Option<usize>,
 }
 
@@ -922,6 +971,143 @@ impl CausalMemoryServer {
                 fact.value,
                 fact.confidence * 100.0,
             ));
+        }
+        out
+    }
+
+    #[tool(
+        name = "search_memory",
+        description = "Search ALL memory types at once: flat facts (preferences, tech stack, config) AND causal lessons (decision → outcome). Use this when you're not sure whether what you need is a fact or a lesson — results from every layer are fused by Reciprocal Rank Fusion (RRF) into one ranked list. For a deep dive into one layer, use search_facts or search_causal directly."
+    )]
+    fn search_memory(&self, Parameters(params): Parameters<SearchMemoryParams>) -> String {
+        let limit = params.limit.unwrap_or(10);
+        let scope = params.scope.as_deref();
+        if let Some(s) = scope {
+            if !matches!(s, "user" | "session" | "agent") {
+                return format!("❌ Invalid scope '{s}' — use one of: user, session, agent");
+            }
+        }
+        // Pull more than needed per layer so the fusion has real candidates.
+        let per_layer = limit.saturating_mul(2).max(10);
+
+        // Same retrieval discipline as the single-layer tools: semantic when
+        // an embedder is configured, BM25 otherwise. One query embedding
+        // serves both layers. Per-layer fallthrough: an empty/failed
+        // semantic result (e.g. records stored without embeddings) degrades
+        // that layer to BM25 instead of silently missing hits.
+        let query_vec = EmbedConfig::from_env()
+            .map(Embedder::new)
+            .and_then(|e| block_on(e.embed(&params.query)).ok());
+
+        let mut used_semantic = false;
+        let facts: Vec<AgentFact> = match &query_vec {
+            Some(v) => {
+                let sem: Vec<AgentFact> = self
+                    .store
+                    .search_facts_semantic(v, scope, per_layer)
+                    .map(|hits| hits.into_iter().map(|(f, _)| f).collect())
+                    .unwrap_or_default();
+                if sem.is_empty() {
+                    self.store
+                        .search_facts_bm25(&params.query, scope, per_layer)
+                        .unwrap_or_default()
+                } else {
+                    used_semantic = true;
+                    sem
+                }
+            }
+            None => self
+                .store
+                .search_facts_bm25(&params.query, scope, per_layer)
+                .unwrap_or_default(),
+        };
+        let causal: Vec<CausalEntry> = match &query_vec {
+            Some(v) => {
+                let sem: Vec<CausalEntry> = self
+                    .store
+                    .search_causal_semantic(v, params.task_tag.as_deref(), per_layer)
+                    .map(|hits| hits.into_iter().map(|(e, _)| e).collect())
+                    .unwrap_or_default();
+                if sem.is_empty() {
+                    self.store
+                        .search_causal_bm25(params.task_tag.as_deref(), &params.query, per_layer)
+                        .unwrap_or_default()
+                } else {
+                    used_semantic = true;
+                    sem
+                }
+            }
+            None => self
+                .store
+                .search_causal_bm25(params.task_tag.as_deref(), &params.query, per_layer)
+                .unwrap_or_default(),
+        };
+        let mode = if used_semantic { "semantic" } else { "bm25" };
+
+        if facts.is_empty() && causal.is_empty() {
+            return format!(
+                "[unified/{mode}] 📭 No memories found matching your query in any layer."
+            );
+        }
+
+        // RRF fusion over layer-prefixed keys. Keys are namespaced per
+        // layer (a fact and a causal edge never share a key), so fusion is
+        // rank-interleaving: each item scores by its own layer's rank.
+        let fact_keys: Vec<String> = facts.iter().map(|f| format!("fact:{}", f.id)).collect();
+        let causal_keys: Vec<String> = causal
+            .iter()
+            .map(|e| format!("causal:{}", e.edge_id))
+            .collect();
+        let fused = rrf_fuse(&fact_keys, &causal_keys);
+        let rank_of: HashMap<&str, usize> = fused
+            .iter()
+            .enumerate()
+            .map(|(i, (k, _))| (k.as_str(), i + 1))
+            .collect();
+
+        // Keep only items inside the fused top-`limit`, then group by layer
+        // for display (each item annotated with its fused rank).
+        let keep = |key: &str| rank_of.get(key).is_some_and(|r| *r <= limit);
+        let facts_kept: Vec<&AgentFact> = facts
+            .iter()
+            .filter(|f| keep(&format!("fact:{}", f.id)))
+            .collect();
+        let causal_kept: Vec<&CausalEntry> = causal
+            .iter()
+            .filter(|e| keep(&format!("causal:{}", e.edge_id)))
+            .collect();
+
+        let layers = usize::from(!facts_kept.is_empty()) + usize::from(!causal_kept.is_empty());
+        let total = facts_kept.len() + causal_kept.len();
+        let mut out =
+            format!("[unified/{mode}] Found {total} memories across {layers} layer(s):\n\n");
+        if !facts_kept.is_empty() {
+            out.push_str(&format!("📊 Facts ({}):\n", facts_kept.len()));
+            for fact in &facts_kept {
+                let rank = rank_of[format!("fact:{}", fact.id).as_str()];
+                out.push_str(&format!(
+                    "  #{rank} [{}] {} = \"{}\" (confidence: {:.0}%)\n",
+                    fact.scope,
+                    fact.key,
+                    truncate_chars(&fact.value, 60),
+                    fact.confidence * 100.0,
+                ));
+            }
+            out.push('\n');
+        }
+        if !causal_kept.is_empty() {
+            out.push_str(&format!("🔗 Causal lessons ({}):\n", causal_kept.len()));
+            for entry in &causal_kept {
+                let rank = rank_of[format!("causal:{}", entry.edge_id).as_str()];
+                out.push_str(&format!(
+                    "  #{rank} [{}] \"{}\" →({})→ \"{}\" (confidence: {:.0}%)\n",
+                    entry.task_tag.as_deref().unwrap_or("untagged"),
+                    truncate_chars(&entry.decision_text, 50),
+                    entry.relation,
+                    truncate_chars(&entry.outcome_text, 50),
+                    entry.confidence * 100.0,
+                ));
+            }
         }
         out
     }
@@ -1575,6 +1761,59 @@ impl ServerHandler for CausalMemoryServer {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_rrf_fuse_single_list_order() {
+        // One empty list: the other list's order is preserved, scores by rank.
+        let a = vec!["fact:1".to_string(), "fact:2".to_string()];
+        let fused = rrf_fuse(&a, &[]);
+        assert_eq!(fused.len(), 2);
+        assert_eq!(fused[0].0, "fact:1");
+        assert!((fused[0].1 - 1.0 / (RRF_K + 1.0)).abs() < 1e-12);
+        assert!((fused[1].1 - 1.0 / (RRF_K + 2.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_rrf_fuse_production_shape_interleaving() {
+        // Production keys are layer-namespaced ("fact:{id}" / "causal:{id}"),
+        // so no key ever appears in both lists: fusion is rank-interleaving.
+        // Rank-1 items from each list tie and surface first, in first-seen
+        // order (facts list is passed first).
+        let a = vec!["fact:1".to_string(), "fact:2".to_string()];
+        let b = vec!["causal:9".to_string(), "causal:2".to_string()];
+        let fused = rrf_fuse(&a, &b);
+        assert_eq!(fused.len(), 4);
+        assert_eq!(fused[0].0, "fact:1"); // facts rank 1
+        assert_eq!(fused[1].0, "causal:9"); // causal rank 1 (tied score)
+        assert_eq!(fused[2].0, "fact:2");
+        assert_eq!(fused[3].0, "causal:2");
+    }
+
+    #[test]
+    fn test_rrf_fuse_shared_key_accumulates() {
+        // The helper itself is generic: a key present in BOTH lists
+        // accumulates both list scores and outranks single-list rank-1.
+        // (Unreachable with layer-namespaced production keys; the fusion
+        // helper is kept honest about its own semantics.)
+        let a = vec!["x".to_string(), "shared".to_string()];
+        let b = vec!["y".to_string(), "shared".to_string()];
+        let fused = rrf_fuse(&a, &b);
+        assert_eq!(fused[0].0, "shared");
+        let expected = 2.0 / (RRF_K + 2.0);
+        assert!((fused[0].1 - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_rrf_fuse_disjoint_union() {
+        let a = vec!["fact:1".to_string()];
+        let b = vec!["causal:9".to_string(), "causal:2".to_string()];
+        let fused = rrf_fuse(&a, &b);
+        // Union of both lists, rank-1 items first (tie → first-seen).
+        assert_eq!(fused.len(), 3);
+        assert_eq!(fused[0].0, "fact:1");
+        assert_eq!(fused[1].0, "causal:9");
+        assert_eq!(fused[2].0, "causal:2");
+    }
 
     #[test]
     fn test_chain_label_stored_polarity() {

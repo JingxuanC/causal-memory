@@ -32,9 +32,9 @@ argument — lightweight self-built fact layer, pluggable storage substrate).
 - [x] **Fact/preference layer** — ✅ shipped 2026-07-31 (schema v6):
   `agent_facts` with scope + validity intervals, idempotent upsert,
   same-key retirement (`replace_same_key`), BM25 + optional embedding
-  retrieval, `record_fact` / `search_facts` MCP tools. Remaining: unified
-  `search_memory` RRF fusion (Phase 2) and LLM distill ingest (Phase 3),
-  then LoCoMo rerun targeting 75–80%
+  retrieval, `record_fact` / `search_facts` MCP tools. Phase 2
+  (`search_memory` RRF fusion) and Phase 3 (`causal-memory distill` LLM
+  ingest) shipped the same day. Remaining: LoCoMo rerun targeting 75–80%
 - [ ] **Hebbian co-occurrence edges** — weak associative edges between
   decisions co-active in the same session, weight ∝ co-occurrence (the
   excitatory complement to `prevented` negative spread; absorbs HeLa-Mem's
@@ -42,10 +42,10 @@ argument — lightweight self-built fact layer, pluggable storage substrate).
 - [ ] **SWR 2.0 / Dreams alignment** — consolidation produces a *new* store
   (original untouched, auditable, rollback-able) + an `instructions`-style
   focus parameter ("focus on causal lessons; ignore routine operations")
-- [ ] **Query routing + fusion retrieval** — query-type classifier routes to
-  fact / causal / temporal path, RRF fusion when ambiguous; iterative
-  retrieval with entity/time anchors for multi-session questions (targets
-  LongMemEval multi-session 32.3%)
+- [~] **Query routing + fusion retrieval** — ✅ RRF fusion shipped
+  (`search_memory`, 2026-07-31); remaining: query-type classifier for
+  single-layer routing and iterative retrieval with entity/time anchors for
+  multi-session questions (targets LongMemEval multi-session 32.3%)
 - [ ] **Q-value dynamics** — MemRL/MemQ-style dynamic utility replaces static
   confidence as the primary edge weight
 
@@ -65,10 +65,10 @@ Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
 
 ## Current state — v0.9.0+ (main)
 
-**Twelve MCP tools**: `record_decision` / `search_causal` / `record_fact` /
-`search_facts` / `trace_cause` / `trace_cause_chain` / `invalidate_decision` /
-`search_patterns` / `causal_directory` / `intervention_query` /
-`counterfactual_query` / `reconstruct_lesson`
+**Thirteen MCP tools**: `record_decision` / `search_causal` / `record_fact` /
+`search_facts` / `search_memory` / `trace_cause` / `trace_cause_chain` /
+`invalidate_decision` / `search_patterns` / `causal_directory` /
+`intervention_query` / `counterfactual_query` / `reconstruct_lesson`
 
 Core capabilities (all shipped, all tested):
 
@@ -76,6 +76,11 @@ Core capabilities (all shipped, all tested):
   table + embeddings (schema v6), idempotent upsert on (key, value, scope),
   soft invalidation + same-key retirement (`replace_same_key`), BM25 +
   optional semantic retrieval, revive-on-re-record
+- **Unified retrieval** (2026-07-31, Phase 2): `search_memory` RRF-fuses
+  facts + causal layers into one ranked list
+- **LLM distill ingest** (2026-07-31, Phase 3): `causal-memory distill`
+  routes distilled facts/preferences → `agent_facts` (supersedes retirement)
+  and lessons/events → the causal store
 - Temporal schema (v6) + idempotent migrations; `valid_to` invalidation
   (manual + contradiction short-circuit with write-time polarity)
 - Dual-system memory: meta-edge pattern miner with **stratified
@@ -93,7 +98,7 @@ Core capabilities (all shipped, all tested):
 - Retrieval: BM25 default + optional embeddings with cosine ranking
 - Cross-agent sharing: `causal-memory export` / `import` (JSONL, idempotent,
   best-effort redaction)
-- 213 tests (unit + e2e: migration / pipeline / MCP stdio)
+- 218 tests (unit + e2e: migration / pipeline / MCP stdio)
 
 ## Benchmarks (frozen protocols, all published in docs/benchmarks/)
 

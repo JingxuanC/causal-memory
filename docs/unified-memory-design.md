@@ -286,17 +286,17 @@ agent-teardown 当日三篇深度分析提出了一个真实张力：OpenViking�
 - [x] `search_facts` MCP 工具 (server.rs, 语义 → BM25 → 列表 三档降级)
 - [x] 单元测试 ×5 + migration v5→v6 测试 + mcp_e2e 全链路覆盖（212 tests 全绿）
 
-### Phase 2：统一检索 (1 天)
+### Phase 2：统一检索 (1 天) — ✅ 已完成 2026-07-31
 
-- [ ] `search_memory()` 实现 (RRF 融合 facts + causal + temporal)
-- [ ] `search_memory` MCP 工具 (server.rs)
-- [ ] 测试：验证 RRF 融合排序正确
+- [x] `rrf_fuse()` 实现 (RRF k=60, 跨层共识加分, server.rs)
+- [x] `search_memory` MCP 工具 (server.rs, 语义/BM25 双模式共享一次 query embedding)
+- [x] 测试：RRF 单元测试 ×3（排序/跨层共识/并集）+ mcp_e2e 统一检索覆盖
 
-### Phase 3：LLM Distill (1 天)
+### Phase 3：LLM Distill (1 天) — ✅ 已完成 2026-07-31
 
-- [ ] `distill` CLI 命令 (从 session 提取 facts + decisions + insights)
-- [ ] 参考 Vela Reflector 的 prompt 设计
-- [ ] 测试：对 papers/02 的 Redis session 跑 distill
+- [x] `distill` CLI 命令 (session JSON/目录 → facts + lessons/events 分流写入)
+- [x] facts/preferences → agent_facts (supersedes 退休旧值), lessons/events → record_distilled
+- [x] 测试：load_session 解析 + retire_superseded_facts（key/scope 隔离 + 阈值）
 
 ### Phase 4：Benchmark 重跑 (半天)
 

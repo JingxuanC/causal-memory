@@ -57,6 +57,13 @@ fn main() -> anyhow::Result<()> {
         return run_link();
     }
 
+    // Subcommand: distill <session.json|dir> [--dry-run] — LLM distill into
+    // all memory layers (facts → agent_facts, lessons/events → causal store)
+    if args.len() >= 2 && args[1] == "distill" {
+        let rt = tokio::runtime::Runtime::new()?;
+        return rt.block_on(run_distill(&args[2..]));
+    }
+
     // Subcommand: sleep [--db <PATH>] [--dry-run] — offline consolidation cycle
     if args.len() >= 2 && args[1] == "sleep" {
         return run_sleep(&args[2..]);
@@ -103,6 +110,269 @@ fn main() -> anyhow::Result<()> {
 
     // Default: MCP server mode
     run_mcp_server()
+}
+
+/// LLM-distill session file(s) into all memory layers (unified-memory-design
+/// Phase 3): one LLM call per session produces facts + lessons/events; facts
+/// land in `agent_facts`, lessons/events take the existing record_distilled
+/// path into the causal store.
+async fn run_distill(args: &[String]) -> anyhow::Result<()> {
+    use causal_memory::distill::{Distiller, ItemKind};
+
+    let dry_run = args.iter().any(|a| a == "--dry-run");
+    let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+    // Fail loudly on anything we don't understand — silently ignoring a
+    // misspelled flag (e.g. `--dryrun`) could write when the user asked not to.
+    let unknown: Vec<&String> = args
+        .iter()
+        .filter(|a| a.starts_with("--") && a.as_str() != "--dry-run")
+        .collect();
+    if !unknown.is_empty() || positional.len() > 1 {
+        eprintln!(
+            "Unrecognized argument(s): {}",
+            unknown
+                .iter()
+                .map(|s| s.as_str())
+                .chain(positional.iter().skip(1).map(|s| s.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        std::process::exit(2);
+    }
+    if positional.is_empty() {
+        eprintln!("Usage: causal-memory distill <session.json|session-dir> [--dry-run]");
+        eprintln!(
+            "  Session file: {{\"date\": \"YYYY-MM-DD\", \"turns\": [[speaker, message], ...]}}"
+        );
+        eprintln!("\nRequired env:");
+        eprintln!("  CAUSAL_MEMORY_LLM_API   (e.g. https://api.deepseek.com/v1)");
+        eprintln!("  CAUSAL_MEMORY_LLM_KEY   (or DEEPSEEK_API_KEY)");
+        std::process::exit(1);
+    }
+
+    let distiller = match Distiller::from_env() {
+        Some(d) => d,
+        None => {
+            eprintln!("No LLM configured. Set CAUSAL_MEMORY_LLM_API + CAUSAL_MEMORY_LLM_KEY (or DEEPSEEK_API_KEY)");
+            std::process::exit(1);
+        }
+    };
+
+    // Collect session files: one JSON file, or every *.json in a directory.
+    let path = PathBuf::from(positional[0]);
+    let mut files = Vec::new();
+    if path.is_dir() {
+        for entry in std::fs::read_dir(&path)? {
+            let p = entry?.path();
+            if p.extension().is_some_and(|e| e == "json") {
+                files.push(p);
+            }
+        }
+        files.sort();
+    } else {
+        files.push(path.clone());
+    }
+    if files.is_empty() {
+        eprintln!("No .json session files found at {}", path.display());
+        std::process::exit(1);
+    }
+
+    let db_path = get_db_path();
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let store = CausalStore::open(&db_path)?;
+    let embedder = causal_memory::embed::EmbedConfig::from_env()
+        .map(causal_memory::embed::Embedder::new);
+
+    let mut total_facts = 0usize;
+    let mut total_episodes = 0usize;
+    let mut total_retired = 0usize;
+    let mut sessions_distilled = 0usize;
+
+    for file in &files {
+        let (date, turns) = match load_session(file) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("⚠️ {}: {e}", file.display());
+                continue;
+            }
+        };
+        let items = match distiller.distill_session(&date, &turns).await {
+            Ok(items) if !items.is_empty() => items,
+            Ok(_) => {
+                println!("{}: nothing worth remembering", file.display());
+                continue;
+            }
+            Err(e) => {
+                eprintln!("⚠️ distill failed for {}: {e}", file.display());
+                continue;
+            }
+        };
+        sessions_distilled += 1;
+        println!(
+            "{}: {} item(s){}",
+            file.display(),
+            items.len(),
+            if dry_run { " (dry run)" } else { "" }
+        );
+
+        for item in &items {
+            let kind = match item.kind {
+                ItemKind::Fact => "fact",
+                ItemKind::Preference => "preference",
+                ItemKind::Lesson => "lesson",
+                ItemKind::Event => "event",
+            };
+            println!("  [{kind}] {}", item.text);
+            if dry_run {
+                continue;
+            }
+            match item.kind {
+                // Facts/preferences → the fact layer; supersedes retires the
+                // outdated value it replaces (edge-layer threshold semantics).
+                ItemKind::Fact | ItemKind::Preference => {
+                    // Log-and-continue: one bad record must not abort the batch.
+                    let id = match store.record_fact(kind, &item.text, "user", "distill", 0.8) {
+                        Ok(id) => id,
+                        Err(e) => {
+                            eprintln!("⚠️ record_fact failed ({}): {e}", item.text);
+                            continue;
+                        }
+                    };
+                    total_facts += 1;
+                    if let Some(hint) = item.supersedes.as_deref() {
+                        total_retired += retire_superseded_facts(&store, kind, "user", hint);
+                    }
+                    // Opportunistic embedding (silent on failure).
+                    if let Some(e) = &embedder {
+                        let text = format!("{} {}", kind.replace('_', " "), item.text);
+                        if let Ok(vec) = e.embed(&text).await {
+                            let _ = store.put_fact_embedding(id, e.model(), &vec);
+                        }
+                    }
+                }
+                // Lessons/events → the causal store's distilled path (handles
+                // its own supersedes-based soft-invalidation).
+                ItemKind::Lesson | ItemKind::Event => {
+                    if let Err(e) = store.record_distilled(item, None) {
+                        eprintln!("⚠️ record_distilled failed ({}): {e}", item.text);
+                        continue;
+                    }
+                    total_episodes += 1;
+                }
+            }
+        }
+    }
+
+    println!("\n=== Distill complete ===");
+    println!("Sessions: {sessions_distilled}/{} distilled", files.len());
+    println!("Facts recorded: {total_facts} (outdated retired: {total_retired})");
+    println!("Episodes recorded: {total_episodes}");
+    Ok(())
+}
+
+/// Parse a session JSON file: `{"date": "YYYY-MM-DD", "turns": [...]}` where
+/// turns are `[speaker, message]` pairs or `{speaker, message}` objects.
+fn load_session(path: &std::path::Path) -> anyhow::Result<(String, Vec<(String, String)>)> {
+    let raw = std::fs::read_to_string(path)?;
+    let v: serde_json::Value = serde_json::from_str(&raw)?;
+    let date = v
+        .get("date")
+        .and_then(|d| d.as_str())
+        .unwrap_or("")
+        .to_string();
+    if date.is_empty() {
+        anyhow::bail!("missing 'date'");
+    }
+    let turns_v = v
+        .get("turns")
+        .and_then(|t| t.as_array())
+        .ok_or_else(|| anyhow::anyhow!("missing 'turns' array"))?;
+    let mut turns = Vec::new();
+    let mut skipped = 0usize;
+    for t in turns_v {
+        if let Some(arr) = t.as_array() {
+            if arr.len() >= 2 {
+                turns.push((
+                    arr[0].as_str().unwrap_or("user").to_string(),
+                    arr[1].as_str().unwrap_or("").to_string(),
+                ));
+            } else {
+                skipped += 1;
+            }
+        } else if let Some(obj) = t.as_object() {
+            turns.push((
+                obj.get("speaker")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("user")
+                    .to_string(),
+                obj.get("message")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            ));
+        } else {
+            skipped += 1;
+        }
+    }
+    if skipped > 0 {
+        eprintln!(
+            "⚠️ {}: skipped {skipped} malformed turn(s)",
+            path.display()
+        );
+    }
+    Ok((date, turns))
+}
+
+/// Retire valid facts under (key, scope) whose value matches a supersedes
+/// hint. Ported from the edge layer's supersedes machinery
+/// (store::record_distilled), with its guards:
+/// - thresholds: containment ≥ 0.5 AND ≥ 2 shared tokens (SUPERSEDES_SIM_THRESHOLD
+///   / SUPERSEDES_MIN_SHARED_TOKENS), computed on DEDUPLICATED token sets
+/// - retraction records are never retirement TARGETS (a fact whose text
+///   announces a retraction, e.g. "no longer likes X", must not be killed by
+///   a later hint sharing that vocabulary — double-negation resurrection)
+///
+/// Returns the number retired.
+fn retire_superseded_facts(store: &CausalStore, key: &str, scope: &str, hint: &str) -> usize {
+    use std::collections::HashSet;
+    let hint_tokens: HashSet<String> = causal_memory::patterns::tokenize(hint).into_iter().collect();
+    if hint_tokens.len() < causal_memory::store::SUPERSEDES_MIN_SHARED_TOKENS {
+        return 0;
+    }
+    let Ok(candidates) = store.search_facts_bm25(hint, Some(scope), 10) else {
+        return 0;
+    };
+    let mut retired = 0;
+    for fact in candidates {
+        if fact.key != key {
+            continue;
+        }
+        // Guard: retraction records are never targets (edge-layer parity).
+        let lower = fact.value.to_lowercase();
+        if causal_memory::store::RETRACTION_MARKERS
+            .iter()
+            .any(|m| lower.contains(m))
+        {
+            continue;
+        }
+        let cand_tokens: HashSet<String> = causal_memory::patterns::tokenize(&fact.value)
+            .into_iter()
+            .collect();
+        let shared = hint_tokens.intersection(&cand_tokens).count();
+        if shared < causal_memory::store::SUPERSEDES_MIN_SHARED_TOKENS {
+            continue;
+        }
+        let denom = hint_tokens.len().min(cand_tokens.len());
+        if denom > 0
+            && shared as f64 / denom as f64 >= causal_memory::store::SUPERSEDES_SIM_THRESHOLD
+            && store.invalidate_fact(fact.id).unwrap_or(false)
+        {
+            retired += 1;
+        }
+    }
+    retired
 }
 
 async fn run_judge(args: &[String]) -> anyhow::Result<()> {
@@ -1509,5 +1779,84 @@ mod tests {
         };
         let (_, stats) = export_jsonl(&store, &f).unwrap();
         assert_eq!(stats.edges, 2);
+    }
+
+    // ─── distill CLI helpers (Phase 3) ────────────────────────────────────
+
+    #[test]
+    fn test_load_session_pair_and_object_turns() {
+        let dir = std::env::temp_dir().join(format!("cm-distill-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Pair form: [[speaker, message], ...]
+        let f1 = dir.join("a.json");
+        std::fs::write(
+            &f1,
+            r#"{"date": "2026-07-31", "turns": [["user", "hi"], ["assistant", "hello"]]}"#,
+        )
+        .unwrap();
+        let (date, turns) = load_session(&f1).unwrap();
+        assert_eq!(date, "2026-07-31");
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0], ("user".to_string(), "hi".to_string()));
+
+        // Object form: [{speaker, message}, ...]
+        let f2 = dir.join("b.json");
+        std::fs::write(
+            &f2,
+            r#"{"date": "2026-07-31", "turns": [{"speaker": "user", "message": "ping"}]}"#,
+        )
+        .unwrap();
+        let (_, turns) = load_session(&f2).unwrap();
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].1, "ping");
+
+        // Missing date / missing turns are errors, not panics.
+        let f3 = dir.join("c.json");
+        std::fs::write(&f3, r#"{"turns": []}"#).unwrap();
+        assert!(load_session(&f3).is_err());
+        let f4 = dir.join("d.json");
+        std::fs::write(&f4, r#"{"date": "2026-07-31"}"#).unwrap();
+        assert!(load_session(&f4).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_retire_superseded_facts() {
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .record_fact("preference", "user likes Bonobo coffee beans", "user", "distill", 0.8)
+            .unwrap();
+        store
+            .record_fact("tech_stack", "Redis 7.2", "user", "distill", 0.8)
+            .unwrap();
+
+        // A supersedes hint naming the old preference retires it — the
+        // unrelated fact is untouched.
+        let retired =
+            retire_superseded_facts(&store, "preference", "user", "Bonobo coffee beans");
+        assert_eq!(retired, 1);
+        let facts = store.list_facts(None, 10).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0].key, "tech_stack");
+
+        // Key isolation: a hint matching a fact under a DIFFERENT key
+        // retires nothing.
+        store
+            .record_fact("preference", "user likes PostgreSQL 16", "user", "distill", 0.8)
+            .unwrap();
+        let retired =
+            retire_superseded_facts(&store, "config", "user", "PostgreSQL 16");
+        assert_eq!(retired, 0);
+
+        // One-token or weak hints never nuke anything.
+        let retired = retire_superseded_facts(&store, "preference", "user", "PostgreSQL");
+        assert_eq!(retired, 0);
+
+        // Scope isolation: session-scoped retire does not touch user facts.
+        let retired =
+            retire_superseded_facts(&store, "preference", "session", "PostgreSQL 16");
+        assert_eq!(retired, 0);
     }
 }
