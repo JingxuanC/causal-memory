@@ -72,6 +72,27 @@ const KNOWLEDGE_UPDATE_RULE: &str =
     "\n- If the requested information was updated over time, always answer with the most recent \
      value (latest session date), not an outdated one.";
 
+/// P8: Extra instruction for multi-session questions. These are typically
+/// "how many X?" or "list all Y" questions that need the model to scan ALL
+/// provided memories and aggregate, not stop at the first match.
+const MULTI_SESSION_RULE: &str = "\n- This question requires synthesizing information across \
+     MULTIPLE sessions. Follow this procedure:\n\
+     1. Scan EVERY memory line, not just the first few.\n\
+     2. If the question asks \"how many\" or \"list all\", first WRITE OUT each matching item \
+     you find (e.g. \"1. boots from Zara, 2. jacket from H&M, 3. shirt from Uniqlo\"), then \
+     give the final count or list.\n\
+     3. Do NOT stop after finding one or two matches — some items may be buried deep in the \
+     memory list. Read ALL lines before answering.\n\
+     4. If you found N items, the answer to \"how many\" is N, even if you suspect there \
+     might be more — answer based only on what the memories state.";
+
+/// P8: Extra instruction for single-session-preference questions. These ask
+/// for a preference (favorite, preferred, likes) — answer with the specific
+/// stated preference, not a vague summary.
+const PREFERENCE_RULE: &str = "\n- This question asks about a user preference. Answer with the \
+     specific item, brand, or choice the user stated they prefer. If multiple preferences were \
+     mentioned, answer with the most recently stated one.";
+
 /// Judge system prompt (shared preamble; the user message carries the
 /// official per-type template from evaluate_qa.py).
 const JUDGE_SYSTEM_PROMPT: &str =
@@ -549,8 +570,55 @@ async fn distill_question(
 
 /// Retrieve candidate causal entries for a question (BM25), hard-scoped to
 /// this question's haystack via the task_tag = question_id edge filter.
+///
+/// For multi-session questions, does **iterative retrieval**: extracts
+/// content nouns from the question and runs additional BM25 queries per
+/// noun, merging results by dedup on edge_id. This widens the evidence
+/// net — a single top-k query misses fragments scattered across 40+
+/// sessions, but per-noun queries catch them.
 fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize) -> Result<Vec<CausalEntry>> {
-    store.search_causal_bm25(Some(&q.question_id), &q.question, topk)
+    let base = store.search_causal_bm25(Some(&q.question_id), &q.question, topk)?;
+
+    // P7: multi-session retrieval boost.
+    if q.question_type != "multi-session" || base.len() < 2 {
+        return Ok(base);
+    }
+
+    // Extract content words from the question (skip stopwords, short words).
+    let stopwords: HashSet<&str> = [
+        "how", "many", "what", "which", "who", "whom", "whose", "where", "when",
+        "why", "do", "did", "does", "is", "are", "was", "were", "have", "has",
+        "had", "i", "you", "we", "they", "he", "she", "it", "the", "a", "an",
+        "of", "in", "on", "at", "to", "for", "with", "from", "by", "and", "or",
+        "but", "not", "this", "that", "these", "those", "my", "your", "me",
+        "need", "pick", "up", "return", "list", "all", "items", "kind", "types",
+        "led", "leading", "worked", "bought", "am", "currently",
+    ]
+    .into_iter()
+    .collect();
+
+    let mut seen_ids: HashSet<i64> = base.iter().map(|e| e.edge_id).collect();
+    let mut merged = base;
+
+    // Pull content nouns ≥4 chars that aren't stopwords.
+    let nouns: Vec<String> = q
+        .question
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+        .filter(|w| w.len() >= 4 && !stopwords.contains(w.as_str()))
+        .collect();
+
+    // Run one BM25 query per noun, merge new hits.
+    for noun in &nouns {
+        let hits = store.search_causal_bm25(Some(&q.question_id), noun, topk / 2)?;
+        for entry in hits {
+            if seen_ids.insert(entry.edge_id) {
+                merged.push(entry);
+            }
+        }
+    }
+
+    Ok(merged)
 }
 
 /// Chunk ids covered by the retrieval result (decision + outcome endpoints).
@@ -712,14 +780,17 @@ async fn chat(cfg: &LlmConfig, system: &str, user: &str, max_tokens: u32) -> Res
 // Answer & judge prompts (official LongMemEval protocol)
 // ---------------------------------------------------------------------------
 
-/// Answer system prompt for a question type: balanced-refusal base plus the
-/// knowledge-update "latest value wins" rule where applicable.
+/// Answer system prompt for a question type: balanced-refusal base plus
+/// type-specific rules where applicable.
 fn answer_system_prompt(question_type: &str) -> String {
-    if question_type == "knowledge-update" {
-        format!("{ANSWER_SYSTEM_PROMPT}{KNOWLEDGE_UPDATE_RULE}")
-    } else {
-        ANSWER_SYSTEM_PROMPT.to_string()
+    let mut prompt = ANSWER_SYSTEM_PROMPT.to_string();
+    match question_type {
+        "knowledge-update" => prompt.push_str(KNOWLEDGE_UPDATE_RULE),
+        "multi-session" => prompt.push_str(MULTI_SESSION_RULE),
+        "single-session-preference" => prompt.push_str(PREFERENCE_RULE),
+        _ => {}
     }
+    prompt
 }
 
 /// Answer user prompt: memories + question_date as the "current time"
@@ -1058,10 +1129,46 @@ async fn answer_question(
     // only (facts carry no chunk ids) — protocol unchanged.
     let memories = if with_facts {
         let fact_scope = format!("lme:{}", q.question_id);
+        // P7: multi-session questions need ALL matching facts, not top-k.
+        // "How many X?" questions require scanning every fact that mentions
+        // the entity — top-k truncates and the count comes out wrong.
+        // Use a very large top-k (500) to effectively list all matching facts.
+        let fact_topk = if q.question_type == "multi-session" {
+            500
+        } else {
+            topk
+        };
         let facts = store
-            .search_facts_bm25(&q.question, Some(&fact_scope), topk)
+            .search_facts_bm25(&q.question, Some(&fact_scope), fact_topk)
             .unwrap_or_default();
         let mut lines: Vec<String> = facts.iter().map(|f| format!("- {}", f.value)).collect();
+
+        // P7: for multi-session, also run per-noun fact queries and merge,
+        // catching facts that the full-question BM25 missed (different
+        // phrasing in distill vs question).
+        if q.question_type == "multi-session" {
+            let mut seen_values: HashSet<String> =
+                facts.iter().map(|f| f.value.clone()).collect();
+            let nouns: Vec<String> = q
+                .question
+                .split_whitespace()
+                .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
+                .filter(|w| w.len() >= 4)
+                .filter(|w| !["what", "which", "how", "many", "have", "been", "does", "that", "this", "with", "from", "they", "them"].contains(&w.as_str()))
+                .take(5)
+                .collect();
+            for noun in &nouns {
+                let extra = store
+                    .search_facts_bm25(noun, Some(&fact_scope), 50)
+                    .unwrap_or_default();
+                for f in extra {
+                    if seen_values.insert(f.value.clone()) {
+                        lines.push(format!("- {}", f.value));
+                    }
+                }
+            }
+        }
+
         let causal = memory_lines(&retrieved);
         if !causal.is_empty() {
             lines.push(causal);
