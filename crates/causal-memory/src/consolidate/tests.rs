@@ -1,0 +1,693 @@
+use std::collections::HashMap;
+use crate::consolidate::{consolidate, ConsolidateConfig};
+use crate::store::CausalStore;
+const NOW: i64 = 1_700_000_000;
+const DAY: i64 = 86_400;
+
+/// Insert an edge with full control over audit fields. Returns edge id.
+#[allow(clippy::too_many_arguments)]
+fn insert_edge(
+    store: &CausalStore,
+    decision: &str,
+    outcome: &str,
+    confidence: f64,
+    discovered_by: &str,
+    task_tag: Option<&str>,
+    discovered_at: i64,
+    last_accessed_at: Option<i64>,
+) -> i64 {
+    store
+        .record_decision_at(
+            decision,
+            outcome,
+            "caused",
+            task_tag,
+            confidence,
+            discovered_by,
+            discovered_at,
+        )
+        .unwrap();
+    let edge = store.all_valid_edges().unwrap();
+    let edge = edge
+        .iter()
+        .find(|e| e.decision_text == decision)
+        .unwrap_or_else(|| panic!("edge for {decision} not found"));
+    let id = edge.edge_id;
+    store
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE causal_edges SET discovered_at = ?1, last_accessed_at = ?2 WHERE id = ?3",
+                rusqlite::params![discovered_at, last_accessed_at, id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    id
+}
+
+fn edge_conf(store: &CausalStore, edge_id: i64) -> f64 {
+    store.get_edge(edge_id).unwrap().unwrap().confidence
+}
+
+fn edge_valid(store: &CausalStore, edge_id: i64) -> bool {
+    store.get_edge(edge_id).unwrap().unwrap().valid_to.is_none()
+}
+
+fn default_config() -> ConsolidateConfig {
+    ConsolidateConfig::default()
+}
+
+// ── Stage 3: decay math ──────────────────────────────────────────────
+
+#[test]
+fn test_decay_math_ten_days() {
+    let store = CausalStore::open_in_memory().unwrap();
+    let id = insert_edge(
+        &store,
+        "use connection pool",
+        "successfully fixed exhaustion",
+        0.8,
+        "rule",
+        Some("db"),
+        NOW - 10 * DAY,
+        None,
+    );
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    let expected = 0.8 * 0.99_f64.powi(10);
+    assert!(
+        (edge_conf(&store, id) - expected).abs() < 1e-9,
+        "got {}, expected {expected}",
+        edge_conf(&store, id)
+    );
+    assert_eq!(report.decayed, 1);
+    assert_eq!(report.boosted, 0);
+}
+
+#[test]
+fn test_same_day_edge_not_decayed() {
+    let store = CausalStore::open_in_memory().unwrap();
+    let id = insert_edge(
+        &store,
+        "add retry loop",
+        "deploy success",
+        0.7,
+        "rule",
+        Some("deploy"),
+        NOW - 3600, // one hour ago
+        None,
+    );
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert!((edge_conf(&store, id) - 0.7).abs() < 1e-12);
+    assert_eq!(report.decayed, 0);
+}
+
+// ── Stage 3: access boost + cap ──────────────────────────────────────
+
+#[test]
+fn test_access_boost_and_cap() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Accessed yesterday, discovered today → +0.05, no decay.
+    let boosted_id = insert_edge(
+        &store,
+        "cache config lookup",
+        "resolved quickly",
+        0.7,
+        "rule",
+        Some("cache"),
+        NOW - 3600,
+        Some(NOW - DAY),
+    );
+    // High confidence + boost must cap at 0.95.
+    let capped_id = insert_edge(
+        &store,
+        "pin dependency version",
+        "build success",
+        0.93,
+        "rule",
+        Some("build"),
+        NOW - 3600,
+        Some(NOW - DAY),
+    );
+    // Accessed 30 days ago → outside the 7-day window, no boost.
+    let stale_id = insert_edge(
+        &store,
+        "old refactor attempt",
+        "no visible change",
+        0.6,
+        "rule",
+        Some("misc"),
+        NOW - 3600,
+        Some(NOW - 30 * DAY),
+    );
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert!((edge_conf(&store, boosted_id) - 0.75).abs() < 1e-9);
+    assert!((edge_conf(&store, capped_id) - 0.95).abs() < 1e-9);
+    assert!((edge_conf(&store, stale_id) - 0.6).abs() < 1e-12);
+    assert_eq!(report.boosted, 2);
+    assert_eq!(report.decayed, 0);
+}
+
+// ── Stage 3: GC ──────────────────────────────────────────────────────
+
+#[test]
+fn test_gc_invalidates_low_confidence_but_pins_user_feedback() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // 0.21 decayed 10 days → ~0.19 < 0.2 → collected.
+    let gc_id = insert_edge(
+        &store,
+        "speculative micro-optimization",
+        "no measurable effect",
+        0.21,
+        "llm_inferred",
+        Some("perf"),
+        NOW - 10 * DAY,
+        None,
+    );
+    // Same low confidence, but user feedback is pinned forever.
+    let pinned_id = insert_edge(
+        &store,
+        "user said keep this workaround",
+        "user confirmed it helps",
+        0.1,
+        "user_feedback",
+        Some("perf"),
+        NOW - 10 * DAY,
+        None,
+    );
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert!(
+        !edge_valid(&store, gc_id),
+        "low-confidence edge must be GC'd"
+    );
+    assert!(
+        edge_valid(&store, pinned_id),
+        "user_feedback edge is pinned"
+    );
+    assert_eq!(report.gc_invalidated, 1);
+    // The pinned edge still decays (it just can't be collected).
+    assert!((edge_conf(&store, pinned_id) - 0.1 * 0.99_f64.powi(10)).abs() < 1e-9);
+}
+
+// ── Stage 2a: redundant merge ────────────────────────────────────────
+
+#[test]
+fn test_merge_redundant_edges_keeps_highest_confidence() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Three edges over the same chunk pair + relation, different confidence.
+    store
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chunks (id, text, created_at) VALUES ('dA', 'use global lock', 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chunks (id, text, created_at) VALUES ('oA', 'deadlock under load', 0)",
+                [],
+            )?;
+            for (conf, et) in [(0.5_f64, 100_i64), (0.9, 200), (0.7, 300)] {
+                conn.execute(
+                    "INSERT INTO causal_edges
+                         (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at)
+                     VALUES ('dA', 'oA', 'caused', ?1, 'rule', ?2, ?3)",
+                    rusqlite::params![conf, et, NOW],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert_eq!(report.merged_edges, 2);
+
+    let valid = store.all_valid_edges().unwrap();
+    assert_eq!(valid.len(), 1);
+    assert!((valid[0].confidence - 0.9).abs() < 1e-9);
+    // Survivor confidence is unchanged by the merge itself (same-day, no decay).
+    let losers: Vec<_> = (1..=3_i64)
+        .map(|id| store.get_edge(id).unwrap().unwrap())
+        .filter(|e| e.valid_to.is_some())
+        .collect();
+    assert_eq!(losers.len(), 2);
+}
+
+// ── Stage 4: REM cross-domain transfer ───────────────────────────────
+
+#[test]
+fn test_rem_cross_domain_transfer() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Two pattern pairs with similar shape but fully disjoint task tags:
+    // (A,B) mine into meta edge M1 over tags {t1,t2};
+    // (C,D) mine into meta edge M2 over tags {t3,t4}.
+    // Texts are built for the default miner bar (≥4 content tokens,
+    // Jaccard ≥ 0.65): within a pair the overlap is 4/6 ≈ 0.667; the two
+    // meta edges' combined texts overlap 5/7 ≈ 0.714.
+    insert_edge(
+        &store,
+        "use redis cache layer alpha",
+        "deploy success",
+        0.8,
+        "rule",
+        Some("t1"),
+        NOW,
+        None,
+    );
+    insert_edge(
+        &store,
+        "use redis cache layer beta",
+        "rollout success",
+        0.8,
+        "rule",
+        Some("t2"),
+        NOW,
+        None,
+    );
+    insert_edge(
+        &store,
+        "use redis cache pool alpha",
+        "deploy success",
+        0.8,
+        "rule",
+        Some("t3"),
+        NOW,
+        None,
+    );
+    insert_edge(
+        &store,
+        "use redis cache pool beta",
+        "rollout success",
+        0.8,
+        "rule",
+        Some("t4"),
+        NOW,
+        None,
+    );
+
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert!(
+        report.rem_transfers >= 1,
+        "expected at least one cross-domain transfer, got {report:?}"
+    );
+    let transfer = store
+        .search_patterns(Some("cross-domain transfer"), None, 10)
+        .unwrap();
+    assert!(!transfer.is_empty());
+    assert_eq!(transfer[0].relation, "similar_to");
+}
+
+#[test]
+fn test_rem_same_task_tag_no_transfer() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Same shape as the cross-domain test, but the two pattern pairs share
+    // task tag t2 → tags are not disjoint → no transfer may be written.
+    insert_edge(
+        &store,
+        "use redis cache layer alpha",
+        "deploy success",
+        0.8,
+        "rule",
+        Some("t1"),
+        NOW,
+        None,
+    );
+    insert_edge(
+        &store,
+        "use redis cache layer beta",
+        "rollout success",
+        0.8,
+        "rule",
+        Some("t2"),
+        NOW,
+        None,
+    );
+    insert_edge(
+        &store,
+        "use redis cache pool alpha",
+        "deploy success",
+        0.8,
+        "rule",
+        Some("t2"),
+        NOW,
+        None,
+    );
+    insert_edge(
+        &store,
+        "use redis cache pool beta",
+        "rollout success",
+        0.8,
+        "rule",
+        Some("t3"),
+        NOW,
+        None,
+    );
+
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert_eq!(
+        report.rem_transfers, 0,
+        "overlapping task tags must block transfer: {report:?}"
+    );
+    let transfer = store
+        .search_patterns(Some("cross-domain transfer"), None, 10)
+        .unwrap();
+    assert!(transfer.is_empty());
+}
+
+// ── dry run ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_dry_run_writes_nothing_but_counts() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Would decay + GC.
+    let gc_id = insert_edge(
+        &store,
+        "weak guess",
+        "unclear outcome",
+        0.21,
+        "llm_inferred",
+        Some("x"),
+        NOW - 10 * DAY,
+        None,
+    );
+    // Would decay + boost.
+    let boost_id = insert_edge(
+        &store,
+        "hot path cache",
+        "success",
+        0.7,
+        "rule",
+        Some("y"),
+        NOW - 5 * DAY,
+        Some(NOW - DAY),
+    );
+    // Duplicate pair that would merge.
+    store
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO chunks (id, text, created_at) VALUES ('dD', 'dup decision', 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chunks (id, text, created_at) VALUES ('oD', 'dup outcome', 0)",
+                [],
+            )?;
+            for conf in [0.5_f64, 0.9] {
+                conn.execute(
+                    "INSERT INTO causal_edges
+                         (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at)
+                     VALUES ('dD', 'oD', 'caused', ?1, 'rule', 0, ?2)",
+                    rusqlite::params![conf, NOW],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    let edges_before = store.all_valid_edges().unwrap();
+    let conf_before: HashMap<i64, f64> = edges_before
+        .iter()
+        .map(|e| (e.edge_id, e.confidence))
+        .collect();
+    let count_before = edges_before.len();
+    let meta_before = store.search_patterns(None, None, 100).unwrap().len();
+
+    let report = consolidate(&store, &default_config(), true, NOW).unwrap();
+
+    assert!(report.dry_run);
+    assert_eq!(report.decayed, 2, "both old edges would decay");
+    assert_eq!(report.boosted, 1);
+    assert_eq!(report.gc_invalidated, 1);
+    assert_eq!(report.merged_edges, 1);
+
+    // Zero change in the DB.
+    let edges_after = store.all_valid_edges().unwrap();
+    assert_eq!(edges_after.len(), count_before);
+    for e in &edges_after {
+        assert_eq!(e.confidence, conf_before[&e.edge_id]);
+        assert!(e.valid_to.is_none());
+    }
+    assert!(edge_valid(&store, gc_id));
+    assert_eq!(
+        store.search_patterns(None, None, 100).unwrap().len(),
+        meta_before
+    );
+    assert!(edge_conf(&store, boost_id) == conf_before[&boost_id]);
+}
+
+// ── Stage 1: reactivation ordering ───────────────────────────────────
+
+#[test]
+fn test_reactivation_failure_outranks_success_and_sorted() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // High-confidence success: score 0.9.
+    insert_edge(
+        &store,
+        "add index to users table",
+        "query success fast",
+        0.9,
+        "rule",
+        Some("db"),
+        NOW,
+        None,
+    );
+    // Lower-confidence failure: 0.5 + 0.5 = 1.0 → must rank first.
+    let fail_id = insert_edge(
+        &store,
+        "skip migration backup",
+        "data loss error",
+        0.5,
+        "rule",
+        Some("db"),
+        NOW,
+        None,
+    );
+    // User feedback success: 0.6 + 0.3 = 0.9 (ties the first edge; edge id
+    // breaks the tie, and the failure still outranks both).
+    let feedback_id = insert_edge(
+        &store,
+        "user approved workaround",
+        "works fine",
+        0.6,
+        "user_feedback",
+        Some("db"),
+        NOW,
+        None,
+    );
+
+    let report = consolidate(&store, &default_config(), true, NOW).unwrap();
+    let r = &report.reactivated;
+    assert_eq!(r.len(), 3);
+    assert!(
+        r.windows(2).all(|w| w[0].score >= w[1].score),
+        "sorted desc"
+    );
+    assert_eq!(r[0].edge_id, fail_id, "failure replayed before successes");
+    assert!(r[0].reasons.iter().any(|s| s.contains("outcome failed")));
+    let fb = r.iter().find(|e| e.edge_id == feedback_id).unwrap();
+    assert!(fb.reasons.iter().any(|s| s.contains("user feedback")));
+}
+
+#[test]
+fn test_reactivation_contradiction_bonus() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Similar decisions, opposite outcomes → both get +0.2.
+    let a = insert_edge(
+        &store,
+        "use global lock for cache data",
+        "deadlock error under load",
+        0.6,
+        "rule",
+        Some("locking"),
+        NOW,
+        None,
+    );
+    let b = insert_edge(
+        &store,
+        "use global lock for queue data",
+        "successfully fixed contention",
+        0.6,
+        "rule",
+        Some("queue"),
+        NOW,
+        None,
+    );
+    let report = consolidate(&store, &default_config(), true, NOW).unwrap();
+    for id in [a, b] {
+        let entry = report.reactivated.iter().find(|e| e.edge_id == id).unwrap();
+        assert!(
+            entry.reasons.iter().any(|s| s.contains("contradicted")),
+            "edge {id} should carry the contradiction reason: {entry:?}"
+        );
+    }
+}
+
+// ── Stage 1→3: replay protection & write-back ────────────────────────
+
+#[test]
+fn test_replay_protected_edges_decay_at_half_rate() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Failure lesson: score 0.5 + 0.5 = 1.0 → replay-protected.
+    let protected_id = insert_edge(
+        &store,
+        "skip migration backup",
+        "data loss error",
+        0.5,
+        "rule",
+        Some("db"),
+        NOW - 10 * DAY,
+        None,
+    );
+    // Same confidence and age, but a success: score 0.5 → not protected.
+    let plain_id = insert_edge(
+        &store,
+        "add index to users table",
+        "query success fast",
+        0.5,
+        "rule",
+        Some("db"),
+        NOW - 10 * DAY,
+        None,
+    );
+
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+
+    // Protected: decay over 10/2 = 5 days. Plain: full 10 days.
+    let expected_protected = 0.5 * 0.99_f64.powi(5);
+    let expected_plain = 0.5 * 0.99_f64.powi(10);
+    assert!(
+        (edge_conf(&store, protected_id) - expected_protected).abs() < 1e-9,
+        "protected edge decays at half rate: got {}",
+        edge_conf(&store, protected_id)
+    );
+    assert!(
+        (edge_conf(&store, plain_id) - expected_plain).abs() < 1e-9,
+        "unprotected edge decays at full rate: got {}",
+        edge_conf(&store, plain_id)
+    );
+    assert_eq!(report.decayed, 2);
+    assert_eq!(report.boosted, 0, "write-back happens after downscale");
+
+    // Write-back: only the replayed edge is marked, with this cycle's time.
+    assert_eq!(report.replayed, 1);
+    let protected_edge = store.get_edge(protected_id).unwrap().unwrap();
+    assert_eq!(protected_edge.last_accessed_at, Some(NOW));
+    assert!(protected_edge
+        .decision_text
+        .contains("skip migration backup"));
+    let plain_edge = store.get_edge(plain_id).unwrap().unwrap();
+    assert_eq!(plain_edge.last_accessed_at, None, "not replayed → unmarked");
+}
+
+#[test]
+fn test_replay_protected_gc_threshold_more_lenient() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Protected failure edge: 0.5 * 0.99^(200/2) ≈ 0.183 — below the
+    // normal GC threshold (0.2) but above the protected one (0.1).
+    let protected_id = insert_edge(
+        &store,
+        "skip migration backup",
+        "data loss error",
+        0.5,
+        "rule",
+        Some("db"),
+        NOW - 200 * DAY,
+        None,
+    );
+    // Same age and confidence, unprotected: 0.5 * 0.99^200 ≈ 0.067 → GC'd.
+    let plain_id = insert_edge(
+        &store,
+        "add index to users table",
+        "query success fast",
+        0.5,
+        "rule",
+        Some("db"),
+        NOW - 200 * DAY,
+        None,
+    );
+
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert!(
+        edge_valid(&store, protected_id),
+        "replay-protected edge survives below the normal GC threshold"
+    );
+    assert!(
+        !edge_valid(&store, plain_id),
+        "unprotected edge at the same confidence is collected"
+    );
+    assert_eq!(report.gc_invalidated, 1);
+}
+
+#[test]
+fn test_replay_feedback_loop_across_cycles() {
+    let store = CausalStore::open_in_memory().unwrap();
+    let protected_id = insert_edge(
+        &store,
+        "skip migration backup",
+        "data loss error",
+        0.6,
+        "rule",
+        Some("db"),
+        NOW - 2 * DAY,
+        None,
+    );
+    let control_id = insert_edge(
+        &store,
+        "add index to users table",
+        "query success fast",
+        0.6,
+        "rule",
+        Some("db"),
+        NOW - 2 * DAY,
+        None,
+    );
+
+    // Cycle 1: protected edge decays halved (2/2 = 1 day) and is marked.
+    let report1 = consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert!((edge_conf(&store, protected_id) - 0.6 * 0.99_f64).abs() < 1e-9);
+    assert!((edge_conf(&store, control_id) - 0.6 * 0.99_f64.powi(2)).abs() < 1e-9);
+    assert_eq!(report1.replayed, 1);
+    assert_eq!(report1.boosted, 0);
+
+    // Cycle 2 (one day later): the mark makes the edge "recently
+    // accessed" → access boost on top of halved decay (3/2 = 1.5 days).
+    let report2 = consolidate(&store, &default_config(), false, NOW + DAY).unwrap();
+    let expected = (0.6 * 0.99_f64 * 0.99_f64.powf(1.5) + 0.05).min(0.95);
+    assert!(
+        (edge_conf(&store, protected_id) - expected).abs() < 1e-9,
+        "replayed edge gets boost + half decay: got {}, expected {expected}",
+        edge_conf(&store, protected_id)
+    );
+    // Control: full 3-day decay, no boost.
+    assert!(
+        (edge_conf(&store, control_id) - 0.6 * 0.99_f64.powi(2) * 0.99_f64.powi(3)).abs()
+            < 1e-9
+    );
+    assert!(
+        edge_conf(&store, protected_id) > edge_conf(&store, control_id),
+        "replay → consolidate → survives better"
+    );
+    assert_eq!(report2.boosted, 1);
+    assert_eq!(report2.replayed, 1);
+    let edge = store.get_edge(protected_id).unwrap().unwrap();
+    assert_eq!(edge.last_accessed_at, Some(NOW + DAY));
+}
+
+#[test]
+fn test_dry_run_does_not_mark_replayed() {
+    let store = CausalStore::open_in_memory().unwrap();
+    let id = insert_edge(
+        &store,
+        "skip migration backup",
+        "data loss error",
+        0.5,
+        "rule",
+        Some("db"),
+        NOW - 10 * DAY,
+        None,
+    );
+    let report = consolidate(&store, &default_config(), true, NOW).unwrap();
+    // Decay is still reported (halved), but nothing is written or marked.
+    assert_eq!(report.decayed, 1);
+    assert_eq!(report.replayed, 0);
+    let edge = store.get_edge(id).unwrap().unwrap();
+    assert!((edge.confidence - 0.5).abs() < 1e-12);
+    assert_eq!(edge.last_accessed_at, None);
+}
