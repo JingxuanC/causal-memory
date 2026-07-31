@@ -94,8 +94,18 @@ results with a mem0-compatible judge (no re-answering, ~$1/1986q).
 
 | | strict judge | mem0 judge | Δ (judge tax) |
 |---|---|---|---|
-| V1 prompt | 69.6% (1382) | pending | — |
+| V1 prompt | 69.6% (1382) | **78.3%** (1556) | **+8.7pp** |
 | **V2 prompt** | **74.2%** (1474) | **84.1%** (1671) | **+9.9pp** |
+
+**Category breakdown (V1 × mem0 judge)**:
+
+| Category | V1 strict | V1 mem0 | Δ |
+|---|---|---|---|
+| 1 multi-hop | — | 62.4% | — |
+| 2 temporal | — | 72.6% | — |
+| 3 open-domain | — | 36.5% | — |
+| 4 single-hop | — | 83.6% | — |
+| 5 adversarial | — | 91.7% | — |
 
 **Category breakdown (V2 × mem0 judge)**:
 
@@ -111,6 +121,10 @@ results with a mem0-compatible judge (no re-answering, ~$1/1986q).
 At the **same judge caliber** (mem0 judge), our V2 scores 84.1% — the gap
 narrows to **7.5pp**, and that 7.5pp is attributable to model (gpt-5 vs
 deepseek-chat) and retrieval budget (top-200 vs top-10), not judge looseness.
+
+The judge tax is fairly stable across prompt versions: +8.7pp (V1) vs
++9.9pp (V2). V2 benefits slightly more from lenient judging because its
+longer answers contain more partial matches.
 
 cat1 multi-hop benefits most from lenient judging (+37.2pp) — these
 list-style questions score 1-item-correct under mem0 rules, where strict
