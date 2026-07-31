@@ -20,7 +20,7 @@ This happens because **causal information is the most fragile type under text co
 | 3 | 55% | 100% |
 | 5 | **45%** | **100%** |
 
-The causal table doesn't decay because it lives outside the agent's context window — compaction cannot touch it. See [`docs/design.md`](docs/design.md) and the [full benchmark writeup](https://github.com/JingxuanC/agent-teardown/blob/main/spike/grok-causal-memory/bench-RESULTS.md).
+The causal table doesn't decay because it lives outside the agent's context window — compaction cannot touch it. See [`docs/design.md`](docs/design.md), [`docs/architecture.md`](docs/architecture.md) (the current system map), and the [full benchmark writeup](https://github.com/JingxuanC/agent-teardown/blob/main/spike/grok-causal-memory/bench-RESULTS.md).
 
 ## Benchmarks
 
