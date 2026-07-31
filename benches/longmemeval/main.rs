@@ -286,9 +286,11 @@ fn turn_chunk_text(session_idx: usize, date_raw: &str, role: &str, content: &str
 /// `caused` edge (temporal discovery) tagged with `task_tag = question_id` —
 /// that tag is what scopes later retrieval to this question's haystack.
 ///
-/// Idempotent: if the store already holds exactly this question's expected
-/// chunk count, ingestion is skipped; on a partial/stale state the question's
-/// own chunks and edges are wiped and re-ingested (other questions untouched).
+/// Idempotent: if the store already holds approximately the expected chunk
+/// count for this question, ingestion is skipped (tolerates small mismatches
+/// from duplicate session_ids causing INSERT OR IGNORE skips). On a clearly
+/// stale/empty state the question's own chunks and edges are wiped and
+/// re-ingested (other questions untouched).
 ///
 /// Returns (chunk count, evidence chunk ids) — evidence ids are the turns
 /// flagged `has_answer: true`.
@@ -318,17 +320,24 @@ fn ingest_question(store: &CausalStore, q: &LmeQuestion) -> Result<(usize, Vec<S
                 .map(move |(i, _)| chunk_id(&qid, &sid, i))
         })
         .collect();
-    if existing == expected_chunks as i64 && expected_chunks > 0 {
-        return Ok((expected_chunks, evidence));
+    // Tolerate small mismatches: duplicate session_ids in the dataset cause
+    // INSERT OR IGNORE to skip a few chunks (e.g. 508 vs 514 expected). A
+    // 5% tolerance avoids a re-ingest → wipe distill edges → re-distill cycle
+    // that wastes LLM calls on every run.
+    let tolerance = (expected_chunks as f64 * 0.05).ceil() as i64;
+    if (existing - expected_chunks as i64).abs() <= tolerance && expected_chunks > 0 {
+        return Ok((existing as usize, evidence));
     }
     if existing > 0 {
         eprintln!(
-            "warn: question {} has {existing} chunks, expected {expected_chunks}; re-ingesting",
+            "warn: question {} has {existing} chunks, expected {expected_chunks} (outside ±{tolerance} tolerance); re-ingesting",
             q.question_id
         );
+        // F1 fix: preserve distill edges across re-ingest — they reference
+        // chunk ids that are recreated with the same deterministic format.
         store.with_conn(|c| {
             c.execute(
-                "DELETE FROM causal_edges WHERE task_tag = ?1",
+                "DELETE FROM causal_edges WHERE task_tag = ?1 AND discovered_by != 'distill'",
                 rusqlite::params![&q.question_id],
             )?;
             c.execute(
@@ -1206,6 +1215,8 @@ struct Summary {
     /// the fact layer in the answer prompt (documented deviation from the
     /// causal-only protocol — that comparison is the point).
     ingest: String,
+    /// E4: answer prompt version ("v1" | "v2").
+    prompt_version: String,
     /// Aggregated distillation-pass statistics (distill mode only).
     #[serde(skip_serializing_if = "Option::is_none")]
     distill_ingest: Option<DistillStats>,
@@ -1616,6 +1627,10 @@ async fn run(args: Args) -> Result<()> {
         temperature: LLM_TEMPERATURE,
         topk: args.topk,
         ingest: args.ingest.as_str().to_string(),
+        prompt_version: match args.prompt_version {
+            LmePromptVersion::V1 => "v1",
+            LmePromptVersion::V2 => "v2",
+        }.to_string(),
         distill_ingest: (args.ingest == IngestMode::Distill).then_some(distill_totals),
         data: args.data.display().to_string(),
         qtype_filter: args.qtype.clone(),

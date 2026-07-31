@@ -335,15 +335,22 @@ fn ingest_conversation(store: &CausalStore, conv: &LocomoConversation) -> Result
 
     let existing: i64 =
         store.with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?))?;
-    if existing == expected_chunks as i64 && expected_chunks > 0 {
-        return Ok(expected_chunks);
+    // Tolerate small mismatches (5%): duplicate or multi-turn parsing
+    // differences cause a few chunks to differ. Avoids re-ingest → wipe
+    // distill edges → re-distill cycle that wastes LLM calls.
+    let tolerance = (expected_chunks as f64 * 0.05).ceil() as i64;
+    if (existing - expected_chunks as i64).abs() <= tolerance && expected_chunks > 0 {
+        return Ok(existing as usize);
     }
     if existing > 0 {
         eprintln!(
-            "warn: DB has {existing} chunks, expected {expected_chunks}; re-ingesting from scratch"
+            "warn: DB has {existing} chunks, expected {expected_chunks} (outside ±{tolerance} tolerance); re-ingesting from scratch"
         );
         store.with_conn(|c| {
-            c.execute("DELETE FROM causal_edges", [])?;
+            // Preserve distill edges across re-ingest: they reference chunk
+            // ids that are recreated with the same ids (chunk_id format
+            // is deterministic: {question_id}::{session_id}::{turn}).
+            c.execute("DELETE FROM causal_edges WHERE discovered_by != 'distill'", [])?;
             c.execute("DELETE FROM chunks", [])?;
             Ok(())
         })?;

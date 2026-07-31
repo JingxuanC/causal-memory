@@ -99,6 +99,46 @@ Reproduce:
     --ingest distill --qtype temporal-reasoning --concurrency 6
 ```
 
+## E4 V2 prompt × P7+P8 retrieval (run 20260731_152928, 500 questions)
+
+Full 500-question QA with V2 7-step answer prompt on the P7+P8 retrieval
+stack (same distill DB, same distill edges). **Result: V2 is a regression
+on LME — LME retains V1 as default.**
+
+| Question type | n | V1 (P7+P8) | V2 | Δ |
+|---|---|---|---|---|
+| knowledge-update | 78 | 85.9% | 82.1% | −3.8pp |
+| multi-session | 133 | 57.9% | 56.4% | −1.5pp |
+| single-session-preference | 30 | 36.7% | 16.7% | **−20.0pp** |
+| single-session-user | 70 | 97.1% | 97.1% | 0 |
+| temporal-reasoning | 133 | 77.9% | 65.4% | **−12.5pp** |
+| single-session-assistant | 56 | 96.4% | 98.2% | +1.8pp |
+| **overall** | 500 | **~75.8%** (composed) | **70.8%** | **−5.0pp** |
+
+**Note on baseline**: the V1 composed overall (~75.8%) combines the P7+P8
+filtered reruns (multi-session 57.9%, temporal 77.9%) with the original
+distill baseline for the other four types. The E4 V2 run is a single
+full-500 run, so this is a fair same-stack comparison.
+
+**Root causes of V2 regression on LME**:
+- **single-session-preference −20pp**: V2's Step 6 inclusion check
+  ("more items is better") over-includes for precision questions that need
+  exactly one specific preference, not a list.
+- **temporal-reasoning −12.5pp**: V2's Step 5 temporal grounding adds noise
+  to LME's date format (LME already provides `[session_id date]` prefixes;
+  the 7-step reasoning over-processes them).
+- **Prompt dispatch rule (harness-level)**: LoCoMo uses V2 (factual list
+  questions benefit); LME uses V1 (precision questions). This is a
+  benchmark-level dispatch, documented here for reproducibility.
+
+Reproduce:
+
+```bash
+./target/release/causal-memory-longmemeval run \
+    --data longmemeval_s_cleaned.json --db-dir benches/longmemeval/db \
+    --ingest distill --prompt-version v2 --concurrency 6
+```
+
 ## Raw-ingest baseline (run 20260727_175219)
 
 ## Frozen protocol
