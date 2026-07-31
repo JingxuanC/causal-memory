@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.0] - Unreleased
 
 ### Added
+- Benchmark harness distill mode (unified-memory-design Phase 4): all three
+  harnesses accept `--ingest raw|distill` (+ `--ingest-only`), writing to
+  separate `*_distill.db` files so raw baselines stay intact; kind-based
+  routing (facts/preferences → `agent_facts` with supersedes retirement,
+  lessons/events → causal layer) and fact-lines-first answer prompts.
+  Same-harness results (deepseek-chat answerer + judge, frozen protocols):
+  LoCoMo 64.2% → **69.6%** (+5.4pp), LongMemEval 61.8% → **69.6%** (+7.8pp,
+  knowledge-update 76.9% → 85.9%), Memora weekly 10 personas MPA 33.9% →
+  **46.8%** (+12.9pp)
+- Resumable distillation: per-question/per-persona `distill_done` marker
+  tables — interrupted runs redo cleanly (item-level idempotency), and a
+  unit whose LLM calls ALL failed (rate-limit storm, balance outage) is
+  deliberately left unmarked instead of frozen as "successfully empty"
+- Distill robustness: 3 retries with 2s/4s backoff on transient API errors
+  (was 1); memora raw-ingest no longer duplicates turn edges on redo
 - Unified retrieval (unified-memory-design Phase 2): `search_memory` MCP
   tool — facts + causal lessons fused by Reciprocal Rank Fusion (RRF,
   k=60) in one call; one query embedding serves both layers; cross-layer

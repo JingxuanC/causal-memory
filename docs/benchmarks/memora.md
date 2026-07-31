@@ -5,8 +5,51 @@ first benchmark with an explicit **forgetting** dimension: FAMA (Forgetting-
 Aware Memory Accuracy) rewards both recalling what should be remembered and
 *not* recalling what was deleted or superseded.
 
-**Headline (weekly, 10 personas, 150 questions, 735 probes): FAMA 27.2 ·
-MPA (recall) 33.9% · FAA (forgetting) 80.8%.**
+**Headline (distill + fact layer, run 20260731_012137): MPA 46.8% (+12.9pp
+vs raw) · FAA 72.1% · mean FAMA 31.0 — 10/10 personas, all sessions
+distilled, zero fallbacks.**
+Raw headline (weekly, 10 personas, 150 questions, 735 probes): FAMA 27.2 ·
+MPA (recall) 33.9% · FAA (forgetting) 80.8%.
+
+## Distill + fact-layer run (run 20260731_012137, weekly, 10 personas)
+
+Same dataset, answerer, judge and top-k as the raw baseline; ingest changes
+to LLM distillation per session with kind-based routing: `Fact`/`Preference`
+items → the `agent_facts` layer (scope `user`, per-persona DB; supersedes
+hints retire outdated values via `retire_facts_by_hint`, retire-before-record
+order after review caught a self-retire window), `Lesson`/`Event`
+items → the causal layer; heavy sessions additionally dual-write raw turns
+(quantitative detail the distiller compresses away). At QA time fact lines
+are placed FIRST in the prompt. Persona-level idempotency via the
+`distill_done` marker table (a persona whose LLM calls ALL failed is left
+unmarked and redone next run).
+
+| Persona | FAMA | MPA | FAA |
+|---|---|---|---|
+| academic_researcher | 28.8 | 43.4% | 75.0% |
+| business_executive | 31.2 | 41.5% | 83.3% |
+| content_writer | 31.0 | 43.9% | 79.2% |
+| creative_designer | 37.2 | 55.3% | 66.7% |
+| financial_analyst | 34.3 | 54.4% | 57.9% |
+| management_consultant | 22.4 | 45.7% | 64.7% |
+| marketing_manager | 28.5 | 41.5% | 85.2% |
+| sales_manager | 35.2 | 50.0% | 66.7% |
+| software_engineer | 34.8 | 45.5% | 74.1% |
+| startup_founder | 26.6 | 46.8% | 68.0% |
+| **mean** | **31.0** | **46.8%** | **72.1%** |
+
+Read: MPA jumps 33.9% → 46.8% (+12.9pp) — atomic facts are exactly what
+memory-presence probes ask about. FAA dips 80.8% → 72.1%: retired facts
+are correctly hidden, but dual-written raw turns still carry the deleted
+values verbatim, and the forgetting judge counts any mention as a failure.
+That trade is visible in the per-persona spread (FAA 58–85%); tightening
+the retraction-record filter to dual-written raw chunks is the known fix.
+An earlier run of this same configuration with the pre-fix record order
+(record-then-retire) scored MPA 46.0% / FAA 71.4% / FAMA 30.8 — the
+self-retire window cost ~1pp here, consistent with its conservative
+direction.
+
+## Raw baseline
 
 ## Frozen protocol
 

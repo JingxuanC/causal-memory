@@ -298,12 +298,12 @@ agent-teardown 当日三篇深度分析提出了一个真实张力：OpenViking�
 - [x] facts/preferences → agent_facts (supersedes 退休旧值), lessons/events → record_distilled
 - [x] 测试：load_session 解析 + retire_superseded_facts（key/scope 隔离 + 阈值）
 
-### Phase 4：Benchmark 重跑 (半天)
+### Phase 4：Benchmark 重跑 (半天) — ✅ 已完成 2026-07-31
 
-- [ ] LoCoMo 用 distill 模式重跑
-- [ ] LongMemEval 用 distill 模式重跑
-- [ ] Memora weekly 用 distill 模式重跑
-- [ ] 对比 raw vs distill 的 MPA 差异
+- [x] LoCoMo 用 distill 模式重跑 — **69.6% vs raw 64.2% (+5.4pp)**，1,986 题 0 错误（run_distill_full_20260730）
+- [x] LongMemEval 用 distill 模式重跑 — **69.6% vs raw 61.8% (+7.8pp)**，500 题 0 错误，knowledge-update 76.9%→85.9%（supersedes 机制主场兑现）
+- [x] Memora weekly 用 distill 模式重跑 — 10/10 persona 事实层全量：MPA 33.9%→**46.8% (+12.9pp)**，平均 FAA 72.1%
+- [x] 对比 raw vs distill 的 MPA 差异 — 三个 benchmark 一致正向，详见 docs/benchmarks/*.md
 
 **总计约 4.5 天。**
 

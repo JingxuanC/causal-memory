@@ -49,7 +49,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
-use causal_memory::distill::Distiller;
+use causal_memory::distill::{Distiller, ItemKind};
 use causal_memory::store::{CausalEntry, CausalStore};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -423,13 +423,19 @@ fn ingest_session_raw(
             &turn.speaker,
             &turn.message,
         );
-        store.with_conn(|c| {
-            c.execute(
+        // INSERT OR IGNORE returns 1 only when the chunk was newly written;
+        // on a redo of an interrupted persona (distill_done marker absent)
+        // existing chunks are skipped and their turn edges must NOT be
+        // duplicated, or BM25 evidence would double-count.
+        let inserted = store.with_conn(|c| {
+            Ok(c.execute(
                 "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
                 rusqlite::params![&id, &text, ts],
-            )?;
-            Ok(())
+            )?)
         })?;
+        if inserted == 0 {
+            continue;
+        }
 
         // Link each turn to the nearest preceding turn from the OTHER
         // speaker (the turn it responds to); first turn gets no edge.
@@ -482,6 +488,11 @@ struct DistillIngestStats {
     sessions_fallback_raw: usize,
     items_recorded: usize,
     items_duplicate: usize,
+    /// Fact/Preference items routed to the fact layer (scope = "user" in this
+    /// persona's own DB), mirroring the LongMemEval harness.
+    facts_recorded: usize,
+    /// Older same-key facts retired via supersedes-hint matching.
+    facts_retired: usize,
     /// Old edges soft-invalidated via supersedes matching.
     superseded_invalidations: usize,
     raw_chunks_written: usize,
@@ -543,9 +554,23 @@ async fn ingest_persona_distill(
         ..Default::default()
     };
 
+    // Idempotent at the persona level via the `distill_done` marker table,
+    // mirroring the LongMemEval harness. The old check ("has any distill
+    // edge") broke once Fact/Preference items route to the fact layer: a
+    // persona whose items are all facts writes ZERO distill edges and would
+    // be re-distilled forever. A persona interrupted mid-record has no
+    // marker and is redone cleanly (item-level idempotency lives in
+    // record_distilled / record_fact).
     let existing: i64 = store.with_conn(|c| {
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS distill_done (
+                qid TEXT PRIMARY KEY,
+                done_at INTEGER NOT NULL
+            )",
+            [],
+        )?;
         Ok(c.query_row(
-            "SELECT COUNT(*) FROM causal_edges WHERE task_tag = ?1 AND discovered_by = 'distill'",
+            "SELECT COUNT(*) FROM distill_done WHERE qid = ?1",
             rusqlite::params![persona],
             |r| r.get(0),
         )?)
@@ -604,13 +629,48 @@ async fn ingest_persona_distill(
                 }
                 stats.sessions_distilled += 1;
                 for it in &items {
-                    let out = store.record_distilled(it, Some(persona))?;
-                    if out.duplicate {
-                        stats.items_duplicate += 1;
-                    } else {
-                        stats.items_recorded += 1;
+                    match it.kind {
+                        // Fact/Preference → the fact layer. Scope "user"
+                        // suffices: each persona gets its OWN distill DB
+                        // (see db_name in main), so per-persona isolation is
+                        // physical, not scope-based like the LME harness.
+                        ItemKind::Fact | ItemKind::Preference => {
+                            let kind = match it.kind {
+                                ItemKind::Fact => "fact",
+                                ItemKind::Preference => "preference",
+                                _ => unreachable!(),
+                            };
+                            // Retire BEFORE record: the new value often
+                            // shares topic tokens with its own supersedes
+                            // hint ("now prefers classical over jazz" vs
+                            // hint "likes jazz") and retire_facts_by_hint
+                            // has no self-exclusion — recording first can
+                            // retire the fact we just wrote (found by review;
+                            // masked in small corpora where shared tokens get
+                            // IDF 0). Retiring first removes that window;
+                            // record_fact's upsert still revives an identical
+                            // re-recorded value afterwards.
+                            if let Some(hint) = it.supersedes.as_deref() {
+                                match store.retire_facts_by_hint(kind, "user", hint) {
+                                    Ok(n) => stats.facts_retired += n,
+                                    Err(e) => eprintln!(
+                                        "warn: retire_facts_by_hint failed for {persona} ({e}); stale fact may stay live"
+                                    ),
+                                }
+                            }
+                            store.record_fact(kind, &it.text, "user", "distill", 0.8)?;
+                            stats.facts_recorded += 1;
+                        }
+                        ItemKind::Lesson | ItemKind::Event => {
+                            let out = store.record_distilled(it, Some(persona))?;
+                            if out.duplicate {
+                                stats.items_duplicate += 1;
+                            } else {
+                                stats.items_recorded += 1;
+                            }
+                            stats.superseded_invalidations += out.invalidated_edge_ids.len();
+                        }
                     }
-                    stats.superseded_invalidations += out.invalidated_edge_ids.len();
                 }
             }
             Ok(_) if light => {
@@ -636,6 +696,27 @@ async fn ingest_persona_distill(
             }
         }
     }
+
+    // Completion marker: only written after ALL sessions were processed.
+    // EXCEPTION mirroring the LME harness: if EVERY session's LLM call
+    // failed (rate-limit burst, API outage, balance exhausted), the persona
+    // produced nothing through no fault of its own — writing the marker
+    // would freeze it as "successfully empty" (found the hard way on LME:
+    // 133 questions marked with zero data during a 429 storm).
+    if stats.sessions_fallback_raw == stats.sessions && stats.sessions > 0 {
+        eprintln!(
+            "warn: ALL {} sessions of {persona} failed; NOT marking done (retry next run)",
+            stats.sessions
+        );
+        return Ok(stats);
+    }
+    store.with_conn(|c| {
+        c.execute(
+            "INSERT OR REPLACE INTO distill_done (qid, done_at) VALUES (?1, ?2)",
+            rusqlite::params![persona, chrono::Utc::now().timestamp()],
+        )?;
+        Ok(())
+    })?;
     Ok(stats)
 }
 
@@ -1009,9 +1090,28 @@ async fn answer_question(
     persona: &str,
     q: &MemoraQuestion,
     topk: usize,
+    with_facts: bool,
 ) -> ResultRow {
     let retrieved = retrieve(store, persona, &q.question, topk).unwrap_or_default();
-    let memories = memory_lines(&retrieved, &q.question);
+    // Distill mode additionally queries the fact layer (BM25, scope "user" —
+    // this persona's own DB, same topk) and puts fact lines FIRST: they are
+    // the high-precision layer for the factual-recall slice. Retired facts
+    // (superseded) are excluded by search_facts_bm25, which is exactly the
+    // semantics the forgetting (FAA) evaluation wants: the model never sees
+    // the outdated value. Mirrors the LongMemEval harness.
+    let memories = if with_facts {
+        let facts = store
+            .search_facts_bm25(&q.question, Some("user"), topk)
+            .unwrap_or_default();
+        let mut lines: Vec<String> = facts.iter().map(|f| format!("- {}", f.value)).collect();
+        let causal = memory_lines(&retrieved, &q.question);
+        if !causal.is_empty() {
+            lines.push(causal);
+        }
+        lines.join("\n")
+    } else {
+        memory_lines(&retrieved, &q.question)
+    };
     let memories_retrieved = retrieved.len();
 
     let base_row = |model_response: String, error: Option<String>| ResultRow {
@@ -1374,7 +1474,7 @@ async fn run_persona(
             eprintln!(
                 "ingest {persona} (distill): {}/{} sessions distilled ({} dual-write, \
                  {} light-empty dropped), {} fallback-raw, \
-                 {} items (+{} dup), {} superseded, {} LLM calls{}",
+                 {} items (+{} dup), {} facts ({} retired), {} superseded, {} LLM calls{}",
                 stats.sessions_distilled,
                 stats.sessions,
                 stats.sessions_dual_write,
@@ -1382,6 +1482,8 @@ async fn run_persona(
                 stats.sessions_fallback_raw,
                 stats.items_recorded,
                 stats.items_duplicate,
+                stats.facts_recorded,
+                stats.facts_retired,
                 stats.superseded_invalidations,
                 stats.llm_calls,
                 if stats.skipped_existing {
@@ -1401,12 +1503,13 @@ async fn run_persona(
 
     let done = Arc::new(AtomicUsize::new(0));
     let total = selected.len();
+    let with_facts = args.ingest == "distill";
     let rows: Vec<ResultRow> = futures::stream::iter(selected.iter().map(|q| {
         let cfg = cfg.clone();
         let store = store.clone();
         let done = done.clone();
         async move {
-            let row = answer_question(&cfg, &store, persona, q, args.topk).await;
+            let row = answer_question(&cfg, &store, persona, q, args.topk, with_facts).await;
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             eprintln!(
                 "[{persona} {d}/{total}] {} ({}) FAMA={:.2} MPA={}/{} FAA={}/{}",
@@ -1816,6 +1919,61 @@ mod tests {
         assert!(res
             .iter()
             .all(|e| e.decision_id.starts_with("p1::") && e.outcome_id.starts_with("p1::")));
+    }
+
+    #[test]
+    fn fact_layer_routing_and_supersedes_retirement() {
+        // Mirrors the ingest_persona_distill routing: Fact/Preference items
+        // go to the fact layer (scope "user"); a supersedes hint retires the
+        // outdated value so retrieval only surfaces the live fact — the
+        // semantics the forgetting (FAA) evaluation relies on.
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .record_fact("preference", "User likes jazz music.", "user", "distill", 0.8)
+            .unwrap();
+        store
+            .record_fact(
+                "preference",
+                "User now prefers classical music over jazz.",
+                "user",
+                "distill",
+                0.8,
+            )
+            .unwrap();
+        let retired = store
+            .retire_facts_by_hint("preference", "user", "likes jazz music")
+            .unwrap();
+        assert_eq!(retired, 1);
+        let hits = store
+            .search_facts_bm25("what music does the user like", Some("user"), 10)
+            .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].value.contains("classical"));
+    }
+
+    #[test]
+    fn raw_ingest_redo_does_not_duplicate_turn_edges() {
+        // distill_done-marker redo path: an interrupted persona is re-ingested
+        // on the next run. Chunks dedupe via INSERT OR IGNORE; turn edges
+        // must not be inserted again for pre-existing chunks.
+        let session: MemoraSession = serde_json::from_str(tiny_session_json()).unwrap();
+        let store = CausalStore::open_in_memory().unwrap();
+        ingest_session_raw(&store, "p1", &session).unwrap();
+        ingest_session_raw(&store, "p1", &session).unwrap();
+        let (chunks, edges) = store
+            .with_conn(|c| {
+                let chunks: i64 = c.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
+                let edges: i64 = c.query_row(
+                    "SELECT COUNT(*) FROM causal_edges WHERE task_tag = 'p1'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                Ok((chunks, edges))
+            })
+            .unwrap();
+        assert_eq!(chunks, 4);
+        // 4 alternating-speaker turns: turns 2/3/4 link back → exactly 3.
+        assert_eq!(edges, 3);
     }
 
     // -- judge output parsing (official _evaluate_with_single_judge logic) --

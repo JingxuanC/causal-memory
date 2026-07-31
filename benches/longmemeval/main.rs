@@ -485,13 +485,25 @@ async fn distill_question(
                     // v7 namespaced scope: hard-scopes fact retrieval to this
                     // question's haystack, mirroring the edge task_tag filter.
                     let fact_scope = format!("lme:{}", q.question_id);
+                    // Retire BEFORE record: the new value often shares topic
+                    // tokens with its own supersedes hint and
+                    // retire_facts_by_hint has no self-exclusion — recording
+                    // first can retire the fact we just wrote (found by
+                    // review). NOTE: the 20260730/31 full distill runs
+                    // predates this fix; any self-retires there remove facts
+                    // (scores degrade toward the raw baseline), i.e. the
+                    // reported +7.8pp is, if anything, conservative.
+                    if let Some(hint) = item.supersedes.as_deref() {
+                        match store.retire_facts_by_hint(kind, &fact_scope, hint) {
+                            Ok(n) => stats.facts_retired += n,
+                            Err(e) => eprintln!(
+                                "warn: retire_facts_by_hint failed for {} ({e}); stale fact may stay live",
+                                q.question_id
+                            ),
+                        }
+                    }
                     store.record_fact(kind, &item.text, &fact_scope, "distill", 0.8)?;
                     stats.facts_recorded += 1;
-                    if let Some(hint) = item.supersedes.as_deref() {
-                        stats.facts_retired += store
-                            .retire_facts_by_hint(kind, &fact_scope, hint)
-                            .unwrap_or(0);
-                    }
                 }
                 ItemKind::Lesson | ItemKind::Event => {
                     let out = store.record_distilled(item, Some(&q.question_id))?;

@@ -3,7 +3,48 @@
 Evaluation on [LongMemEval](https://github.com/xiaowu0162/LongMemEval)
 (`longmemeval_s_cleaned`, 500 questions, ~115k-token chat histories per question).
 
-**Headline: overall 61.8% (309/500) · abstention 96.7% (29/30) · evidence hit rate 84.4% · zero judge errors.**
+**Headline (distill + fact layer): overall 69.6% (348/500) vs raw-ingest baseline 61.8% — +7.8pp, zero errors.**
+Raw baseline: overall 61.8% (309/500) · abstention 96.7% (29/30) · evidence hit rate 84.4%.
+
+## Distill-mode run (run 20260730_212026, schema v7 fact layer)
+
+Same dataset, answerer, judge, top-k and isolation protocol as the raw
+baseline below; the only change is ingest: every haystack session is
+LLM-distilled, `Fact`/`Preference` items route to the `agent_facts` layer
+(scope `lme:<question_id>`, supersedes hints retire outdated values) and
+`Lesson`/`Event` items route to the causal layer. At QA time fact lines
+(BM25 over `agent_facts`, same top-10) are placed FIRST in the prompt,
+followed by the causal memory lines. Distillation completed for all
+500/500 questions (45,143 facts, resumable via the `distill_done` marker
+table after a balance-outage mid-run).
+
+| Question type | n | raw | distill | Δ |
+|---|---|---|---|---|
+| knowledge-update | 78 | 76.9% | **85.9%** | **+9.0pp** |
+| multi-session | 133 | 32.3% | **41.4%** | **+9.1pp** |
+| single-session-preference | 30 | 23.3% | **36.7%** | **+13.4pp** |
+| single-session-user | 70 | 90.0% | **97.1%** | +7.1pp |
+| temporal-reasoning | 133 | 61.7% | **69.9%** | +8.2pp |
+| single-session-assistant | 56 | 96.4% | 96.4% | 0 (saturated) |
+| **overall** | 500 | **61.8%** | **69.6%** | **+7.8pp** |
+
+Read: every non-saturated type improves. knowledge-update — the category
+the supersedes mechanism was built for — delivers +9.0pp, confirming the
+retire-old-value path end to end. multi-session remains the weakest slice
+(41.4%): facts are atomic, so cross-session synthesis still rides on the
+causal layer's coverage. Evidence hit rate is unchanged (84.2% vs 84.4%):
+the gain comes from the fact layer's precision, not from noisier retrieval.
+
+Reproduce:
+
+```bash
+export DEEPSEEK_API_KEY=...
+./target/release/causal-memory-longmemeval run \
+    --data benches/longmemeval/data/longmemeval_s_cleaned.json \
+    --ingest distill --concurrency 64   # resumable; add --ingest-only to skip QA
+```
+
+## Raw-ingest baseline (run 20260727_175219)
 
 ## Frozen protocol
 

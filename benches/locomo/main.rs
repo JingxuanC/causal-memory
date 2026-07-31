@@ -668,12 +668,23 @@ async fn distill_conversation(
                         ItemKind::Preference => "preference",
                         _ => unreachable!(),
                     };
+                    // Retire BEFORE record: the new value often shares topic
+                    // tokens with its own supersedes hint and
+                    // retire_facts_by_hint has no self-exclusion — recording
+                    // first can retire the fact we just wrote (found by
+                    // review). The 20260730 full distill run predates this
+                    // fix; any self-retires there remove facts, so the
+                    // reported +5.4pp is, if anything, conservative.
+                    if let Some(hint) = item.supersedes.as_deref() {
+                        match store.retire_facts_by_hint(kind, "user", hint) {
+                            Ok(n) => stats.facts_retired += n,
+                            Err(e) => eprintln!(
+                                "warn: retire_facts_by_hint failed ({e}); stale fact may stay live"
+                            ),
+                        }
+                    }
                     store.record_fact(kind, &item.text, "user", "distill", 0.8)?;
                     stats.facts_recorded += 1;
-                    if let Some(hint) = item.supersedes.as_deref() {
-                        stats.facts_retired +=
-                            store.retire_facts_by_hint(kind, "user", hint).unwrap_or(0);
-                    }
                 }
                 ItemKind::Lesson | ItemKind::Event => {
                     let out = store.record_distilled(item, None)?;

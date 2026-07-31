@@ -3,11 +3,50 @@
 Baseline evaluation of causal-memory on the [LoCoMo](https://github.com/snap-research/locomo)
 long-conversational-memory benchmark (`locomo10.json`: 10 conversations, 1,986 questions).
 
-**Headline (run 5, adopted prompt): overall 64.2% (1,275/1,986) · cats 1–4: 56.3% · adversarial abstention: 91.5% · zero judge errors. Best raw QA: run 3 at 65.0% / 59.4%.**
+**Headline (distill + fact layer, run_distill_full_20260730): overall 69.6% (1,382/1,986) vs raw-ingest baseline 64.2% — +5.4pp, zero errors.**
+Raw headline (run 5, adopted prompt): overall 64.2% (1,275/1,986) · cats 1–4: 56.3% · adversarial abstention: 91.5% · zero judge errors. Best raw QA: run 3 at 65.0% / 59.4%.**
 
 This is an honest baseline, published with the same spirit as the v0.4.1 retrieval
 finding: causal-memory is a **causal layer**, not a general-purpose factual memory —
 and this benchmark measures mostly the latter. See [Failure analysis](#failure-analysis).
+
+## Distill-mode run (run_distill_full_20260730, schema v7 fact layer)
+
+Same dataset, answerer, judge, top-k and protocol as run 5; the only change
+is ingest: every session is LLM-distilled, `Fact`/`Preference` items route
+to the `agent_facts` layer (scope `user` — each conversation gets its own
+distill DB, so isolation is physical; supersedes hints retire outdated
+values) and `Lesson`/`Event` items route to the causal layer. Fact lines
+are placed FIRST in the answer prompt, followed by causal memory lines.
+
+| Category | n | raw (run 5) | distill | Δ |
+|---|---|---|---|---|
+| 1 single-hop | 282 | 24.1% | 30.5% | +6.4pp |
+| 2 temporal | 321 | 49.2% | **60.8%** | **+11.6pp** |
+| 3 multi-hop | 96 | 19.8% | **31.3%** | **+11.5pp** |
+| 4 open-domain | 841 | 74.0% | **78.6%** | +4.6pp |
+| 5 adversarial | 446 | 91.5% | 91.9% | +0.4pp |
+| **overall** | 1,986 | **64.2%** | **69.6%** | **+5.4pp** |
+| evidence retrieval hit rate | — | 74.4% | 71.7% | −2.7pp |
+
+Honest reading: the unified-memory design doc predicted 75–80%; we landed
+at 69.6%. The mechanism is validated — gains concentrate exactly where
+atomic facts should help (temporal +11.6, multi-hop +11.5) and abstention
+does not degrade — but two bottlenecks cap the total: cat 1 list-style
+questions need complete-set recall the fact layer only partially covers,
+and cat 3 counterfactual phrasing collides with the abstention protocol.
+The design doc's 75–80% remains the target after fixing those two; see
+the failure analysis below.
+
+Reproduce:
+
+```bash
+export DEEPSEEK_API_KEY=...
+./target/release/causal-memory-locomo run --all \
+    --data benches/locomo/data/locomo10.json \
+    --ingest distill --concurrency 16   # add --ingest-only to skip QA
+```
+
 
 ## Frozen protocol
 
