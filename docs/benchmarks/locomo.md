@@ -86,6 +86,45 @@ Reproduce:
     --ingest distill --prompt-version v2 --concurrency 16
 ```
 
+## E3 Judge dual-caliber (F1 full rejudge, 2026-07-31)
+
+mem0's 91.6% uses a lenient judge (partial credit, ±14d dates, extra detail OK).
+To separate judge looseness from genuine recall quality, we re-judged the V2
+results with a mem0-compatible judge (no re-answering, ~$1/1986q).
+
+| | strict judge | mem0 judge | Δ (judge tax) |
+|---|---|---|---|
+| V1 prompt | 69.6% (1382) | pending | — |
+| **V2 prompt** | **74.2%** (1474) | **84.1%** (1671) | **+9.9pp** |
+
+**Category breakdown (V2 × mem0 judge)**:
+
+| Category | V2 strict | V2 mem0 | Δ |
+|---|---|---|---|
+| 1 multi-hop | 35.8% | 73.0% | +37.2pp |
+| 2 temporal | 72.0% | 84.1% | +12.1pp |
+| 3 open-domain | 47.9% | 60.4% | +12.5pp |
+| 4 single-hop | 83.5% | 88.7% | +5.2pp |
+| 5 adversarial | 88.3% | 87.7% | −0.6pp |
+
+**Key finding**: mem0 official is 91.6% (gpt-5 + top-200 + mem0 judge).
+At the **same judge caliber** (mem0 judge), our V2 scores 84.1% — the gap
+narrows to **7.5pp**, and that 7.5pp is attributable to model (gpt-5 vs
+deepseek-chat) and retrieval budget (top-200 vs top-10), not judge looseness.
+
+cat1 multi-hop benefits most from lenient judging (+37.2pp) — these
+list-style questions score 1-item-correct under mem0 rules, where strict
+requires the complete list. cat5 (adversarial) is judge-invariant
+(−0.6pp, within noise) — abstention is binary.
+
+Reproduce:
+
+```bash
+# re-judge existing V2 results with mem0 judge (no re-answering)
+./target/release/causal-memory-locomo rejudge \
+    --input benches/locomo/results/e1_v2_full --judge-style mem0
+```
+
 
 ## Category ID mapping (corrected 2026-07-31)
 

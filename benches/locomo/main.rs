@@ -1033,7 +1033,10 @@ async fn answer_question(
 
     // E1: V2 presents memories in chronological order (event_time ascending)
     // to prevent lost-in-the-middle and narrative drift. Facts stay first.
-    if prompt_version == PromptVersion::V2 {
+    // F4 fix: only sort for cat1-4 (factual QA). cat5 (adversarial) uses V1
+    // prompt and should also get V1's BM25-ranked memory order — sorting
+    // by time is a variable leak that contributed to cat5's -3.6pp regression.
+    if prompt_version == PromptVersion::V2 && qa.category != 5 {
         retrieved.sort_by_key(|e| e.event_time);
     }
 
@@ -1375,6 +1378,9 @@ async fn run(args: Args) -> Result<()> {
 /// E3: re-judge existing results with a different judge style (no re-answering).
 /// Reads a JSONL results file, re-runs only the judge LLM call per row with
 /// the specified style, writes a new JSONL + summary. Cost: ~1 judge call/q.
+/// E3/F1: re-judge existing results with a different judge style.
+/// Accepts a DIRECTORY (processes all *.jsonl, excluding *_rejudged_* files)
+/// or a single .jsonl file. Output goes to a `rejudged_<style>/` subdirectory.
 async fn rejudge(argv: &[String]) -> Result<()> {
     let mut input: Option<PathBuf> = None;
     let mut judge_style = JudgeStyle::Mem0;
@@ -1396,111 +1402,150 @@ async fn rejudge(argv: &[String]) -> Result<()> {
                 }
             }
             "--help" | "-h" => {
-                eprintln!("Usage: causal-memory-locomo rejudge --input <run>.jsonl [--judge-style strict|mem0]");
+                eprintln!("Usage: causal-memory-locomo rejudge --input <dir-or-file> [--judge-style strict|mem0]");
+                eprintln!("  If --input is a directory, all *.jsonl files are processed (excluding *_rejudged_*).");
+                eprintln!("  Output goes to <input>/rejudged_<style>/");
                 return Ok(());
             }
             other => anyhow::bail!("unknown argument {other:?}"),
         }
         i += 1;
     }
-    let input_path = input.ok_or_else(|| anyhow!("--input is required (path to a .jsonl results file)"))?;
+    let input_path = input.ok_or_else(|| anyhow!("--input is required (path to a .jsonl file or results directory)"))?;
 
-    // Read existing rows.
-    let raw = std::fs::read_to_string(&input_path)
-        .with_context(|| format!("reading {}", input_path.display()))?;
-    let rows: Vec<ResultRow> = raw
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).with_context(|| "parsing row"))
-        .collect::<Result<Vec<_>>>()?;
+    // Collect input files: directory → all *.jsonl excluding _rejudged_; file → just that file.
+    let input_files: Vec<PathBuf> = if input_path.is_dir() {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(&input_path)?
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension().is_some_and(|ext| ext == "jsonl")
+                    // F1 bug fix: exclude any file that is itself a rejudged output
+                    && !p.to_string_lossy().contains("_rejudged_")
+            })
+            .collect();
+        files.sort();
+        files
+    } else {
+        vec![input_path.clone()]
+    };
 
-    eprintln!("re-judging {} rows with {} style...", rows.len(), judge_style.as_str());
+    if input_files.is_empty() {
+        anyhow::bail!("no .jsonl files found in {} (excluding _rejudged_)", input_path.display());
+    }
+
+    eprintln!("re-judging {} file(s) with {} style...", input_files.len(), judge_style.as_str());
+
+    // Output directory: sibling to input, named rejudged_<style>/.
+    let out_dir = if input_path.is_dir() {
+        input_path.join(format!("rejudged_{}", judge_style.as_str()))
+    } else {
+        input_path.parent().unwrap_or(&PathBuf::from("."))
+            .join(format!("rejudged_{}", judge_style.as_str()))
+    };
+    std::fs::create_dir_all(&out_dir)?;
+
     let cfg = LlmConfig::from_env()?;
 
-    let done = Arc::new(AtomicUsize::new(0));
-    let total = rows.len();
-    let rejudged: Vec<ResultRow> = futures::stream::iter(rows.into_iter())
-        .map(|mut row| {
-            let cfg = cfg.clone();
-            let done = done.clone();
-            async move {
-                // Skip error rows (no predicted answer to judge).
-                if row.verdict == Verdict::Error.as_str() || row.predicted.is_empty() {
+    // Aggregate across all files.
+    let mut grand_per_cat: BTreeMap<u32, Acc> = BTreeMap::new();
+    let mut grand_overall = Acc::new();
+
+    for file_path in &input_files {
+        let raw = std::fs::read_to_string(file_path)
+            .with_context(|| format!("reading {}", file_path.display()))?;
+        let rows: Vec<ResultRow> = raw
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).with_context(|| "parsing row"))
+            .collect::<Result<Vec<_>>>()?;
+
+        eprintln!("  {} ({} rows)", file_path.file_name().unwrap().to_string_lossy(), rows.len());
+
+        let done = Arc::new(AtomicUsize::new(0));
+        let total = rows.len();
+        let rejudged: Vec<ResultRow> = futures::stream::iter(rows.into_iter())
+            .map(|mut row| {
+                let cfg = cfg.clone();
+                let done = done.clone();
+                async move {
+                    if row.verdict == Verdict::Error.as_str() || row.predicted.is_empty() {
+                        let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+                        if d.is_multiple_of(200) { eprintln!("    {d}/{total}"); }
+                        return row;
+                    }
+                    let gold = row.gold.as_deref().unwrap_or("");
+                    let judge_user = if row.category == 5 {
+                        format!(
+                            "Question: {}\nThis is an adversarial question: the information it asks about was NOT mentioned in the conversation. The correct behavior is to state that the information is not mentioned.\n\nPredicted Answer: {}\n\nDid the model correctly refuse to answer? Answer yes or no only.",
+                            row.question, row.predicted
+                        )
+                    } else {
+                        format!(
+                            "Question: {}\nCorrect Answer: {gold}\n\nPredicted Answer: {}\n\nIs the predicted answer correct? Answer yes or no only.",
+                            row.question, row.predicted
+                        )
+                    };
+                    match chat(&cfg, judge_style.system_prompt(), &judge_user, JUDGE_MAX_TOKENS).await {
+                        Ok(raw_judge) => {
+                            let (verdict, reason) = parse_judge_output(&raw_judge)
+                                .unwrap_or((Verdict::Incorrect, raw_judge.clone()));
+                            row.verdict = verdict.as_str().into();
+                            row.judge_reason = reason;
+                        }
+                        Err(e) => {
+                            row.judge_reason = format!("re-judge LLM failed: {e}");
+                        }
+                    }
                     let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    if d.is_multiple_of(200) { eprintln!("{d}/{total}"); }
-                    return row;
+                    if d.is_multiple_of(200) { eprintln!("    {d}/{total}"); }
+                    row
                 }
-                // Rebuild the judge prompt the same way answer_question does.
-                let gold = row.gold.as_deref().unwrap_or("");
-                let judge_user = if row.category == 5 {
-                    format!(
-                        "Question: {}\nThis is an adversarial question: the information it asks about was NOT mentioned in the conversation. The correct behavior is to state that the information is not mentioned.\n\nPredicted Answer: {}\n\nDid the model correctly refuse to answer? Answer yes or no only.",
-                        row.question, row.predicted
-                    )
-                } else {
-                    format!(
-                        "Question: {}\nCorrect Answer: {gold}\n\nPredicted Answer: {}\n\nIs the predicted answer correct? Answer yes or no only.",
-                        row.question, row.predicted
-                    )
-                };
-                match chat(&cfg, judge_style.system_prompt(), &judge_user, JUDGE_MAX_TOKENS).await {
-                    Ok(raw_judge) => {
-                        let (verdict, reason) = parse_judge_output(&raw_judge)
-                            .unwrap_or((Verdict::Incorrect, raw_judge.clone()));
-                        row.verdict = verdict.as_str().into();
-                        row.judge_reason = reason;
-                    }
-                    Err(e) => {
-                        row.judge_reason = format!("re-judge LLM failed: {e}");
-                    }
-                }
-                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if d.is_multiple_of(200) { eprintln!("{d}/{total}"); }
-                row
+            })
+            .buffered(8)
+            .collect()
+            .await;
+
+        // Write re-judged JSONL to the output subdirectory (same filename).
+        let out_path = out_dir.join(file_path.file_name().unwrap());
+        use std::io::Write;
+        let mut file = std::io::BufWriter::new(std::fs::File::create(&out_path)?);
+        for row in &rejudged {
+            serde_json::to_writer(&mut file, row)?;
+            writeln!(file)?;
+        }
+
+        // Aggregate.
+        for row in &rejudged {
+            let acc = grand_per_cat.entry(row.category).or_insert_with(Acc::new);
+            acc.total += 1;
+            grand_overall.total += 1;
+            if row.verdict == "correct" {
+                acc.correct += 1;
+                grand_overall.correct += 1;
+            } else if row.verdict == "incorrect" {
+                acc.incorrect += 1;
+                grand_overall.incorrect += 1;
+            } else {
+                acc.error += 1;
+                grand_overall.error += 1;
             }
-        })
-        .buffered(8)
-        .collect()
-        .await;
-
-    // Write re-judged JSONL.
-    let out_path = input_path.with_extension(format!(
-        "{}_rejudged_{}.jsonl",
-        input_path.extension().unwrap_or_default().to_string_lossy(),
-        judge_style.as_str()
-    ));
-    use std::io::Write;
-    let mut file = std::io::BufWriter::new(std::fs::File::create(&out_path)?);
-    for row in &rejudged {
-        serde_json::to_writer(&mut file, row)?;
-        writeln!(file)?;
-    }
-
-    // Summary.
-    let mut per_cat: BTreeMap<u32, Acc> = BTreeMap::new();
-    let mut overall = Acc::new();
-    for row in &rejudged {
-        let cat = row.category;
-        let acc = per_cat.entry(cat).or_insert_with(Acc::new);
-        acc.total += 1;
-        overall.total += 1;
-        if row.verdict == "correct" {
-            acc.correct += 1;
-            overall.correct += 1;
-        } else if row.verdict == "incorrect" {
-            acc.incorrect += 1;
-            overall.incorrect += 1;
-        } else {
-            acc.error += 1;
-            overall.error += 1;
         }
     }
-    eprintln!("\n=== re-judge ({}) results ===", judge_style.as_str());
-    eprintln!("overall: {:.1}% ({}/{})", overall.correct as f64 / overall.total as f64 * 100.0, overall.correct, overall.total);
-    for (cat, acc) in &per_cat {
-        eprintln!("  cat{cat}: {:.1}% ({}/{})", acc.correct as f64 / acc.total as f64 * 100.0, acc.correct, acc.total);
+
+    eprintln!("\n=== re-judge ({}) aggregate results ===", judge_style.as_str());
+    eprintln!("overall: {:.1}% ({}/{})",
+        grand_overall.correct as f64 / grand_overall.total as f64 * 100.0,
+        grand_overall.correct, grand_overall.total);
+    // Category names: 1=multi-hop, 2=temporal, 3=open-domain, 4=single-hop, 5=adversarial
+    let cat_names = [(1u32, "multi-hop"), (2, "temporal"), (3, "open-domain"), (4, "single-hop"), (5, "adversarial")];
+    for (cat, name) in &cat_names {
+        if let Some(acc) = grand_per_cat.get(cat) {
+            eprintln!("  cat{cat} ({name}): {:.1}% ({}/{})",
+                acc.correct as f64 / acc.total as f64 * 100.0, acc.correct, acc.total);
+        }
     }
-    eprintln!("wrote {}", out_path.display());
+    eprintln!("output dir: {}", out_dir.display());
     Ok(())
 }
 
