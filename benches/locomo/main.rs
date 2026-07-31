@@ -803,6 +803,10 @@ struct Args {
     /// E3: judge style. strict = exact match; mem0 = lenient (partial credit,
     /// date tolerance ±14d). Default strict.
     judge_style: JudgeStyle,
+    /// E2: top-k cutoffs for retrieval budget experiment (e.g. [10, 20, 50]).
+    /// When non-empty, one retrieval at max(cutoffs) is sliced to each cutoff
+    /// and answered+judged independently. Mutually exclusive with plain --topk.
+    topk_cutoffs: Vec<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -840,6 +844,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
     let mut ingest_only = false;
     let mut prompt_version = PromptVersion::V2;
     let mut judge_style = JudgeStyle::Strict;
+    let mut topk_cutoffs: Vec<usize> = Vec::new();
 
     let mut i = 1;
     let take = |i: &mut usize, flag: &str| -> Result<String> {
@@ -886,6 +891,17 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
                     other => anyhow::bail!("bad --judge-style {other:?}; expected strict|mem0"),
                 }
             }
+            "--topk-cutoffs" => {
+                let raw = take(&mut i, "--topk-cutoffs")?;
+                topk_cutoffs = raw
+                    .split(',')
+                    .map(|s| s.trim().parse::<usize>())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| anyhow!("bad --topk-cutoffs: {e}"))?;
+                if topk_cutoffs.len() < 2 {
+                    anyhow::bail!("--topk-cutoffs needs at least 2 values, e.g. 10,20,50");
+                }
+            }
             other => anyhow::bail!("unknown argument {other:?}"),
         }
         i += 1;
@@ -907,6 +923,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
         ingest_only,
         prompt_version,
         judge_style,
+        topk_cutoffs,
     }))
 }
 
