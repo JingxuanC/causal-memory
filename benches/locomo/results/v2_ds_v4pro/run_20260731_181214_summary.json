@@ -1,7 +1,7 @@
 {
-  "run_id": "20260731_170146",
-  "date": "2026-07-31T17:55:51.861862+00:00",
-  "git_commit": "e7af88c",
+  "run_id": "20260731_181214",
+  "date": "2026-07-31T18:55:23.871383+00:00",
+  "git_commit": "dfba2ce",
   "model": "deepseek-v4-pro",
   "judge_model": "deepseek-v4-pro",
   "temperature": 0.0,
@@ -33,46 +33,46 @@
     9
   ],
   "total_questions": 1986,
-  "correct": 885,
-  "incorrect": 485,
-  "error": 616,
-  "accuracy": 0.6459854014598541,
+  "correct": 959,
+  "incorrect": 206,
+  "error": 821,
+  "accuracy": 0.8231759656652361,
   "evidence_hit_rate": 0.7109768378650554,
   "per_category": {
     "1": {
       "total": 282,
       "correct": 46,
-      "incorrect": 172,
-      "error": 64,
-      "accuracy": 0.21100917431192662
+      "incorrect": 81,
+      "error": 155,
+      "accuracy": 0.36220472440944884
     },
     "2": {
       "total": 321,
-      "correct": 140,
-      "incorrect": 88,
-      "error": 93,
-      "accuracy": 0.6140350877192983
+      "correct": 147,
+      "incorrect": 34,
+      "error": 140,
+      "accuracy": 0.8121546961325967
     },
     "3": {
       "total": 96,
-      "correct": 19,
-      "incorrect": 43,
-      "error": 34,
-      "accuracy": 0.3064516129032258
+      "correct": 23,
+      "incorrect": 15,
+      "error": 58,
+      "accuracy": 0.6052631578947368
     },
     "4": {
       "total": 841,
-      "correct": 435,
-      "incorrect": 172,
-      "error": 234,
-      "accuracy": 0.7166392092257001
+      "correct": 467,
+      "incorrect": 62,
+      "error": 312,
+      "accuracy": 0.8827977315689981
     },
     "5": {
       "total": 446,
-      "correct": 245,
-      "incorrect": 10,
-      "error": 191,
-      "accuracy": 0.9607843137254902
+      "correct": 276,
+      "incorrect": 14,
+      "error": 156,
+      "accuracy": 0.9517241379310345
     }
   }
 }

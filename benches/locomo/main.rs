@@ -502,6 +502,11 @@ struct ChatChoice {
 #[derive(Deserialize)]
 struct ChatOwnedMessage {
     content: String,
+    /// Reasoning models (deepseek-v4-pro, o1-style) put their chain-of-thought
+    /// here and sometimes leave `content` empty. Fall back to this when content
+    /// is blank so we don't lose the answer.
+    #[serde(default)]
+    reasoning_content: String,
 }
 
 /// Single chat completion attempt.
@@ -549,7 +554,15 @@ async fn chat_once(
     let chat: ChatResponse = resp.json().await?;
     chat.choices
         .first()
-        .map(|c| c.message.content.trim().to_string())
+        .map(|c| {
+            let content = c.message.content.trim();
+            if content.is_empty() {
+                // Reasoning model put everything in reasoning_content
+                c.message.reasoning_content.trim().to_string()
+            } else {
+                content.to_string()
+            }
+        })
         .ok_or_else(|| anyhow!("no choices in LLM response"))
 }
 
