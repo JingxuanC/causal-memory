@@ -910,6 +910,7 @@ impl CausalStore {
                         if other_tag.is_none() {
                             continue;
                         }
+                        #[allow(clippy::unwrap_used, reason = "checked is_none above")]
                         let other_tag = other_tag.unwrap();
 
                         // Session 2: backward chain from the bridged decision.

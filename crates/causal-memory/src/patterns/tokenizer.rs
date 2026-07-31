@@ -1,6 +1,6 @@
 //! Text tokenization and similarity utilities for pattern mining.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::extractor::DECISION_WORTHY_TOOLS;
 
