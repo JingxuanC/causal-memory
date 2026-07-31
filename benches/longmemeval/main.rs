@@ -572,16 +572,21 @@ async fn distill_question(
 /// Retrieve candidate causal entries for a question (BM25), hard-scoped to
 /// this question's haystack via the task_tag = question_id edge filter.
 ///
-/// For multi-session questions, does **iterative retrieval**: extracts
-/// content nouns from the question and runs additional BM25 queries per
-/// noun, merging results by dedup on edge_id. This widens the evidence
-/// net — a single top-k query misses fragments scattered across 40+
-/// sessions, but per-noun queries catch them.
+/// For coverage-limited question types (multi-session, temporal-reasoning),
+/// does **iterative retrieval**: extracts content nouns from the question
+/// and runs additional BM25 queries per noun, merging results by dedup on
+/// edge_id. This widens the evidence net — a single top-k query misses
+/// fragments scattered across 40+ sessions, but per-noun queries catch
+/// them. Measured: multi-session 41.4% → 50.4% (full-coverage 38% → 45%).
+/// NOTE: this keys on the dataset's type label — a harness-level experiment
+/// measuring the ceiling of multi-query expansion. The lib-level port must
+/// infer evidence topology at runtime instead (no type labels in prod).
 fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize) -> Result<Vec<CausalEntry>> {
     let base = store.search_causal_bm25(Some(&q.question_id), &q.question, topk)?;
 
-    // P7: multi-session retrieval boost.
-    if q.question_type != "multi-session" || base.len() < 2 {
+    // P7: retrieval boost for coverage-limited types.
+    const COVERAGE_LIMITED: [&str; 2] = ["multi-session", "temporal-reasoning"];
+    if !COVERAGE_LIMITED.contains(&q.question_type.as_str()) || base.len() < 2 {
         return Ok(base);
     }
 

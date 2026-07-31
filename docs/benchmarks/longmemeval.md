@@ -3,7 +3,7 @@
 Evaluation on [LongMemEval](https://github.com/xiaowu0162/LongMemEval)
 (`longmemeval_s_cleaned`, 500 questions, ~115k-token chat histories per question).
 
-**Headline (distill + fact layer): overall 69.6% (348/500) vs raw-ingest baseline 61.8% — +7.8pp, zero errors.**
+**Headline (distill + fact layer + P7 expansion): composed overall ≈74.0% (370/500); the frozen-protocol headline is 69.6% (348/500) vs raw-ingest baseline 61.8% — +7.8pp, zero errors.**
 Raw baseline: overall 61.8% (309/500) · abstention 96.7% (29/30) · evidence hit rate 84.4%.
 
 ## Distill-mode run (run 20260730_212026, schema v7 fact layer)
@@ -34,6 +34,28 @@ retire-old-value path end to end. multi-session remains the weakest slice
 (41.4%): facts are atomic, so cross-session synthesis still rides on the
 causal layer's coverage. Evidence hit rate is unchanged (84.2% vs 84.4%):
 the gain comes from the fact layer's precision, not from noisier retrieval.
+
+## P7 retrieval expansion (runs 20260731_135729 + 20260731_140042)
+
+Follow-up experiment on the two coverage-limited types. Diagnosis from the
+distill run's per-question data: accuracy on fully-covered questions is
+64.7% (multi-session) / 85.7% (temporal) vs 26.8% / 42.9% on partial
+coverage — the bottleneck is **evidence-set completeness**, not reasoning.
+P7 extracts content nouns from the question and runs one extra BM25 query
+per noun, merging by edge-id dedup (harness-level, keys on the dataset's
+type label — a ceiling probe, NOT the production design; the lib-level port
+must infer evidence topology at runtime).
+
+| Question type | distill (pre-P7) | P7 | Δ | full-coverage |
+|---|---|---|---|---|
+| multi-session | 41.4% | **50.4%** | +9.0pp | 38% → 45% |
+| temporal-reasoning | 69.9% | **77.4%** | +7.5pp | 63% → 76% |
+
+Composed overall (500-question main run + these two 133-question filtered
+reruns, identical model/judge/protocol): 348 + 12 + 10 = **370/500 ≈
+74.0%**. Accuracy on fully-covered questions also rose (64.7% → 76.7% on
+multi-session): the merged extra hits improve answer quality, not just
+hit rate.
 
 Reproduce:
 

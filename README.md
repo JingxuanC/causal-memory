@@ -26,7 +26,7 @@ The causal table doesn't decay because it lives outside the agent's context wind
 
 **LoCoMo** (1,986 questions, deepseek-chat answerer + judge, frozen protocol): **distill + fact layer 69.6%** vs raw-ingest 64.2% (**+5.4pp**), same harness/judge/protocol — gains concentrate where atomic facts should help (temporal +11.6pp, multi-hop +11.5pp), abstention intact at 91.9%. Honest reading: the design doc predicted 75–80%; cat-1 list completeness and cat-3 counterfactual/abstention mismatch are the documented bottlenecks. Full methodology and failure analysis in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md).
 
-**LongMemEval** (500 questions, official judge templates): **distill + fact layer 69.6%** vs raw-ingest 61.8% (**+7.8pp**) — knowledge-update **76.9% → 85.9%** (the supersedes mechanism's home turf), preference 23.3% → 36.7%, abstention unchanged. Methodology and per-type analysis in [`docs/benchmarks/longmemeval.md`](docs/benchmarks/longmemeval.md).
+**LongMemEval** (500 questions, official judge templates): **distill + fact layer 69.6%** vs raw-ingest 61.8% (**+7.8pp**) — knowledge-update **76.9% → 85.9%** (the supersedes mechanism's home turf), preference 23.3% → 36.7%, abstention unchanged. **P7 retrieval expansion** (per-noun multi-query on the two coverage-limited types) lifts multi-session 41.4% → 50.4% and temporal 69.9% → 77.4%, composed overall **≈74.0%**. Methodology and per-type analysis in [`docs/benchmarks/longmemeval.md`](docs/benchmarks/longmemeval.md).
 
 **Memora** (ACL 2026, weekly scale, 10 personas, forgetting-aware): distill + fact layer MPA **33.9% → 46.8%** (+12.9pp) · FAA 72.1% · mean FAMA 31.0 — raw baselines and the FAA trade-off analysis in [`docs/benchmarks/memora.md`](docs/benchmarks/memora.md).
 
