@@ -99,6 +99,44 @@ const JUDGE_SYSTEM_PROMPT: &str = r#"You are an impartial judge evaluating wheth
 Respond with ONLY a JSON object (no markdown, no extra text):
 {"verdict": "correct" or "incorrect", "reason": "<one sentence>"}"#;
 
+// E3: mem0-compatible judge — much more lenient than strict.
+// Used to quantify the "judge caliber tax": how much of mem0's 91.6% is
+// judge looseness vs genuine recall quality. Report as "J-score (mem0)".
+const JUDGE_SYSTEM_PROMPT_MEM0: &str = r#"You are evaluating conversational AI memory recall. Label the predicted answer as CORRECT or WRONG.
+
+Rules:
+1. PARTIAL CREDIT: If the predicted answer includes AT LEAST ONE correct item from the gold answer's list, mark CORRECT. Only mark WRONG if NONE of the gold items appear.
+2. PARAPHRASES COUNT: Same concept in different words is CORRECT. Emotions in the same positive/negative family count as paraphrases.
+3. EXTRA DETAIL IS FINE: A longer answer that includes the gold answer's key facts plus more is CORRECT. Never penalize detail.
+4. DATE TOLERANCE: Dates within 14 days are CORRECT. Durations within 50% are CORRECT. Converting relative dates to the correct absolute date is CORRECT.
+5. SEMANTIC OVERLAP: Judge whether the answer addresses the same topic and captures the core idea. Different wording or specificity should not cause WRONG.
+6. SAME REFERENT: If the answer references the same core entity/concept as the gold answer, mark CORRECT even with different descriptions.
+
+ONLY mark WRONG if: the answer contains ZERO correct items from the gold answer, or addresses a completely different topic.
+
+Respond with ONLY a JSON object: {"verdict": "correct" or "incorrect", "reason": "<one sentence>"}"#;
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum JudgeStyle {
+    Strict,
+    Mem0,
+}
+
+impl JudgeStyle {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            JudgeStyle::Strict => "strict",
+            JudgeStyle::Mem0 => "mem0",
+        }
+    }
+    pub(crate) fn system_prompt(&self) -> &'static str {
+        match self {
+            JudgeStyle::Strict => JUDGE_SYSTEM_PROMPT,
+            JudgeStyle::Mem0 => JUDGE_SYSTEM_PROMPT_MEM0,
+        }
+    }
+}
+
 fn usage() {
     eprintln!("Usage: causal-memory-locomo run --data <locomo10.json> [options]");
     eprintln!("       causal-memory-locomo compact --data <locomo10.json> [options]");
@@ -117,6 +155,8 @@ fn usage() {
     eprintln!("                      episodes on top; separate *_distill.db)");
     eprintln!("  --ingest-only       ingest (+ distill) and exit; skip QA");
     eprintln!("  --prompt-version VER  v1 (legacy) | v2 (7-step reasoning, default)");
+    eprintln!("  --judge-style STYLE  strict (default) | mem0 (lenient: partial credit, ±14d dates)");
+    eprintln!("  rejudge --input results/<run>.jsonl --judge-style mem0  (re-judge without re-answering)");
     eprintln!();
     eprintln!("compact options: --data PATH (required) [--conv N] [--compact K] (default 5)");
     eprintln!("  [--limit Q] [--concurrency N] [--out DIR] (default benches/locomo/results)");
@@ -760,6 +800,9 @@ struct Args {
     /// E1: answer prompt version. v1 = legacy one-paragraph; v2 = 7-step
     /// reasoning (mem0-aligned). Default v2.
     prompt_version: PromptVersion,
+    /// E3: judge style. strict = exact match; mem0 = lenient (partial credit,
+    /// date tolerance ±14d). Default strict.
+    judge_style: JudgeStyle,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -796,6 +839,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
     let mut ingest = IngestMode::Raw;
     let mut ingest_only = false;
     let mut prompt_version = PromptVersion::V2;
+    let mut judge_style = JudgeStyle::Strict;
 
     let mut i = 1;
     let take = |i: &mut usize, flag: &str| -> Result<String> {
@@ -835,6 +879,13 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
                     other => anyhow::bail!("bad --prompt-version {other:?}; expected v1|v2"),
                 }
             }
+            "--judge-style" => {
+                judge_style = match take(&mut i, "--judge-style")?.as_str() {
+                    "strict" => JudgeStyle::Strict,
+                    "mem0" => JudgeStyle::Mem0,
+                    other => anyhow::bail!("bad --judge-style {other:?}; expected strict|mem0"),
+                }
+            }
             other => anyhow::bail!("unknown argument {other:?}"),
         }
         i += 1;
@@ -855,10 +906,11 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
         ingest,
         ingest_only,
         prompt_version,
+        judge_style,
     }))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct ResultRow {
     conv: usize,
     category: u32,
@@ -896,6 +948,8 @@ struct Summary {
     ingest: String,
     /// E1: answer prompt version ("v1" | "v2").
     prompt_version: String,
+    /// E3: judge style ("strict" | "mem0").
+    judge_style: String,
     /// Aggregated distillation-pass statistics (distill mode only).
     #[serde(skip_serializing_if = "Option::is_none")]
     distill_ingest: Option<DistillStats>,
@@ -968,6 +1022,7 @@ async fn answer_question(
     topk: usize,
     with_facts: bool,
     prompt_version: PromptVersion,
+    judge_style: JudgeStyle,
 ) -> ResultRow {
     let mut retrieved = retrieve(store, &qa.question, topk).unwrap_or_default();
     let retrieved_ids = retrieved_chunk_ids(&retrieved);
@@ -1082,7 +1137,7 @@ async fn answer_question(
         )
     };
     let (verdict, reason) =
-        match chat(cfg, JUDGE_SYSTEM_PROMPT, &judge_user, JUDGE_MAX_TOKENS).await {
+        match chat(cfg, judge_style.system_prompt(), &judge_user, JUDGE_MAX_TOKENS).await {
             Ok(raw) => parse_judge_output(&raw)
                 .unwrap_or((Verdict::Error, format!("unparseable judge output: {raw}"))),
             Err(e) => (Verdict::Error, format!("judge LLM failed: {e}")),
@@ -1104,6 +1159,7 @@ async fn answer_question(
 
 /// Answer + judge a batch of questions against one store, in parallel.
 /// Shared by `run` and the compact experiment's QA phase.
+#[allow(clippy::too_many_arguments, reason = "benchmark harness; params are independent")]
 pub(crate) async fn answer_all(
     cfg: &LlmConfig,
     store: &CausalStore,
@@ -1113,6 +1169,7 @@ pub(crate) async fn answer_all(
     concurrency: usize,
     with_facts: bool,
     prompt_version: PromptVersion,
+    judge_style: JudgeStyle,
 ) -> Vec<ResultRow> {
     let done = Arc::new(AtomicUsize::new(0));
     futures::stream::iter(qas.into_iter().map(|qa| {
@@ -1120,7 +1177,7 @@ pub(crate) async fn answer_all(
         let store = store.clone();
         let done = done.clone();
         async move {
-            let row = answer_question(&cfg, &store, conv_idx, &qa, topk, with_facts, prompt_version).await;
+            let row = answer_question(&cfg, &store, conv_idx, &qa, topk, with_facts, prompt_version, judge_style).await;
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d.is_multiple_of(50) {
                 eprintln!("conv {conv_idx}: {d} questions done");
@@ -1231,6 +1288,7 @@ async fn run(args: Args) -> Result<()> {
             args.concurrency,
             with_facts,
             args.prompt_version,
+            args.judge_style,
         )
         .await;
 
@@ -1276,6 +1334,7 @@ async fn run(args: Args) -> Result<()> {
         topk: args.topk,
         ingest: args.ingest.as_str().to_string(),
         prompt_version: args.prompt_version.as_str().to_string(),
+        judge_style: args.judge_style.as_str().to_string(),
         distill_ingest: (args.ingest == IngestMode::Distill).then_some(distill_totals),
         data: args.data.display().to_string(),
         conversations: ran_convs,
@@ -1313,12 +1372,148 @@ async fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
+/// E3: re-judge existing results with a different judge style (no re-answering).
+/// Reads a JSONL results file, re-runs only the judge LLM call per row with
+/// the specified style, writes a new JSONL + summary. Cost: ~1 judge call/q.
+async fn rejudge(argv: &[String]) -> Result<()> {
+    let mut input: Option<PathBuf> = None;
+    let mut judge_style = JudgeStyle::Mem0;
+    let mut i = 0;
+    let take = |i: &mut usize, flag: &str| -> Result<String> {
+        *i += 1;
+        argv.get(*i)
+            .cloned()
+            .ok_or_else(|| anyhow!("missing value for {flag}"))
+    };
+    while i < argv.len() {
+        match argv[i].as_str() {
+            "--input" => input = Some(PathBuf::from(take(&mut i, "--input")?)),
+            "--judge-style" => {
+                judge_style = match take(&mut i, "--judge-style")?.as_str() {
+                    "strict" => JudgeStyle::Strict,
+                    "mem0" => JudgeStyle::Mem0,
+                    other => anyhow::bail!("bad --judge-style {other:?}"),
+                }
+            }
+            "--help" | "-h" => {
+                eprintln!("Usage: causal-memory-locomo rejudge --input <run>.jsonl [--judge-style strict|mem0]");
+                return Ok(());
+            }
+            other => anyhow::bail!("unknown argument {other:?}"),
+        }
+        i += 1;
+    }
+    let input_path = input.ok_or_else(|| anyhow!("--input is required (path to a .jsonl results file)"))?;
+
+    // Read existing rows.
+    let raw = std::fs::read_to_string(&input_path)
+        .with_context(|| format!("reading {}", input_path.display()))?;
+    let rows: Vec<ResultRow> = raw
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).with_context(|| "parsing row"))
+        .collect::<Result<Vec<_>>>()?;
+
+    eprintln!("re-judging {} rows with {} style...", rows.len(), judge_style.as_str());
+    let cfg = LlmConfig::from_env()?;
+
+    let done = Arc::new(AtomicUsize::new(0));
+    let total = rows.len();
+    let rejudged: Vec<ResultRow> = futures::stream::iter(rows.into_iter())
+        .map(|mut row| {
+            let cfg = cfg.clone();
+            let done = done.clone();
+            async move {
+                // Skip error rows (no predicted answer to judge).
+                if row.verdict == Verdict::Error.as_str() || row.predicted.is_empty() {
+                    let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if d.is_multiple_of(200) { eprintln!("{d}/{total}"); }
+                    return row;
+                }
+                // Rebuild the judge prompt the same way answer_question does.
+                let gold = row.gold.as_deref().unwrap_or("");
+                let judge_user = if row.category == 5 {
+                    format!(
+                        "Question: {}\nThis is an adversarial question: the information it asks about was NOT mentioned in the conversation. The correct behavior is to state that the information is not mentioned.\n\nPredicted Answer: {}\n\nDid the model correctly refuse to answer? Answer yes or no only.",
+                        row.question, row.predicted
+                    )
+                } else {
+                    format!(
+                        "Question: {}\nCorrect Answer: {gold}\n\nPredicted Answer: {}\n\nIs the predicted answer correct? Answer yes or no only.",
+                        row.question, row.predicted
+                    )
+                };
+                match chat(&cfg, judge_style.system_prompt(), &judge_user, JUDGE_MAX_TOKENS).await {
+                    Ok(raw_judge) => {
+                        let (verdict, reason) = parse_judge_output(&raw_judge)
+                            .unwrap_or((Verdict::Incorrect, raw_judge.clone()));
+                        row.verdict = verdict.as_str().into();
+                        row.judge_reason = reason;
+                    }
+                    Err(e) => {
+                        row.judge_reason = format!("re-judge LLM failed: {e}");
+                    }
+                }
+                let d = done.fetch_add(1, Ordering::Relaxed) + 1;
+                if d.is_multiple_of(200) { eprintln!("{d}/{total}"); }
+                row
+            }
+        })
+        .buffered(8)
+        .collect()
+        .await;
+
+    // Write re-judged JSONL.
+    let out_path = input_path.with_extension(format!(
+        "{}_rejudged_{}.jsonl",
+        input_path.extension().unwrap_or_default().to_string_lossy(),
+        judge_style.as_str()
+    ));
+    use std::io::Write;
+    let mut file = std::io::BufWriter::new(std::fs::File::create(&out_path)?);
+    for row in &rejudged {
+        serde_json::to_writer(&mut file, row)?;
+        writeln!(file)?;
+    }
+
+    // Summary.
+    let mut per_cat: BTreeMap<u32, Acc> = BTreeMap::new();
+    let mut overall = Acc::new();
+    for row in &rejudged {
+        let cat = row.category;
+        let acc = per_cat.entry(cat).or_insert_with(Acc::new);
+        acc.total += 1;
+        overall.total += 1;
+        if row.verdict == "correct" {
+            acc.correct += 1;
+            overall.correct += 1;
+        } else if row.verdict == "incorrect" {
+            acc.incorrect += 1;
+            overall.incorrect += 1;
+        } else {
+            acc.error += 1;
+            overall.error += 1;
+        }
+    }
+    eprintln!("\n=== re-judge ({}) results ===", judge_style.as_str());
+    eprintln!("overall: {:.1}% ({}/{})", overall.correct as f64 / overall.total as f64 * 100.0, overall.correct, overall.total);
+    for (cat, acc) in &per_cat {
+        eprintln!("  cat{cat}: {:.1}% ({}/{})", acc.correct as f64 / acc.total as f64 * 100.0, acc.correct, acc.total);
+    }
+    eprintln!("wrote {}", out_path.display());
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(String::as_str) == Some("compact") {
         let args = compact::parse_args(&argv)?;
         let rt = tokio::runtime::Runtime::new()?;
         return rt.block_on(compact::run(args));
+    }
+    if argv.first().map(String::as_str) == Some("rejudge") {
+        let rt = tokio::runtime::Runtime::new()?;
+        return rt.block_on(rejudge(&argv[1..]));
     }
     match parse_args(&argv)? {
         None => {

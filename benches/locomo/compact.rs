@@ -532,6 +532,7 @@ pub(crate) async fn run(args: CompactArgs) -> Result<()> {
             args.concurrency,
             false, // compact experiment is causal/text-only; no fact layer
             PromptVersion::V1, // compact experiment uses legacy prompt
+            crate::JudgeStyle::Strict,
         )
         .await;
         write_rows(&args.out_dir, &run_id, conv_idx, "A", &rows_a)?;
@@ -557,6 +558,7 @@ pub(crate) async fn run(args: CompactArgs) -> Result<()> {
             args.concurrency,
             false, // compact experiment is causal/text-only; no fact layer
             PromptVersion::V1, // compact experiment uses legacy prompt
+            crate::JudgeStyle::Strict,
         )
         .await;
         write_rows(&args.out_dir, &run_id, conv_idx, "B", &rows_b)?;

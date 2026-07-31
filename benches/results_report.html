@@ -1,0 +1,1414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>causal-memory Benchmark Report</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; max-width: 960px; color: #1a1a1a; }
+  h1 { border-bottom: 2px solid #333; padding-bottom: .5rem; }
+  h2 { margin-top: 2rem; color: #555; }
+  .run-section { margin-bottom: 2rem; padding: 1rem; background: #f8f9fa; border-radius: 8px; }
+  .overall { font-size: 1.2rem; }
+  .meta { color: #666; font-size: 0.85rem; }
+  .bar-row { display: flex; align-items: center; margin: 4px 0; }
+  .bar-label { width: 80px; font-size: 0.85rem; color: #555; }
+  .bar-track { flex: 1; position: relative; height: 24px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+  .bar-text { position: absolute; right: 8px; top: 3px; font-size: 0.75rem; color: #333; font-weight: 600; }
+  .inspector { margin-top: 2rem; }
+  .q-row { margin: 2px 0; padding: 4px 8px; border-radius: 4px; cursor: pointer; }
+  .q-row.correct { background: #f0fdf4; }
+  .q-row.wrong { background: #fef2f2; }
+  .q-row summary { font-size: 0.85rem; list-style: none; }
+  .q-row summary::-webkit-details-marker { display: none; }
+  .q-detail { padding: 8px 16px; font-size: 0.8rem; color: #444; }
+  .q-detail p { margin: 4px 0; }
+  .v { display: inline-block; width: 1.5em; }
+  .cat { color: #888; font-size: 0.8rem; }
+  .filter-bar { margin-bottom: 1rem; }
+  .filter-bar label { margin-right: 1rem; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+<h1>causal-memory Benchmark Report</h1>
+<p>Generated "auto" · git: e90bc70</p>
+
+<h2>Per-Category Accuracy</h2>
+
+    <div class="run-section">
+      <h3>LoCoMo</h3>
+      <p class="overall">Overall: <strong>74.2%</strong> (1474/1986)</p>
+      <p class="meta">prompt: v2 · judge: strict · ingest: distill</p>
+      
+        <div class="bar-row">
+          <span class="bar-label">1</span>
+          <div class="bar-track">
+            <div class="bar-fill" style="width:35.8%; background:#ef4444"></div>
+            <span class="bar-text">35.8% (101/282)</span>
+          </div>
+        </div>
+        <div class="bar-row">
+          <span class="bar-label">2</span>
+          <div class="bar-track">
+            <div class="bar-fill" style="width:72.0%; background:#eab308"></div>
+            <span class="bar-text">72.0% (231/321)</span>
+          </div>
+        </div>
+        <div class="bar-row">
+          <span class="bar-label">3</span>
+          <div class="bar-track">
+            <div class="bar-fill" style="width:47.9%; background:#ef4444"></div>
+            <span class="bar-text">47.9% (46/96)</span>
+          </div>
+        </div>
+        <div class="bar-row">
+          <span class="bar-label">4</span>
+          <div class="bar-track">
+            <div class="bar-fill" style="width:83.5%; background:#22c55e"></div>
+            <span class="bar-text">83.5% (702/841)</span>
+          </div>
+        </div>
+        <div class="bar-row">
+          <span class="bar-label">5</span>
+          <div class="bar-track">
+            <div class="bar-fill" style="width:88.3%; background:#22c55e"></div>
+            <span class="bar-text">88.3% (394/446)</span>
+          </div>
+        </div>
+    </div>
+    <div class="run-section">
+      <h3>LongMemEval</h3>
+      <p class="overall">Overall: <strong>57.9%</strong> (77/133)</p>
+      <p class="meta">prompt: v1 · judge: strict · ingest: distill</p>
+      
+        <div class="bar-row">
+          <span class="bar-label">qt:multi-session</span>
+          <div class="bar-track">
+            <div class="bar-fill" style="width:57.9%; background:#eab308"></div>
+            <span class="bar-text">57.9% (77/133)</span>
+          </div>
+        </div>
+    </div>
+
+<h2>Per-Question Inspector</h2>
+<p>(no row data available)</p>
+    <div class="inspector">
+      <h3>LongMemEval — Per-Question Inspector (133 questions)</h3>
+      <div class="filter-bar">
+        <label><input type="checkbox" id="show-correct" checked> Correct</label>
+        <label><input type="checkbox" id="show-wrong" checked> Wrong</label>
+      </div>
+      
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many weeks did it take me to watch all the Marvel Cinematic Universe movies </summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many weeks did it take me to watch all the Marvel Cinematic Universe movies and the main Star Wars films?</p>
+            <p><strong>Gold:</strong> 3.5 weeks</p>
+            <p><strong>Predicted:</strong> The user watched all 22 MCU movies in two weeks and the main Star Wars films in a week and a half.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many days did I spend on camping trips in the United States this year?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many days did I spend on camping trips in the United States this year?</p>
+            <p><strong>Gold:</strong> 8 days.</p>
+            <p><strong>Predicted:</strong> Based on the memories, you went on a 3-day solo camping trip to Big Sur in early April and a 5-day camping trip to Yellowstone last month (March 2023). That totals 8 days of camping trips in the United States this year.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many items of clothing do I need to pick up or return from a store?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many items of clothing do I need to pick up or return from a store?</p>
+            <p><strong>Gold:</strong> 3</p>
+            <p><strong>Predicted:</strong> Based on the memories, you need to pick up one item: the new pair of boots from Zara (exchanged on 2/5). No returns are mentioned as pending.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many projects have I led or am currently leading?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many projects have I led or am currently leading?</p>
+            <p><strong>Gold:</strong> 2</p>
+            <p><strong>Predicted:</strong> Based on the memories, you led the data analysis team for a Marketing Research class project, and you are currently leading a team of five engineers as a senior software engineer. That&#x27;s 2 projects.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many plants did I acquire in the last month?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many plants did I acquire in the last month?</p>
+            <p><strong>Gold:</strong> 3</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user received a snake plant from their sister around April 2023. No other plant acquisitions are mentioned.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many model kits have I worked on or bought?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many model kits have I worked on or bought?</p>
+            <p><strong>Gold:</strong> I have worked on or bought five model kits. The scales of the models are: Revell</p>
+            <p><strong>Predicted:</strong> Based on the memories, you worked on or bought these model kits:
+1. Revell F-15 Eagle kit (bought late April, finished)
+2. Tamiya 1/48 scale Spitfire Mk.V (completed)
+3. 1/72 scale B-29 bomber (bought at a model show)
+4. 1/24 scale &#x27;69 Camaro (bought at a model show)
+
+That&#x27;s 4 model kits.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> What time did I go to bed on the day before I had a doctor&#x27;s appointment?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What time did I go to bed on the day before I had a doctor&#x27;s appointment?</p>
+            <p><strong>Gold:</strong> 2 AM</p>
+            <p><strong>Predicted:</strong> The information was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many movie festivals that I attended?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many movie festivals that I attended?</p>
+            <p><strong>Gold:</strong> I attended four movie festivals.</p>
+            <p><strong>Predicted:</strong> Based on the memories, you attended 2 film festivals: AFI Fest and the Portland Film Festival.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many different doctors did I visit?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many different doctors did I visit?</p>
+            <p><strong>Gold:</strong> I visited three different doctors: a primary care physician, an ENT specialist, </p>
+            <p><strong>Predicted:</strong> Based on the memories, there is no information about you visiting any doctors. The information was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many different types of citrus fruits have I used in my cocktail recipes?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many different types of citrus fruits have I used in my cocktail recipes?</p>
+            <p><strong>Gold:</strong> 3</p>
+            <p><strong>Predicted:</strong> Based on the memories, the citrus fruits used in cocktail recipes are: lime, lemon, orange, and grapefruit. That&#x27;s 4 types.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How much total money have I spent on bike-related expenses since the start of th</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much total money have I spent on bike-related expenses since the start of the year?</p>
+            <p><strong>Gold:</strong> $185</p>
+            <p><strong>Predicted:</strong> Based on the memories, I can find the following bike-related expenses:
+1. Bell Zephyr helmet: $120
+2. Bike lights: $40
+
+Total: $160
+
+The user has spent $160 on bike-related expenses since the start of the year.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many hours in total did I spend driving to my three road trip destinations c</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many hours in total did I spend driving to my three road trip destinations combined?</p>
+            <p><strong>Gold:</strong> 15 hours for getting to the three destinations (or 30 hours for the round trip)</p>
+            <p><strong>Predicted:</strong> Based on the memories, I found three road trip drives:
+1. Outer Banks, NC: 4 hours
+2. Washington D.C.: 6 hours
+3. Tennessee mountains: 5 hours
+
+Total: 4 + 6 + 5 = 15 hours.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many weddings have I attended in this year?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many weddings have I attended in this year?</p>
+            <p><strong>Gold:</strong> I attended three weddings. The couples were Rachel and Mike, Emily and Sarah, an</p>
+            <p><strong>Predicted:</strong> Based on the memories, you attended your cousin Rachel&#x27;s wedding at a vineyard in August, your cousin Emily&#x27;s wedding in the city, and your sister&#x27;s wedding. That&#x27;s 3 weddings mentioned.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many hours have I spent playing games in total?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many hours have I spent playing games in total?</p>
+            <p><strong>Gold:</strong> 140 hours</p>
+            <p><strong>Predicted:</strong> Based on the memories, I can count the following completed game playtimes:
+1. Assassin&#x27;s Creed Odyssey: 70 hours
+2. Celeste: 10 hours
+3. Hyper Light Drifter: 5 hours
+4. The Last of Us Part II (hard): 30 hours
+5. The Last of Us Part II (normal): 25 hours
+
+Total: 140 hours.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many tanks do I currently have, including the one I set up for my friend&#x27;s k</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many tanks do I currently have, including the one I set up for my friend&#x27;s kid?</p>
+            <p><strong>Gold:</strong> 3</p>
+            <p><strong>Predicted:</strong> Based on the memories, you have:
+1. A 1-gallon tank set up for a friend&#x27;s kid
+2. A 20-gallon community tank named &#x27;Amazonia&#x27;
+
+So you currently have 2 tanks.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total amount I spent on luxury items in the past few months?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total amount I spent on luxury items in the past few months?</p>
+            <p><strong>Gold:</strong> $2,500</p>
+            <p><strong>Predicted:</strong> Based on the memories, the luxury purchases mentioned are:
+1. Gucci handbag: $1,200
+2. Luxury evening gown: $800
+3. Leather boots from a high-end Italian designer: $500
+
+Total: $2,500.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many days did I take social media breaks in total?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many days did I take social media breaks in total?</p>
+            <p><strong>Gold:</strong> 17 days</p>
+            <p><strong>Predicted:</strong> The user mentioned taking a week-long break from social media in mid-January, which is 7 days.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many babies were born to friends and family members in the last few months?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many babies were born to friends and family members in the last few months?</p>
+            <p><strong>Gold:</strong> 5</p>
+            <p><strong>Predicted:</strong> Based on the memories, the babies born to friends and family members are:
+1. Jasper (David&#x27;s son)
+2. Max (Rachel&#x27;s son, born March)
+3. Charlotte (Mike and Emma&#x27;s daughter)
+4. Ava (aunt&#x27;s twin, born April)
+5. Lily (aunt&#x27;s twin, born April)
+
+That&#x27;s 5 babies.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many different museums or galleries did I visit in the month of February?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many different museums or galleries did I visit in the month of February?</p>
+            <p><strong>Gold:</strong> 2</p>
+            <p><strong>Predicted:</strong> Based on the memories, you visited the Natural History Museum on 2/8 and the Modern Art Museum in January. No February visits to other museums or galleries are mentioned.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many times did I bake something in the past two weeks?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many times did I bake something in the past two weeks?</p>
+            <p><strong>Gold:</strong> 4</p>
+            <p><strong>Predicted:</strong> Based on the memories, I found no record of you baking anything in the past two weeks. The information was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many pieces of furniture did I buy, assemble, sell, or fix in the past few m</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many pieces of furniture did I buy, assemble, sell, or fix in the past few months?</p>
+            <p><strong>Gold:</strong> 4</p>
+            <p><strong>Predicted:</strong> Based on the memories, I found these furniture-related activities:
+1. Assembled an IKEA bookshelf for the home office (about two months before 2023-05-29)
+2. Fixed the wobbly leg on the kitchen table (last weekend before 2023-05-26)
+3. Bought a new coffee table (wooden with metal legs)
+
+That&#x27;s 3 pieces of furniture bought, assembled, or fixed.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many different cuisines have I learned to cook or tried out in the past few </summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many different cuisines have I learned to cook or tried out in the past few months?</p>
+            <p><strong>Gold:</strong> 4</p>
+            <p><strong>Predicted:</strong> Based on the memories, you learned to cook or tried out these cuisines:
+1. Ethiopian (misir wot, injera)
+2. Indian (chicken tikka masala)
+3. Vegan (vegan lasagna with cashew ricotta)
+4. Korean (bibimbap, kimchi)
+
+That&#x27;s 4 different cuisines.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many properties did I view before making an offer on the townhouse in the Br</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many properties did I view before making an offer on the townhouse in the Brookside neighborhood?</p>
+            <p><strong>Gold:</strong> I viewed four properties before making an offer on the townhouse in the Brooksid</p>
+            <p><strong>Predicted:</strong> Based on the memories, you viewed one property before making an offer: the 3-bedroom townhouse in the Brookside neighborhood, which you saw on February 22nd.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many different types of food delivery services have I used recently?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many different types of food delivery services have I used recently?</p>
+            <p><strong>Gold:</strong> 3</p>
+            <p><strong>Predicted:</strong> Based on the memories, you mentioned using Domino&#x27;s Pizza and Fresh Fusion. That&#x27;s 2 different food delivery services.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many different art-related events did I attend in the past month?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many different art-related events did I attend in the past month?</p>
+            <p><strong>Gold:</strong> 4</p>
+            <p><strong>Predicted:</strong> Based on the memories, you attended two art-related events in the past month: the &quot;Women in Art&quot; exhibition on February 10th and a lecture on &quot;The Evolution of Street Art&quot; on March 3rd.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> Which grocery store did I spend the most money at in the past month?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> Which grocery store did I spend the most money at in the past month?</p>
+            <p><strong>Gold:</strong> Thrive Market</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user spent $120 at Walmart on 2023-05-20, which is the highest single grocery store amount mentioned.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many hours of jogging and yoga did I do last week?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many hours of jogging and yoga did I do last week?</p>
+            <p><strong>Gold:</strong> 0.5 hours</p>
+            <p><strong>Predicted:</strong> Based on the memories, I don&#x27;t have information about your jogging or yoga hours from last week. The conversations mention your yoga practice (three times a week, 2 hours each session) and plans to get back into it, but no specific hours for last week were recorded.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How much more did I spend on accommodations per night in Hawaii compared to Toky</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much more did I spend on accommodations per night in Hawaii compared to Tokyo?</p>
+            <p><strong>Gold:</strong> $270</p>
+            <p><strong>Predicted:</strong> Based on the memories, I don&#x27;t have any information about your accommodations in Hawaii. The only accommodation cost mentioned is the hostel in Tokyo at around $30 per night.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> Which social media platform did I gain the most followers on over the past month</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> Which social media platform did I gain the most followers on over the past month?</p>
+            <p><strong>Gold:</strong> TikTok</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user gained around 200 followers on TikTok over the three weeks prior to 2023-05-29, and their Twitter follower count jumped from 420 to 540 over the past month (a gain of 120). So the platform with the most follower growth was TikTok.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> What is the average age of me, my parents, and my grandparents?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the average age of me, my parents, and my grandparents?</p>
+            <p><strong>Gold:</strong> 59.6</p>
+            <p><strong>Predicted:</strong> Based on the memories, your mom is 55, your dad is 58, your grandma is 75, and your grandpa is 78. Your own age is not mentioned, so the average cannot be calculated.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many fish are there in total in both of my aquariums?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many fish are there in total in both of my aquariums?</p>
+            <p><strong>Gold:</strong> 17</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user has a 20-gallon tank with gouramis and betta fish Bubbles, and previously mentioned 10 neon tetras, 5 golden honey gouramis, and a small pleco catfish. The total number of fish is not explicitly stated across all tanks, so I cannot provide a definitive count.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many days did it take for me to receive the new remote shutter release after</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many days did it take for me to receive the new remote shutter release after I ordered it?</p>
+            <p><strong>Gold:</strong> 5 days. 6 days (including the last day) is also acceptable.</p>
+            <p><strong>Predicted:</strong> The remote shutter release was ordered on February 5th and arrived on February 10th, so it took 5 days.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many health-related devices do I use in a day?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many health-related devices do I use in a day?</p>
+            <p><strong>Gold:</strong> 4</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user uses 3 health-related devices in a day:
+1. Nebulizer machine (twice a day)
+2. Accu-Chek Aviva Nano system (three times a day)
+3. Fitbit Versa 3 (for tracking activity and sleep)</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many doctor&#x27;s appointments did I go to in March?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many doctor&#x27;s appointments did I go to in March?</p>
+            <p><strong>Gold:</strong> 2</p>
+            <p><strong>Predicted:</strong> Based on the memories, you went to at least 2 doctor&#x27;s appointments in March: one with Dr. Smith on March 3rd (bronchitis diagnosis) and one with Dr. Thompson on March 20th (knee follow-up).</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many fitness classes do I attend in a typical week?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many fitness classes do I attend in a typical week?</p>
+            <p><strong>Gold:</strong> 5</p>
+            <p><strong>Predicted:</strong> Based on the memories, you attend 5 fitness classes in a typical week:
+1. Zumba (Tuesdays and Thursdays)
+2. Hip Hop Abs (Saturdays)
+3. Yoga (Sundays)
+4. BodyPump (Mondays)</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many days did it take for my laptop backpack to arrive after I bought it?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many days did it take for my laptop backpack to arrive after I bought it?</p>
+            <p><strong>Gold:</strong> 5 days. 6 days (including the last day) is also acceptable.</p>
+            <p><strong>Predicted:</strong> The backpack was bought on 1/15 and arrived on 1/20, so it took 5 days.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many musical instruments do I currently own?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many musical instruments do I currently own?</p>
+            <p><strong>Gold:</strong> I currently own 4 musical instruments. I&#x27;ve had the Fender Stratocaster electric</p>
+            <p><strong>Predicted:</strong> The number of musical instruments you own was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many projects have I been working on simultaneously, excluding my thesis?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many projects have I been working on simultaneously, excluding my thesis?</p>
+            <p><strong>Gold:</strong> 2</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user has been working on a Data Mining project and a Database Systems project simultaneously, excluding the thesis. That&#x27;s 2 projects.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How much money did I raise in total through all the charity events I participate</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much money did I raise in total through all the charity events I participated in?</p>
+            <p><strong>Gold:</strong> $5,850</p>
+            <p><strong>Predicted:</strong> The user raised $250 through a charity walk and $5,000 through a Bike-a-Thon for Cancer Research, totaling $5,250.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many pieces of jewelry did I acquire in the last two months?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many pieces of jewelry did I acquire in the last two months?</p>
+            <p><strong>Gold:</strong> 3</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user acquired three pieces of jewelry in the last two months: emerald earrings from a flea market (around May 2023), a silver necklace with a pendant (April 15, 2023), and an engagement ring (about a month before May 28, 2023).</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How much money did I raise for charity in total?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much money did I raise for charity in total?</p>
+            <p><strong>Gold:</strong> $3,750</p>
+            <p><strong>Predicted:</strong> Based on the memories, you raised:
+1. $1,000 at a charity bake sale for a local children&#x27;s hospital
+2. $250 at the &quot;Run for Hunger&quot; charity event
+3. $500 at a charity fitness challenge for the American Cancer Society
+4. $2,000 for a local animal shelter
+
+Total: $3,750.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many bikes did I service or plan to service in March?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many bikes did I service or plan to service in March?</p>
+            <p><strong>Gold:</strong> 2</p>
+            <p><strong>Predicted:</strong> Based on the memories, you serviced your road bike at Pedal Power on March 10th (replacing brake pads and cables), and you cleaned/lubricated the chain on March 2nd. That&#x27;s 2 bike maintenance events in March.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many times did I ride rollercoasters across all the events I attended from J</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many times did I ride rollercoasters across all the events I attended from July to October?</p>
+            <p><strong>Gold:</strong> 10 times</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user rode:
+1. Mako, Kraken, and Manta at SeaWorld San Diego in July 2023 (3 rides)
+2. Revenge of the Mummy three times at Universal Studios Hollywood on October 15th (3 rides)
+3. Space Mountain: Ghost Galaxy three times at Disneyland on September 24th (3 rides)
+
+Total: 9 rollercoaster rides.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many kitchen items did I replace or fix?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many kitchen items did I replace or fix?</p>
+            <p><strong>Gold:</strong> I replaced or fixed five items: the kitchen faucet, the kitchen mat, the toaster</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user replaced or fixed the following kitchen items:
+1. Kitchen shelves (fixed)
+2. Kitchen mat (replaced with IKEA one)
+3. Kitchen faucet (replaced with Moen touchless)
+4. Toaster (replaced with toaster oven)
+5. Coffee maker (donated, replaced with espresso machine)
+
+Total: 5 kitchen items.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many days did I spend participating in faith-related activities in December?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many days did I spend participating in faith-related activities in December?</p>
+            <p><strong>Gold:</strong> 3 days.</p>
+            <p><strong>Predicted:</strong> The user participated in faith-related activities on 2 days in December: December 10th (church holiday food drive) and December 17th (Bible study).</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How much total money did I spend on attending workshops in the last four months?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much total money did I spend on attending workshops in the last four months?</p>
+            <p><strong>Gold:</strong> $720</p>
+            <p><strong>Predicted:</strong> Based on the memories, I can identify the following workshop costs:
+1. Mindfulness workshop on December 12: $20
+2. Two-day writing workshop in November 2022: $200
+
+Total: $220
+
+The other workshops (digital marketing, entrepreneurship, photography) did not have their costs mentioned.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many days did I spend attending workshops, lectures, and conferences in Apri</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many days did I spend attending workshops, lectures, and conferences in April?</p>
+            <p><strong>Gold:</strong> 3 days</p>
+            <p><strong>Predicted:</strong> Based on the memories, I found no mention of the user attending any workshops, lectures, or conferences in April. The only related event mentioned was a lecture on sustainable development at the public library on 10 April 2023, but the number of days spent attending such events was not stated.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many days did I spend in total traveling in Hawaii and in New York City?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many days did I spend in total traveling in Hawaii and in New York City?</p>
+            <p><strong>Gold:</strong> 15 days</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user spent 5 days in New York City and 10 days in Hawaii.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many rare items do I have in total?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many rare items do I have in total?</p>
+            <p><strong>Gold:</strong> 99</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user has:
+1. 12 rare figurines
+2. 57 rare records
+3. 25 rare coins
+4. 5 rare books
+
+Total: 12 + 57 + 25 + 5 = 99 rare items.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> What is the total amount of money I earned from selling my products at the marke</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total amount of money I earned from selling my products at the markets?</p>
+            <p><strong>Gold:</strong> $495</p>
+            <p><strong>Predicted:</strong> Based on the memories, you earned $120 from selling 12 bunches of fresh organic herbs at the farmers&#x27; market on May 15th.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many online courses have I completed in total?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many online courses have I completed in total?</p>
+            <p><strong>Gold:</strong> 5</p>
+            <p><strong>Predicted:</strong> Based on the memories, you completed three courses on Coursera (as of 2023-05-23) and two courses on edX (as of 2023-05-30), totaling 5 courses.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many magazine subscriptions do I currently have?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many magazine subscriptions do I currently have?</p>
+            <p><strong>Gold:</strong> 2</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user has one magazine subscription: The New Yorker (subscribed in early February 2023). The Forbes subscription was canceled in early March 2023.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many music albums or EPs have I purchased or downloaded?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many music albums or EPs have I purchased or downloaded?</p>
+            <p><strong>Gold:</strong> 3</p>
+            <p><strong>Predicted:</strong> 1. Billie Eilish&#x27;s &#x27;Happier Than Ever&#x27; album (downloaded on Spotify)
+2. The Whiskey Wanderers&#x27; EP &#x27;Midnight Sky&#x27; (bought at festival)
+
+The user purchased/downloaded 2 music albums/EPs.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many years in total did I spend in formal education from high school to the </summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many years in total did I spend in formal education from high school to the completion of my Bachelor&#x27;s degree?</p>
+            <p><strong>Gold:</strong> 10 years</p>
+            <p><strong>Predicted:</strong> The user attended Arcadia High School from 2010 to 2014 (4 years) and graduated with a Bachelor&#x27;s from UCLA in 2020, which took four years to complete. Total: 8 years.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many graduation ceremonies have I attended in the past three months?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many graduation ceremonies have I attended in the past three months?</p>
+            <p><strong>Gold:</strong> 3</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user attended:
+1. Little cousin Emma&#x27;s preschool graduation ceremony (around 2023-05-21)
+2. Best friend Rachel&#x27;s master&#x27;s degree graduation ceremony (around 2023-07-07)
+3. Colleague Alex&#x27;s graduation from a leadership development program (a few weeks before 2023-07-21)
+
+That&#x27;s 3 graduation ceremonies in the past three months.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many times did I bake egg tarts in the past two weeks?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many times did I bake egg tarts in the past two weeks?</p>
+            <p><strong>Gold:</strong> The information provided is not enough. You did not mention baking egg tarts.</p>
+            <p><strong>Predicted:</strong> The information was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many total pieces of writing have I completed since I started writing again </summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many total pieces of writing have I completed since I started writing again three weeks ago, including short stories, poems, and pieces for the writing challenge?</p>
+            <p><strong>Gold:</strong> 23</p>
+            <p><strong>Predicted:</strong> Based on the memories, you wrote 17 poems in the two weeks leading up to 2023-05-21, and you had written 5 short stories as of 2023-05-28. The writing challenge piece &quot;The Smell of Old Books&quot; was written for last week&#x27;s prompt (around 2023-05-30). The total number of pieces is not explicitly stated, so I cannot provide an exact count.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many different museums or galleries did I visit in December?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many different museums or galleries did I visit in December?</p>
+            <p><strong>Gold:</strong> 0. You did not mention visitng any museum in December</p>
+            <p><strong>Predicted:</strong> The information was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many fish are there in my 30-gallon tank?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many fish are there in my 30-gallon tank?</p>
+            <p><strong>Gold:</strong> The information provided is not enough. You did not mention that you have a 30-g</p>
+            <p><strong>Predicted:</strong> The information was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many days did it take for my iPad case to arrive after I bought it?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many days did it take for my iPad case to arrive after I bought it?</p>
+            <p><strong>Gold:</strong> The information provided is not enough. You did not mention buying an iPad case.</p>
+            <p><strong>Predicted:</strong> The information was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many years in total did I spend in formal education from high school to the </summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many years in total did I spend in formal education from high school to the completion of my Master&#x27;s degree?</p>
+            <p><strong>Gold:</strong> The information provided is not enough. You mentioned 4 years in high school (20</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user attended Arcadia High School from 2010 to 2014 (4 years), earned an Associate&#x27;s degree from PCC in May 2016, and graduated with a Bachelor&#x27;s from UCLA in 2020. There is no mention of completing a Master&#x27;s degree, so the total years cannot be determined.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> What is the total distance of the hikes I did on two consecutive weekends?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total distance of the hikes I did on two consecutive weekends?</p>
+            <p><strong>Gold:</strong> 8 miles</p>
+            <p><strong>Predicted:</strong> The total distance of the hikes is not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many days did I spend in total traveling in Hawaii and in Seattle?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many days did I spend in total traveling in Hawaii and in Seattle?</p>
+            <p><strong>Gold:</strong> The information provided is not enough. You mentioned traveling for 10 days in H</p>
+            <p><strong>Predicted:</strong> Based on the memories, I don&#x27;t have any information about traveling in Seattle. The memories mention a Hawaii trip with family (returned 2023-05-23) but don&#x27;t specify the number of days spent there.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many pages do I have left to read in &#x27;The Nightingale&#x27;?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many pages do I have left to read in &#x27;The Nightingale&#x27;?</p>
+            <p><strong>Gold:</strong> 190</p>
+            <p><strong>Predicted:</strong> 190 pages (440 total minus 250 read).</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What was the approximate increase in Instagram followers I experienced in two we</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What was the approximate increase in Instagram followers I experienced in two weeks?</p>
+            <p><strong>Gold:</strong> 100</p>
+            <p><strong>Predicted:</strong> The user went from 250 followers at the start of the year to around 350 followers after two weeks of regular posting, an increase of about 100 followers.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> For my daily commute, how much more expensive was the taxi ride compared to the </summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> For my daily commute, how much more expensive was the taxi ride compared to the train fare?</p>
+            <p><strong>Gold:</strong> $6</p>
+            <p><strong>Predicted:</strong> The taxi ride cost $12, which is $6 more than the $6 daily train fare.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the difference in price between my luxury boots and the similar pair fou</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the difference in price between my luxury boots and the similar pair found at the budget store?</p>
+            <p><strong>Gold:</strong> $750</p>
+            <p><strong>Predicted:</strong> The luxury boots cost $800, while the similar pair at the budget store was $50, so the difference is $750.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How much cashback did I earn at SaveMart last Thursday?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much cashback did I earn at SaveMart last Thursday?</p>
+            <p><strong>Gold:</strong> $0.75</p>
+            <p><strong>Predicted:</strong> Based on the memories, you spent $75 at SaveMart on 2023-05-18 (last Thursday). With 1% cashback, you earned $0.75.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total cost of the new food bowl, measuring cup, dental chews, and fl</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total cost of the new food bowl, measuring cup, dental chews, and flea and tick collar I got for Max?</p>
+            <p><strong>Gold:</strong> $50</p>
+            <p><strong>Predicted:</strong> Based on the memories, the costs are:
+1. Stainless steel food bowl: $15
+2. Measuring cup: $5
+3. Dental chews: $10
+4. Flea and tick collar: $20
+
+Total: $15 + $5 + $10 + $20 = $50.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many antique items did I inherit or acquire from my family members?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many antique items did I inherit or acquire from my family members?</p>
+            <p><strong>Gold:</strong> 5</p>
+            <p><strong>Predicted:</strong> The user inherited or acquired 5 antique items from family members: 1. vintage diamond necklace (grandmother), 2. antique music box (great-aunt), 3. depression-era glassware (mom), 4. antique tea set (cousin Rachel), 5. vintage typewriter (dad).</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> When did I submit my research paper on sentiment analysis?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> When did I submit my research paper on sentiment analysis?</p>
+            <p><strong>Gold:</strong> February 1st</p>
+            <p><strong>Predicted:</strong> Based on the memories, your research paper on sentiment analysis was submitted to ACL before 2023-05-22.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> Did I receive a higher percentage discount on my first order from HelloFresh, co</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> Did I receive a higher percentage discount on my first order from HelloFresh, compared to my first UberEats order?</p>
+            <p><strong>Gold:</strong> Yes.</p>
+            <p><strong>Predicted:</strong> Yes — 40% off HelloFresh vs. $5 off your first UberEats order.</p>
+            <p><strong>Judge:</strong> Yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many plants did I initially plant for tomatoes and cucumbers?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many plants did I initially plant for tomatoes and cucumbers?</p>
+            <p><strong>Gold:</strong> 8</p>
+            <p><strong>Predicted:</strong> The user initially planted 5 tomato plants and 3 cucumber plants.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> What percentage discount did I get on the book from my favorite author?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What percentage discount did I get on the book from my favorite author?</p>
+            <p><strong>Gold:</strong> 20%</p>
+            <p><strong>Predicted:</strong> The book was originally priced at $30, and the user bought it at a sale, but the exact discount percentage was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total number of episodes I&#x27;ve listened to from &#x27;How I Built This&#x27; an</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total number of episodes I&#x27;ve listened to from &#x27;How I Built This&#x27; and &#x27;My Favorite Murder&#x27;?</p>
+            <p><strong>Gold:</strong> 27</p>
+            <p><strong>Predicted:</strong> The user has listened to 15 episodes of &quot;How I Built This&quot; and 12 episodes of &quot;My Favorite Murder,&quot; totaling 27 episodes.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many hours do I work in a typical week during peak campaign seasons?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many hours do I work in a typical week during peak campaign seasons?</p>
+            <p><strong>Gold:</strong> 50</p>
+            <p><strong>Predicted:</strong> Based on the memories, during peak campaign seasons you work up to 50 hours per week.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What percentage of packed shoes did I wear on my last trip?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What percentage of packed shoes did I wear on my last trip?</p>
+            <p><strong>Gold:</strong> 40%</p>
+            <p><strong>Predicted:</strong> The user wore 2 out of 5 pairs of shoes on their last trip, which is 40%.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many Marvel movies did I re-watch?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many Marvel movies did I re-watch?</p>
+            <p><strong>Gold:</strong> 2</p>
+            <p><strong>Predicted:</strong> The user re-watched Spider-Man: No Way Home, which is one Marvel movie.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How much did I save on the designer handbag at TK Maxx?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much did I save on the designer handbag at TK Maxx?</p>
+            <p><strong>Gold:</strong> $300</p>
+            <p><strong>Predicted:</strong> The user saved $300 on the handbag (originally $500, paid $200).</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What was the total number of people reached by my Facebook ad campaign and Insta</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What was the total number of people reached by my Facebook ad campaign and Instagram influencer collaboration?</p>
+            <p><strong>Gold:</strong> 12,000</p>
+            <p><strong>Predicted:</strong> Based on the memories, your Facebook ad campaign reached around 2,000 people, and your Instagram influencer collaboration reached 10,000 followers.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total number of goals and assists I have in the recreational indoor </summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total number of goals and assists I have in the recreational indoor soccer league?</p>
+            <p><strong>Gold:</strong> 5</p>
+            <p><strong>Predicted:</strong> The user has 3 goals and 2 assists in the recreational indoor soccer league.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How much did I spend on car wash and parking ticket?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much did I spend on car wash and parking ticket?</p>
+            <p><strong>Gold:</strong> $65</p>
+            <p><strong>Predicted:</strong> Based on the memories, the car wash on February 3rd cost $15, and the parking ticket on January 5th cost $50.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many sports have I played competitively in the past?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many sports have I played competitively in the past?</p>
+            <p><strong>Gold:</strong> two</p>
+            <p><strong>Predicted:</strong> The user played tennis competitively in high school and swam competitively in college — 2 sports.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How old was I when Alex was born?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How old was I when Alex was born?</p>
+            <p><strong>Gold:</strong> 11</p>
+            <p><strong>Predicted:</strong> The information was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What are the two hobbies that led me to join online communities?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What are the two hobbies that led me to join online communities?</p>
+            <p><strong>Gold:</strong> photography and cooking</p>
+            <p><strong>Predicted:</strong> The two hobbies that led you to join online communities are cooking and photography (editing photos in Lightroom).</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many points do I need to earn to redeem a free skincare product at Sephora?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many points do I need to earn to redeem a free skincare product at Sephora?</p>
+            <p><strong>Gold:</strong> 100</p>
+            <p><strong>Predicted:</strong> 300 points.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How much older am I than the average age of employees in my department?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much older am I than the average age of employees in my department?</p>
+            <p><strong>Gold:</strong> 2.5 years</p>
+            <p><strong>Predicted:</strong> The information was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the minimum amount I could get if I sold the vintage diamond necklace an</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the minimum amount I could get if I sold the vintage diamond necklace and the antique vanity?</p>
+            <p><strong>Gold:</strong> $5,150</p>
+            <p><strong>Predicted:</strong> Based on the memories, the vintage diamond necklace is worth $5,000, and the antique vanity could sell for at least $150. So the minimum total would be $5,150.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What percentage of the countryside property&#x27;s price is the cost of the renovatio</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What percentage of the countryside property&#x27;s price is the cost of the renovations I plan to do on my current house?</p>
+            <p><strong>Gold:</strong> 10%</p>
+            <p><strong>Predicted:</strong> The renovations ($20,000) are 10% of the countryside property&#x27;s price ($200,000).</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total cost of Lola&#x27;s vet visit and flea medication?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total cost of Lola&#x27;s vet visit and flea medication?</p>
+            <p><strong>Gold:</strong> $75</p>
+            <p><strong>Predicted:</strong> The vet consultation was $50 and the flea medication was $25, so the total is $75.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total number of days I spent in Japan and Chicago?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total number of days I spent in Japan and Chicago?</p>
+            <p><strong>Gold:</strong> 11 days (or 12 days, if April 15th to 22nd is considered as 8 days)</p>
+            <p><strong>Predicted:</strong> The user spent 8 days in Japan (April 15–22, 2023) and 4 days in Chicago (March 2023), totaling 12 days.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total number of lunch meals I got from the chicken fajitas and lenti</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total number of lunch meals I got from the chicken fajitas and lentil soup?</p>
+            <p><strong>Gold:</strong> 8 meals</p>
+            <p><strong>Predicted:</strong> The user got 3 meals from the chicken fajitas and 5 lunches from the lentil soup, totaling 8 meals.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How much more did I have to pay for the trip after the initial quote?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much more did I have to pay for the trip after the initial quote?</p>
+            <p><strong>Gold:</strong> $300</p>
+            <p><strong>Predicted:</strong> Based on the memories, the initial quote from Sakura Travel Agency was $2,500, and the corrected price was $2,800, so the user had to pay $300 more.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> At which university did I present a poster on my thesis research?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> At which university did I present a poster on my thesis research?</p>
+            <p><strong>Gold:</strong> Harvard University</p>
+            <p><strong>Predicted:</strong> The user presented their poster at Harvard University.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How long have I been working in my current role?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How long have I been working in my current role?</p>
+            <p><strong>Gold:</strong> 1 year and 5 months</p>
+            <p><strong>Predicted:</strong> Based on the memories, you have been a Senior Marketing Specialist for 3 years and 9 months (as of the conversation on 2023/05/29).</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How much more was the pre-approval amount than the final sale price of the house</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much more was the pre-approval amount than the final sale price of the house?</p>
+            <p><strong>Gold:</strong> $25,000</p>
+            <p><strong>Predicted:</strong> The pre-approval amount ($350,000) was $25,000 more than the final sale price ($325,000).</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How much did I spend on each coffee mug for my coworkers?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much did I spend on each coffee mug for my coworkers?</p>
+            <p><strong>Gold:</strong> $12</p>
+            <p><strong>Predicted:</strong> The user spent $60 total on coffee mugs for coworkers, but the per-mug cost was not mentioned.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total distance I covered in my four road trips?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total distance I covered in my four road trips?</p>
+            <p><strong>Gold:</strong> 3,000 miles</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user covered 1,800 miles on three road trips (Durango, Breckenridge, Santa Fe) and 1,200 miles on a fourth trip to Yellowstone, totaling 3,000 miles.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total cost of the car cover and detailing spray I purchased?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total cost of the car cover and detailing spray I purchased?</p>
+            <p><strong>Gold:</strong> $140</p>
+            <p><strong>Predicted:</strong> The car cover cost $120 and the detailing spray cost $20, so the total is $140.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total number of online courses I&#x27;ve completed?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total number of online courses I&#x27;ve completed?</p>
+            <p><strong>Gold:</strong> 20</p>
+            <p><strong>Predicted:</strong> Based on the memories, you&#x27;ve completed 8 edX courses in data analysis (as of 2023-05-21) and 12 courses on Coursera (mentioned on 2023-05-27). That totals 20 online courses.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total time it takes I to get ready and commute to work?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total time it takes I to get ready and commute to work?</p>
+            <p><strong>Gold:</strong> an hour and a half</p>
+            <p><strong>Predicted:</strong> The user&#x27;s morning routine takes about an hour to get ready, plus a 30-minute commute, totaling about 1.5 hours.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How much more miles per gallon was my car getting a few months ago compared to n</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much more miles per gallon was my car getting a few months ago compared to now?</p>
+            <p><strong>Gold:</strong> 2</p>
+            <p><strong>Predicted:</strong> The car was getting 30 mpg a few months ago and 28 mpg now, so 2 mpg more.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How much did I save on the Jimmy Choo heels?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much did I save on the Jimmy Choo heels?</p>
+            <p><strong>Gold:</strong> $300</p>
+            <p><strong>Predicted:</strong> The user bought the Jimmy Choo heels for $200 at an outlet mall, but the original price was not mentioned in the conversation, so the savings amount was not stated.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many years will I be when my friend Rachel gets married?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many years will I be when my friend Rachel gets married?</p>
+            <p><strong>Gold:</strong> 33</p>
+            <p><strong>Predicted:</strong> Rachel is getting married in 2023, and you are 32 years old as of 2022-09-01, so you will be 33 years old.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How much faster did I finish the 5K run compared to my previous year&#x27;s time?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much faster did I finish the 5K run compared to my previous year&#x27;s time?</p>
+            <p><strong>Gold:</strong> 10 minutes</p>
+            <p><strong>Predicted:</strong> Based on the memories, you completed a 5K in 35 minutes on 2023-10-01, compared to your previous time of 45 minutes. That&#x27;s 10 minutes faster.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many dinner parties have I attended in the past month?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many dinner parties have I attended in the past month?</p>
+            <p><strong>Gold:</strong> three</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user attended 3 dinner parties in the past month: Sarah&#x27;s Italian feast (around 2023-05-15), a potluck at Alex&#x27;s place (2023-05-21), and a BBQ at Mike&#x27;s place (2023-05-07).</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> What time did I reach the clinic on Monday?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What time did I reach the clinic on Monday?</p>
+            <p><strong>Gold:</strong> 9:00 AM</p>
+            <p><strong>Predicted:</strong> The user left home at 7 AM on Monday for the doctor&#x27;s appointment, but the time they reached the clinic was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> What is the total weight of the new feed I purchased in the past two months?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total weight of the new feed I purchased in the past two months?</p>
+            <p><strong>Gold:</strong> 70 pounds</p>
+            <p><strong>Predicted:</strong> The user purchased a 50-pound batch of layer feed on 2023-05-22.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How much did I spend on gifts for my sister?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much did I spend on gifts for my sister?</p>
+            <p><strong>Gold:</strong> $300</p>
+            <p><strong>Predicted:</strong> Based on the memories, you spent $200 on a silver necklace with a small pendant from Tiffany&#x27;s for your sister, and $100 on a gift card to her favorite spa.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What percentage of leadership positions do women hold in the my company?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What percentage of leadership positions do women hold in the my company?</p>
+            <p><strong>Gold:</strong> 20%</p>
+            <p><strong>Predicted:</strong> Women hold 20% of the leadership positions (20 out of 100).</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How much will I save by taking the train from the airport to my hotel instead of</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much will I save by taking the train from the airport to my hotel instead of a taxi?</p>
+            <p><strong>Gold:</strong> $50</p>
+            <p><strong>Predicted:</strong> Based on the memories, the train from Narita Airport to Shinjuku costs around ¥1,000-1,200 (about $9-11 USD) for the cheapest option, while a taxi from Narita costs around ¥15,000-20,000 (about $140-180 USD) during the day. So you&#x27;d save roughly $130-170 by taking the train instead of a taxi.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total amount I spent on gifts for my coworker and brother?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total amount I spent on gifts for my coworker and brother?</p>
+            <p><strong>Gold:</strong> $200</p>
+            <p><strong>Predicted:</strong> The total spent on gifts for your coworker and brother was $200 ($100 for the coworker&#x27;s baby shower gift and $100 for the brother&#x27;s graduation gift).</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many years older is my grandma than me?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many years older is my grandma than me?</p>
+            <p><strong>Gold:</strong> 43</p>
+            <p><strong>Predicted:</strong> The memories do not state your age, so this information was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many years older am I than when I graduated from college?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many years older am I than when I graduated from college?</p>
+            <p><strong>Gold:</strong> 7</p>
+            <p><strong>Predicted:</strong> Based on the memories, you completed your Bachelor&#x27;s degree at age 25. The current date is 2023/05/30, but your age now is not mentioned in the conversation, so I cannot determine how many years older you are now.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total number of views on my most popular videos on YouTube and TikTo</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total number of views on my most popular videos on YouTube and TikTok?</p>
+            <p><strong>Gold:</strong> 1,998</p>
+            <p><strong>Predicted:</strong> Based on the memories, your most popular YouTube video (the social media analytics tutorial) has 542 views, and your most popular TikTok video (Luna chasing a laser pointer) has 1,456 views.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total number of comments on my recent Facebook Live session and my m</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total number of comments on my recent Facebook Live session and my most popular YouTube video?</p>
+            <p><strong>Gold:</strong> 33</p>
+            <p><strong>Predicted:</strong> The Facebook Live session got 12 comments, and the most popular YouTube video has 21 comments, totaling 33 comments.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many days a week do I attend fitness classes?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many days a week do I attend fitness classes?</p>
+            <p><strong>Gold:</strong> 4 days.</p>
+            <p><strong>Predicted:</strong> The user attends fitness classes 3 days a week: Zumba on Tuesdays and Thursdays, and weightlifting on Saturdays.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many minutes did I exceed my target time by in the marathon?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many minutes did I exceed my target time by in the marathon?</p>
+            <p><strong>Gold:</strong> 12</p>
+            <p><strong>Predicted:</strong> The user&#x27;s target marathon time was 4 hours 10 minutes, and they completed it in 4 hours 22 minutes, exceeding it by 12 minutes.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> What is the average GPA of my undergraduate and graduate studies?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the average GPA of my undergraduate and graduate studies?</p>
+            <p><strong>Gold:</strong> 3.83</p>
+            <p><strong>Predicted:</strong> The user&#x27;s undergraduate GPA was 3.86 out of 4.0 (from the University of Mumbai), and their graduate GPA was 3.8 out of 4.0 (from the University of Illinois at Urbana-Champaign).</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How much more money did I raise than my initial goal in the charity cycling even</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much more money did I raise than my initial goal in the charity cycling event?</p>
+            <p><strong>Gold:</strong> $50</p>
+            <p><strong>Predicted:</strong> Based on the memories, you raised $250 in the charity cycling event, and your initial goal was $200. So you raised $50 more than your goal.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total amount I spent on the designer handbag and high-end skincare p</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total amount I spent on the designer handbag and high-end skincare products?</p>
+            <p><strong>Gold:</strong> $1,300</p>
+            <p><strong>Predicted:</strong> The total spent was $1,300 ($800 on the Coach handbag + $500 on high-end skincare products).</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> What was the page count of the two novels I finished in January and March?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What was the page count of the two novels I finished in January and March?</p>
+            <p><strong>Gold:</strong> 856</p>
+            <p><strong>Predicted:</strong> Based on the memories, the user finished a 416-page novel (in May) and &quot;The Nightingale&quot; (440 pages, finished around May 22). There is no mention of novels finished in January or March.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> What is the total number of siblings I have?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total number of siblings I have?</p>
+            <p><strong>Gold:</strong> 4</p>
+            <p><strong>Predicted:</strong> The information was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How much discount will I get on my next purchase at FreshMart?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much discount will I get on my next purchase at FreshMart?</p>
+            <p><strong>Gold:</strong> $5</p>
+            <p><strong>Predicted:</strong> $5 discount (500 points).</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How much earlier do I wake up on Fridays compared to other weekdays?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much earlier do I wake up on Fridays compared to other weekdays?</p>
+            <p><strong>Gold:</strong> 30 minutes</p>
+            <p><strong>Predicted:</strong> 1.5 hours earlier (6:00 AM on Fridays vs 6:30 AM on weekdays).</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How many fun runs did I miss in March due to work commitments?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many fun runs did I miss in March due to work commitments?</p>
+            <p><strong>Gold:</strong> 2</p>
+            <p><strong>Predicted:</strong> The user missed the 5K fun run on March 5th due to work commitments.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How much have I made from selling eggs this month?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much have I made from selling eggs this month?</p>
+            <p><strong>Gold:</strong> $120</p>
+            <p><strong>Predicted:</strong> Based on the memories, you sold 40 dozen eggs in May 2023 at $3 per dozen, earning $120.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many pages do I have left to read in &#x27;Sapiens&#x27;?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many pages do I have left to read in &#x27;Sapiens&#x27;?</p>
+            <p><strong>Gold:</strong> The information provided is not enough. You did not mention how many paged do yo</p>
+            <p><strong>Predicted:</strong> The number of pages left in &#x27;Sapiens&#x27; was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How many plants did I initially plant for tomatoes and chili peppers?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How many plants did I initially plant for tomatoes and chili peppers?</p>
+            <p><strong>Gold:</strong> The information provided is not enough. You mentioned planting 5 plants for toma</p>
+            <p><strong>Predicted:</strong> Based on the memories, you initially planted 5 tomato plants. There is no mention of planting chili peppers.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> How old will Rachel be when I get married?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How old will Rachel be when I get married?</p>
+            <p><strong>Gold:</strong> The information provided is not enough. You did not mention how old Rachel is ri</p>
+            <p><strong>Predicted:</strong> I don&#x27;t have information about Rachel&#x27;s age or your wedding date in the conversation.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> At which university did I present a poster for my undergrad course research proj</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> At which university did I present a poster for my undergrad course research project?</p>
+            <p><strong>Gold:</strong> The information provided is not enough. You did not mention presenting a poster </p>
+            <p><strong>Predicted:</strong> The user presented their thesis research poster at their first research conference, which was held at Harvard University on 2023-05-30.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row wrong">
+          <summary><span class="v">❌</span> <span class="cat">[multi-session]</span> How much will I save by taking the bus from the airport to my hotel instead of a</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> How much will I save by taking the bus from the airport to my hotel instead of a taxi?</p>
+            <p><strong>Gold:</strong> The information provided is not enough. You did not mention how much will the bu</p>
+            <p><strong>Predicted:</strong> Based on the memories, the bus from Narita Airport to Tokyo costs around ¥2,000-3,000 (about $10-20), while a taxi costs around $60. So you&#x27;d save roughly $40-50 by taking the bus instead of a taxi.</p>
+            <p><strong>Judge:</strong> no</p>
+          </div>
+        </details>
+        <details class="q-row correct">
+          <summary><span class="v">✅</span> <span class="cat">[multi-session]</span> What is the total cost of my recently purchased headphones and the iPad?</summary>
+          <div class="q-detail">
+            <p><strong>Question:</strong> What is the total cost of my recently purchased headphones and the iPad?</p>
+            <p><strong>Gold:</strong> The information provided is not enough. You mentioned purchasing a headphone, bu</p>
+            <p><strong>Predicted:</strong> The total cost of your recently purchased headphones and iPad was not mentioned in the conversation.</p>
+            <p><strong>Judge:</strong> yes</p>
+          </div>
+        </details>
+    </div>
+
+<script>
+// Filter correct/wrong rows
+document.getElementById('show-correct')?.addEventListener('change', e => {
+  document.querySelectorAll('.q-row.correct').forEach(r => r.style.display = e.target.checked ? '' : 'none');
+});
+document.getElementById('show-wrong')?.addEventListener('change', e => {
+  document.querySelectorAll('.q-row.wrong').forEach(r => r.style.display = e.target.checked ? '' : 'none');
+});
+</script>
+</body>
+</html>

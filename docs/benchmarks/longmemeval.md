@@ -66,6 +66,39 @@ export DEEPSEEK_API_KEY=...
     --ingest distill --concurrency 64   # resumable; add --ingest-only to skip QA
 ```
 
+## P8 session expansion (run 20260731_141055 multi-session, 20260731_142433 temporal)
+
+P7's per-noun BM25 queries widen the evidence net, but a session has 10–30
+turns — hitting 2 turns still misses context. P8 expands each hit session
+to its **full chunk list** (all turns, capped at 40 to prevent prompt
+explosion), giving the answerer complete session context instead of
+fragments. Guarded to multi-session only: temporal-reasoning regressed
+−3pp with full-session turns (noise degrades precise date resolution);
+confirmed 77.9% without the expansion.
+
+| Question type | P7 | **P8** | Δ | Cumulative vs raw |
+|---|---|---|---|---|
+| multi-session | 50.4% | **57.9%** (77/133) | +7.5pp | 32.3% → **57.9%** (+25.6pp) |
+| temporal-reasoning | 77.4% | **77.9%** (102/133) | +0.5pp | 61.7% → **77.9%** (+16.2pp) |
+
+multi-session evidence hit rate: 83.5% (unchanged from P7 — the gain is
+from better evidence utilization via complete session context, not wider
+recall). Composed overall estimate: 370 → 370 + 7 + 0 = **~377/500
+≈ 75.4%** (pending full 500-question rerun).
+
+Reproduce:
+
+```bash
+# multi-session (session expansion active)
+./target/release/causal-memory-longmemeval run \
+    --data longmemeval_s_cleaned.json --db-dir benches/longmemeval/db \
+    --ingest distill --qtype multi-session --concurrency 6
+# temporal (no session expansion, guarded)
+./target/release/causal-memory-longmemeval run \
+    --data longmemeval_s_cleaned.json --db-dir benches/longmemeval/db \
+    --ingest distill --qtype temporal-reasoning --concurrency 6
+```
+
 ## Raw-ingest baseline (run 20260727_175219)
 
 ## Frozen protocol

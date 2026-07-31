@@ -47,6 +47,44 @@ export DEEPSEEK_API_KEY=...
     --ingest distill --concurrency 16   # add --ingest-only to skip QA
 ```
 
+## E1 V2 prompt run (run_e1_v2_full, 2026-07-31)
+
+Same dataset, DBs, ingest (distill), judge (strict), and top-k=10 as the
+distill baseline; the only change is the **answer prompt**: V1 (one
+paragraph, 4 rules) replaced by V2 (7-step reasoning, ported from mem0's
+`ANSWER_GENERATION_PROMPT`). V2 adds: scan-all-memories (anti
+lost-in-the-middle), entity verification, combine-and-cross-reference,
+temporal grounding with absolute dates, inclusion check (anti
+over-filtering on list questions), and `ANSWER:` marker parsing.
+Memories are sorted by `event_time` ascending under V2 (narrative order).
+cat5 (adversarial) always uses V1 to preserve abstention ability.
+
+| Category | n | distill V1 | **distill V2** | Δ |
+|---|---|---|---|---|
+| 1 single-hop | 282 | 30.5% | **35.8%** | +5.3pp |
+| 2 temporal | 321 | 60.8% | **72.0%** | **+11.2pp** |
+| 3 multi-hop | 96 | 31.3% | **47.9%** | **+16.6pp** |
+| 4 open-domain | 841 | 78.6% | **83.5%** | +4.9pp |
+| 5 adversarial | 446 | 91.9% | 88.3% | −3.6pp |
+| **overall** | 1,986 | **69.6%** | **74.2%** | **+4.6pp** |
+
+Read: V2 lifts every factual category. The biggest win is cat3 multi-hop
+(+16.6pp) — the combine-and-cross-reference step (Step 3) bridges
+multi-hop evidence that V1's single-pass answer missed. cat2 temporal
+(+11.2pp) benefits from Step 5's absolute-date grounding. cat5 dips
+−3.6pp (V2's anti-abstention language leaks into cat5 despite the V1
+guard; fixable by tightening the cat5 dispatch). cat1 single-hop remains
+the weakest slice — Step 6 inclusion check helps (+5.3pp) but list-style
+questions still need complete-set recall.
+
+Reproduce:
+
+```bash
+./target/release/causal-memory-locomo run --all \
+    --data benches/locomo/data/locomo10.json \
+    --ingest distill --prompt-version v2 --concurrency 16
+```
+
 
 ## Frozen protocol
 

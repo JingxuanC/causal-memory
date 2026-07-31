@@ -99,6 +99,42 @@ const PREFERENCE_RULE: &str = "\n- This question asks about a user preference. A
 const JUDGE_SYSTEM_PROMPT: &str =
     "You are an impartial judge. Answer the user's question with yes or no only.";
 
+/// E4: V2 answer prompt — 7-step reasoning (same structure as LoCoMo E1).
+/// LME-specific: keeps the abstention-allowed clause (LME has unanswerable
+/// questions, unlike LoCoMo cat5 which is adversarial-only).
+const ANSWER_SYSTEM_PROMPT_V2: &str = r#"You are answering a question using retrieved memories from past conversations with a user. Follow these reasoning steps IN ORDER.
+
+## Step 1: SCAN ALL MEMORIES
+Read EVERY memory from first to last. Important details are scattered across the whole list. Give equal weight to ALL memories.
+
+## Step 2: COMBINE AND CROSS-REFERENCE
+- COMBINE facts from multiple memories about the same topic.
+- For listing/counting questions, extract EVERY distinct item, enumerate explicitly, THEN count.
+- For counting questions, list each instance with its context before giving the final count.
+
+## Step 3: SELECT THE BEST ANSWER
+- Choose the MOST SPECIFIC detail available. A proper name or number beats a generic description.
+- Report what someone actually DID, not what was offered.
+
+## Step 4: TEMPORAL GROUNDING
+- Resolve relative time expressions against the date attached to each memory and the question's current date. Answer with ABSOLUTE dates.
+- For "how long" questions, find explicit start/end dates and compute.
+
+## Step 5: INCLUSION CHECK
+If you found items you are tempted to exclude — include them unless you have STRONG evidence they are wrong. More items is better than fewer.
+
+## Step 6: COMMIT AND ANSWER
+Give a direct, specific answer after "ANSWER:".
+- NEVER invent specific names, dates, or details not in any memory.
+- If no memory contains the requested fact, answer: "I don't have enough information to answer this."
+- Keep the final answer short: a few words or one or two sentences."#;
+
+#[derive(Clone, Copy, PartialEq)]
+enum LmePromptVersion {
+    V1,
+    V2,
+}
+
 const DATA_HINT: &str = "data file not found: please download longmemeval_s_cleaned.json from \
      https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned \
      and place it at benches/longmemeval/data/longmemeval_s_cleaned.json";
@@ -891,8 +927,20 @@ async fn chat(cfg: &LlmConfig, system: &str, user: &str, max_tokens: u32) -> Res
 // ---------------------------------------------------------------------------
 
 /// Answer system prompt for a question type: balanced-refusal base plus
-/// type-specific rules where applicable.
-fn answer_system_prompt(question_type: &str) -> String {
+/// type-specific rules where applicable. V2 uses 7-step reasoning.
+fn answer_system_prompt(question_type: &str, prompt_version: LmePromptVersion) -> String {
+    if prompt_version == LmePromptVersion::V2 {
+        // V2 base already has scan/combine/temporal/inclusion built in;
+        // append type-specific rules on top for extra emphasis.
+        let mut prompt = ANSWER_SYSTEM_PROMPT_V2.to_string();
+        match question_type {
+            "knowledge-update" => prompt.push_str(KNOWLEDGE_UPDATE_RULE),
+            "multi-session" => prompt.push_str(MULTI_SESSION_RULE),
+            "single-session-preference" => prompt.push_str(PREFERENCE_RULE),
+            _ => {}
+        }
+        return prompt;
+    }
     let mut prompt = ANSWER_SYSTEM_PROMPT.to_string();
     match question_type {
         "knowledge-update" => prompt.push_str(KNOWLEDGE_UPDATE_RULE),
@@ -1044,6 +1092,8 @@ struct Args {
     /// Ingest (+ distill) only; skip the QA phase. Used to warm the shared
     /// distill DB in offset/limit chunks before one full QA run.
     ingest_only: bool,
+    /// E4: answer prompt version (v1 legacy | v2 7-step reasoning, default v2).
+    prompt_version: LmePromptVersion,
 }
 
 fn parse_args(argv: &[String]) -> Result<Option<Args>> {
@@ -1063,6 +1113,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
     let mut concurrency = 8usize;
     let mut ingest = IngestMode::Raw;
     let mut ingest_only = false;
+    let mut prompt_version = LmePromptVersion::V2;
 
     let mut i = 1;
     let take = |i: &mut usize, flag: &str| -> Result<String> {
@@ -1089,6 +1140,13 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
                 }
             }
             "--ingest-only" => ingest_only = true,
+            "--prompt-version" => {
+                prompt_version = match take(&mut i, "--prompt-version")?.as_str() {
+                    "v1" => LmePromptVersion::V1,
+                    "v2" => LmePromptVersion::V2,
+                    other => anyhow::bail!("bad --prompt-version {other:?}; expected v1|v2"),
+                }
+            }
             other => anyhow::bail!("unknown argument {other:?}"),
         }
         i += 1;
@@ -1105,6 +1163,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
         concurrency,
         ingest,
         ingest_only,
+        prompt_version,
     }))
 }
 
@@ -1229,6 +1288,7 @@ async fn answer_question(
     evidence_ids: Vec<String>,
     topk: usize,
     with_facts: bool,
+    prompt_version: LmePromptVersion,
 ) -> ResultRow {
     let retrieved = retrieve(store, q, topk).unwrap_or_default();
     let retrieved_ids = retrieved_chunk_ids(&retrieved);
@@ -1309,9 +1369,10 @@ async fn answer_question(
         memory_lines(&retrieved)
     };
 
-    let system = answer_system_prompt(&q.question_type);
+    let system = answer_system_prompt(&q.question_type, prompt_version);
     let answer_user = answer_user_prompt(q, &memories);
-    let predicted = match chat(cfg, &system, &answer_user, ANSWER_MAX_TOKENS).await {
+    let max_tokens = if prompt_version == LmePromptVersion::V2 { 800 } else { ANSWER_MAX_TOKENS };
+    let raw_predicted = match chat(cfg, &system, &answer_user, max_tokens).await {
         Ok(s) => s,
         Err(e) => {
             return ResultRow {
@@ -1329,6 +1390,18 @@ async fn answer_question(
                 evidence_hit,
             }
         }
+    };
+
+    // E4: V2 outputs "ANSWER: <final>" after reasoning — extract it.
+    let predicted = if prompt_version == LmePromptVersion::V2 {
+        raw_predicted
+            .rsplit("ANSWER:")
+            .next()
+            .unwrap_or(&raw_predicted)
+            .trim()
+            .to_string()
+    } else {
+        raw_predicted
     };
 
     let judge_user = judge_user_prompt(q, &predicted);
@@ -1502,7 +1575,7 @@ async fn run(args: Args) -> Result<()> {
             .cloned()
             .unwrap_or_default();
         async move {
-            let row = answer_question(&cfg, &store, &graph, q, evidence, args.topk, with_facts).await;
+            let row = answer_question(&cfg, &store, &graph, q, evidence, args.topk, with_facts, args.prompt_version).await;
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d.is_multiple_of(25) || d == total {
                 eprintln!("{d}/{total} questions done");
