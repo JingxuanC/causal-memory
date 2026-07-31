@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
+    use crate::store::CausalStore;
 
     fn make_test_graph() -> CausalGraph {
         let nodes = vec![
@@ -615,5 +616,133 @@ mod tests {
         let graph = CausalGraph::from_store(&store).unwrap();
         assert!(graph.num_nodes() >= 4);
         assert!(graph.num_edges() >= 2);
+    }
+
+    // ─── P1: typed-edge unification ──────────────────────────────────────
+
+    #[test]
+    fn test_fact_meta_relation_spread_coeffs() {
+        assert!((Relation::Fact.spread_coeff() - 0.8).abs() < 1e-6);
+        assert!((Relation::Meta.spread_coeff() - 0.6).abs() < 1e-6);
+        assert!((Relation::CoOccurrence.spread_coeff() - 1.0).abs() < 1e-6);
+        assert_eq!(Relation::from_str_lossy("fact"), Relation::Fact);
+        assert_eq!(Relation::from_str_lossy("meta"), Relation::Meta);
+    }
+
+    #[test]
+    fn test_fact_edges_loaded_from_store_into_graph() {
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .record_fact("preference", "TypeScript", "user", "agent", 0.8)
+            .unwrap();
+        store
+            .record_decision("used Redis", "cache hit", "caused", Some("caching"), 0.9, "rule")
+            .unwrap();
+        let mut graph = CausalGraph::from_store(&store).unwrap();
+        assert!(graph.num_nodes() > 2);
+        let results = graph.spreading_activation("TypeScript", None, false);
+        assert!(
+            results.iter().any(|r| r.text.contains("TypeScript")),
+            "fact node should participate in spreading activation"
+        );
+    }
+
+    // ─── P2: Hebbian co-occurrence weight update ─────────────────────────
+
+    fn make_co_graph() -> CausalGraph {
+        let nodes: Vec<NodeData> = ["d1", "o1", "d2", "o2", "d3", "o3"]
+            .iter()
+            .enumerate()
+            .map(|(i, id)| NodeData {
+                id: (*id).into(),
+                text: format!("node {id}"),
+                event_time: 1000 + i as i64,
+                q_value: 0.8,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: Some("test".into()),
+            })
+            .collect();
+        let edges = vec![
+            EdgeData { from_id: "d1".into(), to_id: "o1".into(), relation: Relation::Caused, weight: 0.9, valid: true },
+            EdgeData { from_id: "d2".into(), to_id: "o2".into(), relation: Relation::Caused, weight: 0.85, valid: true },
+            EdgeData { from_id: "d3".into(), to_id: "o3".into(), relation: Relation::Caused, weight: 0.95, valid: true },
+            EdgeData { from_id: "d2".into(), to_id: "o3".into(), relation: Relation::Prevented, weight: 0.6, valid: true },
+            EdgeData { from_id: "d1".into(), to_id: "d3".into(), relation: Relation::CoOccurrence, weight: 0.2, valid: true },
+        ];
+        CausalGraph::build(&nodes, &edges)
+    }
+
+    #[test]
+    fn test_hebbian_strengthens_co_active() {
+        let mut graph = make_co_graph();
+        let idx = (0..graph.num_edges())
+            .find(|&i| graph.edge_relation_at(i) == Relation::CoOccurrence)
+            .unwrap();
+        let before = graph.edge_raw_weight(idx);
+        graph.hebbian_update(&[0, 4], 0.0, 0.5); // d1(0) + d3(4) co-active
+        let after = graph.edge_raw_weight(idx);
+        assert!(after > before, "co-active should strengthen: {before} → {after}");
+    }
+
+    #[test]
+    fn test_hebbian_decays_non_co_active() {
+        let mut graph = make_co_graph();
+        let idx = (0..graph.num_edges())
+            .find(|&i| graph.edge_relation_at(i) == Relation::CoOccurrence)
+            .unwrap();
+        let before = graph.edge_raw_weight(idx);
+        graph.hebbian_update(&[0], 0.5, 0.1); // only d1 active, d3 not
+        let after = graph.edge_raw_weight(idx);
+        assert!(after < before, "non-co-active should decay: {before} → {after}");
+    }
+
+    // ─── P3: Immutable consolidation ─────────────────────────────────────
+
+    #[test]
+    fn test_immutable_consolidation_preserves_original() {
+        let graph = make_test_graph();
+        let orig_w = graph.edge_raw_weight(0);
+        let result = graph.swr_consolidate_immutable(10, Some("focus on causal lessons"));
+        assert!(
+            (graph.edge_raw_weight(0) - orig_w).abs() < 1e-9,
+            "original must not be mutated"
+        );
+        assert!(!result.delta_log.is_empty());
+        assert!(result.stats.chains_replayed > 0);
+        assert_eq!(result.instructions.as_deref(), Some("focus on causal lessons"));
+    }
+
+    // ─── P4: Q-value dynamics ────────────────────────────────────────────
+
+    #[test]
+    fn test_q_value_increases_on_reward() {
+        let mut graph = make_test_graph();
+        let before = graph.node_q_value(0);
+        graph.update_q_value(0, 1.0, 0.1, 0.9);
+        let after = graph.node_q_value(0);
+        assert!(after >= before, "Q should increase on reward: {before} → {after}");
+    }
+
+    #[test]
+    fn test_q_value_never_negative() {
+        let mut graph = make_test_graph();
+        graph.update_q_value(0, 0.0, 0.5, 0.9);
+        assert!(graph.node_q_value(0) >= 0.0, "Q must never go negative");
+    }
+
+    // ─── P6: Novelty entropy ─────────────────────────────────────────────
+
+    #[test]
+    fn test_novelty_entropy_low_for_uniform() {
+        let graph = make_test_graph(); // all replay_count=0
+        assert!(graph.novelty_entropy() < 0.01, "uniform should be low entropy");
+    }
+
+    #[test]
+    fn test_novelty_entropy_high_for_skewed() {
+        let mut graph = make_test_graph();
+        graph.swr_consolidate(50); // creates skewed replay distribution
+        assert!(graph.novelty_entropy() > 0.1, "skewed should be higher entropy");
     }
 }

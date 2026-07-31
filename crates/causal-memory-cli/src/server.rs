@@ -132,6 +132,66 @@ const SEMANTIC_CONTRADICTION_MIN_SIMILARITY: f64 = 0.85;
 /// Reciprocal Rank Fusion constant (the RRF paper's standard value).
 const RRF_K: f64 = 60.0;
 
+/// P5: Layered loading — format a causal entry at L0/L1/L2 detail.
+/// Returns (formatted_line, approx_token_count).
+fn format_entry_layered(entry: &CausalEntry, rank: usize, level: &str) -> (String, usize) {
+    let dt = entry.decision_text.as_str();
+    let ot = entry.outcome_text.as_str();
+    let tag = entry.task_tag.as_deref().unwrap_or("untagged");
+    let conf = (entry.confidence * 100.0).round() as u32;
+    match level {
+        "l0" => {
+            let line = format!(
+                "{rank}. [{}] {} →({})→ {}\n",
+                tag,
+                truncate_chars(dt, 40),
+                entry.relation,
+                truncate_chars(ot, 40),
+            );
+            (line, 25)
+        }
+        "l1" => {
+            let line = format!(
+                "{rank}. [{}] \"{}\"\n   →({})→ \"{}\" (confidence: {conf}%)\n",
+                tag, dt, entry.relation, ot,
+            );
+            (line, 60)
+        }
+        _ => {
+            let line = format!(
+                "{rank}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {conf}%\n\n",
+                tag, dt, entry.relation, ot,
+            );
+            (line, 100)
+        }
+    }
+}
+
+/// P5: Token budget tracker — yields entries until the budget is exhausted.
+struct TokenBudget {
+    remaining: usize,
+    limit: usize,
+}
+
+impl TokenBudget {
+    fn new(max_tokens: usize) -> Self {
+        Self {
+            remaining: max_tokens,
+            limit: max_tokens,
+        }
+    }
+    fn try_spend(&mut self, cost: usize) -> bool {
+        if self.limit == 0 {
+            return true; // 0 = unlimited
+        }
+        if cost > self.remaining {
+            return false;
+        }
+        self.remaining -= cost;
+        true
+    }
+}
+
 /// Fuse two ranked key lists by Reciprocal Rank Fusion:
 /// `score(key) = Σ_lists 1 / (RRF_K + rank)` with 1-based ranks. A key
 /// present in both lists scores from both — cross-layer agreement floats to
@@ -464,6 +524,13 @@ pub struct SearchCausalParams {
     /// Max number of results (default 5)
     #[schemars(description = "Maximum results to return (default 5)")]
     pub limit: Option<usize>,
+    /// Detail level: l0 = one-line summary (~50 tok); l1 = overview (~200 tok);
+    /// l2 = full text + confidence (default, max detail). Saves tokens.
+    #[schemars(description = "Detail level: l0 (summary), l1 (overview), l2 (full, default)")]
+    pub detail_level: Option<String>,
+    /// Maximum total tokens to return (0 = unlimited, default 0).
+    #[schemars(description = "Max output tokens (0 = unlimited, default 0)")]
+    pub max_tokens: Option<usize>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -718,6 +785,9 @@ impl CausalMemoryServer {
     )]
     fn search_causal(&self, Parameters(params): Parameters<SearchCausalParams>) -> String {
         let limit = params.limit.unwrap_or(5);
+        let detail_level = params.detail_level.as_deref().unwrap_or("l2");
+        let max_tokens = params.max_tokens.unwrap_or(0);
+        let mut budget = TokenBudget::new(max_tokens);
 
         // ── Hippocampus path: spreading activation (联想检索) ──
         // The graph does associative retrieval: from seed matches, activation
@@ -778,17 +848,21 @@ impl CausalMemoryServer {
             if results.is_empty() {
                 return "[bm25] 📭 No past causal episodes found matching your query.".to_string();
             }
-            let mut out = format!("[bm25] Found {} past episode(s):\n\n", results.len());
+            let mut out = format!("[bm25/{detail_level}] Found {} past episode(s)", results.len());
+            if max_tokens > 0 {
+                out.push_str(&format!(" (token budget: {max_tokens})"));
+            }
+            out.push_str(":\n\n");
             for (i, entry) in results.iter().enumerate() {
-                out.push_str(&format!(
-                    "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n\n",
-                    i + 1,
-                    entry.task_tag.as_deref().unwrap_or("untagged"),
-                    entry.decision_text,
-                    entry.relation,
-                    entry.outcome_text,
-                    entry.confidence * 100.0,
-                ));
+                let (line, cost) = format_entry_layered(entry, i + 1, detail_level);
+                if !budget.try_spend(cost) {
+                    out.push_str(&format!(
+                        "… {} more result(s) truncated (token budget)\n",
+                        results.len() - i
+                    ));
+                    break;
+                }
+                out.push_str(&line);
             }
             return out;
         } // end hippocampus if let Some(query) block
@@ -1758,6 +1832,40 @@ impl ServerHandler for CausalMemoryServer {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── P5: layered loading + token budget ───────────────────────────────
+
+    #[test]
+    fn test_format_entry_layered_l0_compact() {
+        let entry = CausalEntry {
+            edge_id: 1, decision_id: "d1".into(),
+            decision_text: "used Redis for caching".into(),
+            outcome_id: "o1".into(), outcome_text: "cache stampede".into(),
+            relation: "caused".into(), confidence: 0.9,
+            task_tag: Some("caching".into()), event_time: 0, valid_to: None,
+            access_count: 0, last_accessed_at: None,
+            discovered_by: "agent".into(), discovered_at: 0, outcome_polarity: None,
+        };
+        let (l0, t0) = format_entry_layered(&entry, 1, "l0");
+        let (l2, t2) = format_entry_layered(&entry, 1, "l2");
+        assert!(t0 < t2);
+        assert!(l0.contains("→(caused)→"));
+        assert!(l2.contains("confidence"));
+    }
+
+    #[test]
+    fn test_token_budget_truncates() {
+        let mut b = TokenBudget::new(100);
+        assert!(b.try_spend(60));
+        assert!(b.try_spend(40));
+        assert!(!b.try_spend(1));
+    }
+
+    #[test]
+    fn test_token_budget_unlimited() {
+        let mut b = TokenBudget::new(0);
+        assert!(b.try_spend(999999));
+    }
 
     #[test]
     fn test_rrf_fuse_single_list_order() {
