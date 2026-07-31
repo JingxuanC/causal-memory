@@ -289,18 +289,34 @@ impl CausalGraph {
     /// Full K-hop spreading activation (CA3 pattern completion).
     ///
     /// `reverse = false`: forward (decision → outcome)
-    /// `reverse = true`:  backward (outcome → decision, for trace_cause)
-    ///
-    /// Merge rule: uses absolute-value max (|new| > |old| → replace). This
-    /// allows negative activations from prevented edges to replace zero
-    /// (which signed-max could not: -0.126 > 0.0 is false). A node receiving
-    /// both caused (+) and prevented (-) signals shows whichever is stronger.
+    /// `run_hebbian = true`: update co-occurrence weights after retrieval (default
+    ///   for external queries); `false` for internal calls like novelty detection
+    ///   that should not mutate the graph as a side effect.
     pub fn spreading_activation(
         &mut self,
         query: &str,
         task_tag: Option<&str>,
         reverse: bool,
     ) -> Vec<ActivationResult> {
+        self.spreading_activation_opts(query, task_tag, reverse, true)
+    }
+
+    /// Spreading activation with explicit Hebbian control.
+    /// Pass `run_hebbian=false` for internal computations (novelty detection,
+    /// consolidation preview) that should not have retrieval side effects.
+    pub fn spreading_activation_opts(
+        &mut self,
+        query: &str,
+        task_tag: Option<&str>,
+        reverse: bool,
+        run_hebbian: bool,
+    ) -> Vec<ActivationResult> {
+        // `reverse = true`: backward (outcome → decision, for trace_cause)
+        //
+        // Merge rule: uses absolute-value max (|new| > |old| → replace). This
+        // allows negative activations from prevented edges to replace zero
+        // (which signed-max could not: -0.126 > 0.0 is false). A node receiving
+        // both caused (+) and prevented (-) signals shows whichever is stronger.
         let seeds = self.find_seeds(query, task_tag);
         if seeds.is_empty() {
             return Vec::new();
@@ -368,9 +384,13 @@ impl CausalGraph {
 
         // P2: Hebbian update — co-activated nodes wire together. Fire after
         // the activation set is known so frequently co-retrieved nodes
-        // strengthen their associative connection over time.
-        let active: Vec<u32> = results.iter().map(|r| r.node_idx).collect();
-        self.hebbian_update(&active, 0.995, 0.02);
+        // strengthen their associative connection over time. Skipped for
+        // internal calls (novelty detection, consolidation preview) via
+        // run_hebbian=false — those should not have retrieval side effects.
+        if run_hebbian {
+            let active: Vec<u32> = results.iter().map(|r| r.node_idx).collect();
+            self.hebbian_update(&active, 0.995, 0.02);
+        }
 
         results
     }
@@ -383,7 +403,9 @@ impl CausalGraph {
     /// limitation (#10 in review). For Chinese-heavy use, switch to
     /// character bigrams or a real tokenizer.
     pub fn detect_novelty(&mut self, decision_text: &str, actual_outcome: &str) -> NoveltyReport {
-        let predicted = self.spreading_activation(decision_text, None, false);
+        // Internal computation: use run_hebbian=false so novelty detection
+        // doesn't have the side effect of strengthening co-occurrence edges.
+        let predicted = self.spreading_activation_opts(decision_text, None, false, false);
 
         let predicted_positive: Vec<String> = predicted
             .iter()

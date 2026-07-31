@@ -731,6 +731,44 @@ mod tests {
         assert!(graph.node_q_value(0) >= 0.0, "Q must never go negative");
     }
 
+    // ─── P3 GC: dormant criterion coverage ───────────────────────────────
+
+    #[test]
+    fn test_gc_preserves_recently_activated_edges() {
+        // The triple-criterion GC should NOT delete edges whose source node
+        // was recently activated (dormant=false), even if the edge is weak
+        // and has zero replay. Build a graph, mark one node as recently
+        // activated, then verify its edges survive consolidation.
+        let nodes = vec![
+            NodeData {
+                id: "d1".into(), text: "weak decision".into(),
+                event_time: 1000, q_value: 0.5, replay_count: 0,
+                // recently activated → dormant=false
+                last_activated: chrono::Utc::now().timestamp(),
+                task_tag: Some("test".into()),
+            },
+            NodeData {
+                id: "o1".into(), text: "weak outcome".into(),
+                event_time: 1001, q_value: 0.5, replay_count: 0,
+                last_activated: chrono::Utc::now().timestamp(),
+                task_tag: Some("test".into()),
+            },
+        ];
+        let edges = vec![EdgeData {
+            from_id: "d1".into(), to_id: "o1".into(),
+            relation: Relation::Caused,
+            weight: 0.01, // below gc_threshold (0.05) → weak
+            valid: true,
+        }];
+        let graph = CausalGraph::build(&nodes, &edges);
+        let result = graph.swr_consolidate_immutable(0, None); // 0 replays → no LTP
+        // The weak edge should SURVIVE because dormant=false (recently activated)
+        assert_eq!(
+            result.stats.forgotten, 0,
+            "recently-activated weak edges should not be GC'd"
+        );
+    }
+
     // ─── P6: Novelty entropy ─────────────────────────────────────────────
 
     #[test]

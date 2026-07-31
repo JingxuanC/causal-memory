@@ -815,19 +815,25 @@ impl CausalMemoryServer {
                         return "[semantic] 📭 No past causal episodes found matching your query."
                             .to_string();
                     }
-                    let mut out =
-                        format!("[semantic] Found {} past episode(s):\n\n", results.len());
-                    for (i, (entry, sim)) in results.iter().enumerate() {
-                        out.push_str(&format!(
-                            "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   similarity: {:.0}%, confidence: {:.0}%\n\n",
-                            i + 1,
-                            entry.task_tag.as_deref().unwrap_or("untagged"),
-                            entry.decision_text,
-                            entry.relation,
-                            entry.outcome_text,
-                            sim * 100.0,
-                            entry.confidence * 100.0,
-                        ));
+                    let mut out = format!(
+                        "[semantic/{detail_level}] Found {} past episode(s)",
+                        results.len()
+                    );
+                    if max_tokens > 0 {
+                        out.push_str(&format!(" (token budget: {max_tokens})"));
+                    }
+                    out.push_str(":\n\n");
+                    for (i, (entry, _sim)) in results.iter().enumerate() {
+                        let (line, cost) =
+                            format_entry_layered(entry, i + 1, detail_level);
+                        if !budget.try_spend(cost) {
+                            out.push_str(&format!(
+                                "… {} more result(s) truncated (token budget)\n",
+                                results.len() - i
+                            ));
+                            break;
+                        }
+                        out.push_str(&line);
                     }
                     return out;
                 }
