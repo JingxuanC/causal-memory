@@ -110,7 +110,10 @@ impl CausalMemoryServer {
 /// The MCP server runs inside a multi-thread tokio runtime (see main.rs), so
 /// bridge with block_in_place; fall back to a throwaway runtime when no
 /// runtime context exists (defensive — not expected in production).
-#[allow(clippy::expect_used, reason = "fallback runtime; failure is unrecoverable")]
+#[allow(
+    clippy::expect_used,
+    reason = "fallback runtime; failure is unrecoverable"
+)]
 fn block_on<F: std::future::Future>(fut: F) -> F::Output {
     match tokio::runtime::Handle::try_current() {
         Ok(handle) => tokio::task::block_in_place(|| handle.block_on(fut)),
@@ -482,9 +485,7 @@ pub struct RecordFactParams {
     pub confidence: Option<f64>,
     /// Retire other valid values under the same key+scope (e.g. user switched
     /// package managers: record the new one, set this true to invalidate the old)
-    #[schemars(
-        description = "If true, invalidate other valid facts with the same key and scope"
-    )]
+    #[schemars(description = "If true, invalidate other valid facts with the same key and scope")]
     pub replace_same_key: Option<bool>,
 }
 
@@ -832,9 +833,7 @@ impl CausalMemoryServer {
     fn record_fact(&self, Parameters(params): Parameters<RecordFactParams>) -> String {
         let scope = params.scope.as_deref().unwrap_or("user");
         if !matches!(scope, "user" | "session" | "agent") {
-            return format!(
-                "❌ Invalid scope '{scope}' — use one of: user, session, agent"
-            );
+            return format!("❌ Invalid scope '{scope}' — use one of: user, session, agent");
         }
         let confidence = params.confidence.unwrap_or(0.8);
 
@@ -853,13 +852,10 @@ impl CausalMemoryServer {
                 Err(e) => return format!("❌ Failed to record fact: {e}"),
             }
         } else {
-            match self.store.record_fact(
-                &params.key,
-                &params.value,
-                scope,
-                "agent",
-                confidence,
-            ) {
+            match self
+                .store
+                .record_fact(&params.key, &params.value, scope, "agent", confidence)
+            {
                 Ok(id) => (id, 0),
                 Err(e) => return format!("❌ Failed to record fact: {e}"),
             }

@@ -158,7 +158,11 @@ async fn mcp_stdio_end_to_end() {
         )
         .await
         .unwrap();
-    assert!(text_of(&f1).contains("✅"), "record_fact #1: {}", text_of(&f1));
+    assert!(
+        text_of(&f1).contains("✅"),
+        "record_fact #1: {}",
+        text_of(&f1)
+    );
 
     // Switching values under the same key retires the old one.
     let f2 = client

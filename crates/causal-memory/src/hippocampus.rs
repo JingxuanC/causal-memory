@@ -247,10 +247,7 @@ impl CausalGraph {
         // Each iteration pushes exactly one entry, preserving the invariant.
         for (node_idx, node_edges) in adj.iter().enumerate() {
             #[allow(clippy::expect_used, reason = "row_ptr invariant: seeded with 0")]
-            let prev = *graph
-                .row_ptr
-                .last()
-                .expect("row_ptr seeded with a 0 above");
+            let prev = *graph.row_ptr.last().expect("row_ptr seeded with a 0 above");
             graph.row_ptr.push(prev + node_edges.len() as u32);
             for &(target, raw_w, val, rel, valid) in node_edges {
                 // CSR index for this edge = current length of col_idx (before push)
@@ -444,11 +441,7 @@ impl CausalGraph {
         // Sort by absolute activation descending (strongest first, regardless
         // of sign). total_cmp handles NaN deterministically (NaN sorts last),
         // so this never panics even if a future bug lets NaN leak in.
-        results.sort_by(|a, b| {
-            b.activation
-                .abs()
-                .total_cmp(&a.activation.abs())
-        });
+        results.sort_by(|a, b| b.activation.abs().total_cmp(&a.activation.abs()));
         results
     }
 
