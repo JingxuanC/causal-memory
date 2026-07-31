@@ -44,6 +44,7 @@ const TURN_EDGE_DISCOVERED_BY: &str = "temporal";
 
 /// LLM answer generation settings (LoCoMo protocol).
 const ANSWER_MAX_TOKENS: u32 = 200;
+const ANSWER_MAX_TOKENS_V2: u32 = 800; // 7-step reasoning needs budget; final answer still short
 const JUDGE_MAX_TOKENS: u32 = 200;
 const LLM_TEMPERATURE: f32 = 0.0;
 const LLM_RETRIES: usize = 3;
@@ -55,6 +56,43 @@ Rules:
 - Keep the answer short: a few words or one sentence.
 - Each memory is prefixed with the session date, e.g. "[session_3 2023-05-08 13:56]". When the question asks WHEN something happened, resolve relative time expressions ("yesterday", "last week", "next month", "last year") against that date and answer with an ABSOLUTE date or time period (e.g. "7 May 2023", "June 2023"), not the relative expression.
 - When a memory DIRECTLY addresses the question, you MUST answer — a short partial answer grounded in a memory is always better than a refusal. Refuse ONLY when no memory states the requested fact: if the memories merely discuss the same person/object/topic without stating the answer, respond that the information was not mentioned in the conversation. Never infer, generalize, or guess specific details (meanings, inspirations, reasons, feelings) that are not explicitly stated."#;
+
+// V1 prompt renamed for adversarial (cat5) questions — must keep refusal ability.
+const ANSWER_SYSTEM_PROMPT_ADVERSARIAL: &str = ANSWER_SYSTEM_PROMPT;
+
+// E1: V2 prompt — 7-step reasoning, ported from mem0's ANSWER_GENERATION_PROMPT.
+// Only for cat1-4 (factual QA); cat5 uses ADVERSARIAL to preserve abstention.
+const ANSWER_SYSTEM_PROMPT_V2: &str = r#"You are answering a question using retrieved memories from past conversations between two people. Follow these reasoning steps IN ORDER.
+
+## Step 1: SCAN ALL MEMORIES
+Read EVERY memory from first to last. Do NOT stop after finding the first relevant memory — important details are often scattered across the whole list, including near the end. Give equal weight to ALL memories regardless of position.
+
+## Step 2: ENTITY VERIFICATION
+Confirm each relevant memory is about the correct person/entity. If the question asks about Person A and a memory attributes something to Person B, do not use it for A — unless B is the other speaker in the same conversation, in which case it is still valid shared evidence, but check the attribution.
+
+## Step 3: COMBINE AND CROSS-REFERENCE
+- COMBINE facts from multiple memories about the same topic.
+- For listing/counting questions, extract EVERY distinct item from ALL memories, then re-scan specifically for each category of answer.
+- For counting questions ("how many times"), enumerate each distinct instance explicitly with its date or context BEFORE giving a final count. Do not estimate — list, then count.
+- DECOMPOSE complex sentences: "an immersive X with Y" contains multiple distinct facts.
+
+## Step 4: SELECT THE BEST ANSWER
+- ALWAYS choose the MOST SPECIFIC detail available. A proper name, title, or number beats a generic description.
+- Report what someone actually DID, not what was offered or available. "Has not tried X yet" means X was NOT done.
+- Repetition of a generic fact across memories does NOT make it more correct than one memory with a more specific answer.
+
+## Step 5: TEMPORAL GROUNDING
+- Resolve all relative time expressions ("yesterday", "last week", "last year") against the date attached to each memory, and answer with an ABSOLUTE date or period (e.g. "7 May 2023", "June 2023").
+- For "how long" questions, find explicit start and end dates, then compute. Do not guess.
+- When MULTIPLE instances of similar events exist at different dates, enumerate them with dates before picking: past tense + "the" → the instance closest to (before) the conversation's latest date; future tense → the earliest planned date.
+
+## Step 6: INCLUSION CHECK (for lists and counts)
+If you found items you are tempted to exclude — STOP. Include them unless you have STRONG evidence they are wrong. The most common mistake is dropping relevant items through overly strict filtering. More items is better than fewer when there is supporting evidence.
+
+## Step 7: COMMIT AND ANSWER
+Give a direct, specific answer after "ANSWER:". NEVER say "not specified", "not mentioned", or "the memories don't say" when ANY memory contains relevant information. No hedging.
+- NEVER invent specific names, titles, places, or dates that do not appear in any memory. If no memory contains the requested detail, answer with what the memories DO contain.
+- Keep the final answer short: a few words or one or two sentences."#;
 
 const JUDGE_SYSTEM_PROMPT: &str = r#"You are an impartial judge evaluating whether a predicted answer correctly answers a question about a conversation.
 
@@ -78,6 +116,7 @@ fn usage() {
     eprintln!("  --ingest MODE       raw (default) | distill (raw + LLM-distilled facts/");
     eprintln!("                      episodes on top; separate *_distill.db)");
     eprintln!("  --ingest-only       ingest (+ distill) and exit; skip QA");
+    eprintln!("  --prompt-version VER  v1 (legacy) | v2 (7-step reasoning, default)");
     eprintln!();
     eprintln!("compact options: --data PATH (required) [--conv N] [--compact K] (default 5)");
     eprintln!("  [--limit Q] [--concurrency N] [--out DIR] (default benches/locomo/results)");
@@ -718,6 +757,24 @@ struct Args {
     /// Ingest (+ distill) only; skip the QA phase. Used to warm the
     /// per-conversation distill DBs in cheap chunks before one full QA run.
     ingest_only: bool,
+    /// E1: answer prompt version. v1 = legacy one-paragraph; v2 = 7-step
+    /// reasoning (mem0-aligned). Default v2.
+    prompt_version: PromptVersion,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum PromptVersion {
+    V1,
+    V2,
+}
+
+impl PromptVersion {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            PromptVersion::V1 => "v1",
+            PromptVersion::V2 => "v2",
+        }
+    }
 }
 
 fn parse_args(argv: &[String]) -> Result<Option<Args>> {
@@ -738,6 +795,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
     let mut concurrency = 8usize;
     let mut ingest = IngestMode::Raw;
     let mut ingest_only = false;
+    let mut prompt_version = PromptVersion::V2;
 
     let mut i = 1;
     let take = |i: &mut usize, flag: &str| -> Result<String> {
@@ -770,6 +828,13 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
                 }
             }
             "--ingest-only" => ingest_only = true,
+            "--prompt-version" => {
+                prompt_version = match take(&mut i, "--prompt-version")?.as_str() {
+                    "v1" => PromptVersion::V1,
+                    "v2" => PromptVersion::V2,
+                    other => anyhow::bail!("bad --prompt-version {other:?}; expected v1|v2"),
+                }
+            }
             other => anyhow::bail!("unknown argument {other:?}"),
         }
         i += 1;
@@ -789,6 +854,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
         concurrency,
         ingest,
         ingest_only,
+        prompt_version,
     }))
 }
 
@@ -828,6 +894,8 @@ struct Summary {
     /// the fact layer in the answer prompt (documented deviation from the
     /// causal-only frozen protocol — that comparison is the point).
     ingest: String,
+    /// E1: answer prompt version ("v1" | "v2").
+    prompt_version: String,
     /// Aggregated distillation-pass statistics (distill mode only).
     #[serde(skip_serializing_if = "Option::is_none")]
     distill_ingest: Option<DistillStats>,
@@ -899,13 +967,21 @@ async fn answer_question(
     qa: &Qa,
     topk: usize,
     with_facts: bool,
+    prompt_version: PromptVersion,
 ) -> ResultRow {
-    let retrieved = retrieve(store, &qa.question, topk).unwrap_or_default();
+    let mut retrieved = retrieve(store, &qa.question, topk).unwrap_or_default();
     let retrieved_ids = retrieved_chunk_ids(&retrieved);
     let evidence_hit = qa
         .evidence
         .iter()
         .any(|e| retrieved_ids.iter().any(|r| r == e));
+
+    // E1: V2 presents memories in chronological order (event_time ascending)
+    // to prevent lost-in-the-middle and narrative drift. Facts stay first.
+    if prompt_version == PromptVersion::V2 {
+        retrieved.sort_by_key(|e| e.event_time);
+    }
+
     // Distill mode additionally queries the fact layer (BM25, same topk) and
     // puts fact lines FIRST: they are the high-precision layer for the
     // factual QA slice the causal-only baseline conceded. Evidence-hit stays
@@ -930,11 +1006,22 @@ async fn answer_question(
         memories
     };
 
+    // E1: select prompt by version and question category.
+    // cat5 (adversarial) always uses the abstention-capable prompt.
+    let (system_prompt, max_tokens) = if qa.category == 5 {
+        (ANSWER_SYSTEM_PROMPT_ADVERSARIAL, ANSWER_MAX_TOKENS)
+    } else {
+        match prompt_version {
+            PromptVersion::V1 => (ANSWER_SYSTEM_PROMPT, ANSWER_MAX_TOKENS),
+            PromptVersion::V2 => (ANSWER_SYSTEM_PROMPT_V2, ANSWER_MAX_TOKENS_V2),
+        }
+    };
+
     let answer_user = format!(
         "Memories:\n{memories}\n\nQuestion: {}\nAnswer:",
         qa.question
     );
-    let predicted = match chat(cfg, ANSWER_SYSTEM_PROMPT, &answer_user, ANSWER_MAX_TOKENS).await {
+    let raw_predicted = match chat(cfg, system_prompt, &answer_user, max_tokens).await {
         Ok(s) => s,
         Err(e) => {
             return ResultRow {
@@ -950,6 +1037,19 @@ async fn answer_question(
                 evidence_hit,
             }
         }
+    };
+
+    // E1: V2 prompt outputs "ANSWER: <final answer>" after reasoning steps.
+    // Extract only the part after the last "ANSWER:" marker (mem0 run.py:468).
+    let predicted = if prompt_version == PromptVersion::V2 && qa.category != 5 {
+        raw_predicted
+            .rsplit("ANSWER:")
+            .next()
+            .unwrap_or(&raw_predicted)
+            .trim()
+            .to_string()
+    } else {
+        raw_predicted
     };
 
     let judge_user = if qa.category == 5 {
@@ -1004,7 +1104,7 @@ async fn answer_question(
 
 /// Answer + judge a batch of questions against one store, in parallel.
 /// Shared by `run` and the compact experiment's QA phase.
-async fn answer_all(
+pub(crate) async fn answer_all(
     cfg: &LlmConfig,
     store: &CausalStore,
     conv_idx: usize,
@@ -1012,6 +1112,7 @@ async fn answer_all(
     topk: usize,
     concurrency: usize,
     with_facts: bool,
+    prompt_version: PromptVersion,
 ) -> Vec<ResultRow> {
     let done = Arc::new(AtomicUsize::new(0));
     futures::stream::iter(qas.into_iter().map(|qa| {
@@ -1019,7 +1120,7 @@ async fn answer_all(
         let store = store.clone();
         let done = done.clone();
         async move {
-            let row = answer_question(&cfg, &store, conv_idx, &qa, topk, with_facts).await;
+            let row = answer_question(&cfg, &store, conv_idx, &qa, topk, with_facts, prompt_version).await;
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d.is_multiple_of(50) {
                 eprintln!("conv {conv_idx}: {d} questions done");
@@ -1129,6 +1230,7 @@ async fn run(args: Args) -> Result<()> {
             args.topk,
             args.concurrency,
             with_facts,
+            args.prompt_version,
         )
         .await;
 
@@ -1173,6 +1275,7 @@ async fn run(args: Args) -> Result<()> {
         temperature: LLM_TEMPERATURE,
         topk: args.topk,
         ingest: args.ingest.as_str().to_string(),
+        prompt_version: args.prompt_version.as_str().to_string(),
         distill_ingest: (args.ingest == IngestMode::Distill).then_some(distill_totals),
         data: args.data.display().to_string(),
         conversations: ran_convs,

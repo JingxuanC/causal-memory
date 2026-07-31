@@ -1186,4 +1186,20 @@ impl CausalStore {
             .optional()?;
         Ok(tag)
     }
+
+    /// Fetch all chunks whose id starts with `prefix`, ordered by id (which
+    /// sorts by session then turn). Used by P8 session expansion: given a
+    /// session prefix like `{question_id}::{session_id}::`, pull every turn
+    /// in that session so the answerer gets full context, not just the 2
+    /// turns BM25 happened to hit.
+    pub fn chunks_by_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let mut stmt =
+            conn.prepare("SELECT id, text FROM chunks WHERE id LIKE ?1 ORDER BY id")?;
+        let pattern = format!("{prefix}%");
+        let rows = stmt.query_map(params![pattern], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
 }

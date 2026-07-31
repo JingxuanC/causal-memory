@@ -27,7 +27,7 @@
 //!
 //! Ingest is one-time and idempotent per question (chunk-count match skips).
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -622,6 +622,74 @@ fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize) -> Result<Vec<Cau
                 merged.push(entry);
             }
         }
+    }
+
+    // P8 Task A: session expansion — for each session touched by the merged
+    // entries, pull ALL chunks in that session (not just the 2-3 BM25 hit).
+    // A session has 10-30 turns; hitting 2 turns still misses context. This
+    // widens coverage from fragment-level to session-level.
+    //
+    // Only for multi-session: temporal-reasoning questions are more precise
+    // (resolve relative dates), and full-session turns add noise that
+    // degrades accuracy (-3pp measured). Multi-session benefits because it
+    // needs to count/aggregate across many sessions.
+    if q.question_type != "multi-session" {
+        return Ok(merged);
+    }
+
+    let mut session_hits: HashMap<String, usize> = HashMap::new();
+    for entry in &merged {
+        for chunk_id in [&entry.decision_id, &entry.outcome_id] {
+            // chunk_id format: {question_id}::{session_id}::{turn}
+            let parts: Vec<&str> = chunk_id.split("::").collect();
+            if parts.len() >= 2 {
+                let session_prefix = format!("{}::{}", parts[0], parts[1]);
+                *session_hits.entry(session_prefix).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Rank sessions by hit count, take top 5.
+    let mut ranked_sessions: Vec<(String, usize)> = session_hits.into_iter().collect();
+    ranked_sessions.sort_by(|a, b| b.1.cmp(&a.1));
+    let top_sessions: Vec<&String> = ranked_sessions.iter().take(5).map(|(s, _)| s).collect();
+
+    // Fetch all chunks for top sessions, cap at 40 total to prevent prompt explosion.
+    let mut session_chunk_texts: Vec<String> = Vec::new();
+    for session_prefix in &top_sessions {
+        let chunks = store.chunks_by_prefix(session_prefix).unwrap_or_default();
+        for (_id, text) in chunks {
+            session_chunk_texts.push(text);
+        }
+        if session_chunk_texts.len() >= 40 {
+            session_chunk_texts.truncate(40);
+            break;
+        }
+    }
+
+    // Inject session chunks as synthetic entries so memory_lines includes them.
+    // Use negative edge_ids and unique chunk ids to avoid dedup collision.
+    let mut synth_id = -1_i64;
+    for (i, text) in session_chunk_texts.into_iter().enumerate() {
+        let chunk_id = format!("{}::session_expansion::{}", q.question_id, i);
+        merged.push(CausalEntry {
+            edge_id: synth_id,
+            decision_id: chunk_id.clone(),
+            decision_text: text.clone(),
+            outcome_id: chunk_id,
+            outcome_text: text,
+            relation: "session".into(),
+            confidence: 0.0,
+            task_tag: Some(q.question_id.clone()),
+            event_time: 0,
+            valid_to: None,
+            access_count: 0,
+            last_accessed_at: None,
+            discovered_by: "session_expansion".into(),
+            discovered_at: 0,
+            outcome_polarity: None,
+        });
+        synth_id -= 1;
     }
 
     Ok(merged)
