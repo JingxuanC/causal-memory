@@ -21,20 +21,20 @@ are placed FIRST in the answer prompt, followed by causal memory lines.
 
 | Category | n | raw (run 5) | distill | Δ |
 |---|---|---|---|---|
-| 1 single-hop | 282 | 24.1% | 30.5% | +6.4pp |
+| 1 multi-hop | 282 | 24.1% | 30.5% | +6.4pp |
 | 2 temporal | 321 | 49.2% | **60.8%** | **+11.6pp** |
-| 3 multi-hop | 96 | 19.8% | **31.3%** | **+11.5pp** |
-| 4 open-domain | 841 | 74.0% | **78.6%** | +4.6pp |
+| 3 open-domain | 96 | 19.8% | **31.3%** | **+11.5pp** |
+| 4 single-hop | 841 | 74.0% | **78.6%** | +4.6pp |
 | 5 adversarial | 446 | 91.5% | 91.9% | +0.4pp |
 | **overall** | 1,986 | **64.2%** | **69.6%** | **+5.4pp** |
 | evidence retrieval hit rate | — | 74.4% | 71.7% | −2.7pp |
 
 Honest reading: the unified-memory design doc predicted 75–80%; we landed
 at 69.6%. The mechanism is validated — gains concentrate exactly where
-atomic facts should help (temporal +11.6, multi-hop +11.5) and abstention
-does not degrade — but two bottlenecks cap the total: cat 1 list-style
-questions need complete-set recall the fact layer only partially covers,
-and cat 3 counterfactual phrasing collides with the abstention protocol.
+atomic facts should help (temporal +11.6, open-domain +11.5) and abstention
+does not degrade — but two bottlenecks cap the total: cat 1 multi-hop
+questions need complete multi-evidence recall the fact layer only partially
+covers, and cat 3 counterfactual phrasing collides with the abstention protocol.
 The design doc's 75–80% remains the target after fixing those two; see
 the failure analysis below.
 
@@ -61,21 +61,22 @@ cat5 (adversarial) always uses V1 to preserve abstention ability.
 
 | Category | n | distill V1 | **distill V2** | Δ |
 |---|---|---|---|---|
-| 1 single-hop | 282 | 30.5% | **35.8%** | +5.3pp |
+| 1 multi-hop | 282 | 30.5% | **35.8%** | +5.3pp |
 | 2 temporal | 321 | 60.8% | **72.0%** | **+11.2pp** |
-| 3 multi-hop | 96 | 31.3% | **47.9%** | **+16.6pp** |
-| 4 open-domain | 841 | 78.6% | **83.5%** | +4.9pp |
+| 3 open-domain | 96 | 31.3% | **47.9%** | **+16.6pp** |
+| 4 single-hop | 841 | 78.6% | **83.5%** | +4.9pp |
 | 5 adversarial | 446 | 91.9% | 88.3% | −3.6pp |
 | **overall** | 1,986 | **69.6%** | **74.2%** | **+4.6pp** |
 
-Read: V2 lifts every factual category. The biggest win is cat3 multi-hop
-(+16.6pp) — the combine-and-cross-reference step (Step 3) bridges
-multi-hop evidence that V1's single-pass answer missed. cat2 temporal
+Read: V2 lifts every factual category. The biggest win is cat3 open-domain
+(+16.6pp) — V2 drops V1's "never infer feelings/meanings" prohibition and
+the COMMIT step allows evidence-grounded inference, which is exactly what
+open-domain/counterfactual questions need. cat2 temporal
 (+11.2pp) benefits from Step 5's absolute-date grounding. cat5 dips
 −3.6pp (V2's anti-abstention language leaks into cat5 despite the V1
-guard; fixable by tightening the cat5 dispatch). cat1 single-hop remains
-the weakest slice — Step 6 inclusion check helps (+5.3pp) but list-style
-questions still need complete-set recall.
+guard; fixable by tightening the cat5 dispatch). cat1 multi-hop remains
+the weakest slice — Step 6 inclusion check helps (+5.3pp) but multi-hop
+questions still need complete multi-evidence recall.
 
 Reproduce:
 
@@ -85,6 +86,29 @@ Reproduce:
     --ingest distill --prompt-version v2 --concurrency 16
 ```
 
+
+## Category ID mapping (corrected 2026-07-31)
+
+Earlier versions of this document mislabeled categories 1/3/4 using the
+white paper's *sequential description*. The canonical mapping — original
+paper Table 5 counts (single-hop 841, multi-hop 282), mem0's evaluation
+suite, and the source-code mapping documented in arXiv 2511.21726 Table E2 —
+is:
+
+| ID | Category | n |
+|---|---|---|
+| 1 | multi-hop | 282 |
+| 2 | temporal | 321 |
+| 3 | open-domain | 96 |
+| 4 | single-hop | 841 |
+| 5 | adversarial | 446 |
+
+All tables in this document have been corrected to this mapping. Note the
+ATANT audit (arXiv 2604.10981) further observes that the IDs do not cleanly
+match question shapes (cat 1 questions are mostly "what" lookups; cat 4 gold
+answers are paraphrased reflections) — we keep the canonical names for
+cross-paper comparability but per-category labels should be read with that
+caveat.
 
 ## Frozen protocol
 
@@ -96,7 +120,7 @@ Reproduce:
 | Judge model | `deepseek-chat`, temperature 0.0 |
 | Retrieval | run 1–2: keyword LIKE + fan-out fallback · run 3: **BM25** (Okapi, k1=1.2, b=0.75, Robertson IDF) · top-k = 10 |
 | Ingest | one chunk per dialog turn (`[session date] speaker: text`), id = `dia_id`; consecutive cross-speaker turns linked by `caused` edges (confidence 0.4, temporal) |
-| Categories | 1 (single-hop), 2 (temporal), 3 (multi-hop), 4 (open-domain), 5 (adversarial) |
+| Categories | 1 (multi-hop), 2 (temporal), 3 (open-domain), 4 (single-hop), 5 (adversarial) — see "Category ID mapping" note below |
 | Run | 2026-07-27, single run, all 1,986 questions, 0 errors |
 
 Reproduce:
@@ -117,10 +141,10 @@ Per-question results: `benches/locomo/results/run_<ts>_conv<N>.jsonl`
 
 | Category | n | Accuracy |
 |---|---|---|
-| 1 single-hop | 282 | 24.1% |
+| 1 multi-hop | 282 | 24.1% |
 | 2 temporal | 321 | 49.2% |
-| 3 multi-hop | 96 | 19.8% |
-| 4 open-domain | 841 | 74.0% |
+| 3 open-domain | 96 | 19.8% |
+| 4 single-hop | 841 | 74.0% |
 | 5 adversarial | 446 | **91.5%** |
 | **overall** | 1,986 | **64.2%** |
 | cats 1–4 | 1,540 | **56.3%** |
@@ -138,10 +162,10 @@ Per-question results: `benches/locomo/results/run_<ts>_conv<N>.jsonl`
 
 | Category | n | Accuracy |
 |---|---|---|
-| 1 single-hop | 282 | 25.9% |
+| 1 multi-hop | 282 | 25.9% |
 | 2 temporal | 321 | 57.6% |
-| 3 multi-hop | 96 | 24.0% |
-| 4 open-domain | 841 | **75.4%** |
+| 3 open-domain | 96 | 24.0% |
+| 4 single-hop | 841 | **75.4%** |
 | 5 adversarial | 446 | 84.3% |
 | **overall** | 1,986 | **65.0%** |
 | cats 1–4 (Genesys protocol) | 1,540 | **59.4%** |
@@ -151,10 +175,10 @@ Per-question results: `benches/locomo/results/run_<ts>_conv<N>.jsonl`
 
 | Category | n | Accuracy |
 |---|---|---|
-| 1 single-hop | 282 | 22.3% |
+| 1 multi-hop | 282 | 22.3% |
 | 2 temporal | 321 | **49.8%** |
-| 3 multi-hop | 96 | 19.8% |
-| 4 open-domain | 841 | 60.3% |
+| 3 open-domain | 96 | 19.8% |
+| 4 single-hop | 841 | 60.3% |
 | 5 adversarial | 446 | **89.5%** |
 | **overall** | 1,986 | **57.8%** |
 | cats 1–4 (Genesys protocol) | 1,540 | **48.6%** |
@@ -164,10 +188,10 @@ Per-question results: `benches/locomo/results/run_<ts>_conv<N>.jsonl`
 
 | Category | n | Accuracy |
 |---|---|---|
-| 1 single-hop | 282 | 20.6% |
+| 1 multi-hop | 282 | 20.6% |
 | 2 temporal | 321 | 20.2% |
-| 3 multi-hop | 96 | 17.7% |
-| 4 open-domain | 841 | 58.1% |
+| 3 open-domain | 96 | 17.7% |
+| 4 single-hop | 841 | 58.1% |
 | 5 adversarial | 446 | 93.3% |
 | **overall** | 1,986 | **52.6%** |
 | cats 1–4 | 1,540 | **40.8%** |
@@ -204,7 +228,7 @@ pure-Rust `bm25.rs`, now the library's default keyword ranking).
   unordered term matches with tf saturation and length normalization.
 - **overall: 57.8% → 65.0%; cats 1–4: 48.6% → 59.4%** — within ~7pp of
   Mem0's published 66.9 (different answerer, not strictly comparable).
-- cat 4 (open-domain): 60.3% → 75.4% — biggest beneficiary.
+- cat 4 (single-hop): 60.3% → 75.4% — biggest beneficiary.
 - **cat 5 (abstention): 89.5% → 84.3%** — the decline continues. This is now
   a confirmed trend across three runs: *better retrieval → more
   plausible-looking context → more committed answers on unanswerable
@@ -267,20 +291,20 @@ the context window — that is the architecture).
 
 | Category | A: text-only | B: text + causal | B − A |
 |---|---|---|---|
-| 1 single-hop | 23.0% | 23.4% | +0.4pp |
+| 1 multi-hop | 23.0% | 23.4% | +0.4pp |
 | 2 temporal | 23.7% | 52.6% | **+28.9pp** |
-| 3 multi-hop | 25.0% | 20.8% | −4.2pp |
-| 4 open-domain | 36.6% | 75.3% | **+38.7pp** |
+| 3 open-domain | 25.0% | 20.8% | −4.2pp |
+| 4 single-hop | 36.6% | 75.3% | **+38.7pp** |
 | 5 adversarial | 91.9% | 91.5% | −0.4pp |
 | **overall** | **44.5%** | **65.3%** | **+20.8pp** |
 
 Read: five compactions collapse text-only memory from 65.0% (uncompressed
 run 3) to 44.5%. Adding the never-compacted causal edges brings the system
 back to 65.3% — **statistically indistinguishable from having no
-compaction at all**. Temporal and open-domain questions benefit most: dates
-and facts survive verbatim in edge text. cat 3 (multi-hop) is the one
+compaction at all**. Temporal and single-hop questions benefit most: dates
+and facts survive verbatim in edge text. cat 3 (open-domain) is the one
 regression (small n=96) — compressed text plus flat adjacent-turn edges
-does not help cross-session synthesis; a real decision-extractor (not
-adjacent-turn pairing) is the fix.
+does not help counterfactual/inferential synthesis; a real
+decision-extractor (not adjacent-turn pairing) is the fix.
 
 This is the experiment the system is designed to win, and it did.
