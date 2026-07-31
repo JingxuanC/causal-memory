@@ -334,7 +334,7 @@ fn ingest_conversation(store: &CausalStore, conv: &LocomoConversation) -> Result
     let expected_chunks: usize = sessions.iter().map(|s| s.turns.len()).sum();
 
     let existing: i64 =
-        store.with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM chunks WHERE id LIKE 'D%'", [], |r| r.get(0))?))?;
+        store.with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM chunks WHERE id GLOB 'D[0-9]*'", [], |r| r.get(0))?))?;
     // Count only raw turn chunks (D-prefixed dia_ids from the dataset).
     // record_decision / record_distilled create extra d{id}/o{id} chunks
     // as causal-edge endpoints — those are expected and must not trigger
