@@ -34,6 +34,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use causal_memory::distill::{Distiller, ItemKind};
+use causal_memory::hippocampus::CausalGraph;
 use causal_memory::store::{CausalEntry, CausalStore};
 use chrono::NaiveDateTime;
 use futures::StreamExt;
@@ -621,6 +622,42 @@ fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize) -> Result<Vec<Cau
     Ok(merged)
 }
 
+/// P7+: Hippocampus spreading activation for multi-session questions.
+///
+/// Uses a pre-built graph (built once per run, not per question — building
+/// from a 500-question DB is expensive). Runs spreading_activation on the
+/// question text and collects texts of activated nodes not already in the
+/// BM25 result set. These are "associative hits" — semantically related
+/// memories that keyword search missed but spreading activation found
+/// through edge traversal.
+fn hippocampus_boost(
+    graph: Option<&CausalGraph>,
+    q: &LmeQuestion,
+    existing_texts: &HashSet<String>,
+) -> Vec<String> {
+    if q.question_type != "multi-session" {
+        return Vec::new();
+    }
+    let graph = match graph {
+        Some(g) => g,
+        None => return Vec::new(),
+    };
+    // Clone for read-only activation (avoids Hebbian side effects + lifetime).
+    let mut g = graph.clone();
+    let results = g.spreading_activation_opts(&q.question, None, false, false);
+    let mut extra = Vec::new();
+    for r in results.iter().take(20) {
+        let snippet = if r.text.len() > 50 { &r.text[..50] } else { &r.text };
+        if !existing_texts
+            .iter()
+            .any(|e| e.contains(snippet) || snippet.contains(e.as_str()))
+        {
+            extra.push(format!("- [spreading] {}", r.text));
+        }
+    }
+    extra
+}
+
 /// Chunk ids covered by the retrieval result (decision + outcome endpoints).
 fn retrieved_chunk_ids(entries: &[CausalEntry]) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -1114,6 +1151,7 @@ fn git_commit() -> String {
 async fn answer_question(
     cfg: &LlmConfig,
     store: &CausalStore,
+    graph: &Option<CausalGraph>,
     q: &LmeQuestion,
     evidence_ids: Vec<String>,
     topk: usize,
@@ -1173,6 +1211,26 @@ async fn answer_question(
         if !causal.is_empty() {
             lines.push(causal);
         }
+
+        // P7+: hippocampus spreading activation — finds associative hits
+        // that BM25 missed (semantically related via edge traversal).
+        // NOTE: in practice on LongMemEval, the BM25 + full-scan fact layer
+        // already covers most evidence; hippocampus spreading finds few NEW
+        // nodes. Its value is in the agent ablation bench (repeated exposure,
+        // where associative recall accumulates). Kept wired but guarded by
+        // CAUSAL_MEMORY_HIPPOCAMPUS_BENCH env var for controlled experiments.
+        if std::env::var("CAUSAL_MEMORY_HIPPOCAMPUS_BENCH").is_ok() {
+            let existing: HashSet<String> = lines
+                .iter()
+                .map(|l| l.trim_start_matches("- ").to_lowercase())
+                .collect();
+            let hippo_extra = hippocampus_boost(graph.as_ref(), q, &existing);
+            if !hippo_extra.is_empty() {
+                lines.push("[associative memory]".to_string());
+                lines.extend(hippo_extra);
+            }
+        }
+
         lines.join("\n")
     } else {
         memory_lines(&retrieved)
@@ -1351,16 +1409,27 @@ async fn run(args: Args) -> Result<()> {
     let done = Arc::new(AtomicUsize::new(0));
     let total = selected.len();
     let with_facts = args.ingest == IngestMode::Distill;
+
+    // P7+: Build the hippocampus graph ONCE for the whole run (building it
+    // per-question from a 500-question DB is too slow). Used for multi-session
+    // spreading activation. None if graph build fails (benchmark continues).
+    eprintln!("building hippocampus graph for spreading activation...");
+    let graph: Arc<Option<CausalGraph>> = Arc::new(CausalGraph::from_store(&store).ok());
+    if let Some(g) = graph.as_ref() {
+        eprintln!("  graph: {} nodes, {} edges", g.num_nodes(), g.num_edges());
+    }
+
     let rows: Vec<ResultRow> = futures::stream::iter(selected.iter().map(|q| {
         let cfg = cfg.clone();
         let store = store.clone();
         let done = done.clone();
+        let graph = graph.clone();
         let evidence = evidence_by_qid
             .get(&q.question_id)
             .cloned()
             .unwrap_or_default();
         async move {
-            let row = answer_question(&cfg, &store, q, evidence, args.topk, with_facts).await;
+            let row = answer_question(&cfg, &store, &graph, q, evidence, args.topk, with_facts).await;
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d.is_multiple_of(25) || d == total {
                 eprintln!("{d}/{total} questions done");
