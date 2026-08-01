@@ -17,12 +17,31 @@ pub(crate) static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// All statements use IF NOT EXISTS; older DBs are upgraded column-by-column
 /// by `crate::migrate::migrate`.
 pub const CAUSAL_SCHEMA_SQL: &str = r#"
--- Minimal chunks table (host agent writes decisions/outcomes as chunks)
+-- Minimal chunks table: ONLY structured memories enter this table.
+--   - causal edge endpoints (d{id}, o{id} from record_decision)
+--   - distilled items (distill:{ts}:{seq})
+-- Raw conversation turns do NOT go here — they live in session_logs.
+-- This separation keeps the retrieval pool (BM25 search target) clean:
+-- only facts, lessons, and causal relationships are searchable.
 CREATE TABLE IF NOT EXISTS chunks (
     id TEXT PRIMARY KEY,
     text TEXT NOT NULL,
     created_at INTEGER NOT NULL
 );
+
+-- Session logs: raw conversation turns for audit/replay.
+-- Not searched by BM25; available for explicit history queries.
+CREATE TABLE IF NOT EXISTS session_logs (
+    id TEXT PRIMARY KEY,
+    session_id INTEGER NOT NULL,
+    turn_index INTEGER NOT NULL,
+    speaker TEXT NOT NULL,
+    text TEXT NOT NULL,
+    event_time INTEGER NOT NULL,
+    task_tag TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_logs_session ON session_logs(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_logs_task ON session_logs(task_tag);
 
 -- Causal edges: decision → outcome
 -- Time fields:

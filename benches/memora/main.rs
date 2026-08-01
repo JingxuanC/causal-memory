@@ -120,9 +120,8 @@ fn usage() {
     eprintln!("  --out DIR           results dir (default: benches/memora/results)");
     eprintln!("  --topk N            retrieved memories per question (default: 10)");
     eprintln!("  --concurrency N     parallel questions (default: 8)");
-    eprintln!("  --ingest MODE       raw (default) | distill (LLM-distilled memory items;");
-    eprintln!("                      hybrid: light sessions distill-only, heavy sessions");
-    eprintln!("                      raw+distill dual write, separate *_distill.db)");
+    eprintln!("  --ingest MODE       raw (default, session_logs only) | distill (LLM-distilled");
+    eprintln!("                      memory items into chunks + facts layer)");
     eprintln!();
     eprintln!("Env: DEEPSEEK_API_KEY (required), LOCOMO_LLM_API, LOCOMO_LLM_MODEL");
     eprintln!();
@@ -355,41 +354,34 @@ fn list_personas(root: &Path, scale: &str) -> Result<Vec<String>> {
 // Ingest
 // ---------------------------------------------------------------------------
 
-/// Ingest one persona's sessions into its dedicated store.
+/// Ingest one persona's raw sessions into `session_logs` (audit only).
 ///
-/// Each turn becomes one chunk keyed `{persona}::{session_id:04}::{turn}`;
-/// consecutive turns of opposite speakers are linked with a low-confidence
-/// `caused` edge (temporal discovery) tagged `task_tag = persona`.
+/// Each turn is logged to `session_logs` — NOT to `chunks`. The retrieval
+/// pool (`chunks`) receives only distilled items via `ingest_persona_distill`.
 ///
-/// Idempotent: if the store already holds exactly the expected chunk count,
-/// ingestion is skipped; on a partial/stale state the persona's own chunks
-/// and edges are wiped and re-ingested.
+/// Idempotent: if session_logs already holds the expected turn count,
+/// ingestion is skipped.
 fn ingest_persona(store: &CausalStore, persona: &str, sessions: &[MemoraSession]) -> Result<usize> {
     let prefix = format!("{persona}::");
-    let expected_chunks: usize = sessions.iter().map(|s| s.conversation.len()).sum();
+    let expected_turns: usize = sessions.iter().map(|s| s.conversation.len()).sum();
 
-    // substr() instead of LIKE: persona names contain '_', a LIKE wildcard.
     let existing: i64 = store.with_conn(|c| {
         Ok(c.query_row(
-            "SELECT COUNT(*) FROM chunks WHERE substr(id, 1, ?1) = ?2",
+            "SELECT COUNT(*) FROM session_logs WHERE substr(id, 1, ?1) = ?2",
             rusqlite::params![prefix.len() as i64, &prefix],
             |r| r.get(0),
         )?)
     })?;
-    if existing == expected_chunks as i64 && expected_chunks > 0 {
-        return Ok(expected_chunks);
+    if existing == expected_turns as i64 && expected_turns > 0 {
+        return Ok(expected_turns);
     }
     if existing > 0 {
         eprintln!(
-            "warn: persona {persona} has {existing} chunks, expected {expected_chunks}; re-ingesting"
+            "warn: persona {persona} has {existing} session_logs, expected {expected_turns}; re-ingesting"
         );
         store.with_conn(|c| {
             c.execute(
-                "DELETE FROM causal_edges WHERE task_tag = ?1",
-                rusqlite::params![persona],
-            )?;
-            c.execute(
-                "DELETE FROM chunks WHERE substr(id, 1, ?1) = ?2",
+                "DELETE FROM session_logs WHERE substr(id, 1, ?1) = ?2",
                 rusqlite::params![prefix.len() as i64, &prefix],
             )?;
             Ok(())
@@ -403,10 +395,13 @@ fn ingest_persona(store: &CausalStore, persona: &str, sessions: &[MemoraSession]
     Ok(written)
 }
 
-/// Raw-ingest one session: each turn becomes one chunk keyed
-/// `{persona}::{session_id:04}::{turn}`; consecutive turns of opposite
-/// speakers are linked with a low-confidence `caused` edge (temporal
-/// discovery) tagged `task_tag = persona`. Returns chunks written.
+/// Raw-ingest one session: each turn is logged to `session_logs` (audit/
+/// replay only — NOT searchable by BM25). No chunks or edges are created.
+///
+/// This is the write-time gatekeeping fix: raw conversation turns never
+/// enter the retrieval pool. Only LLM-distilled items, facts, and causal
+/// edges go into `chunks`. This mirrors mem0's architecture where the LLM
+/// extraction is the sole gatekeeper to the searchable store.
 fn ingest_session_raw(
     store: &CausalStore,
     persona: &str,
@@ -415,7 +410,7 @@ fn ingest_session_raw(
     let mut written = 0usize;
     let base = session_base_time(session.session_id, &session.date);
     for (t_idx, turn) in session.conversation.iter().enumerate() {
-        let ts = base + t_idx as i64; // +1s per turn keeps intra-session order
+        let ts = base + t_idx as i64;
         let id = chunk_id(persona, session.session_id, turn.turn);
         let text = turn_chunk_text(
             session.session_id,
@@ -423,50 +418,16 @@ fn ingest_session_raw(
             &turn.speaker,
             &turn.message,
         );
-        // INSERT OR IGNORE returns 1 only when the chunk was newly written;
-        // on a redo of an interrupted persona (distill_done marker absent)
-        // existing chunks are skipped and their turn edges must NOT be
-        // duplicated, or BM25 evidence would double-count.
-        let inserted = store.with_conn(|c| {
-            Ok(c.execute(
-                "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
-                rusqlite::params![&id, &text, ts],
-            )?)
-        })?;
-        if inserted == 0 {
-            continue;
-        }
-
-        // Link each turn to the nearest preceding turn from the OTHER
-        // speaker (the turn it responds to); first turn gets no edge.
-        let prev_idx = session.conversation[..t_idx]
-            .iter()
-            .rposition(|t| t.speaker != turn.speaker);
-        if let Some(prev_idx) = prev_idx {
-            let prev_id = chunk_id(
-                persona,
-                session.session_id,
-                session.conversation[prev_idx].turn,
-            );
-            store.with_conn(|c| {
-                c.execute(
-                    "INSERT INTO causal_edges
-                     (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                    rusqlite::params![
-                        &prev_id,
-                        &id,
-                        TURN_EDGE_RELATION,
-                        TURN_EDGE_CONFIDENCE,
-                        TURN_EDGE_DISCOVERED_BY,
-                        ts,
-                        ts,
-                        persona
-                    ],
-                )?;
-                Ok(())
-            })?;
-        }
+        // Raw turns go to session_logs, not chunks — keeps BM25 pool clean.
+        store.log_session_turn(
+            &id,
+            session.session_id as i64,
+            turn.turn as i64,
+            &turn.speaker,
+            &text,
+            ts,
+            Some(persona),
+        )?;
         written += 1;
     }
     Ok(written)
@@ -620,10 +581,8 @@ async fn ingest_persona_distill(
         match result {
             Ok(items) if !items.is_empty() => {
                 if !light {
-                    // Heavy session: dual write. Raw turns preserve the
-                    // quantitative detail (totals, prices, lists) that
-                    // distillation compresses away; distilled items stay
-                    // the clean retrieval entry points.
+                    // Heavy session: log raw turns to session_logs (audit)
+                    // and write distilled items to chunks (retrieval).
                     stats.sessions_dual_write += 1;
                     stats.raw_chunks_written += ingest_session_raw(store, persona, session)?;
                 }
@@ -681,9 +640,9 @@ async fn ingest_persona_distill(
                 stats.sessions_light_empty += 1;
             }
             Ok(_) => {
-                // Heavy session with an empty distillation: keep the raw
-                // turns (evaluation questions can hinge on details the
-                // distiller dropped).
+                // Heavy session with an empty distillation: log raw turns
+                // to session_logs for audit (evaluation questions can hinge
+                // on details the distiller dropped).
                 stats.raw_chunks_written += ingest_session_raw(store, persona, session)?;
             }
             Err(e) => {

@@ -1,0 +1,105 @@
+LLM: deepseek-chat @ https://api.deepseek.com/v1
+scale weekly: personas ["academic_researcher"]
+persona academic_researcher: 158 sessions, 15 questions (selected 15)
+ingest academic_researcher (distill): 0/158 sessions distilled (0 dual-write, 0 light-empty dropped), 0 fallback-raw, 0 items (+0 dup), 0 facts (0 retired), 0 superseded, 0 LLM calls [skipped: existing distill DB]
+[academic_researcher 1/15] activity_steps_total_158 (Reasoning) FAMA=1.00 MPA=1/1 FAA=0/0
+[academic_researcher 2/15] activity_food_total_158 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[academic_researcher 3/15] goal_food_expenses_lunch_158_1 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[academic_researcher 4/15] activity_food_coffee_158 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[academic_researcher 5/15] goal_step_tracker_daily_steps_158_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[academic_researcher 6/15] content_email_writeup_158_email_writeup_1 (Remembering) FAMA=0.25 MPA=1/4 FAA=1/1
+[academic_researcher 7/15] content_meeting_notes_158_meeting_notes_2 (Remembering) FAMA=0.75 MPA=3/4 FAA=1/1
+[academic_researcher 8/15] pref_movies_general_158 (Recommending) FAMA=1.00 MPA=2/2 FAA=3/3
+[academic_researcher 9/15] pref_books_general_158 (Recommending) FAMA=0.00 MPA=0/3 FAA=2/2
+[academic_researcher 10/15] pref_music_general_158 (Recommending) FAMA=0.80 MPA=2/2 FAA=2/3
+[academic_researcher 11/15] activity_todos_158 (Remembering) FAMA=0.20 MPA=1/5 FAA=8/8
+[academic_researcher 12/15] pref_books_topics_158 (Recommending) FAMA=0.00 MPA=0/1 FAA=1/2
+[academic_researcher 13/15] pref_travel_general_158 (Recommending) FAMA=0.13 MPA=1/3 FAA=1/2
+[academic_researcher 14/15] content_project_proposal_158_project_proposal_1 (Remembering) FAMA=0.82 MPA=9/10 FAA=1/2
+[academic_researcher 15/15] content_project_proposal_158_project_proposal_2 (Remembering) FAMA=0.71 MPA=10/10 FAA=0/4
+wrote benches/memora/results/run_20260801_122245_weekly_academic_researcher.jsonl
+{
+  "run_id": "20260801_122245",
+  "date": "2026-08-01T12:23:08.148014+00:00",
+  "git_commit": "98c46ab",
+  "scale": "weekly",
+  "model": "deepseek-chat",
+  "judge_model": "deepseek-chat",
+  "temperature": 0.0,
+  "topk": 50,
+  "ingest": "distill",
+  "memora_root": "/Users/hjx/project/memora",
+  "judge_protocol": "single-judge (deepseek-chat, temp=0); official Table 3 uses 3-judge majority vote via OpenRouter — NOT directly comparable",
+  "personas": [
+    {
+      "persona": "academic_researcher",
+      "total_questions": 15,
+      "total_eval_questions": 81,
+      "overall_accuracy": 0.6419753086419753,
+      "fama": 42.20634920634921,
+      "memory_presence_total": 53,
+      "memory_presence_correct": 32,
+      "memory_presence_accuracy": 0.6037735849056604,
+      "forgetting_absence_total": 28,
+      "forgetting_absence_correct": 20,
+      "forgetting_absence_accuracy": 0.7142857142857143,
+      "by_task_type": {
+        "Reasoning": {
+          "total_questions": 5,
+          "total_eval_questions": 9,
+          "correct_count": 3,
+          "accuracy": 0.3333333333333333,
+          "memory_presence_total": 9,
+          "memory_presence_correct": 3,
+          "memory_presence_accuracy": 0.3333333333333333,
+          "forgetting_absence_total": 0,
+          "forgetting_absence_correct": 0,
+          "forgetting_absence_accuracy": null,
+          "fama": 33.33333333333333
+        },
+        "Recommending": {
+          "total_questions": 5,
+          "total_eval_questions": 23,
+          "correct_count": 14,
+          "accuracy": 0.6086956521739131,
+          "memory_presence_total": 11,
+          "memory_presence_correct": 5,
+          "memory_presence_accuracy": 0.45454545454545453,
+          "forgetting_absence_total": 12,
+          "forgetting_absence_correct": 9,
+          "forgetting_absence_accuracy": 0.75,
+          "fama": 38.666666666666664
+        },
+        "Remembering": {
+          "total_questions": 5,
+          "total_eval_questions": 49,
+          "correct_count": 35,
+          "accuracy": 0.7142857142857143,
+          "memory_presence_total": 33,
+          "memory_presence_correct": 24,
+          "memory_presence_accuracy": 0.7272727272727273,
+          "forgetting_absence_total": 16,
+          "forgetting_absence_correct": 11,
+          "forgetting_absence_accuracy": 0.6875,
+          "fama": 54.61904761904762
+        }
+      },
+      "distill_ingest": {
+        "sessions": 158,
+        "sessions_distilled": 0,
+        "sessions_dual_write": 0,
+        "sessions_light_empty": 0,
+        "sessions_fallback_raw": 0,
+        "items_recorded": 0,
+        "items_duplicate": 0,
+        "facts_recorded": 0,
+        "facts_retired": 0,
+        "superseded_invalidations": 0,
+        "raw_chunks_written": 0,
+        "llm_calls": 0,
+        "skipped_existing": true
+      }
+    }
+  ]
+}
+wrote benches/memora/results/run_20260801_122245_summary.json

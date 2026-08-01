@@ -419,4 +419,29 @@ impl CausalStore {
         )?;
         Ok(n > 0)
     }
+
+    /// Record a raw conversation turn into `session_logs` (not `chunks`).
+    ///
+    /// This is the write-time gatekeeping path: raw turns are stored for
+    /// audit/replay but are NOT searchable via BM25. Only structured
+    /// memories (facts, causal edges, distilled items) enter `chunks`.
+    pub fn log_session_turn(
+        &self,
+        id: &str,
+        session_id: i64,
+        turn_index: i64,
+        speaker: &str,
+        text: &str,
+        event_time: i64,
+        task_tag: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        conn.execute(
+            "INSERT OR IGNORE INTO session_logs
+             (id, session_id, turn_index, speaker, text, event_time, task_tag)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, session_id, turn_index, speaker, text, event_time, task_tag],
+        )?;
+        Ok(())
+    }
 }
