@@ -20,7 +20,7 @@ from pathlib import Path
 API_URL = "https://open.bigmodel.cn/api/paas/v4/embeddings"
 API_KEY = "267a25f814c5452290ff6e602e2344f2.MFJfoMrC5V4kyUZo"
 MODEL = "embedding-3"
-BATCH_SIZE = 64
+BATCH_SIZE = 16
 
 
 def embed_batch(texts):
@@ -35,6 +35,14 @@ def embed_batch(texts):
         json={"model": MODEL, "input": texts},
         timeout=30,
     )
+    if resp.status_code == 429:
+        time.sleep(3)
+        resp = requests.post(
+            API_URL,
+            headers=headers,
+            json={"model": MODEL, "input": texts},
+            timeout=30,
+        )
     resp.raise_for_status()
     data = resp.json()
     return [d["embedding"] for d in data["data"]]

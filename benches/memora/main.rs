@@ -50,6 +50,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use causal_memory::distill::{Distiller, ItemKind};
+use causal_memory::embed::{blob_to_vec, cosine_similarity, EmbedConfig, Embedder};
 use causal_memory::store::{CausalEntry, CausalStore};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -699,15 +700,114 @@ async fn ingest_persona_distill(
 // Retrieval
 // ---------------------------------------------------------------------------
 
-/// Retrieve candidate causal entries for a question (BM25), scoped to this
-/// persona via the task_tag edge filter.
+/// Retrieve candidate causal entries for a question (BM25 + optional semantic
+/// RRF fusion), scoped to this persona via the task_tag edge filter.
 fn retrieve(
     store: &CausalStore,
     persona: &str,
     question: &str,
     topk: usize,
+    query_vec: Option<&[f32]>,
 ) -> Result<Vec<CausalEntry>> {
-    store.search_causal_bm25(Some(persona), question, topk)
+    let bm25_results = store.search_causal_bm25(Some(persona), question, topk)?;
+    // Semantic + BM25 RRF fusion
+    if let Some(qv) = query_vec {
+        let semantic = semantic_search(store, persona, qv, topk * 2).unwrap_or_default();
+        if !semantic.is_empty() {
+            return Ok(rrf_merge(&bm25_results, &semantic, topk));
+        }
+    }
+    Ok(bm25_results)
+}
+
+/// Brute-force cosine search over edge_embeddings, scoped to persona.
+fn semantic_search(
+    store: &CausalStore,
+    persona: &str,
+    query_vec: &[f32],
+    limit: usize,
+) -> Result<Vec<CausalEntry>> {
+    store.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT ee.edge_id, ee.vector, cf.text, ct.text, e.relation, e.confidence, e.task_tag
+             FROM edge_embeddings ee
+             JOIN causal_edges e ON e.id = ee.edge_id
+             JOIN chunks cf ON cf.id = e.from_id
+             JOIN chunks ct ON ct.id = e.to_id
+             WHERE e.valid_to IS NULL AND e.task_tag = ?1"
+        )?;
+        let mut scored: Vec<(CausalEntry, f64)> = Vec::new();
+        let rows = stmt.query_map(rusqlite::params![persona], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Vec<u8>>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, f64>(5)?,
+                row.get::<_, Option<String>>(6)?,
+            ))
+        })?;
+        let row_data: Vec<(i64, Vec<u8>, String, String, String, f64, Option<String>)> =
+            rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        for (edge_id, blob, dec_text, out_text, relation, confidence, task_tag) in row_data {
+            if let Ok(vec) = blob_to_vec(&blob) {
+                let sim = cosine_similarity(query_vec, &vec);
+                scored.push((CausalEntry {
+                    edge_id,
+                    decision_id: String::new(),
+                    decision_text: dec_text,
+                    outcome_id: String::new(),
+                    outcome_text: out_text,
+                    relation,
+                    confidence,
+                    task_tag,
+                    event_time: 0,
+                    valid_to: None,
+                    access_count: 0,
+                    last_accessed_at: None,
+                    discovered_by: String::new(),
+                    discovered_at: 0,
+                    outcome_polarity: None,
+                }, sim));
+            }
+        }
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+        Ok(scored.into_iter().map(|(e, _)| e).collect())
+    })
+}
+
+/// RRF merge of two ranked lists (k=60).
+fn rrf_merge(bm25: &[CausalEntry], semantic: &[CausalEntry], limit: usize) -> Vec<CausalEntry> {
+    use std::collections::HashMap;
+    let k = 60.0;
+    let mut scores: HashMap<i64, (f64, usize)> = HashMap::new();
+    for (i, entry) in bm25.iter().enumerate() {
+        let s = 1.0 / (k + i as f64 + 1.0);
+        scores.insert(entry.edge_id, (s, i));
+    }
+    for (i, entry) in semantic.iter().enumerate() {
+        let s = 1.0 / (k + i as f64 + 1.0);
+        match scores.get_mut(&entry.edge_id) {
+            Some((acc, _)) => *acc += s,
+            None => {
+                scores.insert(entry.edge_id, (s, usize::MAX));
+            }
+        }
+    }
+    let mut ranked: Vec<(i64, f64)> = scores.into_iter().map(|(id, (s, _))| (id, s)).collect();
+    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let mut result = Vec::new();
+    for (edge_id, _) in ranked.into_iter().take(limit) {
+        if let Some(entry) = bm25.iter().find(|e| e.edge_id == edge_id) {
+            result.push(entry.clone());
+        } else if let Some(entry) = semantic.iter().find(|e| e.edge_id == edge_id) {
+            result.push(entry.clone());
+        }
+    }
+    result
 }
 
 /// History-intent keywords: when the question explicitly asks about the
@@ -1067,7 +1167,14 @@ async fn answer_question(
     topk: usize,
     with_facts: bool,
 ) -> ResultRow {
-    let retrieved = retrieve(store, persona, &q.question, topk).unwrap_or_default();
+    // Pre-compute query embedding for semantic RRF (avoids block_in_place)
+    let query_vec = if let Some(config) = EmbedConfig::from_env() {
+        let embedder = Embedder::new(config);
+        embedder.embed(&q.question).await.ok()
+    } else {
+        None
+    };
+    let retrieved = retrieve(store, persona, &q.question, topk, query_vec.as_deref()).unwrap_or_default();
     // Distill mode additionally queries the fact layer (BM25, scope "user" —
     // this persona's own DB, same topk) and puts fact lines FIRST: they are
     // the high-precision layer for the factual-recall slice. Retired facts
