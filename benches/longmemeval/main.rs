@@ -1571,7 +1571,16 @@ async fn run(args: Args) -> Result<()> {
     // per-question from a 500-question DB is too slow). Used for multi-session
     // spreading activation. None if graph build fails (benchmark continues).
     eprintln!("building hippocampus graph for spreading activation...");
-    let graph: Arc<Option<CausalGraph>> = Arc::new(CausalGraph::from_store(&store).ok());
+    let mut graph_inner = CausalGraph::from_store(&store).ok();
+    // Inhibitory ablation: zero out all prevented edges if env var is set.
+    // This isolates the contribution of negative activation (paper §4.6).
+    if std::env::var("CAUSAL_MEMORY_NO_INHIBIT").is_ok() {
+        if let Some(ref mut g) = graph_inner {
+            eprintln!("  CAUSAL_MEMORY_NO_INHIBIT set — disabling inhibitory (prevented) edges");
+            g.disable_inhibition();
+        }
+    }
+    let graph: Arc<Option<CausalGraph>> = Arc::new(graph_inner);
     if let Some(g) = graph.as_ref() {
         eprintln!("  graph: {} nodes, {} edges", g.num_nodes(), g.num_edges());
     }
@@ -1817,10 +1826,10 @@ mod tests {
 
     #[test]
     fn knowledge_update_prompt_has_latest_value_rule() {
-        let base = answer_system_prompt("single-session-user");
+        let base = answer_system_prompt("single-session-user", LmePromptVersion::V1);
         assert!(!base.contains("most recent value"));
 
-        let ku = answer_system_prompt("knowledge-update");
+        let ku = answer_system_prompt("knowledge-update", LmePromptVersion::V1);
         assert!(ku.contains("most recent value"));
         assert!(ku.contains("latest session date"));
         assert!(ku.starts_with(ANSWER_SYSTEM_PROMPT));

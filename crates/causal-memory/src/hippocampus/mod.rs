@@ -782,6 +782,32 @@ impl CausalGraph {
         self.edge_relations[edge_idx]
     }
 
+    /// Ablation switch: zero out all `Prevented` (inhibitory) edge values.
+    ///
+    /// After calling this, prevented edges still exist in the graph structure
+    /// but contribute zero spread — equivalent to treating them as `NoEffect`.
+    /// Used by the inhibitory ablation experiment (paper §4.6) to isolate the
+    /// contribution of negative activation.
+    ///
+    /// This is irreversible for the graph instance (rebuild from store to undo).
+    pub fn disable_inhibition(&mut self) {
+        // Zero forward values (O(E))
+        for edge_idx in 0..self.edge_relations.len() {
+            if self.edge_relations[edge_idx] == Relation::Prevented {
+                self.values[edge_idx] = 0.0;
+            }
+        }
+        // Zero reverse values in a single pass (O(E)) using rev_to_fwd_idx
+        for rev_idx in 0..self.rev_to_fwd_idx.len() {
+            let fwd_idx = self.rev_to_fwd_idx[rev_idx] as usize;
+            if fwd_idx < self.edge_relations.len()
+                && self.edge_relations[fwd_idx] == Relation::Prevented
+            {
+                self.values_rev[rev_idx] = 0.0;
+            }
+        }
+    }
+
     pub fn num_nodes(&self) -> usize {
         self.num_nodes
     }

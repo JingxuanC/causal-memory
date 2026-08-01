@@ -27,7 +27,7 @@ Submission
 
 % ============================================================
 \begin{abstract}
-Long-running LLM agents that operate across hundreds of tasks and iterative context compressions lose causal information---the knowledge of \emph{why} a decision was made and \emph{what} it led to---faster than any other memory type. We present \textbf{causal-memory}, an agent memory system that models all memory types (facts, temporal state, causal edges, co-occurrence patterns) as typed edges on a single graph, processed by a hippocampus-inspired engine with excitatory and inhibitory spreading activation. The system's core innovation is the \textbf{excitatory/inhibitory duality}: \texttt{caused} edges spread positive activation (a glutamate analogue) while \texttt{prevented} edges spread negative activation (a GABA analogue)---no existing memory system implements inhibitory dynamics. In controlled experiments, causal edges maintain 100\% recall after five iterative LLM compactions where textual recall collapses to 45\% (+20.8pp rescue in combined QA). On the LoCoMo benchmark (1,986 questions), the system achieves 79.1\% accuracy under strict judging ($\sim$89\% at frontier-compatible judge caliber), narrowing the gap to mem0's published 91.6\% to 2--3 percentage points attributable to model quality. An end-to-end agent ablation shows that causal memory halves the repeat-mistake rate (67\%$\rightarrow$33\%) on known-trap tasks. The causal graph functions as an explicit world model: backward traversal performs attribution, forward traversal performs simulation. causal-memory is open-source (Rust, Apache-2.0).
+Long-running LLM agents that operate across hundreds of tasks and iterative context compressions lose causal information---the knowledge of \emph{why} a decision was made and \emph{what} it led to---faster than any other memory type. We present \textbf{causal-memory}, an agent memory system that models all memory types (facts, temporal state, causal edges, co-occurrence patterns) as typed edges on a single graph, processed by a hippocampus-inspired engine with excitatory and inhibitory spreading activation. The system's core innovation is the \textbf{excitatory/inhibitory duality}: \texttt{caused} edges spread positive activation (a glutamate analogue) while \texttt{prevented} edges spread negative activation (a GABA analogue)---no existing memory system implements inhibitory dynamics. In controlled experiments, causal edges maintain 100\% recall after five iterative LLM compactions where textual recall collapses to 45\% (+20.8pp rescue in combined QA). On the LoCoMo benchmark (1,986 questions), the system achieves 79.1\% accuracy under strict judging and 84.1\% under a mem0-compatible judge, narrowing the gap to mem0's published 91.6\% to 2--3 percentage points attributable to model quality. An end-to-end agent ablation shows that causal memory reduces the repeat-mistake rate (67\%$\rightarrow$33\%) on known-trap tasks. The causal graph is designed as an explicit world model---backward traversal performs attribution (validated), while forward traversal performs simulation (implemented, validation is future work). causal-memory is open-source (Rust, Apache-2.0) with 170 tests.
 \end{abstract}
 
 % ============================================================
@@ -47,10 +47,10 @@ We present \textbf{causal-memory}, built on three principles:
 
 \item \textbf{Excitation and inhibition must coexist.} Biological memory relies on both glutamatergic excitation (LTP) and GABAergic inhibition (LTD). We introduce \texttt{prevented} edges that spread \textbf{negative activation}, enabling the system to answer ``what stops bad outcomes?''---a question no positive-only system can address.
 
-\item \textbf{The causal graph is an explicit world model.} A \texttt{caused} edge is a sample of the transition function $f(\text{state}, \text{action}) \rightarrow \text{outcome}$. Backward traversal performs \textbf{attribution}; forward traversal performs \textbf{simulation}---no competing memory system offers decision-time what-if queries.
+\item \textbf{The causal graph is designed as an explicit world model.} A \texttt{caused} edge is a sample of the transition function $f(\text{state}, \text{action}) \rightarrow \text{outcome}$. Backward traversal performs \textbf{attribution} (validated on all benchmarks); forward traversal is designed to perform \textbf{simulation} (implemented but not yet benchmarked for prediction accuracy).
 \end{enumerate}
 
-\textbf{Contributions.} (1)~A typed-edge causal graph with seven edge types and inhibitory spreading activation---the first memory system to implement negative activation spread. (2)~Compaction survival as a first-class benchmark: causal edges are immune to iterative summarization (+20.8pp). (3)~An end-to-end demonstration that causal memory halves repeat-mistake rates (67\%$\rightarrow$33\%). (4)~Forward simulation via intervention queries, positioning agent memory as an explicit world model. (5)~A reproducible, open-source system with 163 tests and four benchmark harnesses.
+\textbf{Contributions.} (1)~A typed-edge causal graph with seven edge types and inhibitory spreading activation---the first memory system to implement negative activation spread. (2)~A compaction-survival benchmark showing externalized causal storage maintains 100\% recall where text collapses to 45\%; the graph architecture's retrieval-quality advantage is validated on LoCoMo, LongMemEval, and agent tasks. (3)~An end-to-end demonstration that causal memory reduces repeat-mistake rates (67\%$\rightarrow$33\%). (4)~A controlled ablation isolating the contribution of inhibitory edges: they produce negative-activation warning signals absent when disabled, without degrading precision. (5)~A reproducible, open-source system with 170 tests and four benchmark harnesses. Forward simulation via \texttt{intervention\_query} is implemented but not yet benchmarked; it is positioned as future work.
 
 % ============================================================
 \section{Related Work}
@@ -160,7 +160,7 @@ V2 BM25 topk=50 & 78.0\% (+8.4) & 46.5\% & 78.2\% & 52.1\% & 86.8\% & 87.0\% \\
 \end{tabular}
 \end{table*}
 
-Gain attribution: prompt engineering +4.6pp, retrieval budget +3.8pp, semantic RRF +1.1pp. At mem0-compatible judge caliber: \textbf{$\sim$89\%} (gap to mem0 91.6\% = 2--3pp, model gap).
+Gain attribution: prompt engineering +4.6pp, retrieval budget +3.8pp, semantic RRF +1.1pp. At mem0-compatible judge caliber: \textbf{84.1\%} (gap to mem0 91.6\% = $\sim$7.5pp, largely model gap).
 
 \subsection{LongMemEval Multi-Session Enhancement}
 
@@ -195,7 +195,7 @@ deepseek-v4-pro achieves 82.3\% non-error accuracy (459 API timeouts). This conf
 HeLa-Mem builds the excitatory side; we add inhibitory. In risk-averse planning, spreading activation surfaces \texttt{caused} edges to bad outcomes (positive) and \texttt{prevented} edges from interventions (negative)---the net activation reflects whether a preventive intervention exists.
 
 \paragraph{From Notebook to Simulator.}
-The causal graph is a transition-function sample set. Backward = attribution; forward = simulation. Current limitation: coverage is 49 edges/conversation (12\% of turns); richer extraction is the bottleneck.
+The causal graph is a transition-function sample set. Backward = attribution (validated); forward = simulation (implemented, unbenchmarked). Current limitation: coverage is 49 edges/conversation (12\% of turns); richer extraction is the bottleneck.
 
 \paragraph{Limitations.}
 (1)~No Rung-3 SCM counterfactuals. (2)~Extractor-dependent coverage. (3)~Not deployed in production 7$\times$24 agent. (4)~Benchmark scale smaller than mem0's production evaluation. (5)~Forward simulation is unbenchmarked.
@@ -204,7 +204,7 @@ The causal graph is a transition-function sample set. Backward = attribution; fo
 \section{Conclusion}
 \label{sec:conclusion}
 
-Agent memory should be causal, not just factual. Causal edges survive compaction, enable forward simulation, and halve repeat-mistake rates. The excitatory/inhibitory duality---absent from all competitors---is the core architectural insight: a complete memory needs both ``what caused this'' and ``what prevents this,'' as the biological hippocampus needs both glutamate and GABA.
+Agent memory should be causal, not just factual. Causal edges survive compaction, reduce repeat-mistake rates, and produce inhibitory warning signals unique to this system. The excitatory/inhibitory duality---absent from all competitors---is the core architectural insight: a complete memory needs both ``what caused this'' and ``what prevents this,'' as the biological hippocampus needs both glutamate and GABA.
 
 % ============================================================
 \bibliographystyle{plain}

@@ -783,4 +783,164 @@ mod tests {
         graph.swr_consolidate(50); // creates skewed replay distribution
         assert!(graph.novelty_entropy() > 0.1, "skewed should be higher entropy");
     }
+
+    // ─── Inhibitory ablation (paper §4.6) ────────────────────────────────
+
+    /// Build a graph with explicit caused + prevented edges to demonstrate
+    /// that inhibition changes retrieval ranking.
+    fn make_ablation_graph() -> CausalGraph {
+        let nodes = vec![
+            NodeData {
+                id: "deploy".into(),
+                text: "deploy without env check".into(),
+                event_time: 1,
+                q_value: 0.3, // low Q — known mistake
+                replay_count: 2,
+                last_activated: 100,
+                task_tag: None,
+            },
+            NodeData {
+                id: "crash".into(),
+                text: "production crash".into(),
+                event_time: 2,
+                q_value: 0.1,
+                replay_count: 1,
+                last_activated: 100,
+                task_tag: None,
+            },
+            NodeData {
+                id: "safe".into(),
+                text: "zero downtime release".into(),
+                event_time: 3,
+                q_value: 0.8,
+                replay_count: 3,
+                last_activated: 100,
+                task_tag: None,
+            },
+            NodeData {
+                id: "rollback".into(),
+                text: "quick rollback procedure".into(),
+                event_time: 4,
+                q_value: 0.7,
+                replay_count: 2,
+                last_activated: 100,
+                task_tag: None,
+            },
+        ];
+        let edges = vec![
+            EdgeData {
+                from_id: "deploy".into(),
+                to_id: "crash".into(),
+                relation: Relation::Caused,
+                weight: 0.9,
+                valid: true,
+            },
+            EdgeData {
+                from_id: "deploy".into(),
+                to_id: "safe".into(),
+                relation: Relation::Prevented,
+                weight: 0.8,
+                valid: true,
+            },
+            EdgeData {
+                from_id: "deploy".into(),
+                to_id: "rollback".into(),
+                relation: Relation::Enabled,
+                weight: 0.6,
+                valid: true,
+            },
+        ];
+        CausalGraph::build(&nodes, &edges)
+    }
+
+    #[test]
+    fn test_inhibition_changes_activation_sign() {
+        // With inhibition: "zero downtime release" gets NEGATIVE activation
+        // (prevented by deploying without env check).
+        let mut graph = make_ablation_graph();
+        let results = graph.spreading_activation_opts("deploy", None, false, false);
+        let safe = results.iter().find(|r| r.text.contains("zero downtime"));
+        assert!(
+            safe.is_some(),
+            "zero downtime release should be in results"
+        );
+        assert!(
+            safe.unwrap().activation < 0.0,
+            "prevented edge should give negative activation to 'zero downtime release'"
+        );
+    }
+
+    #[test]
+    fn test_disable_inhibition_zeros_prevented() {
+        // After disable_inhibition(): "zero downtime release" gets ZERO or
+        // near-zero activation (no negative spread).
+        let mut graph = make_ablation_graph();
+        graph.disable_inhibition();
+        let results = graph.spreading_activation_opts("deploy", None, false, false);
+
+        // The crash node should still be strongly activated (caused edge intact)
+        let crash = results.iter().find(|r| r.text.contains("crash"));
+        assert!(crash.is_some());
+        assert!(
+            crash.unwrap().activation > 0.0,
+            "caused edges should still spread positive activation"
+        );
+
+        // The safe node should NOT have negative activation anymore
+        let safe = results.iter().find(|r| r.text.contains("zero downtime"));
+        if let Some(safe) = safe {
+            assert!(
+                safe.activation >= -0.001,
+                "prevented edge value zeroed: activation should be >= 0, got {}",
+                safe.activation
+            );
+        }
+        // If safe is absent, that's also fine (threshold filtered it).
+    }
+
+    #[test]
+    fn test_inhibition_changes_ranking() {
+        // The key ablation result: WITH inhibition, the "zero downtime release"
+        // node appears with NEGATIVE activation (a warning signal — "this
+        // outcome is prevented by the queried action").
+        //
+        // WITHOUT inhibition, that node is absent from results entirely — no
+        // warning is surfaced. The system loses the ability to distinguish
+        // "this outcome is likely" (positive) from "this outcome is prevented"
+        // (negative).
+        let mut graph_with = make_ablation_graph();
+        let results_with = graph_with.spreading_activation_opts("deploy", None, false, false);
+
+        let mut graph_without = make_ablation_graph();
+        graph_without.disable_inhibition();
+        let results_without =
+            graph_without.spreading_activation_opts("deploy", None, false, false);
+
+        // WITH inhibition: crash (positive) and zero-downtime (negative) both present
+        let crash_with = results_with
+            .iter()
+            .find(|r| r.text.contains("crash"));
+        let safe_with = results_with
+            .iter()
+            .find(|r| r.text.contains("zero downtime"));
+        assert!(crash_with.is_some(), "crash should be activated");
+        assert!(safe_with.is_some(), "zero downtime should appear (as warning)");
+        assert!(
+            crash_with.unwrap().activation > 0.0,
+            "crash is positively activated (caused)"
+        );
+        assert!(
+            safe_with.unwrap().activation < 0.0,
+            "zero downtime is negatively activated (prevented) — warning signal"
+        );
+
+        // WITHOUT inhibition: zero-downtime is absent (no warning surfaced)
+        let safe_without = results_without
+            .iter()
+            .find(|r| r.text.contains("zero downtime"));
+        assert!(
+            safe_without.is_none(),
+            "without inhibition: prevented target absent from results (no warning)"
+        );
+    }
 }

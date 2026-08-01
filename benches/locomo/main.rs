@@ -1913,6 +1913,7 @@ mod tests {
             &store,
             "When did Caroline go to the LGBTQ support group?",
             10,
+            None,
         )
         .unwrap();
         assert_eq!(res.len(), 1, "BM25 must rank the evidence edge");
