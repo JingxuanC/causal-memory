@@ -67,34 +67,121 @@ pub struct MemoryItem {
 ///   handle for soft-invalidation at write time.
 /// - JSON array output, temp=0: deterministic, machine-parseable; the
 ///   parser below tolerates fences and partial garbage anyway.
-const DISTILL_PROMPT: &str = r#"You are distilling a conversation session into long-term memory items for a personal assistant.
+const DISTILL_PROMPT: &str = r#"You are a Memory Extractor for a personal AI assistant. Your job is to extract EVERY piece of memorable information from a conversation session into structured memory items.
 
-Extract ONLY content worth remembering long-term:
-- fact: stable facts about the user (job, projects, possessions, relationships)
-- preference: likes/dislikes/habits (tools, food, style, workflow)
-- lesson: advice given, decisions made and why, feedback to remember
-- event: dated happenings, plans, deadlines, purchases, todo changes
+# What to Extract
 
-DISCARD greetings, small talk, filler, and content with no future value.
+Extract ALL memorable information from BOTH user and assistant messages:
 
-Rules for EVERY item:
-- "text": ONE self-contained sentence. It MUST include the absolute date (YYYY-MM-DD, from the session date or dates mentioned in the conversation). NEVER use relative time words ("yesterday", "next week", "recently") — resolve them to absolute dates.
-- "kind": one of "fact" | "preference" | "lesson" | "event".
-- "date": the item's date as YYYY-MM-DD (usually the session date).
-- "supersedes": if this item UPDATES or RETRACTS information from an earlier conversation (e.g. a todo changed from "buy groceries" to "bought groceries", a preference was revised, an item was deleted), fill in 2-5 SPECIFIC keywords of the OLD content it replaces so it can be matched by text search. Otherwise null. Only fill supersedes for true RETRACTIONS (cancelled/completed/changed-away-from), NOT for restating the same fact in new words.
+**From user messages:**
+- Personal details: name, job, location, relationships, projects
+- Preferences: likes/dislikes (food, tools, movies, music, books, travel)
+- Plans and intentions: upcoming events, goals, deadlines, travel
+- Activities: workouts, meals, expenses, daily routines (with exact numbers)
+- Professional context: role, team, tools, technologies, career goals
+- Health and wellness: dietary restrictions, fitness routines
+- Opinions, emotional states, motivations
+- Shared content: meeting notes, emails, proposals, documents (extract EACH point)
 
-Preserve specifics — they are what makes a memory useful later:
-- Keep concrete numbers, names, dates, prices, and list items verbatim (e.g. "walked 6,214 steps", "Lars Bergström to optimize the rendering pipeline").
-- For content the user created or discussed in detail (meeting notes, emails, proposals), emit ONE item PER distinct fact (agenda item, decision, action item) instead of one vague summary.
-- For recurring activities (steps, meals, expenses, workouts), emit one event item per day with that day's numbers.
-- For meetings/emails/proposals: extract EACH decision, action item, and key detail as a separate item. A 5-point meeting agenda should produce 5 items, not 1 summary.
-- Up to 30 items per session; prioritize by long-term value. Extract ALL
-  memorable facts — do not compress multiple distinct facts into one item.
+**From assistant messages (only genuinely new info):**
+- Specific recommendations given (books, restaurants, products)
+- Plans or schedules created
+- Solutions provided, instructions given
 
-Respond with ONLY a JSON array, nothing else:
-[{"kind": "...", "text": "...", "date": "YYYY-MM-DD", "supersedes": null}]
+**Do NOT extract:**
+- Greetings, small talk, filler ("Hi!", "Sounds good!", "Thanks!")
+- Vague acknowledgments or restatements of what the user said
+- Meta-commentary about capabilities
 
-Return an empty array [] if nothing is worth remembering."#;
+# Critical Extraction Rules
+
+## Rule 1: Extract ALL Dimensions — Not Just the First Topic
+A conversation about a meeting may also mention a preference, a deadline, and a personal detail. Extract EACH topic separately. Do NOT let the dominant topic cause you to miss secondary information.
+
+## Rule 2: Preserve Exact Specifics
+- Keep concrete numbers verbatim: "walked 6,214 steps", "budget is $15,000", "3 out of 5 items"
+- Keep proper nouns verbatim: "Osteria Francescana", not "a restaurant"
+- Keep titles verbatim: "The Hitchhiker's Guide to the Galaxy", not "a book"
+- Keep dates verbatim: "June 15, 2025", not "a summer date"
+- NEVER generalize: "grilled salmon and roasted vegetables", not "a healthy meal"
+
+## Rule 3: Capture Transitions and Changes
+When a preference or plan CHANGES, capture BOTH the new state AND what it replaces:
+- "switched from almond milk to oat milk" -> NOT just "prefers oat milk"
+- "cancelled the gym membership" -> NOT just "uses the gym"
+- "rescheduled from Tuesday to Thursday" -> capture the day change
+
+## Rule 4: Extract Incidental Facts from Questions
+When a user asks a question, the question itself often contains personal facts:
+- "As an aspiring actor, can you recommend..." -> extract "is an aspiring actor"
+- "I just started learning Python..." -> extract "started learning Python on [date]"
+
+## Rule 5: Temporal Grounding
+- Use absolute dates (YYYY-MM-DD), NEVER relative time ("yesterday", "recently")
+- Resolve relative references using the session date
+- Keep exact durations: "18 days" stays "18 days", not "some time"
+
+## Rule 6: Contextually Rich Memories
+Each item should be a complete, self-contained sentence (15-80 words):
+- BAD: "User has a dog"
+- GOOD: "User has a golden retriever named Max who they walk every morning"
+
+# Item Format
+
+Each item has:
+- "kind": "fact" | "preference" | "lesson" | "event"
+  - fact: stable personal details (job, relationships, possessions)
+  - preference: likes/dislikes/habits (food, tools, entertainment)
+  - lesson: decisions made, advice given, feedback received
+  - event: dated happenings (plans, purchases, activities, todo changes)
+- "text": one self-contained, absolutely-dated sentence
+- "date": YYYY-MM-DD (usually the session date)
+- "supersedes": if this item RETRACTS earlier info (e.g. "cancelled gym"), put 2-5 keywords of the OLD content here. Otherwise null.
+
+# Examples
+
+Input: "Hi, I'm Sarah. I work at Google as a senior engineer. Oh, and I just adopted a cat named Luna!"
+Output: [
+  {"kind": "fact", "text": "User's name is Sarah, works as a senior engineer at Google", "date": "DATE", "supersedes": null},
+  {"kind": "event", "text": "User adopted a cat named Luna on DATE", "date": "DATE", "supersedes": null}
+]
+
+Input: "I usually take the bus, but I just bought a car yesterday so I'll be driving from now on."
+Output: [
+  {"kind": "event", "text": "User bought a car on DATE and switched from taking the bus to driving", "date": "DATE", "supersedes": "takes the bus"}
+]
+
+Input: "We had the project review meeting. Three decisions: 1) Launch v2.0 in March, 2) Allocate $50k for marketing, 3) Hire a junior dev by April."
+Output: [
+  {"kind": "lesson", "text": "On DATE, project review decided to launch v2.0 in March", "date": "DATE", "supersedes": null},
+  {"kind": "lesson", "text": "On DATE, project review allocated $50,000 for marketing budget", "date": "DATE", "supersedes": null},
+  {"kind": "lesson", "text": "On DATE, project review decided to hire a junior developer by April", "date": "DATE", "supersedes": null}
+]
+
+Input: "Hey, how's it going? Nice weather today."
+Output: []
+
+Input: "I walked 8,231 steps today, had a salad for lunch ($12.50), and finished reading 'Project Hail Mary'. Oh, I also decided to switch from Yoga to Pilates starting next week."
+Output: [
+  {"kind": "event", "text": "User walked 8,231 steps on DATE", "date": "DATE", "supersedes": null},
+  {"kind": "event", "text": "User had a salad for lunch costing $12.50 on DATE", "date": "DATE", "supersedes": null},
+  {"kind": "event", "text": "User finished reading 'Project Hail Mary' on DATE", "date": "DATE", "supersedes": null},
+  {"kind": "preference", "text": "User decided to switch from Yoga to Pilates starting the week of DATE", "date": "DATE", "supersedes": "does yoga"}
+]
+
+# Extraction Checklist (verify before outputting)
+1. Have you extracted at least one item from EVERY distinct topic in the conversation?
+2. Have you checked messages in the MIDDLE and END, not just the beginning?
+3. For a conversation with 5+ messages, you should typically extract 5-15 items.
+4. Have you preserved all numbers, names, dates, and prices exactly as stated?
+5. Have you captured any transitions or changes with both old and new state?
+
+# Output
+
+Return ONLY a valid JSON array. No text, no explanation:
+[{"kind": "fact", "text": "...", "date": "YYYY-MM-DD", "supersedes": null}]
+
+Return [] if nothing is worth remembering."#;
 
 /// LLM-backed session distiller. Construct via `from_env`; absent config
 /// yields None and the caller falls back to raw ingest.
@@ -137,17 +224,35 @@ impl Distiller {
     /// Distill one session's turns into memory items.
     ///
     /// `date` is the session date ("YYYY-MM-DD"); `turns` are
-    /// (speaker, message) pairs in order. One retry on failure; a persistent
-    /// error is returned so the caller can fall back to raw ingest for this
-    /// session. An empty Ok(vec![]) means "nothing worth remembering" AND
-    /// parse failure alike — the caller treats both as fallback-to-raw
-    /// (data must not be lost).
+    /// (speaker, message) pairs in order. `existing_memories` is an optional
+    /// list of already-stored memory texts — when provided, they are passed
+    /// into the prompt so the LLM can avoid re-extracting duplicates and
+    /// detect transitions ("switched from X to Y") by seeing what's already
+    /// stored.
     pub async fn distill_session(
         &self,
         date: &str,
         turns: &[(String, String)],
     ) -> Result<Vec<MemoryItem>> {
-        let mut user_msg = format!("Session date: {date}\n\nConversation:\n");
+        self.distill_session_with_context(date, turns, &[]).await
+    }
+
+    /// Distill with dedup context: `existing_memories` are recently-stored
+    /// items that the LLM sees to avoid duplicates and detect transitions.
+    pub async fn distill_session_with_context(
+        &self,
+        date: &str,
+        turns: &[(String, String)],
+        existing_memories: &[String],
+    ) -> Result<Vec<MemoryItem>> {
+        let mut user_msg = format!("Session date: {date}\n");
+        if !existing_memories.is_empty() {
+            user_msg.push_str("\nRecently stored memories (do NOT re-extract these — detect transitions instead):\n");
+            for mem in existing_memories.iter().take(20) {
+                user_msg.push_str(&format!("- {mem}\n"));
+            }
+        }
+        user_msg.push_str("\nConversation:\n");
         for (speaker, message) in turns {
             user_msg.push_str(&format!("{}: {}\n", speaker, message.trim()));
         }

@@ -552,7 +552,15 @@ async fn ingest_persona_distill(
 
     // Distill sessions with bounded concurrency; `buffered` keeps results in
     // session order for the sequential record phase below.
-    let futures = sessions.iter().map(|session| {
+    // Sequential distill with accumulating dedup context: each session's
+    // distill call sees the items extracted by previous sessions, so the
+    // LLM can detect transitions ("switched from X to Y") and skip
+    // duplicates. This mirrors mem0's Phase 0+1 context gathering.
+    // We sacrifice concurrency on the LLM extraction call (the bottleneck
+    // shifts to sequential), but gain much higher extraction quality.
+    let mut stored_texts: Vec<String> = Vec::new();
+    let mut results: Vec<(Result<Vec<causal_memory::distill::MemoryItem>>, usize)> = Vec::new();
+    for session in sessions.iter() {
         let turns: Vec<(String, String)> = session
             .conversation
             .iter()
@@ -566,13 +574,21 @@ async fn ingest_persona_distill(
             })
             .collect();
         let date = session.date.clone();
-        async move { (distiller.distill_session(&date, &turns).await, 1usize) }
-    });
-    let results: Vec<(Result<Vec<causal_memory::distill::MemoryItem>>, usize)> =
-        futures::stream::iter(futures)
-            .buffered(concurrency)
-            .collect()
-            .await;
+        let ctx = stored_texts.clone();
+        let result = distiller.distill_session_with_context(&date, &turns, &ctx).await;
+        results.push((result, 1usize));
+        // After distill, add this session's items to the context for the next.
+        // We peek at the result here; actual recording happens in the loop below.
+        if let Ok(items) = &results.last().unwrap().0 {
+            for it in items {
+                stored_texts.push(it.text.clone());
+            }
+        }
+        // Cap context at 50 items (last ~5 sessions worth) to keep prompt bounded.
+        if stored_texts.len() > 50 {
+            stored_texts = stored_texts.split_off(stored_texts.len() - 50);
+        }
+    }
     stats.llm_calls = results.iter().map(|(_, n)| n).sum();
 
     // Record strictly in session order.
