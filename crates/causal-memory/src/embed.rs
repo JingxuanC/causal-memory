@@ -1,15 +1,18 @@
-//! Embedding client for semantic retrieval (Phase 6).
+//! Embedding client for semantic retrieval.
 //!
-//! When CAUSAL_MEMORY_EMBED_API + CAUSAL_MEMORY_EMBED_KEY are set (falling back
-//! to the CAUSAL_MEMORY_LLM_* pair), edges get vector embeddings and
-//! `search_causal` can rank by cosine similarity instead of LIKE matching.
-//! Otherwise returns None and the caller falls back to the keyword path.
+//! Three backends, tried in priority order via `init_embedder()`:
 //!
-//! Compatible with any OpenAI-style /v1/embeddings endpoint.
+//! 1. **HTTP** (default): OpenAI-compatible `/v1/embeddings` endpoint.
+//!    Configured via `CAUSAL_MEMORY_EMBED_API` + `CAUSAL_MEMORY_EMBED_KEY`.
 //!
-//! HTTP style mirrors `llm.rs`: async `reqwest` (the store layer is sync, the
-//! caller bridges via a tokio runtime), same header style, same
-//! "unconfigured → None → caller falls back" contract.
+//! 2. **Local ONNX** (feature `local-embed`): in-process embedding via
+//!    `fastembed-rs` (BAAI/bge-small-en-v1.5, 384 dims, ~130MB).
+//!    No API key, no network at runtime (model downloads once on first use).
+//!    Activated when HTTP config is absent and the `local-embed` feature is on.
+//!
+//! 3. **None**: semantic search unavailable; caller falls back to BM25.
+//!
+//! Both backends implement the same `embed(text) -> Vec<f32>` contract.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -130,6 +133,121 @@ impl Embedder {
             .map(|d| d.embedding)
             .ok_or_else(|| anyhow::anyhow!("No embedding in API response"))
     }
+}
+
+// ─── Local ONNX embedder (feature-gated) ──────────────────────────────
+
+/// In-process embedding via fastembed-rs (ONNX runtime).
+/// Uses BAAI/bge-small-en-v1.5 by default (384 dims, ~130MB on disk).
+/// Model downloads on first use, then loads from cache (~1s startup).
+#[cfg(feature = "local-embed")]
+pub struct LocalEmbedder {
+    model: fastembed::TextEmbedding,
+    model_name: String,
+}
+
+#[cfg(feature = "local-embed")]
+impl LocalEmbedder {
+    /// Create with the default model (bge-small-en-v1.5).
+    /// Override via `CAUSAL_MEMORY_LOCAL_EMBED_MODEL` env var.
+    pub fn new() -> Result<Self> {
+        let model_name = std::env::var("CAUSAL_MEMORY_LOCAL_EMBED_MODEL")
+            .unwrap_or_else(|_| "BAAI/bge-small-en-v1.5".into());
+        let model_enum = Self::resolve_model(&model_name);
+        let model = fastembed::TextEmbedding::try_new(
+            fastembed::TextInitOptions::new(model_enum),
+        )?;
+        Ok(Self { model, model_name })
+    }
+
+    fn resolve_model(name: &str) -> fastembed::EmbeddingModel {
+        use fastembed::EmbeddingModel as M;
+        match name {
+            "BAAI/bge-base-en-v1.5" => M::BGEBaseENV15,
+            "BAAI/bge-large-en-v1.5" => M::BGELargeENV15,
+            "BAAI/bge-small-zh-v1.5" => M::BGESmallZHV15,
+            "BAAI/bge-large-zh-v1.5" => M::BGELargeZHV15,
+            "sentence-transformers/all-MiniLM-L6-v2" => M::AllMiniLML6V2,
+            "sentence-transformers/all-MiniLM-L12-v2" => M::AllMiniLML12V2,
+            "intfloat/multilingual-e5-small" => M::MultilingualE5Small,
+            _ => M::BGESmallENV15, // default
+        }
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model_name
+    }
+
+    /// Embed a single text synchronously (ONNX inference is CPU-bound, no async needed).
+    pub fn embed(&mut self, text: &str) -> Result<Vec<f32>> {
+        let embeddings = self.model.embed(vec![text.to_string()], None)?;
+        embeddings
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("fastembed returned no embedding"))
+    }
+}
+
+// ─── Unified embedder ─────────────────────────────────────────────────
+
+/// Unified embedder that abstracts over HTTP and Local backends.
+/// Callers use `embed()` without knowing which backend is active.
+pub enum UnifiedEmbedder {
+    Http(Embedder),
+    #[cfg(feature = "local-embed")]
+    Local(LocalEmbedder),
+}
+
+impl UnifiedEmbedder {
+    /// The model name (for recording alongside stored vectors).
+    pub fn model(&self) -> &str {
+        match self {
+            UnifiedEmbedder::Http(e) => e.model(),
+            #[cfg(feature = "local-embed")]
+            UnifiedEmbedder::Local(e) => e.model(),
+        }
+    }
+
+    /// Embed text → f32 vector. Works for both HTTP (async) and local (sync).
+    /// For local, the async wrapper is a no-op (ONNX runs synchronously).
+    pub async fn embed(&mut self, text: &str) -> Result<Vec<f32>> {
+        match self {
+            UnifiedEmbedder::Http(e) => e.embed(text).await,
+            #[cfg(feature = "local-embed")]
+            UnifiedEmbedder::Local(e) => e.embed(text),
+        }
+    }
+}
+
+/// Initialize the best available embedder, in priority order:
+/// 1. HTTP endpoint (if CAUSAL_MEMORY_EMBED_API is configured)
+/// 2. Local ONNX (if `local-embed` feature is compiled in and HTTP is absent)
+/// 3. None (semantic search unavailable)
+pub fn init_embedder() -> Option<UnifiedEmbedder> {
+    // Priority 1: HTTP endpoint
+    if let Some(config) = EmbedConfig::from_env() {
+        return Some(UnifiedEmbedder::Http(Embedder::new(config)));
+    }
+
+    // Priority 2: Local ONNX (feature-gated)
+    #[cfg(feature = "local-embed")]
+    {
+        match LocalEmbedder::new() {
+            Ok(e) => {
+                eprintln!(
+                    "[causal-memory] local embedding initialized: {} ({} dims)",
+                    e.model(),
+                    "384"
+                );
+                return Some(UnifiedEmbedder::Local(e));
+            }
+            Err(e) => {
+                eprintln!("[causal-memory] local embedding init failed: {e}");
+            }
+        }
+    }
+
+    None
 }
 
 /// Cosine similarity between two vectors.

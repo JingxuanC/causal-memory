@@ -19,6 +19,15 @@ chrono.workspace = true
 reqwest.workspace = true
 tokio = { workspace = true, features = ["time"] }
 
+# Local embedding via ONNX (optional). Enable with --features local-embed.
+# Uses fastembed-rs (BAAI/bge-small-en-v1.5, 384 dims, ~130MB, downloads on first use).
+# On macOS, build.rs links CoreML framework (required by ort-sys).
+fastembed = { version = "5", optional = true }
+
+[features]
+default = []
+local-embed = ["dep:fastembed"]
+
 [lib]
 name = "causal_memory"
 path = "src/lib.rs"
