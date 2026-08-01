@@ -46,7 +46,7 @@ compaction cannot touch it.
 | V2 BM25 topk=50 | 78.0% | +8.4pp |
 | **V2 BM25 + semantic RRF topk=50** | **79.1%** | **+9.5pp** |
 
-At mem0-compatible judge caliber: **~89%** (79.1% strict + ~10pp judge tax).
+At mem0-compatible judge caliber: **84.1%** (gap to mem0 91.6% ≈ 7.5pp, largely model gap).
 Gap to mem0 official 91.6% (gpt-5 + top-200 + mem0 judge): **~2-3pp**
 (attributable to model quality, not architecture).
 
@@ -102,10 +102,10 @@ the inhibitory side (`prevented` edges spread **negative** activation — a GABA
 analogue). A complete memory needs both: "what caused this" *and* "what prevents
 this from happening again."
 
-**The causal graph is an explicit world model.** A `caused` edge is a transition
-function sample `f(state, action) → outcome`. Backward traversal is attribution
-(`trace_cause`); forward traversal is simulation (`intervention_query`). No other
-memory system offers forward simulation. See the
+**The causal graph is designed as an explicit world model.** A `caused` edge is a transition
+function sample `f(state, action) → outcome`. Backward traversal (attribution) is validated
+on all benchmarks; forward traversal (simulation via `intervention_query`) is implemented
+but not yet benchmarked for prediction accuracy. See the
 [world-model analysis](https://github.com/JingxuanC/agent-teardown/blob/main/papers/daily/2026-08-01-world-model-analysis.md).
 
 ---
@@ -257,7 +257,7 @@ Design docs: [`docs/complete-memory-system.md`](docs/complete-memory-system.md),
 
 ```bash
 cargo build --release                    # Build binary
-cargo test                              # Run 163 tests (default features)
+cargo test                              # Run 170 tests (default features)
 cargo test --features local-embed       # Run with ONNX embedding tests
 cargo clippy --workspace -- -D warnings # Lint (rust-skills baseline)
 ```
@@ -285,7 +285,7 @@ style/complexity/perf → warn, unwrap_used → warn.
 - ✅ Offline consolidation ("sleep") with immutable delta + clone
 - ✅ Cross-agent sharing (export/import, redacted + idempotent)
 - ✅ Benchmark harnesses: LoCoMo (79.1%), LongMemEval (~75.8%), Memora, compaction survival, agent ablation
-- ✅ 163 tests + clippy clean
+- ✅ 170 tests + clippy clean
 
 What's not done yet:
 
