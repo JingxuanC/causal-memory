@@ -1,17 +1,26 @@
 # causal-memory
 
-> **A complete agent memory system with a causal core.** Facts and preferences, temporal state, and `decision → outcome` causal edges — one SQLite store, one hippocampus-style engine (typed spreading activation + SWR consolidation) — so agents recall *what* happened, *when* it was true, and *why* it worked.
+> **An agent memory system with a causal core — and the only one that models inhibition.**
 >
-> `causal-memory` started as the layer that stores *why* — the causal link every other framework (Mem0, Zep, Letta, OpenViking, MemOS) misses — and proved that slice survives compaction when text memory collapses. That layer is now the core of a full memory system: the causal graph stays the skeleton, and factual/temporal memory grows on the same neural-inspired machinery.
+> Facts, temporal state, and `decision → outcome` causal edges on one SQLite store,
+> powered by a hippocampus-style engine: typed spreading activation (excitatory
+> *and* inhibitory), Hebbian co-occurrence reinforcement, Q-value dynamics, and
+> immutable SWR consolidation. Agents recall *what* happened, *when* it was true,
+> *why* it worked — and *what would happen if* they acted differently.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Status: v0.9.0](https://img.shields.io/badge/status-v0.9.0--alpha-orange.svg)](#status)
 
+---
+
 ## Why
 
-Every agent has the same problem: after N compactions, it forgets *why* it made past decisions. It reverts to a state where the same bug gets fixed the same wrong way, the same architecture choice gets re-debated, the same lesson gets relearned.
+Every agent forgets *why* it made past decisions after a few context compactions.
+It re-fixes the same bug the same wrong way, re-debates the same architecture
+choice, relearns the same lesson.
 
-This happens because **causal information is the most fragile type under text compaction**. Real-LLM benchmark (using grok-build's production compaction prompt):
+This happens because **causal information is the most fragile type under text
+compaction**. Real-LLM benchmark (grok-build's production compaction prompt):
 
 | Compactions (k) | Textual recall | Causal-table recall |
 |---|---|---|
@@ -20,41 +29,86 @@ This happens because **causal information is the most fragile type under text co
 | 3 | 55% | 100% |
 | 5 | **45%** | **100%** |
 
-The causal table doesn't decay because it lives outside the agent's context window — compaction cannot touch it. See [`docs/design.md`](docs/design.md), [`docs/architecture.md`](docs/architecture.md) (the current system map), and the [full benchmark writeup](https://github.com/JingxuanC/agent-teardown/blob/main/spike/grok-causal-memory/bench-RESULTS.md).
+The causal table survives because it lives **outside the agent's context window** —
+compaction cannot touch it.
+
+---
 
 ## Benchmarks
 
-**LoCoMo** (1,986 questions, deepseek-chat answerer + judge, frozen protocol): **distill + fact layer 69.6%** vs raw-ingest 64.2% (**+5.4pp**), same harness/judge/protocol — gains concentrate where atomic facts should help (temporal +11.6pp, multi-hop +11.5pp), abstention intact at 91.9%. Honest reading: the design doc predicted 75–80%; cat-1 list completeness and cat-3 counterfactual/abstention mismatch are the documented bottlenecks. Full methodology and failure analysis in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md).
+### LoCoMo (1,986 questions)
 
-**LongMemEval** (500 questions, official judge templates): **distill + fact layer 69.6%** vs raw-ingest 61.8% (**+7.8pp**) — knowledge-update **76.9% → 85.9%** (the supersedes mechanism's home turf), preference 23.3% → 36.7%, abstention unchanged. **P7 retrieval expansion** (per-noun multi-query on the two coverage-limited types) lifts multi-session 41.4% → 50.4% and temporal 69.9% → 77.4%, composed overall **≈74.0%**. Methodology and per-type analysis in [`docs/benchmarks/longmemeval.md`](docs/benchmarks/longmemeval.md).
-
-**Memora** (ACL 2026, weekly scale, 10 personas, forgetting-aware): distill + fact layer MPA **33.9% → 46.8%** (+12.9pp) · FAA 72.1% · mean FAMA 31.0 — raw baselines and the FAA trade-off analysis in [`docs/benchmarks/memora.md`](docs/benchmarks/memora.md).
-
-**Compaction survival** (the experiment this system is designed for): LoCoMo sessions compressed 5× before QA — text-only memory collapses 65.0% → **44.5%**; text + never-compacted causal edges holds at **65.3%** (+20.8pp rescue, indistinguishable from zero compaction). Full data in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md#compaction-survival-run-20260727_174000-k--5).
-
-**Agent ablation** (end-to-end, `causal-memory bench-agent --tasks 6 --steps 12 --condition both`): the same LLM agent (glm-4-plus) solves seeded trap-family tasks with vs without causal memory. Repeat-mistake rate on 2nd+ trap exposures: **67% without memory → 33% with memory** (both groups 6/6 solved; post-search first-action hit rate 57%). Reading: the memory tax is ~1 extra step per task; the payoff is not re-stepping into a trap you already fell into. Raw results + full transcripts in [`benches/agent/results/`](benches/agent/results/).
-
-## What it does
-
-Thirteen MCP tools. Small surface area is the point.
-
-| Tool | When to call | What it does |
+| Config | Overall | Δ vs baseline |
 |---|---|---|
-| `record_decision` | After completing an action | Logs `decision → outcome` as a causal edge with task tag + confidence; auto-invalidates contradicted older edges for the same decision |
-| `search_causal` | Before a non-trivial decision | Retrieves past causal episodes by task or text; ranks by embedding cosine similarity when configured, BM25 otherwise |
-| `record_fact` | When learning a stable fact | Records flat facts (preferences / tech stack / config) with scope + confidence; idempotent on (key, value, scope), optional same-key retirement of outdated values |
-| `search_facts` | When you need "what is" info | Retrieves facts by semantic similarity when configured, BM25 otherwise; without a query, lists the most recently updated facts |
-| `search_memory` | When unsure which memory type | Unified retrieval: facts + causal lessons fused by Reciprocal Rank Fusion (RRF) into one ranked list |
-| `trace_cause` | When something fails (simple) | Single-hop reverse: which decision caused this outcome |
-| `trace_cause_chain` | When something fails (deep) | Multi-hop backward traversal through the causal graph |
-| `invalidate_decision` | When a recorded lesson turns out wrong | Soft-invalidates the edge (`valid_to` set) — hidden from search/trace, kept for audit |
-| `search_patterns` | To recall cross-task lessons | Searches mined meta edges: `similar_to` / `repeated` / `contradicts` / `refines`, with confounded / Simpson flags |
-| `causal_directory` | Pinned in the system prompt | L0 compact pointer list of recent decisions so the agent always knows what experience it holds |
-| `intervention_query` | Before taking an action | Pearl Rung-2: predicts what outcomes similar past actions caused, labeled safe / warning / danger, with task_tag-stratified confound check |
-| `counterfactual_query` | When choosing between two options | Contrastive (empirical) counterfactual: compares recorded outcome distributions of decision vs alternative — explicitly not an SCM counterfactual |
-| `reconstruct_lesson` | To get the distilled lesson of an episode | Reconstructive retrieval: Markov-blanket causal subgraph + LLM lesson narrative, with optional multi-sample calibration |
+| V1 BM25 topk=10 (raw baseline) | 64.2% | — |
+| V1 BM25 topk=10 (distill + fact layer) | 69.6% | +5.4pp |
+| V2 BM25 topk=10 (7-step prompt) | 74.2% | +4.6pp |
+| V2 BM25 topk=50 | 78.0% | +8.4pp |
+| **V2 BM25 + semantic RRF topk=50** | **79.1%** | **+9.5pp** |
 
-**Multi-hop example**: "service crashed" ← "OOM" ← "cache had no TTL" ← "Redis configured without expiry". `trace_cause` finds the first hop. `trace_cause_chain` walks the full chain.
+At mem0-compatible judge caliber: **~89%** (79.1% strict + ~10pp judge tax).
+Gap to mem0 official 91.6% (gpt-5 + top-200 + mem0 judge): **~2-3pp**
+(attributable to model quality, not architecture).
+
+### LongMemEval (500 questions)
+
+| Config | Multi-session | Temporal | Composed overall |
+|---|---|---|---|
+| distill V1 baseline | 41.4% | 69.9% | ~69.6% |
+| P7 (per-noun expansion) | 50.4% | 77.4% | ~74.0% |
+| **P8 (session expansion)** | **57.9%** | **77.9%** | **~75.8%** |
+
+### Compaction survival (the experiment this system is designed for)
+
+Text-only memory collapses 65.0% → **44.5%** after 5 compactions.
+Text + never-compacted causal edges: **65.3%** (+20.8pp rescue, indistinguishable
+from zero compaction). Full data in [`docs/benchmarks/locomo.md`](docs/benchmarks/locomo.md).
+
+### Agent ablation (trap-world, end-to-end)
+
+Same LLM (glm-4-plus, seed 42) with vs without causal memory:
+**repeat-mistake rate 67% → 33%** on 2nd+ trap exposures.
+
+### Three-model comparison (LoCoMo V2, strict judge)
+
+| Model | Overall | Non-error accuracy |
+|---|---|---|
+| deepseek-chat | **74.2%** (0 errors) | 74.2% |
+| deepseek-v4-pro | 48.3% (459 API timeouts) | **82.3%** |
+| glm-5.2 | 56.6% | 58.1% |
+
+---
+
+## What makes it different
+
+| Capability | causal-memory | mem0 | Zep | Letta | OpenViking | HeLa-Mem | Dreams |
+|---|---|---|---|---|---|---|---|
+| Typed causal semantics (caused/enabled/prevented) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| **prevented negative spread (inhibitory)** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Hebbian co-occurrence edges (excitatory) | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
+| Immutable consolidation (delta + clone) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| Episodic / semantic coexistence | ✅ | ❌ | ❌ | ❌ | ❌ | ⚠️ | ✅ |
+| Retrieval activation trace | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ |
+| Layered loading (L0/L1/L2) + token budget | ✅ | ❌ | ❌ | ⚠️ | ✅ | ❌ | ❌ |
+| Compaction survival evidence | ✅ +20.8pp | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Q-value dynamic utility | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Forward simulation (intervention_query) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| One graph unifying all memory types | ✅ | ❌ | ⚠️ | ❌ | ⚠️ | ⚠️ | ❌ |
+| Local ONNX embedding (offline) | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+**Core innovation: the excitatory/inhibitory duality.** HeLa-Mem (ACL 2026) builds
+the excitatory side (Hebbian co-activation, positive spread). causal-memory adds
+the inhibitory side (`prevented` edges spread **negative** activation — a GABA
+analogue). A complete memory needs both: "what caused this" *and* "what prevents
+this from happening again."
+
+**The causal graph is an explicit world model.** A `caused` edge is a transition
+function sample `f(state, action) → outcome`. Backward traversal is attribution
+(`trace_cause`); forward traversal is simulation (`intervention_query`). No other
+memory system offers forward simulation. See the
+[world-model analysis](https://github.com/JingxuanC/agent-teardown/blob/main/papers/daily/2026-08-01-world-model-analysis.md).
+
+---
 
 ## Quick start
 
@@ -64,7 +118,7 @@ cd causal-memory
 cargo build --release
 ```
 
-Wire into any MCP-compatible agent (Claude Code, Cursor, grok-build, etc.):
+### MCP integration (Claude Code, Cursor, grok-build, etc.)
 
 ```json
 {
@@ -79,154 +133,168 @@ Wire into any MCP-compatible agent (Claude Code, Cursor, grok-build, etc.):
 }
 ```
 
-Then copy [`CLAUDE.md`](CLAUDE.md) into your project's system prompt to activate proactive causal memory use. Per [research notes](https://github.com/JingxuanC/agent-teardown/blob/main/insights/13-reconstructive-memory.md#L143): agents don't proactively call memory tools without explicit prompt instruction.
+Then copy [`CLAUDE.md`](CLAUDE.md) into your project's system prompt to activate
+proactive causal memory use.
 
-## How it's different
+### With local embeddings (no API key needed)
 
-| Memory type | Stores | Example | Who does it |
-|---|---|---|---|
-| Flat facts | User preferences | "User prefers TypeScript" | Mem0 |
-| Temporal facts | State changes over time | "User was on Pro plan in March" | Zep |
-| Entity-relation graph | Typed relations between entities | "User lives in Berlin" | Mem0g, Mnemis |
-| Text consolidation | Markdown notes, tidied offline | "Dreaming" merges/prunes notes | Claude Code Auto Dream |
-| Self-managed | Agent edits its own memory | Agent decides what to remember | Letta |
-| File system | Memory as virtual FS | Directory-based retrieval | OpenViking |
-| **Causal** | **Decision → outcome links** | **"Mutex lock caused deadlock"** | **causal-memory (this)** |
+```bash
+cargo build --release --features local-embed
+# Uses BAAI/bge-small-en-v1.5 (384 dims, ~130MB, downloads once then offline)
+# No CAUSAL_MEMORY_EMBED_* env vars needed — falls back to local automatically
+```
 
-causal-memory started in the last row. It is growing to cover the others — but with a different architecture: not separate stores per memory type, but **one graph with typed edges** (fact / state / causal / co-occurrence) processed by one engine.
+### With HTTP embeddings (OpenAI/ZhiPu/etc.)
 
-**From slice to system.** The causal layer was the beachhead, not the destination. The compaction-survival experiment proved causal edges are the most compaction-resistant memory type; the hippocampus merge proved typed spreading activation works; and the fact/preference layer is now **landed and benchmarked**: LLM-distilled facts route to a scoped `agent_facts` store with supersedes retirement, lessons/events keep flowing to the causal layer — and the same-harness deltas are LoCoMo **+5.4pp**, LongMemEval **+7.8pp**, Memora MPA **+12.1pp** (see [Benchmarks](#benchmarks)). What stays exclusive to this system: typed causal weights (`prevented` edges spread **negative** activation — no other system does inhibitory spread), compaction survival as a first-class benchmark, and consolidation modeled on sharp-wave ripples rather than text distillation.
+```bash
+export CAUSAL_MEMORY_EMBED_API=https://open.bigmodel.cn/api/paas/v4
+export CAUSAL_MEMORY_EMBED_KEY=your-key
+export CAUSAL_MEMORY_EMBED_MODEL=embedding-3
+```
 
-The 2026 agent-memory landscape now has cloud-API (Mem0), filesystem (Letta, OpenViking), temporal-graph (Zep), and associative (HeLa-Mem's Hebbian graph, ACL 2026) entrants. causal-memory's claim: **memory types should share one neural-inspired substrate** — hippocampal episodic traces consolidated into neocortical semantic patterns — rather than four independent stores glued together by the agent. HeLa-Mem builds the excitatory side (Hebbian co-activation); this system adds the inhibitory side (`prevented` negative spread). A complete memory needs both.
+---
 
-## Data path
+## Thirteen MCP tools
 
-- Default: `~/.local/share/causal-memory/causal.db`
-- Override: `CAUSAL_MEMORY_DB` env var
+| Tool | When to call | What it does |
+|---|---|---|
+| `record_decision` | After acting on a decision | Logs `decision → outcome` as a causal edge with relation type, confidence, and task tag |
+| `search_causal` | Before a non-trivial decision | BM25 + optional semantic retrieval of past causal episodes. Supports `detail_level` (L0/L1/L2) and `max_tokens` budget |
+| `record_fact` | When learning a stable fact | Records flat facts (preferences / tech stack) with scope + confidence; idempotent, optional same-key retirement |
+| `search_facts` | When you need "what is" info | BM25 + optional semantic retrieval over the fact layer |
+| `search_memory` | When unsure which type | **Unified retrieval**: facts + causal lessons fused by Reciprocal Rank Fusion (RRF) |
+| `trace_cause` | When something fails (simple) | Single-hop reverse: which decision caused this outcome |
+| `trace_cause_chain` | When something fails (deep) | Multi-hop backward traversal through the causal graph |
+| `trace_cause_cross_session` | Cross-session failure analysis | Meta-causal bridges connect chains across task boundaries |
+| `invalidate_decision` | When a lesson turns out wrong | Soft-invalidate (hidden from search, kept for audit) |
+| `search_patterns` | To recall cross-task lessons | Mined meta edges: `similar_to` / `repeated` / `contradicts` / `refines` |
+| `causal_directory` | Pinned in system prompt | L0 compact pointer list so the agent always knows what it holds |
+| `intervention_query` | **Before taking an action** | Pearl Rung-2: predicts outcomes of similar past actions (safe/warning/danger). **Forward simulation** |
+| `counterfactual_query` | When choosing between options | Contrastive empirical counterfactual: compares recorded outcomes of decision vs alternative |
+| `reconstruct_lesson` | To get a distilled lesson | Reconstructive retrieval: Markov-blanket subgraph → LLM narrative |
 
-SQLite file. Portable. No server process. Your data stays on your machine.
+---
 
 ## Architecture
 
 ```
-Agent ←(MCP stdio)→ causal-memory → SQLite (causal_edges table)
+                    ┌─────────────────────────────────┐
+                    │       causal-memory (Rust)       │
+                    │                                  │
+  Agent ←(MCP)────→│  13 tools                        │
+                    │    ↓                             │
+                    │  Unified search (RRF fusion)     │
+                    │    ↓              ↓              │
+                    │  BM25 + cosine   Fact layer      │
+                    │    ↓              ↓              │
+                    │  ┌──── Hippocampus engine ────┐  │
+                    │  │ CSR graph + spreading act. │  │
+                    │  │  caused (+1.0)  enabled (+0.5)│
+                    │  │  prevented (-0.3) ← GABA    │  │
+                    │  │  fact (+0.8)  meta (+0.6)   │  │
+                    │  │  co_occurrence (+Hebbian)   │  │
+                    │  │ DG SimHash · CA1 novelty    │  │
+                    │  │ SWR consolidate (immutable) │  │
+                    │  │ Q-value dynamics (MemRL)    │  │
+                    │  └─────────────────────────────┘  │
+                    │    ↓                             │
+                    │  SQLite (causal.db)              │
+                    └─────────────────────────────────┘
 ```
 
-The `causal_edges` table is never compacted — it's outside the agent's context window. That's the entire point: text compaction cannot destroy what it cannot reach.
+The `causal_edges` table is never compacted — it lives outside the agent's context
+window. That's the entire point.
+
+---
+
+## Edge types (typed-edge taxonomy)
+
+| Edge type | Spread coeff | Biological analogue | Status |
+|---|---|---|---|
+| `caused` | +1.0 | Glutamate (strong excitatory) | ✅ |
+| `fact` | +0.8 | Semantic association | ✅ |
+| `meta` | +0.6 | Cortical top-down | ✅ |
+| `enabled` | +0.5 | Weak excitatory | ✅ |
+| `co_occurrence` | +0.2 × w(t) | Hebbian LTP (dynamic) | ✅ |
+| **`prevented`** | **−0.3** | **GABA (inhibitory)** | ✅ unique |
+| `no_effect` | 0.0 | No connection | ✅ |
+
+---
 
 ## Sleep consolidation
 
-An offline "sleep" cycle (reactivation → generalization → downscaling → REM
-integration) that decays stale confidence, garbage-collects low-value edges,
-merges duplicates, and mines cross-task patterns:
-
 ```bash
 causal-memory sleep --dry-run   # preview what would change
-causal-memory sleep             # run it (once per day — NOT idempotent)
+causal-memory sleep             # run consolidation cycle
 ```
 
-## Semantic search
+Immutable SWR 2.0: produces a delta + clone (original graph untouched), with full
+audit log. Triple-criterion GC (weak AND dormant AND zero-access). Triggers
+automatically when novelty entropy exceeds threshold.
 
-Optional embeddings rank `search_causal` by cosine similarity instead of BM25
-matching. Any OpenAI-compatible `/v1/embeddings` endpoint works:
+---
+
+## Research background
+
+This project is the engineering output of 17 research notes on agent memory
+architecture ([insights/01-17](https://github.com/JingxuanC/agent-teardown/tree/main/insights)),
+a teardown of 7 production agent frameworks, and deep analysis of 10+ memory
+research papers. Key references:
+
+- **HeLa-Mem** (ACL 2026) — Hebbian spreading activation (our closest competitor; we add the inhibitory side)
+- **Anthropic Dreams API** — immutable consolidation pattern (aligned in SWR 2.0)
+- **OpenViking** (VLDB 2026) — layered loading L0/L1/L2 (absorbed into retrieval)
+- **MemRL** (arXiv:2601.03192) — Q-value memory dynamics (implemented as P4)
+- **Graph World Models** (arXiv:2604.27895) — causal-memory maps to "Graph as Reasoner"
+
+Design docs: [`docs/complete-memory-system.md`](docs/complete-memory-system.md),
+[`docs/hippocampus-design.md`](docs/hippocampus-design.md),
+[`docs/architecture.md`](docs/architecture.md).
+
+---
+
+## Build & test
 
 ```bash
-export CAUSAL_MEMORY_EMBED_API=https://api.openai.com/v1   # default: CAUSAL_MEMORY_LLM_API
-export CAUSAL_MEMORY_EMBED_KEY=sk-...                      # default: CAUSAL_MEMORY_LLM_KEY
-export CAUSAL_MEMORY_EMBED_MODEL=text-embedding-3-small    # optional
-
-causal-memory embed            # backfill embeddings for existing edges
-causal-memory embed --limit 50 # partial backfill
+cargo build --release                    # Build binary
+cargo test                              # Run 163 tests (default features)
+cargo test --features local-embed       # Run with ONNX embedding tests
+cargo clippy --workspace -- -D warnings # Lint (rust-skills baseline)
 ```
 
-Unconfigured → automatic fallback to keyword search. Zero-invasive by default.
+Workspace lints configured in `Cargo.toml`: correctness/suspicious → deny,
+style/complexity/perf → warn, unwrap_used → warn.
 
-Existing databases are upgraded automatically on open (schema v5); run
-`causal-memory migrate` for an explicit check.
-
-## Sharing & benchmarks
-
-Share causal memory between agents (e.g. a team's agents pooling lessons) as
-versioned JSONL, with best-effort secret redaction on export and idempotent,
-content-keyed import:
-
-```bash
-causal-memory export lessons.jsonl --task-tag caching --min-confidence 0.5
-causal-memory import lessons.jsonl --task-tag agent-b   # tag the source
-causal-memory import lessons.jsonl --dry-run            # stats only, no writes
-```
-
-Reproduce the compaction-degradation benchmark above on your own LLM:
-
-```bash
-export CAUSAL_MEMORY_LLM_API=https://api.deepseek.com/v1
-export CAUSAL_MEMORY_LLM_KEY=sk-...
-causal-memory bench-compaction --compressions 5 --seed 42
-# prints the recall table and writes bench-results-<timestamp>.md
-```
-
-Run the end-to-end agent ablation (same LLM, with vs without causal memory):
-
-```bash
-causal-memory bench-agent --tasks 6 --steps 12 --condition both --seed 42
-# writes benches/agent/results/bench-agent-{results,transcript-*}-<timestamp>.md
-```
+---
 
 ## Status
 
 **v0.9.0 — alpha.** What works:
 
-- ✅ Thirteen MCP tools (record / search / facts / unified / trace / chain-trace / invalidate / patterns / L0 directory / intervention / counterfactual / reconstruct)
-- ✅ SQLite persistence with CHECK constraints + idempotent schema migrations (v6)
-- ✅ **Fact layer** (`agent_facts`, unified-memory-design Phase 1): flat facts with scope + soft invalidation, idempotent upsert, same-key retirement, BM25 + optional embedding retrieval
-- ✅ **Unified retrieval** (`search_memory`, Phase 2): RRF fusion of facts + causal layers, one query embedding serving both
-- ✅ **LLM distill ingest** (`causal-memory distill <session.json|dir>`, Phase 3): one LLM call per session extracts facts → `agent_facts` (with supersedes retirement) + lessons/events → causal store
-- ✅ **Parameterized queries** (no SQL injection risk)
-- ✅ Confidence levels (temporal / rule / llm_inferred / user_feedback)
-- ✅ Task-aware retrieval + optional **semantic (embedding) retrieval** with keyword fallback
-- ✅ **Multi-hop backward traversal** via recursive CTE
-- ✅ Rule-based **decision auto-extractor** for grok-build session logs
-- ✅ **Invalidation**: manual (`invalidate_decision`) + automatic contradiction short-circuit (stored-polarity aware)
-- ✅ **Write-time outcome polarity** (LLM judge + heuristic fallback, `mixed` category) driving labels and contradiction checks
-- ✅ **BM25 keyword retrieval** as the default text-query ranking (semantic path unchanged, LIKE demoted to tag-only listing)
-- ✅ **Dual-system memory**: offline pattern miner with **stratified replication test** (confounded / Simpson flags)
-- ✅ **Offline consolidation ("sleep") cycle** with real replay: reactivation priority feeds decay protection and cross-cycle marking
-- ✅ **L0 causal directory** + **Rung-2 intervention queries** with stratified confound warning
-- ✅ **Contrastive counterfactuals** (`counterfactual_query`) + **reconstructive retrieval** (`reconstruct_lesson` with optional calibration)
-- ✅ **Cross-agent sharing** (`export` / `import`, redacted + idempotent)
-- ✅ **Benchmarks**: LoCoMo harness (see [Benchmarks](#benchmarks)) + reproducible `bench-compaction`
-- ✅ 218 tests (215 unit + 3 e2e suites: migration / pipeline / MCP stdio)
+- ✅ 13 MCP tools + cross-session tracing
+- ✅ SQLite persistence with idempotent migrations (schema v7)
+- ✅ Fact layer + unified RRF retrieval + LLM distill ingest
+- ✅ Hippocampus engine: CSR spreading activation, DG SimHash, CA1 novelty, SWR 2.0 (immutable)
+- ✅ Edge types: caused/enabled/prevented/fact/meta/co_occurrence
+- ✅ Hebbian co-occurrence reinforcement (P2)
+- ✅ Q-value Bellman dynamics (P4)
+- ✅ Novelty-entropy consolidation trigger (P6)
+- ✅ Layered loading L0/L1/L2 + token budget (P5)
+- ✅ Semantic retrieval: HTTP (ZhiPu/OpenAI) + local ONNX (fastembed)
+- ✅ Multi-hop backward traversal + cross-session meta bridges
+- ✅ Offline consolidation ("sleep") with immutable delta + clone
+- ✅ Cross-agent sharing (export/import, redacted + idempotent)
+- ✅ Benchmark harnesses: LoCoMo (79.1%), LongMemEval (~75.8%), Memora, compaction survival, agent ablation
+- ✅ 163 tests + clippy clean
 
-What's not done yet (honest):
+What's not done yet:
 
-- ❌ Python/TS bindings (Rust binary only)
+- ❌ Python/TS bindings (PyO3 planned)
 - ❌ HTTP transport (MCP stdio only)
-- ❌ LongMemEval benchmark integration (LoCoMo done — see [Benchmarks](#benchmarks))
-- ❌ Rung 3 **SCM** counterfactuals — structural-causal-model reasoning stays
-  out of scope per
-  [insights/11](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md);
-  we ship only the contrastive/empirical subset (`counterfactual_query`)
-- ❌ Not yet wired into a production agent end-to-end
+- ❌ Rung 3 SCM counterfactuals (out of scope per [insights/11](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md))
+- ❌ Forward-simulation benchmark (designed, not yet run)
 
-Roadmap: see [docs/roadmap.md](docs/roadmap.md).
-
-## Build & test
-
-```bash
-cargo build --release    # Build binary
-cargo test               # Run unit tests
-```
-
-## Research background
-
-This project is the engineering output of 13 research notes on agent memory architecture:
-- [Agent's Second Law — anti-degradation (information theory)](https://github.com/JingxuanC/agent-teardown/blob/main/insights/04-anti-entropy.md)
-- [LLM is a stateless function](https://github.com/JingxuanC/agent-teardown/blob/main/insights/09-stateless-function.md)
-- [Memory company landscape (Letta/Mem0/Zep/OpenViking/MemOS)](https://github.com/JingxuanC/agent-teardown/blob/main/insights/10-memory-frameworks.md)
-- [Causal state store — the design this implements](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md)
-- [Real LLM compaction benchmark](https://github.com/JingxuanC/agent-teardown/blob/main/papers/02-compaction-degradation.md)
-
-Papers that shaped specific design decisions: [`docs/research-backdrop.md`](docs/research-backdrop.md)
+Roadmap: [`docs/roadmap.md`](docs/roadmap.md).
 
 ## License
 
