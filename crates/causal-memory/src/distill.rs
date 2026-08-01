@@ -87,7 +87,9 @@ Preserve specifics — they are what makes a memory useful later:
 - Keep concrete numbers, names, dates, prices, and list items verbatim (e.g. "walked 6,214 steps", "Lars Bergström to optimize the rendering pipeline").
 - For content the user created or discussed in detail (meeting notes, emails, proposals), emit ONE item PER distinct fact (agenda item, decision, action item) instead of one vague summary.
 - For recurring activities (steps, meals, expenses, workouts), emit one event item per day with that day's numbers.
-- Up to 10 items per session; prioritize by long-term value.
+- For meetings/emails/proposals: extract EACH decision, action item, and key detail as a separate item. A 5-point meeting agenda should produce 5 items, not 1 summary.
+- Up to 30 items per session; prioritize by long-term value. Extract ALL
+  memorable facts — do not compress multiple distinct facts into one item.
 
 Respond with ONLY a JSON array, nothing else:
 [{"kind": "...", "text": "...", "date": "YYYY-MM-DD", "supersedes": null}]
@@ -178,9 +180,10 @@ impl Distiller {
         Err(last_err)
     }
 
-    /// Max tokens for the distill reply: up to 10 detailed items per
-    /// session (numbers, names, per-day events) need headroom.
-    const DISTILL_MAX_TOKENS: u32 = 1500;
+    /// Max tokens for the distill reply: up to 30 detailed items per
+    /// session (numbers, names, per-day events, meeting notes, emails,
+    /// proposals) need substantial headroom.
+    const DISTILL_MAX_TOKENS: u32 = 4000;
 
     /// Parse the LLM reply into memory items. Pure function — the test
     /// surface for this module.
