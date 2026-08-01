@@ -844,8 +844,27 @@ fn asks_about_history(question: &str) -> bool {
 /// failure, and deepseek kept volunteering those records whenever they
 /// were in context. They remain stored and retrievable; they are only
 /// withheld from the answer prompt unless the question asks about history.
+///
+/// FAA-2 fix: scan memories for "no longer", "switched from", "changed",
+/// "cancelled" patterns and suppress earlier memories that mention the
+/// superseded topic. This prevents the LLM from seeing both "user likes
+/// opera" (old) and "user no longer likes opera" (new) simultaneously.
 fn memory_lines(entries: &[CausalEntry], question: &str) -> String {
     let history = asks_about_history(question);
+
+    // Collect retraction keywords from the retrieved entries themselves.
+    // Phrases like "no longer enjoys X", "switched from X to Y",
+    // "changed their preference from X" indicate X should be suppressed.
+    let mut suppressed_topics: Vec<String> = Vec::new();
+    for e in entries {
+        for text in [&e.decision_text, &e.outcome_text] {
+            // Extract the old topic from transition phrases
+            if let Some(topic) = extract_superseded_topic(text) {
+                suppressed_topics.push(topic);
+            }
+        }
+    }
+
     let mut seen = std::collections::HashSet::new();
     let mut lines = Vec::new();
     for e in entries {
@@ -853,14 +872,79 @@ fn memory_lines(entries: &[CausalEntry], question: &str) -> String {
             (&e.decision_id, &e.decision_text),
             (&e.outcome_id, &e.outcome_text),
         ] {
-            if seen.insert(id.clone())
-                && (history || !causal_memory::store::is_retraction_record(text))
-            {
-                lines.push(format!("- {text}"));
+            if !seen.insert(id.clone()) {
+                continue;
             }
+            // Filter retraction records for non-history questions
+            if !history && causal_memory::store::is_retraction_record(text) {
+                continue;
+            }
+            // Filter entries whose topic matches a superseded topic
+            if !history && suppressed_topics.iter().any(|t| text.to_lowercase().contains(t)) {
+                continue;
+            }
+            lines.push(format!("- {text}"));
         }
     }
     lines.join("\n")
+}
+
+/// Extract the superseded (old) topic from a transition phrase.
+/// "no longer enjoys opera" → "opera"
+/// "switched from coffee to tea" → "coffee"
+/// "changed from spirituals to chamber" → "spirituals"
+fn extract_superseded_topic(text: &str) -> Option<String> {
+    let lower = text.to_lowercase();
+
+    // "no longer X likes/enjoys/prefers Y"
+    for marker in &["no longer likes", "no longer enjoys", "no longer prefers"] {
+        if let Some(pos) = lower.find(marker) {
+            let after = &text[pos + marker.len()..];
+            // Take up to 30 chars or until punctuation
+            let topic: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == ' ' || *c == '-')
+                .take(30)
+                .collect::<String>()
+                .trim()
+                .to_string();
+            if topic.len() >= 3 {
+                return Some(topic);
+            }
+        }
+    }
+
+    // "switched from X to Y" / "changed from X to Y" / "from X to Y"
+    for marker in &["switched from ", "changed from ", "shifted from "] {
+        if let Some(pos) = lower.find(marker) {
+            let after = &text[pos + marker.len()..];
+            if let Some(to_pos) = after.to_lowercase().find(" to ") {
+                let topic: String = after[..to_pos].trim().to_string();
+                if topic.len() >= 3 {
+                    return Some(topic);
+                }
+            }
+        }
+    }
+
+    // "used to like X" / "used to enjoy X"
+    for marker in &["used to like ", "used to enjoy ", "used to prefer "] {
+        if let Some(pos) = lower.find(marker) {
+            let after = &text[pos + marker.len()..];
+            let topic: String = after
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == ' ')
+                .take(30)
+                .collect::<String>()
+                .trim()
+                .to_string();
+            if topic.len() >= 3 {
+                return Some(topic);
+            }
+        }
+    }
+
+    None
 }
 
 /// Answer user prompt: memories + question_date as the "current time"
@@ -872,7 +956,7 @@ fn answer_user_prompt(q: &MemoraQuestion, memories: &str) -> String {
         memories
     };
     format!(
-        "Current Date: {}\n\nUser's Relevant Memories:\n{memories}\n\nUser's Question: {}\n\nPlease provide a helpful answer based on these memories.",
+        "Current Date: {}\n\nUser's Relevant Memories:\n{memories}\n\nUser's Question: {}\n\nIMPORTANT: Answer based ONLY on the current state of the user's memories. If a memory mentions something was changed, cancelled, or superseded, do NOT include the old value in your answer. Only mention the current/latest value.\n\nPlease provide a helpful answer based on these memories.",
         q.question_date, q.question
     )
 }

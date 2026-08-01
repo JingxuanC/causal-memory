@@ -136,7 +136,7 @@ Each item has:
   - event: dated happenings (plans, purchases, activities, todo changes)
 - "text": one self-contained, absolutely-dated sentence
 - "date": YYYY-MM-DD (usually the session date)
-- "supersedes": if this item RETRACTS earlier info (e.g. "cancelled gym"), put 2-5 keywords of the OLD content here. Otherwise null.
+- "supersedes": CRITICAL for forgetting accuracy. Fill this whenever the user CHANGES, CANCELS, or COMPLETES something previously stated. Put 2-5 keywords of the OLD content. Examples: user says "I now prefer tea" (previously liked coffee) → supersedes: "likes coffee". User says "I cancelled my gym membership" → supersedes: "gym membership". User says "the budget is now $1M" (was $1.2M) → supersedes: "budget 1200000". A missed supersedes means the old fact stays live and pollutes future answers.
 
 # Examples
 
