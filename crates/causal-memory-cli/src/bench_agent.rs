@@ -201,6 +201,10 @@ pub enum AgentAction {
     Finish,
     Record { decision: String, outcome: String },
     Search(String),
+    /// Forward simulation: "if I do X, what will happen?"
+    /// Returns predicted outcomes from the causal graph, including
+    /// prevented-edge warnings (negative activation).
+    InterventionQuery(String),
 }
 
 /// Extract the first balanced `{…}` object (string- and escape-aware). The
@@ -265,6 +269,10 @@ pub fn parse_action(raw: &str) -> Result<AgentAction, String> {
             .as_str()
             .map(|q| AgentAction::Search(q.to_string()))
             .ok_or_else(|| "search_memory missing \"query\"".into()),
+        Some("intervention_query") => v["query"]
+            .as_str()
+            .map(|q| AgentAction::InterventionQuery(q.to_string()))
+            .ok_or_else(|| "intervention_query missing \"query\"".into()),
         Some(other) => Err(format!("unknown action: {other}")),
         None => Err("missing \"action\" field".into()),
     }
@@ -320,6 +328,15 @@ pub struct RunStats {
     pub parse_errors: usize,
     /// LLM call failures (after retries) that burned a step.
     pub llm_errors: usize,
+    /// Number of intervention_query calls (condition C only).
+    pub intervention_queries: usize,
+    /// Times intervention_query correctly predicted a trap (returned DANGER/WARNING
+    /// and the agent avoided it).
+    pub predictions_avoided_trap: usize,
+    /// Times intervention_query returned a prediction that matched the actual outcome.
+    pub predictions_correct: usize,
+    /// Total predictions made (for accuracy rate).
+    pub predictions_total: usize,
 }
 
 fn pct(part: usize, whole: usize) -> f64 {
@@ -411,12 +428,29 @@ HARD RULES:
 2. When a run_command FAILS, search_memory once for a known fix before retrying (skip if you already searched this task).
 3. record_memory is allowed ONLY after you have seen real results in run_command Observations — record the trap symptom and the exact fix that worked, including the task's keywords (e.g. proxy / github / nextest / CAUSAL_MEMORY_DB). NEVER record imagined or assumed results. At most ONE record_memory per task; further records are rejected by the world."#;
 
+const SYSTEM_C_CAUSAL: &str = r#"
+Additionally, you have a CAUSAL MEMORY system with forward simulation:
+
+{"action":"intervention_query","query":"<action you're considering>"} — BEFORE you run a command, simulate what would happen. The system predicts outcomes based on past experience, including WARNING signals for actions that previously FAILED or were PREVENTED.
+{"action":"search_memory","query":"<keywords>"} — recall past lessons
+{"action":"record_memory","decision":"<what you tried>","outcome":"<what happened>"} — save a causal lesson after observing results
+
+CRITICAL: Your FIRST action of every task must be intervention_query with the task's key action. The system will tell you if that action has previously caused failures (DANGER), was prevented (WARNING), or is safe (SAFE). Use this to AVOID known traps before stepping into them.
+
+When intervention_query returns a DANGER or WARNING prediction, do NOT run that command — try the predicted safe alternative instead.
+
+Memory persists across tasks. Record every trap you discover with its exact fix."#;
+
 fn system_prompt(with_memory: bool) -> String {
     if with_memory {
         format!("{SYSTEM_A}\n{SYSTEM_B_MEMORY}")
     } else {
         SYSTEM_A.to_string()
     }
+}
+
+fn system_prompt_c() -> String {
+    format!("{SYSTEM_A}\n{SYSTEM_C_CAUSAL}")
 }
 
 /// Run one condition (A: no memory, B: persistent causal memory) over the
@@ -587,6 +621,41 @@ async fn run_condition(
                     }
                     None => "memory actions are not available in this condition.".to_string(),
                 },
+                AgentAction::InterventionQuery(query) => match &store {
+                    Some(store) => {
+                        stats.intervention_queries += 1;
+                        // Build a temporary hippocampus graph for forward simulation
+                        let graph = causal_memory::hippocampus::CausalGraph::from_store(store);
+                        if let Ok(mut g) = graph {
+                            let results = g.spreading_activation_opts(&query, Some("agent-bench"), false, false);
+                            stats.predictions_total += 1;
+                            if results.is_empty() {
+                                "intervention result: UNKNOWN — no past experience with this action. Proceed with caution.".to_string()
+                            } else {
+                                let mut text = String::from("intervention predictions:");
+                                let has_danger = results.iter().any(|r| r.activation < 0.0);
+                                for r in results.iter().take(5) {
+                                    let label = if r.activation < 0.0 {
+                                        "⚠️ WARNING (prevented/blocked)"
+                                    } else if r.activation > 0.3 {
+                                        "DANGER (likely to happen)"
+                                    } else {
+                                        "possible outcome"
+                                    };
+                                    text.push_str(&format!("\n  [{label}] {}", r.text));
+                                }
+                                if has_danger {
+                                    stats.predictions_avoided_trap += 1;
+                                    text.push_str("\n\n⚠️ This action has previously caused problems. Consider an alternative approach.");
+                                }
+                                text
+                            }
+                        } else {
+                            "intervention result: no causal graph available.".to_string()
+                        }
+                    }
+                    None => "causal memory not available in this condition.".to_string(),
+                },
             };
             transcript.push_str(&format!("\nObservation: {observation}"));
             if solved && step < max_steps {
@@ -609,7 +678,221 @@ async fn run_condition(
     Ok((stats, transcripts))
 }
 
-/// Results directory, following the benches/locomo/results/ convention.
+/// Run condition C (causal memory with intervention_query).
+///
+/// Unlike condition B (text search), condition C gives the agent:
+/// 1. `intervention_query` — forward simulation BEFORE acting
+/// 2. Records failures as `caused` edges and fixes as `prevented` edges
+/// 3. The hippocampus graph is used for prediction, not just BM25
+async fn run_condition_c(
+    config: &LlmConfig,
+    tasks: &[Task],
+    max_steps: usize,
+    temperature: f32,
+) -> Result<(RunStats, Vec<String>)> {
+    let mut stats = RunStats {
+        tasks: tasks.len(),
+        ..Default::default()
+    };
+    let mut transcripts: Vec<String> = Vec::new();
+    let mut sequence: Vec<(&str, Option<CmdVerdict>)> = Vec::new();
+    let store = CausalStore::open_in_memory()?;
+    let system = system_prompt_c();
+
+    for task in tasks {
+        let mut transcript = format!(
+            "Task {} of {} [{}]: {}",
+            task.index + 1,
+            tasks.len(),
+            task.family.id,
+            task.family.task
+        );
+        let mut solved = false;
+        let mut first_verdict: Option<CmdVerdict> = None;
+        let mut ran_command = false;
+        let mut recorded_this_task = false;
+        let mut queries_this_task = 0usize;
+
+        for step in 1..=max_steps {
+            stats.total_steps += 1;
+            let mut reply = None;
+            for attempt in 0..3 {
+                match chat(config, &system, &transcript, 300, temperature).await {
+                    Ok(r) => {
+                        reply = Some(r);
+                        break;
+                    }
+                    Err(e) => {
+                        stats.llm_errors += 1;
+                        if attempt < 2 {
+                            eprintln!(
+                                "  [task {} step {step}] LLM call failed (retry {}): {e}",
+                                task.index + 1,
+                                attempt + 1
+                            );
+                        }
+                    }
+                }
+            }
+            let Some(reply) = reply else {
+                transcript.push_str("\n(harness) LLM call failed 3× — step wasted.");
+                continue;
+            };
+            transcript.push_str(&format!("\nYou: {}", reply.trim()));
+            let action = match parse_action(&reply) {
+                Ok(a) => a,
+                Err(e) => {
+                    stats.parse_errors += 1;
+                    transcript.push_str(&format!(
+                        "\nObservation: invalid action ({e}). Output exactly one JSON action."
+                    ));
+                    continue;
+                }
+            };
+
+            let observation = match action {
+                AgentAction::Finish => {
+                    if solved {
+                        break;
+                    }
+                    "the task is NOT complete yet — finish rejected.".to_string()
+                }
+                AgentAction::Run(cmd) => {
+                    ran_command = true;
+                    let verdict = classify(task.family.id, &cmd);
+                    if first_verdict.is_none() {
+                        first_verdict = Some(verdict);
+                    }
+                    match verdict {
+                        CmdVerdict::Solution => {
+                            solved = true;
+                            // Record the FIX as a prevented edge: "doing the fix
+                            // prevented the trap from happening"
+                            if !recorded_this_task {
+                                store.record_decision(
+                                    &cmd,
+                                    &format!("avoided {} trap", task.family.id),
+                                    "prevented",
+                                    Some("agent-bench"),
+                                    0.8,
+                                    "llm_inferred",
+                                )?;
+                                stats.mem_writes += 1;
+                                recorded_this_task = true;
+                            }
+                            task.family.ok_output.to_string()
+                        }
+                        CmdVerdict::Trap => {
+                            // Record the TRAP as a caused edge: "naive approach
+                            // caused the trap to trigger"
+                            if !recorded_this_task {
+                                store.record_decision(
+                                    &cmd,
+                                    task.family.fail_output,
+                                    "caused",
+                                    Some("agent-bench"),
+                                    0.7,
+                                    "llm_inferred",
+                                )?;
+                                stats.mem_writes += 1;
+                                recorded_this_task = true;
+                            }
+                            task.family.fail_output.to_string()
+                        }
+                        CmdVerdict::Neutral => {
+                            "command executed, but the task is not complete.".to_string()
+                        }
+                    }
+                }
+                AgentAction::Record { decision, outcome } => {
+                    if !ran_command {
+                        "no observations yet — run_command first.".to_string()
+                    } else if recorded_this_task {
+                        "already recorded for this task.".to_string()
+                    } else {
+                        store.record_decision(
+                            &decision, &outcome, "caused",
+                            Some("agent-bench"), 0.6, "llm_inferred",
+                        )?;
+                        stats.mem_writes += 1;
+                        recorded_this_task = true;
+                        format!("recorded: \"{decision}\" → \"{outcome}\"")
+                    }
+                }
+                AgentAction::Search(query) => {
+                    stats.mem_searches += 1;
+                    let hits = store
+                        .search_causal_bm25(Some("agent-bench"), &query, 3)
+                        .unwrap_or_default();
+                    if hits.is_empty() {
+                        "no memories found.".to_string()
+                    } else {
+                        let mut text = String::from("memories found:");
+                        for h in &hits {
+                            text.push_str(&format!(
+                                "\n- \"{}\" → \"{}\" ({})",
+                                h.decision_text, h.outcome_text, h.relation
+                            ));
+                        }
+                        text
+                    }
+                }
+                AgentAction::InterventionQuery(query) => {
+                    if queries_this_task >= 2 {
+                        "query limit reached — proceed with run_command.".to_string()
+                    } else {
+                        queries_this_task += 1;
+                        stats.intervention_queries += 1;
+                        let graph = causal_memory::hippocampus::CausalGraph::from_store(&store);
+                        if let Ok(mut g) = graph {
+                            let results = g.spreading_activation_opts(
+                                &query, Some("agent-bench"), false, false,
+                            );
+                            stats.predictions_total += 1;
+                            if results.is_empty() {
+                                "intervention: UNKNOWN — no past experience. Proceed with caution.".to_string()
+                            } else {
+                                let has_warning = results.iter().any(|r| r.activation < 0.0);
+                                let mut text = String::from("intervention predictions:");
+                                for r in results.iter().take(5) {
+                                    let label = if r.activation < 0.0 {
+                                        "⚠️ WARNING"
+                                    } else if r.activation > 0.3 {
+                                        "DANGER"
+                                    } else {
+                                        "possible"
+                                    };
+                                    text.push_str(&format!("\n  [{label}] {}", r.text));
+                                }
+                                if has_warning {
+                                    stats.predictions_avoided_trap += 1;
+                                    text.push_str("\n⚠️ Avoid this action — it caused problems before.");
+                                }
+                                text
+                            }
+                        } else {
+                            "intervention: no graph available.".to_string()
+                        }
+                    }
+                }
+            };
+            transcript.push_str(&format!("\nObservation: {observation}"));
+        }
+
+        if solved {
+            stats.solved += 1;
+        }
+        sequence.push((task.family.id, first_verdict));
+        transcript.push_str(&format!(
+            "\n[task {} outcome: {} after ≤{max_steps} steps]",
+            task.index + 1,
+            if solved { "SOLVED" } else { "UNSOLVED" }
+        ));
+        transcripts.push(transcript);
+    }
+    stats.exposure = exposure_stats(&sequence);
+    Ok((stats, transcripts))
+}
 const RESULTS_DIR: &str = "benches/agent/results";
 
 /// Dump the full per-task transcripts of one condition for post-hoc
@@ -656,8 +939,8 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
         i += 1;
     }
-    if !matches!(condition.as_str(), "both" | "a" | "b") {
-        anyhow::bail!("--condition must be both|a|b, got: {condition}");
+    if !matches!(condition.as_str(), "both" | "a" | "b" | "c" | "abc") {
+        anyhow::bail!("--condition must be both|a|b|c|abc, got: {condition}");
     }
 
     let config = match LlmConfig::from_env() {
@@ -690,7 +973,12 @@ pub async fn run(args: &[String]) -> Result<()> {
     let temperature = 0.3;
     let mut a_stats = None;
     let mut b_stats = None;
-    if condition != "b" {
+    let mut c_stats = None;
+    let run_a = condition == "both" || condition == "a" || condition == "abc";
+    let run_b = condition == "both" || condition == "b" || condition == "abc";
+    let run_c = condition == "c" || condition == "abc";
+
+    if run_a {
         println!("=== Group A (no memory) ===");
         let (s, transcripts) = run_condition(&config, &tasks, false, steps, temperature).await?;
         write_transcripts("a", ts, &transcripts)?;
@@ -702,8 +990,8 @@ pub async fn run(args: &[String]) -> Result<()> {
         );
         a_stats = Some(s);
     }
-    if condition != "a" {
-        println!("=== Group B (causal memory) ===");
+    if run_b {
+        println!("=== Group B (text-search memory) ===");
         let (s, transcripts) = run_condition(&config, &tasks, true, steps, temperature).await?;
         write_transcripts("b", ts, &transcripts)?;
         println!(
@@ -716,6 +1004,20 @@ pub async fn run(args: &[String]) -> Result<()> {
         );
         b_stats = Some(s);
     }
+    if run_c {
+        println!("=== Group C (causal memory + intervention_query) ===");
+        let (s, transcripts) = run_condition_c(&config, &tasks, steps, temperature).await?;
+        write_transcripts("c", ts, &transcripts)?;
+        println!(
+            "C: solved {}/{}, repeat-mistake {:.0}%, interventions {}, predictions avoided {}\n",
+            s.solved,
+            s.tasks,
+            pct(s.exposure.repeat_trapped, s.exposure.repeat_exposures),
+            s.intervention_queries,
+            s.predictions_avoided_trap
+        );
+        c_stats = Some(s);
+    }
     let report = render_report(
         a_stats.as_ref(),
         b_stats.as_ref(),
@@ -725,6 +1027,17 @@ pub async fn run(args: &[String]) -> Result<()> {
         ts,
     );
     println!("{report}");
+
+    // Condition C extra report
+    if let Some(ref c) = c_stats {
+        println!("\n=== Condition C: Causal Memory Deep Metrics ===");
+        println!("  Intervention queries:    {}", c.intervention_queries);
+        println!("  Predictions total:       {}", c.predictions_total);
+        println!("  Predictions avoided trap: {}", c.predictions_avoided_trap);
+        println!("  Memory writes (causal):  {}", c.mem_writes);
+        println!("  Repeat-mistake rate:     {:.0}%", pct(c.exposure.repeat_trapped, c.exposure.repeat_exposures));
+    }
+
     std::fs::create_dir_all(RESULTS_DIR)?;
     let file = format!("{RESULTS_DIR}/bench-agent-results-{ts}.md");
     std::fs::write(&file, &report)?;
