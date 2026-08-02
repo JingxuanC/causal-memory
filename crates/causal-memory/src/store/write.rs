@@ -145,6 +145,15 @@ impl CausalStore {
 
     /// Record one distilled memory item (see `crate::distill`).
     ///
+    /// For non-causal items: creates a self-referential `caused` edge so the
+    /// item text is visible to edge-based read paths.
+    ///
+    /// For causal items (kind=Causal): creates a proper directed edge from
+    /// the decision chunk to the outcome chunk, using the specified relation
+    /// (caused/enabled/prevented). This is the key difference — causal items
+    /// form real decision→outcome edges that can be traversed by the
+    /// hippocampus spreading activation engine.
+    ///
     /// Every item becomes ONE chunk whose text carries a `[YYYY-MM-DD]` date
     /// prefix (event_time parsed from `item.date`; current time when the
     /// item has no valid date) plus ONE self-referential `caused` edge —
@@ -209,11 +218,30 @@ impl CausalStore {
         }
 
         let confidence = match item.kind {
-            crate::distill::ItemKind::Lesson => 0.7,
+            crate::distill::ItemKind::Lesson | crate::distill::ItemKind::Causal => 0.7,
             _ => 0.6,
         };
-        let (chunk_id, edge_id) =
-            Self::insert_distilled_chunk(&conn, &text, event_time, now, confidence, task_tag)?;
+
+        // Causal items create a proper directed edge: decision → outcome
+        let (chunk_id, edge_id) = if item.kind == crate::distill::ItemKind::Causal {
+            let decision_text = item.decision.as_deref().unwrap_or("unknown action");
+            let relation = item
+                .causal_relation
+                .map(|r| r.as_str())
+                .unwrap_or("caused");
+            Self::insert_causal_distilled(
+                &conn,
+                decision_text,
+                &text,
+                relation,
+                event_time,
+                now,
+                confidence,
+                task_tag,
+            )?
+        } else {
+            Self::insert_distilled_chunk(&conn, &text, event_time, now, confidence, task_tag)?
+        };
 
         // Effective kill hint: the LLM's `supersedes` field when given,
         // otherwise — when the item text itself announces a retraction
@@ -277,6 +305,42 @@ impl CausalStore {
             params![&chunk_id, confidence, event_time, now, task_tag],
         )?;
         Ok((chunk_id, conn.last_insert_rowid()))
+    }
+
+    /// Insert a proper causal edge: decision chunk → outcome chunk.
+    /// This is the key method for Causal items — it creates TWO chunks
+    /// (decision + outcome) and a directed edge between them with the
+    /// specified relation (caused/enabled/prevented).
+    fn insert_causal_distilled(
+        conn: &Connection,
+        decision_text: &str,
+        outcome_text: &str,
+        relation: &str,
+        event_time: i64,
+        now: i64,
+        confidence: f64,
+        task_tag: Option<&str>,
+    ) -> Result<(String, i64)> {
+        let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let dec_id = format!("distill:d{event_time}:{seq}");
+        let out_id = format!("distill:o{event_time}:{seq}");
+
+        conn.execute(
+            "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
+            params![&dec_id, decision_text, event_time],
+        )?;
+        conn.execute(
+            "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
+            params![&out_id, outcome_text, event_time],
+        )?;
+        conn.execute(
+            "INSERT INTO causal_edges
+             (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
+             VALUES (?1, ?2, ?3, ?4, 'distill', ?5, ?6, ?7)",
+            params![&dec_id, &out_id, relation, confidence, event_time, now, task_tag],
+        )?;
+        // Return the outcome chunk_id (the "text" that carries the result)
+        Ok((out_id, conn.last_insert_rowid()))
     }
 
     /// Find every valid in-scope edge whose decision text matches the

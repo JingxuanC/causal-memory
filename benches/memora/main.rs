@@ -637,7 +637,7 @@ async fn ingest_persona_distill(
                             store.record_fact(kind, &it.text, "user", "distill", 0.8)?;
                             stats.facts_recorded += 1;
                         }
-                        ItemKind::Lesson | ItemKind::Event => {
+                        ItemKind::Lesson | ItemKind::Event | ItemKind::Causal => {
                             let out = store.record_distilled(it, Some(persona))?;
                             if out.duplicate {
                                 stats.items_duplicate += 1;
@@ -1957,6 +1957,8 @@ mod tests {
             text: text.into(),
             date: Some(date.into()),
             supersedes: None,
+            causal_relation: None,
+            decision: None,
         };
         let store = CausalStore::open_in_memory().unwrap();
         store
@@ -1986,7 +1988,7 @@ mod tests {
             )
             .unwrap();
 
-        let entries = retrieve(&store, "p1", "music preference", 10).unwrap();
+        let entries = retrieve(&store, "p1", "music preference", 10, None).unwrap();
 
         // Current-state question: retraction records withheld, current
         // preference kept.
@@ -2080,7 +2082,7 @@ mod tests {
         ingest_persona(&store, "p1", std::slice::from_ref(&session)).unwrap();
         ingest_persona(&store, "p2", std::slice::from_ref(&session)).unwrap();
 
-        let res = retrieve(&store, "p1", "todo list groceries", 10).unwrap();
+        let res = retrieve(&store, "p1", "todo list groceries", 10, None).unwrap();
         assert!(!res.is_empty());
         assert!(res
             .iter()

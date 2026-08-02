@@ -27,6 +27,9 @@ pub enum ItemKind {
     Preference,
     Lesson,
     Event,
+    /// A causal lesson: "doing X caused/enabled/prevented Y".
+    /// The `causal_relation` field on MemoryItem specifies which edge type.
+    Causal,
 }
 
 impl ItemKind {
@@ -35,8 +38,40 @@ impl ItemKind {
             "preference" => Self::Preference,
             "lesson" => Self::Lesson,
             "event" => Self::Event,
+            "causal" => Self::Causal,
             // Unknown / missing kinds default to Fact (the least surprising).
             _ => Self::Fact,
+        }
+    }
+}
+
+/// The causal edge type for Causal items.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CausalRelation {
+    /// "Doing X caused Y" — positive activation (+1.0)
+    Caused,
+    /// "Doing X enabled Y" — mild positive (+0.5)
+    Enabled,
+    /// "Doing X prevented Y" — NEGATIVE activation (-0.3, GABA)
+    Prevented,
+}
+
+impl CausalRelation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Caused => "caused",
+            Self::Enabled => "enabled",
+            Self::Prevented => "prevented",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "caused" => Some(Self::Caused),
+            "enabled" => Some(Self::Enabled),
+            "prevented" => Some(Self::Prevented),
+            _ => None,
         }
     }
 }
@@ -51,6 +86,14 @@ pub struct MemoryItem {
     pub text: String,
     pub date: Option<String>,
     pub supersedes: Option<String>,
+    /// For Causal items: the relation type (caused/enabled/prevented).
+    /// Ignored for other kinds.
+    #[serde(default)]
+    pub causal_relation: Option<CausalRelation>,
+    /// For Causal items: the decision text (what the user did).
+    /// Combined with `text` (the outcome) to form a proper causal edge.
+    #[serde(default)]
+    pub decision: Option<String>,
 }
 
 /// Why the prompt looks like this:
@@ -129,11 +172,17 @@ Each item should be a complete, self-contained sentence (15-80 words):
 # Item Format
 
 Each item has:
-- "kind": "fact" | "preference" | "lesson" | "event"
+- "kind": "fact" | "preference" | "lesson" | "event" | "causal"
   - fact: stable personal details (job, relationships, possessions)
   - preference: likes/dislikes/habits (food, tools, entertainment)
   - lesson: decisions made, advice given, feedback received
   - event: dated happenings (plans, purchases, activities, todo changes)
+  - causal: a decision→outcome relationship — "doing X caused/enabled/prevented Y"
+- "causal_relation": ONLY for kind="causal". One of "caused" | "enabled" | "prevented".
+  - caused: the decision directly led to the outcome (e.g. "deploying without tests caused a production crash")
+  - enabled: the decision made the outcome possible (e.g. "adding caching enabled faster response times")
+  - prevented: the decision blocked something from happening (e.g. "adding input validation prevented SQL injection")
+- "decision": ONLY for kind="causal". The action/decision text (the "cause"). The "text" field holds the outcome (the "effect").
 - "text": one self-contained, absolutely-dated sentence
 - "date": YYYY-MM-DD (usually the session date)
 - "supersedes": CRITICAL for forgetting accuracy. Fill this whenever the user CHANGES, CANCELS, or COMPLETES something previously stated. Put 2-5 keywords of the OLD content. Examples: user says "I now prefer tea" (previously liked coffee) → supersedes: "likes coffee". User says "I cancelled my gym membership" → supersedes: "gym membership". User says "the budget is now $1M" (was $1.2M) → supersedes: "budget 1200000". A missed supersedes means the old fact stays live and pollutes future answers.
@@ -161,6 +210,12 @@ Output: [
 Input: "Hey, how's it going? Nice weather today."
 Output: []
 
+Input: "I tried deploying without running tests and it caused a production crash. The rollback took 2 hours. Lesson learned — always run tests before deploying."
+Output: [
+  {"kind": "causal", "causal_relation": "caused", "decision": "deployed without running tests", "text": "Production crash on DATE, requiring a 2-hour rollback", "date": "DATE", "supersedes": null},
+  {"kind": "lesson", "text": "Always run tests before deploying (learned from crash on DATE)", "date": "DATE", "supersedes": null}
+]
+
 Input: "I walked 8,231 steps today, had a salad for lunch ($12.50), and finished reading 'Project Hail Mary'. Oh, I also decided to switch from Yoga to Pilates starting next week."
 Output: [
   {"kind": "event", "text": "User walked 8,231 steps on DATE", "date": "DATE", "supersedes": null},
@@ -181,6 +236,9 @@ Output: [
 Return ONLY a valid JSON array. No text, no explanation:
 [{"kind": "fact", "text": "...", "date": "YYYY-MM-DD", "supersedes": null}]
 
+For causal items, include decision and causal_relation:
+[{"kind": "causal", "causal_relation": "caused", "decision": "what was done", "text": "what happened as a result", "date": "YYYY-MM-DD", "supersedes": null}]
+
 Return [] if nothing is worth remembering."#;
 
 /// LLM-backed session distiller. Construct via `from_env`; absent config
@@ -200,6 +258,10 @@ struct RawItem {
     date: Option<serde_json::Value>,
     #[serde(default)]
     supersedes: Option<serde_json::Value>,
+    #[serde(default)]
+    causal_relation: Option<String>,
+    #[serde(default)]
+    decision: Option<String>,
 }
 
 impl Distiller {
@@ -417,6 +479,8 @@ fn normalize_item(item: RawItem, fallback_date: &str) -> Option<MemoryItem> {
         text,
         date,
         supersedes,
+        causal_relation: item.causal_relation.as_deref().and_then(CausalRelation::parse),
+        decision: item.decision.filter(|s| !s.is_empty()),
     })
 }
 

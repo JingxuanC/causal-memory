@@ -223,6 +223,7 @@ async fn run_distill(args: &[String]) -> anyhow::Result<()> {
                 ItemKind::Preference => "preference",
                 ItemKind::Lesson => "lesson",
                 ItemKind::Event => "event",
+                ItemKind::Causal => "causal",
             };
             println!("  [{kind}] {}", item.text);
             if dry_run {
@@ -255,7 +256,7 @@ async fn run_distill(args: &[String]) -> anyhow::Result<()> {
                 }
                 // Lessons/events → the causal store's distilled path (handles
                 // its own supersedes-based soft-invalidation).
-                ItemKind::Lesson | ItemKind::Event => {
+                ItemKind::Lesson | ItemKind::Event | ItemKind::Causal => {
                     if let Err(e) = store.record_distilled(item, None) {
                         eprintln!("⚠️ record_distilled failed ({}): {e}", item.text);
                         continue;

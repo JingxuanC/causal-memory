@@ -1134,6 +1134,8 @@ use rusqlite::params;
             text: text.to_string(),
             date: Some(date.to_string()),
             supersedes: supersedes.map(str::to_string),
+            causal_relation: None,
+            decision: None,
         }
     }
 
@@ -1385,6 +1387,8 @@ use rusqlite::params;
             text: "Undated fact.".into(),
             date: None,
             supersedes: None,
+            causal_relation: None,
+            decision: None,
         };
         let out = store.record_distilled(&it, None).unwrap();
         let edge = store.get_edge(out.edge_id.unwrap()).unwrap().unwrap();
@@ -1610,6 +1614,8 @@ use rusqlite::params;
                 text: format!("event number {seq}"),
                 date: Some("2025-06-05".to_string()),
                 supersedes: None,
+                causal_relation: None,
+                decision: None,
             }
         };
         {

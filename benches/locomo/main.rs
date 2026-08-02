@@ -886,7 +886,7 @@ async fn distill_conversation(
                     store.record_fact(kind, &item.text, "user", "distill", 0.8)?;
                     stats.facts_recorded += 1;
                 }
-                ItemKind::Lesson | ItemKind::Event => {
+                ItemKind::Lesson | ItemKind::Event | ItemKind::Causal => {
                     let out = store.record_distilled(item, None)?;
                     if out.duplicate {
                         stats.episodes_duplicate += 1;
