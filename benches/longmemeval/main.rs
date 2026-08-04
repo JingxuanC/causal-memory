@@ -90,9 +90,7 @@ const MULTI_SESSION_RULE: &str = "\n- This question requires synthesizing inform
 /// P8: Extra instruction for single-session-preference questions. These ask
 /// for a preference (favorite, preferred, likes) — answer with the specific
 /// stated preference, not a vague summary.
-const PREFERENCE_RULE: &str = "\n- This question asks about a user preference. Answer with the \
-     specific item, brand, or choice the user stated they prefer. If multiple preferences were \
-     mentioned, answer with the most recently stated one.";
+const PREFERENCE_RULE: &str = "\n- This question asks about a user preference. Infer the user's likely preference from their past statements, activities, and choices — even if they never explicitly stated a preference on this exact topic. For example, if the user owns Sony camera equipment and mentions photography, suggest Sony-compatible accessories. If they mentioned watching stand-up comedy before, suggest comedy content. Base your inference on concrete details from the memories and state your reasoning. DO NOT answer 'I don't have enough information' for preference questions — always provide a preference-grounded recommendation.";
 
 /// Judge system prompt (shared preamble; the user message carries the
 /// official per-type template from evaluate_qa.py).
