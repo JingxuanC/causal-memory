@@ -3,15 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>causal-memory · AI 的因果记忆引擎</title>
+<title>causal-memory · 从论文到产品</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 :root {
   --bg: #08090c;
-  --bg2: #0f1115;
+  --bg2: #0d0e12;
   --gold: #f0b90b;
   --gold2: #ffd633;
-  --gold-glow: rgba(240,185,11,0.15);
   --green: #00d97e;
   --red: #ff4757;
   --blue: #4dabf7;
@@ -19,93 +18,131 @@
   --cyan: #22d3ee;
   --text: #e8eaed;
   --muted: #8b949e;
-  --dim: #57606a;
+  --dim: #484f58;
   --card: rgba(255,255,255,0.03);
   --border: rgba(255,255,255,0.08);
   --mono: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
 }
-html { scroll-snap-type: y mandatory; scroll-behavior: smooth; }
+html, body {
+  height: 100%;
+  overflow: hidden;
+}
 body {
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'PingFang SC', sans-serif;
-  overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-section {
-  min-height: 100vh;
+
+/* ═══ Slide container ═══ */
+.deck {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+.slide {
+  min-width: 100vw;
+  height: 100vh;
   scroll-snap-align: start;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 60px 20px;
+  padding: 48px 28px;
   position: relative;
   overflow: hidden;
 }
-
-/* ═══ Canvas backgrounds ═══ */
-.bg-canvas {
+canvas.bg-canvas {
   position: absolute;
   top: 0; left: 0;
   width: 100%; height: 100%;
   z-index: 0;
+  opacity: 0.4;
 }
-section > *:not(.bg-canvas) { position: relative; z-index: 1; }
+.slide > *:not(canvas) { position: relative; z-index: 1; }
 
-/* ═══ Common ═══ */
+/* ═══ Navigation ═══ */
+.nav {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  z-index: 100;
+  background: rgba(8,9,12,0.8);
+  backdrop-filter: blur(12px);
+  padding: 8px 14px;
+  border-radius: 24px;
+  border: 1px solid var(--border);
+}
+.nav-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.2);
+  transition: all 0.3s;
+  cursor: pointer;
+}
+.nav-dot.active {
+  background: var(--gold);
+  width: 20px;
+  border-radius: 3px;
+}
+.nav-text {
+  position: fixed;
+  bottom: 52px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  color: var(--dim);
+  letter-spacing: 2px;
+  z-index: 100;
+  white-space: nowrap;
+}
+
+/* ═══ Common elements ═══ */
 .kicker {
   font-size: 11px;
   letter-spacing: 4px;
   text-transform: uppercase;
   color: var(--gold);
-  margin-bottom: 12px;
+  margin-bottom: 16px;
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.kicker::before {
-  content: '';
-  width: 24px; height: 1px;
-  background: var(--gold);
-}
+.kicker::before { content: ''; width: 20px; height: 1px; background: var(--gold); }
 h2 {
-  font-size: clamp(28px, 7.5vw, 56px);
+  font-size: clamp(24px, 6vw, 44px);
   font-weight: 800;
   letter-spacing: -1px;
   line-height: 1.15;
   text-align: center;
 }
 h2 .hl { color: var(--gold); }
-h2 .hl-green { color: var(--green); }
 h2 .hl-red { color: var(--red); }
+h2 .hl-green { color: var(--green); }
+h2 .hl-blue { color: var(--blue); }
 .sub {
-  font-size: clamp(13px, 3.5vw, 17px);
+  font-size: clamp(12px, 3vw, 15px);
   color: var(--muted);
   margin-top: 12px;
   text-align: center;
   line-height: 1.6;
-  max-width: 400px;
+  max-width: 380px;
 }
 
 /* ═══ S1: Hero ═══ */
-#s1 {
-  background: radial-gradient(ellipse 80% 60% at 50% 35%, rgba(240,185,11,0.06), transparent 70%);
-}
-.hero-glow {
-  position: absolute;
-  width: 300px; height: 300px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(240,185,11,0.1), transparent 70%);
-  top: 20%; left: 50%;
-  transform: translateX(-50%);
-  filter: blur(40px);
-  animation: breathe 4s ease-in-out infinite;
-}
-@keyframes breathe {
-  0%, 100% { opacity: 0.5; transform: translateX(-50%) scale(1); }
-  50% { opacity: 1; transform: translateX(-50%) scale(1.15); }
-}
+#s1 { background: radial-gradient(ellipse 80% 60% at 50% 35%, rgba(240,185,11,0.08), transparent 70%); }
 .hero-badge {
   display: inline-flex;
   align-items: center;
@@ -114,918 +151,650 @@ h2 .hl-red { color: var(--red); }
   border-radius: 20px;
   background: rgba(240,185,11,0.08);
   border: 1px solid rgba(240,185,11,0.2);
-  font-size: 11px;
+  font-size: 10px;
   color: var(--gold);
-  letter-spacing: 1px;
-  margin-bottom: 24px;
-  opacity: 0;
-  animation: fadeUp 0.6s 0.1s forwards;
+  letter-spacing: 2px;
+  margin-bottom: 20px;
 }
 .hero-title {
-  font-size: clamp(44px, 14vw, 120px);
+  font-size: clamp(48px, 16vw, 140px);
   font-weight: 900;
-  letter-spacing: -3px;
-  line-height: 0.95;
+  letter-spacing: -4px;
+  line-height: 0.9;
   text-align: center;
-  opacity: 0;
-  animation: fadeUp 0.8s 0.3s forwards;
 }
 .hero-title .gradient {
-  background: linear-gradient(135deg, #fff 30%, var(--gold) 100%);
+  background: linear-gradient(135deg, #fff 25%, var(--gold) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
-.hero-title .typed {
-  display: inline-block;
-  color: var(--gold);
-  min-width: 0.5em;
-}
+.hero-typed { color: var(--gold); display: inline-block; min-width: 0.5em; }
 .cursor {
-  display: inline-block;
-  width: 4px;
-  height: 0.8em;
-  background: var(--gold);
-  margin-left: 2px;
-  animation: blink 0.8s steps(1) infinite;
-  vertical-align: text-bottom;
+  display: inline-block; width: 4px; height: 0.8em;
+  background: var(--gold); margin-left: 2px;
+  animation: blink 0.8s steps(1) infinite; vertical-align: text-bottom;
 }
 @keyframes blink { 50% { opacity: 0; } }
-.hero-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: center;
-  margin-top: 28px;
-  opacity: 0;
-  animation: fadeUp 0.6s 0.8s forwards;
-}
+.hero-tags { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 24px; }
 .hero-tag {
-  font-size: 11px;
-  padding: 5px 12px;
-  border-radius: 16px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  color: var(--muted);
+  font-size: 11px; padding: 5px 12px; border-radius: 16px;
+  background: var(--card); border: 1px solid var(--border); color: var(--muted);
 }
-.scroll-cue {
-  position: absolute;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  opacity: 0.4;
-  animation: fadeUp 1s 1.2s forwards;
+.swipe-hint {
+  position: absolute; bottom: 80px;
+  font-size: 11px; color: var(--dim);
+  display: flex; align-items: center; gap: 6px;
 }
-.scroll-cue-text { font-size: 10px; color: var(--dim); letter-spacing: 2px; }
-.scroll-cue-arrow {
-  width: 1px; height: 24px;
-  background: linear-gradient(to bottom, var(--gold), transparent);
-  animation: scrollDown 1.5s ease-in-out infinite;
+.swipe-arrow {
+  width: 20px; height: 1px; background: var(--gold);
+  position: relative;
+  animation: slideRight 1.5s ease-in-out infinite;
 }
-@keyframes scrollDown {
-  0% { transform: scaleY(0); transform-origin: top; }
-  50% { transform: scaleY(1); transform-origin: top; }
-  100% { transform: scaleY(0); transform-origin: bottom; }
+.swipe-arrow::after {
+  content: ''; position: absolute; right: 0; top: -3px;
+  width: 7px; height: 7px;
+  border-right: 1px solid var(--gold);
+  border-top: 1px solid var(--gold);
+  transform: rotate(45deg);
+}
+@keyframes slideRight {
+  0%, 100% { transform: translateX(0); opacity: 0.3; }
+  50% { transform: translateX(6px); opacity: 1; }
 }
 
-/* ═══ S2: Problem — Typing demo ═══ */
-#s2 { background: var(--bg); }
-.code-window {
-  width: 100%;
-  max-width: 420px;
-  background: #0d0e12;
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  overflow: hidden;
-  margin-top: 32px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
-}
-.code-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
-}
-.code-dot { width: 10px; height: 10px; border-radius: 50%; }
-.code-dot.r { background: #ff5f57; }
-.code-dot.y { background: #febc2e; }
-.code-dot.g { background: #28c840; }
-.code-title {
-  font-size: 11px;
-  color: var(--dim);
-  margin-left: 8px;
-  font-family: var(--mono);
-}
-.code-body {
-  padding: 16px;
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.8;
-}
-.code-line { white-space: pre-wrap; word-break: break-word; }
-.syntax-comment { color: var(--dim); }
-.syntax-key { color: var(--purple); }
-.syntax-str { color: var(--green); }
-.syntax-fn { color: var(--blue); }
-.syntax-warn { color: var(--red); }
-.syntax-gold { color: var(--gold); }
-
-/* ═══ S3: Architecture — Animated layers ═══ */
-#s3 { background: linear-gradient(180deg, var(--bg) 0%, #0a0b0f 100%); }
-.arch-stack {
+/* ═══ S2: Research motivation ═══ */
+.research-grid {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 0;
-  margin-top: 32px;
+  gap: 14px;
   max-width: 420px;
   width: 100%;
+  margin-top: 24px;
 }
-.arch-card {
-  width: 100%;
+.research-card {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 16px;
   padding: 18px 20px;
   display: flex;
-  align-items: center;
   gap: 14px;
-  opacity: 0;
-  transform: translateY(20px);
-  transition: all 0.5s;
+  align-items: flex-start;
 }
-.arch-card.visible { opacity: 1; transform: translateY(0); }
-.arch-card.gold {
-  border-color: rgba(240,185,11,0.3);
-  background: rgba(240,185,11,0.04);
-  box-shadow: 0 0 30px rgba(240,185,11,0.08);
+.research-num {
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 900;
+  color: var(--gold);
+  opacity: 0.25;
+  flex-shrink: 0;
+  line-height: 1;
 }
-.arch-card-icon {
-  width: 36px; height: 36px;
+.research-body h4 { font-size: 14px; margin-bottom: 4px; }
+.research-body p { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.research-body .src { font-size: 10px; color: var(--dim); margin-top: 4px; font-family: var(--mono); }
+
+/* ═══ S3: Insight quotes ═══ */
+.insight-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 420px;
+  width: 100%;
+  margin-top: 20px;
+}
+.insight-card {
+  background: linear-gradient(135deg, rgba(240,185,11,0.05), rgba(255,255,255,0.01));
+  border: 1px solid rgba(240,185,11,0.15);
+  border-radius: 16px;
+  padding: 20px 22px;
+}
+.insight-card .label {
+  font-size: 10px;
+  color: var(--gold);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.insight-card .quote {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.insight-card .desc {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 6px;
+  line-height: 1.5;
+}
+
+/* ═══ S4: Full architecture diagram ═══ */
+.arch-full {
+  max-width: 420px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin-top: 12px;
+}
+.arch-row {
+  display: flex;
+  gap: 0;
+  align-items: stretch;
+}
+.arch-block {
+  flex: 1;
   border-radius: 10px;
+  padding: 10px 8px;
+  text-align: center;
+  font-size: 10px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  margin: 2px;
+}
+.arch-block.title {
+  background: rgba(240,185,11,0.06);
+  border-color: rgba(240,185,11,0.2);
+  font-weight: 700;
+  color: var(--gold);
+  font-size: 11px;
+  padding: 8px 6px;
+}
+.arch-block .blk-icon { font-size: 16px; display: block; margin-bottom: 3px; }
+.arch-block .blk-name { font-size: 10px; font-weight: 600; display: block; }
+.arch-block .blk-desc { font-size: 9px; color: var(--muted); display: block; margin-top: 2px; line-height: 1.3; }
+.arch-col-label {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 9px;
+  color: var(--dim);
+  letter-spacing: 2px;
+  text-transform: uppercase;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
-  flex-shrink: 0;
-  background: rgba(255,255,255,0.05);
-}
-.arch-card-content h4 { font-size: 14px; margin-bottom: 2px; }
-.arch-card-content p { font-size: 11px; color: var(--muted); }
-.arch-arrow-down {
-  color: var(--gold);
-  font-size: 14px;
+  min-width: 20px;
   padding: 4px 0;
-  opacity: 0;
-  animation: fadeUp 0.4s forwards;
 }
-.arch-card.visible + .arch-arrow-down { animation: fadeUp 0.4s 0.3s forwards; }
+.arch-divider {
+  text-align: center;
+  color: var(--gold);
+  font-size: 10px;
+  letter-spacing: 4px;
+  margin: 8px 0 4px;
+  opacity: 0.5;
+}
+.arch-flow-arrow {
+  text-align: center;
+  color: var(--dim);
+  font-size: 12px;
+  margin: 1px 0;
+}
 
-/* ═══ S4: Edge Types — Interactive ═══ */
-#s4 { background: var(--bg); }
-.edge-container {
-  max-width: 440px;
-  width: 100%;
-  margin-top: 24px;
-}
+/* ═══ S5: Edge types ═══ */
+.edge-list { max-width: 420px; width: 100%; margin-top: 16px; }
 .edge-item {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 14px 18px;
-  margin-bottom: 8px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  opacity: 0;
-  transform: translateX(-20px);
-  transition: all 0.4s;
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; margin-bottom: 6px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
 }
-.edge-item.visible { opacity: 1; transform: translateX(0); }
-.edge-item.featured {
-  border-color: rgba(255,71,87,0.3);
-  background: rgba(255,71,87,0.04);
-}
-.edge-pulse {
-  width: 14px; height: 14px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  position: relative;
-}
-.edge-pulse::after {
-  content: '';
-  position: absolute;
-  inset: -3px;
-  border-radius: 50%;
-  border: 1px solid currentColor;
-  opacity: 0;
-  animation: ring 2s ease-out infinite;
-}
-@keyframes ring {
-  0% { opacity: 0.8; transform: scale(1); }
-  100% { opacity: 0; transform: scale(2.5); }
-}
-.edge-info { flex: 1; }
-.edge-label {
-  font-size: 14px;
-  font-weight: 600;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.edge-badge {
-  font-size: 9px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: rgba(255,71,87,0.15);
-  color: var(--red);
-  font-weight: 700;
-}
-.edge-desc {
-  font-size: 11px;
-  color: var(--muted);
-  margin-top: 2px;
-}
-.edge-val {
-  font-family: var(--mono);
-  font-size: 14px;
-  font-weight: 700;
-  min-width: 40px;
-  text-align: right;
+.edge-item.hl { border-color: rgba(255,71,87,0.3); background: rgba(255,71,87,0.04); }
+.edge-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+.edge-name { font-size: 13px; font-weight: 600; min-width: 80px; }
+.edge-desc { font-size: 11px; color: var(--muted); flex: 1; }
+.edge-val { font-family: var(--mono); font-size: 13px; font-weight: 700; }
+.edge-tag {
+  font-size: 9px; padding: 2px 6px; border-radius: 4px;
+  background: rgba(255,71,87,0.15); color: var(--red); font-weight: 700;
 }
 
-/* ═══ S5: Benchmark — Animated bars ═══ */
-#s5 { background: #0a0b0f; }
-.bench-section {
-  max-width: 440px;
-  width: 100%;
-  margin-top: 24px;
-}
-.bench-block { margin-bottom: 28px; }
-.bench-label-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
-}
-.bench-name {
-  font-size: 13px;
-  font-weight: 600;
-}
-.bench-name.muted { color: var(--muted); font-weight: 400; }
-.bench-score {
-  font-family: var(--mono);
-  font-size: 14px;
-  font-weight: 700;
-}
+/* ═══ S6: Benchmark ═══ */
+.bench-wrap { max-width: 420px; width: 100%; margin-top: 16px; }
+.bench-block { margin-bottom: 20px; }
+.bench-row2 { margin-bottom: 6px; }
+.bench-lbl { display: flex; justify-content: space-between; margin-bottom: 4px; }
+.bench-lbl .name { font-size: 12px; font-weight: 600; }
+.bench-lbl .name.muted { color: var(--muted); font-weight: 400; }
+.bench-lbl .score { font-family: var(--mono); font-size: 13px; font-weight: 700; }
 .bench-track {
-  height: 32px;
-  background: rgba(255,255,255,0.03);
-  border-radius: 8px;
-  overflow: hidden;
-  position: relative;
+  height: 28px; background: rgba(255,255,255,0.03);
+  border-radius: 7px; overflow: hidden;
 }
 .bench-fill {
-  height: 100%;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  padding-right: 10px;
-  font-size: 12px;
-  font-weight: 800;
-  width: 0;
-  transition: width 1.8s cubic-bezier(0.16,1,0.3,1);
+  height: 100%; border-radius: 7px; width: 0;
+  transition: width 1.5s cubic-bezier(0.16,1,0.3,1);
+  display: flex; align-items: center; justify-content: flex-end;
+  padding-right: 8px; font-size: 11px; font-weight: 800;
 }
-.bench-fill.gold {
-  background: linear-gradient(90deg, rgba(240,185,11,0.3), var(--gold));
-  color: #000;
-  box-shadow: 0 0 20px rgba(240,185,11,0.2);
-}
-.bench-fill.gray {
-  background: rgba(255,255,255,0.06);
-  color: var(--muted);
-}
-.bench-divider {
-  font-size: 10px;
-  color: var(--dim);
-  text-align: center;
-  margin: 4px 0 12px;
-  letter-spacing: 1px;
-}
-.stat-row {
-  display: flex;
-  gap: 12px;
-  margin-top: 20px;
-}
+.bench-fill.gold { background: linear-gradient(90deg, rgba(240,185,11,0.3), var(--gold)); color: #000; }
+.bench-fill.gray { background: rgba(255,255,255,0.06); color: var(--muted); }
+.stat-row { display: flex; gap: 10px; margin-top: 16px; }
 .stat-card {
-  flex: 1;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 18px 14px;
-  text-align: center;
+  flex: 1; background: var(--card); border: 1px solid var(--border);
+  border-radius: 12px; padding: 14px 10px; text-align: center;
 }
-.stat-number {
-  font-size: 28px;
-  font-weight: 900;
-  font-family: var(--mono);
-}
-.stat-label {
-  font-size: 10px;
-  color: var(--muted);
-  margin-top: 4px;
-  line-height: 1.3;
-}
+.stat-num { font-size: 24px; font-weight: 900; font-family: var(--mono); }
+.stat-lbl { font-size: 9px; color: var(--muted); margin-top: 3px; line-height: 1.3; }
 
-/* ═══ S6: ReAct Demo ═══ */
-#s6 { background: var(--bg); }
-.react-demo {
-  max-width: 420px;
-  width: 100%;
-  margin-top: 24px;
-}
-.react-step {
-  display: flex;
-  gap: 12px;
-  padding: 10px 14px;
-  margin-bottom: 6px;
-  border-radius: 12px;
-  opacity: 0;
-  transform: translateY(10px);
-  transition: all 0.4s;
-}
-.react-step.visible { opacity: 1; transform: translateY(0); }
-.react-step.thought { background: rgba(177,151,252,0.06); border: 1px solid rgba(177,151,252,0.15); }
-.react-step.tool { background: rgba(77,171,247,0.06); border: 1px solid rgba(77,171,247,0.15); }
-.react-step.warn { background: rgba(255,71,87,0.06); border: 1px solid rgba(255,71,87,0.15); }
-.react-step.result { background: rgba(0,217,126,0.06); border: 1px solid rgba(0,217,126,0.15); }
-.react-icon { font-size: 16px; flex-shrink: 0; line-height: 1.5; }
-.react-text { font-size: 12px; line-height: 1.5; }
-.react-text .mono { font-family: var(--mono); font-size: 11px; }
-
-/* ═══ S7: Unique Grid ═══ */
-#s7 { background: #0a0b0f; }
-.unique-list {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 10px;
-  max-width: 420px;
-  width: 100%;
-  margin-top: 24px;
-}
+/* ═══ S7: Unique ═══ */
+.unique-grid { max-width: 420px; width: 100%; margin-top: 16px; display: flex; flex-direction: column; gap: 8px; }
 .unique-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  padding: 16px 18px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  opacity: 0;
-  transform: scale(0.95);
-  transition: all 0.4s;
+  display: flex; gap: 14px; padding: 14px 16px;
+  background: var(--card); border: 1px solid var(--border); border-radius: 12px;
 }
-.unique-item.visible { opacity: 1; transform: scale(1); }
-.unique-num {
-  font-family: var(--mono);
-  font-size: 24px;
-  font-weight: 800;
-  color: var(--gold);
-  opacity: 0.3;
-  flex-shrink: 0;
-  min-width: 32px;
-}
-.unique-body h4 { font-size: 14px; margin-bottom: 3px; }
-.unique-body p { font-size: 12px; color: var(--muted); line-height: 1.4; }
-.unique-tag {
-  display: inline-block;
-  font-size: 9px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: rgba(0,217,126,0.12);
-  color: var(--green);
-  margin-top: 4px;
-  font-weight: 600;
+.unique-num { font-family: var(--mono); font-size: 22px; font-weight: 800; color: var(--gold); opacity: 0.25; flex-shrink: 0; }
+.unique-body h4 { font-size: 13px; margin-bottom: 2px; }
+.unique-body p { font-size: 11px; color: var(--muted); line-height: 1.4; }
+.utag {
+  display: inline-block; font-size: 9px; padding: 2px 6px; border-radius: 4px;
+  background: rgba(0,217,126,0.12); color: var(--green); margin-top: 3px; font-weight: 600;
 }
 
 /* ═══ S8: CTA ═══ */
-#s8 {
-  background: radial-gradient(ellipse at 50% 40%, rgba(240,185,11,0.08), transparent 65%);
-}
-.cta-stack {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 20px;
-}
-.cta-numbers {
-  display: flex;
-  gap: 20px;
-  margin-bottom: 8px;
-}
-.cta-stat {
-  text-align: center;
-}
-.cta-stat-num {
-  font-size: 32px;
-  font-weight: 900;
-  font-family: var(--mono);
-  color: var(--gold);
-}
-.cta-stat-label {
-  font-size: 10px;
-  color: var(--muted);
-}
+#s8 { background: radial-gradient(ellipse at 50% 40%, rgba(240,185,11,0.08), transparent 65%); }
+.cta-stats { display: flex; gap: 24px; margin-bottom: 20px; }
+.cta-stat { text-align: center; }
+.cta-stat-num { font-size: 28px; font-weight: 900; font-family: var(--mono); color: var(--gold); }
+.cta-stat-lbl { font-size: 10px; color: var(--muted); }
 .cta-btn {
-  padding: 16px 48px;
-  background: var(--gold);
-  color: #000;
-  border-radius: 14px;
-  font-size: 17px;
-  font-weight: 800;
-  text-decoration: none;
-  transition: transform 0.2s, box-shadow 0.2s;
-  box-shadow: 0 10px 40px rgba(240,185,11,0.3);
+  padding: 14px 40px; background: var(--gold); color: #000;
+  border-radius: 12px; font-size: 16px; font-weight: 800;
+  text-decoration: none; box-shadow: 0 10px 40px rgba(240,185,11,0.3);
 }
-.cta-btn:active { transform: scale(0.95); }
-.cta-gh {
-  font-size: 12px;
-  color: var(--muted);
-  font-family: var(--mono);
-}
-
-/* ═══ Animations ═══ */
-@keyframes fadeUp {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-/* Neural network canvas */
-#neuralCanvas { opacity: 0.4; }
+.cta-gh { font-size: 12px; color: var(--muted); font-family: var(--mono); margin-top: 14px; }
 </style>
 </head>
 <body>
 
-<!-- ═══ S1: HERO ═══ -->
-<section id="s1">
-  <canvas class="bg-canvas" id="neuralCanvas"></canvas>
-  <div class="hero-glow"></div>
-  <div class="hero-badge">⚡ OPEN SOURCE · MIT · RUST</div>
-  <h1 class="hero-title">
+<!-- ═══ Slides ═══ -->
+<div class="deck" id="deck">
+
+<!-- ── S1: Hero ── -->
+<div class="slide" id="s1">
+  <canvas class="bg-canvas" id="nn1"></canvas>
+  <div class="hero-badge">⚡ RESEARCH → PRODUCT · MIT · RUST</div>
+  <div class="hero-title">
     <span class="gradient">AI 的</span><br>
-    <span class="typed" id="typed"></span><span class="cursor"></span>
-  </h1>
+    <span class="hero-typed" id="typed"></span><span class="cursor"></span>
+  </div>
   <div class="hero-tags">
     <span class="hero-tag">🧠 海马体架构</span>
     <span class="hero-tag">⚡ MCP Server</span>
-    <span class="hero-tag">🔬 206 Tests</span>
-    <span class="hero-tag">📊 LongMemEval 71.2%</span>
-    <span class="hero-tag">🚫 0% 重复犯错</span>
+    <span class="hero-tag">🔬 17 篇研究笔记</span>
+    <span class="hero-tag">📊 206 Tests</span>
   </div>
-  <div class="scroll-cue">
-    <span class="scroll-cue-text">SCROLL</span>
-    <div class="scroll-cue-arrow"></div>
-  </div>
-</section>
+  <div class="swipe-hint">向右滑动 <div class="swipe-arrow"></div></div>
+</div>
 
-<!-- ═══ S2: PROBLEM ═══ -->
-<section id="s2">
-  <div class="kicker">❌ 当前 AI 的致命问题</div>
-  <h2>AI 会<span class="hl-red">忘记</span><br>但更糟的是<br>它会<span class="hl-red">重复犯错</span></h2>
-  <div class="code-window">
-    <div class="code-header">
-      <span class="code-dot r"></span>
-      <span class="code-dot y"></span>
-      <span class="code-dot g"></span>
-      <span class="code-title">agent_trace.log</span>
-    </div>
-    <div class="code-body" id="codeBody">
-      <div class="code-line"><span class="syntax-comment"># 第 1 次遇到代理问题</span></div>
-      <div class="code-line"><span class="syntax-key">Agent</span>: <span class="syntax-fn">git</span> fetch origin</div>
-      <div class="code-line"><span class="syntax-warn">❌ Connection timed out</span></div>
-      <div class="code-line"><span class="syntax-comment"># → 记住：需要设置代理</span></div>
-      <div class="code-line" style="margin-top:8px;"><span class="syntax-comment"># 第 2 次遇到同样的问题</span></div>
-      <div class="code-line"><span class="syntax-key">Agent</span>: <span class="syntax-fn">git</span> fetch origin</div>
-      <div class="code-line"><span class="syntax-warn">❌ Connection timed out</span></div>
-      <div class="code-line"><span class="syntax-comment"># 没有 causal-memory: 20% 概率重复犯错</span></div>
-      <div class="code-line" style="margin-top:8px;"><span class="syntax-comment"># 有 causal-memory:</span></div>
-      <div class="code-line"><span class="syntax-gold">⚡ intervention_query → 预测到风险</span></div>
-      <div class="code-line"><span class="syntax-key">Agent</span>: <span class="syntax-fn">git</span> -c proxy fetch origin</div>
-      <div class="code-line"><span style="color:var(--green)">✅ 成功 · 0% 重复犯错</span></div>
-    </div>
-  </div>
-</section>
-
-<!-- ═══ S3: ARCHITECTURE ═══ -->
-<section id="s3">
-  <div class="kicker">🧠 架构设计</div>
-  <h2>模拟<span class="hl">人脑海马体</span><br>四层记忆架构</h2>
-  <div class="arch-stack" id="archStack">
-    <div class="arch-card" data-delay="0">
-      <div class="arch-card-icon">📝</div>
-      <div class="arch-card-content">
-        <h4>RAW 记忆层</h4>
-        <p>原始对话 verbatim 存储 · 可逆 · 不丢失细节</p>
+<!-- ── S2: Research motivation ── -->
+<div class="slide" id="s2">
+  <div class="kicker">🔬 研究动机</div>
+  <h2>为什么做<span class="hl">这套系统</span></h2>
+  <p class="sub">系统性拆解了 100K+ 行 AI Agent 源码，发现 5 个基础设施级失败模式</p>
+  <div class="research-grid">
+    <div class="research-card">
+      <div class="research-num">01</div>
+      <div class="research-body">
+        <h4>压缩退化 — 记忆越压越丢</h4>
+        <p>Agent 运行越久，context 压缩导致关键信息丢失越多。实测 17 轮压缩后准确率降 20pp</p>
+        <div class="src">来源：kimi-code / Grok Build 源码分析</div>
       </div>
     </div>
-    <div class="arch-arrow-down">↓</div>
-    <div class="arch-card gold" data-delay="200">
-      <div class="arch-card-icon">🔗</div>
-      <div class="arch-card-content">
-        <h4>因果记忆层</h4>
-        <p>caused / enabled / prevented · spreading activation</p>
+    <div class="research-card">
+      <div class="research-num">02</div>
+      <div class="research-body">
+        <h4>重复犯错 — 没有因果记忆</h4>
+        <p>现有记忆系统只存"发生了什么"，不存"为什么"。Agent 重复犯错率 20%</p>
+        <div class="src">来源：Agent Ablation Benchmark (trap-world)</div>
       </div>
     </div>
-    <div class="arch-arrow-down">↓</div>
-    <div class="arch-card" data-delay="400">
-      <div class="arch-card-icon">🌙</div>
-      <div class="arch-card-content">
-        <h4>睡眠巩固 (SWR)</h4>
-        <p>LTP 强化 · LTD 弱化 · GC 清理 · Q-value 更新</p>
-      </div>
-    </div>
-    <div class="arch-arrow-down">↓</div>
-    <div class="arch-card" data-delay="600">
-      <div class="arch-card-icon">🔮</div>
-      <div class="arch-card-content">
-        <h4>前向模拟</h4>
-        <p>intervention_query · 行动前预测后果 · 世界模型</p>
+    <div class="research-card">
+      <div class="research-num">03</div>
+      <div class="research-body">
+        <h4>无法预测 — 记住过去 ≠ 预测未来</h4>
+        <p>记忆系统都是"归因"（向后看），没有"模拟"（向前看）。世界模型能力缺失</p>
+        <div class="src">来源：Physical Intelligence arXiv:2607.06401</div>
       </div>
     </div>
   </div>
-</section>
+</div>
 
-<!-- ═══ S4: EDGE TYPES ═══ -->
-<section id="s4">
-  <div class="kicker">🔗 统一记忆 · 7 种边类型</div>
+<!-- ── S3: Key insights ── -->
+<div class="slide" id="s3">
+  <div class="kicker">💡 核心洞察</div>
+  <h2>三个<span class="hl">关键发现</span></h2>
+  <div class="insight-stack">
+    <div class="insight-card">
+      <div class="label">发现 1 · 统一记忆</div>
+      <div class="quote">"所有记忆类型——事实、因果、偏好、模式——都是同一张图上的 typed edge"</div>
+      <div class="desc">不是多个存储拼在一起，是一个引擎统一检索、统一传播</div>
+    </div>
+    <div class="insight-card">
+      <div class="label">发现 2 · 兴奋/抑制二元性</div>
+      <div class="quote">"caused = 谷氨酸兴奋 · prevented = GABA 抑制"</div>
+      <div class="desc">人脑同时有兴奋性和抑制性突触。现有 AI 记忆只有兴奋侧，我们补上了抑制侧</div>
+    </div>
+    <div class="insight-card">
+      <div class="label">发现 3 · 记忆 → 世界模型</div>
+      <div class="quote">"caused 边 = 转移函数样本 · 向后走 = 归因 · 向前走 = 模拟"</div>
+      <div class="desc">记忆系统从"记事本"到"模拟器"的转变，是比 QA 分数更锋利的定位</div>
+    </div>
+  </div>
+</div>
+
+<!-- ── S4: Full Architecture ── -->
+<div class="slide" id="s4">
+  <div class="kicker">🏗️ 整体架构</div>
+  <h2>四层<span class="hl">统一架构</span></h2>
+  <div class="arch-full">
+
+    <!-- WRITE layer -->
+    <div class="arch-block title" style="grid-column: span 3;">
+      <span class="blk-icon">✏️</span> 写入层 (WRITE) — 三条通道
+    </div>
+    <div class="arch-row">
+      <div class="arch-block">
+        <span class="blk-icon">📝</span>
+        <span class="blk-name">RAW Ingest</span>
+        <span class="blk-desc">每轮 verbatim · 可逆</span>
+      </div>
+      <div class="arch-block">
+        <span class="blk-icon">🧪</span>
+        <span class="blk-name">Distill</span>
+        <span class="blk-desc">LLM 提取因果/事实</span>
+      </div>
+      <div class="arch-block">
+        <span class="blk-icon">🔌</span>
+        <span class="blk-name">MCP Tools</span>
+        <span class="blk-desc">Agent 运行时写入</span>
+      </div>
+    </div>
+
+    <div class="arch-flow-arrow">↓</div>
+
+    <!-- STORE layer -->
+    <div class="arch-block title">
+      <span class="blk-icon">💾</span> 存储层 (STORE) — SQLite v7 · 统一图
+    </div>
+    <div class="arch-row">
+      <div class="arch-block" style="border-color:rgba(240,185,11,0.2);background:rgba(240,185,11,0.03);">
+        <span class="blk-icon">📄</span>
+        <span class="blk-name">chunks</span>
+        <span class="blk-desc">原始对话</span>
+      </div>
+      <div class="arch-block" style="border-color:rgba(77,171,247,0.2);background:rgba(77,171,247,0.03);">
+        <span class="blk-icon">📋</span>
+        <span class="blk-name">agent_facts</span>
+        <span class="blk-desc">事实 + 偏好</span>
+      </div>
+      <div class="arch-block" style="border-color:rgba(0,217,126,0.2);background:rgba(0,217,126,0.03);">
+        <span class="blk-icon">🔗</span>
+        <span class="blk-name">causal_edges</span>
+        <span class="blk-desc">因果边 (7种)</span>
+      </div>
+    </div>
+
+    <div class="arch-flow-arrow">↓</div>
+
+    <!-- ENGINE layer -->
+    <div class="arch-block title">
+      <span class="blk-icon">🧠</span> 引擎层 (ENGINE) — 海马体 CSR 稀疏矩阵
+    </div>
+    <div class="arch-row">
+      <div class="arch-block">
+        <span class="blk-icon">⚡</span>
+        <span class="blk-name">Spreading</span>
+        <span class="blk-desc">typed edge 激活扩散</span>
+      </div>
+      <div class="arch-block">
+        <span class="blk-icon">🌙</span>
+        <span class="blk-name">SWR 巩固</span>
+        <span class="blk-desc">LTP/LTD/GC + Q-value</span>
+      </div>
+      <div class="arch-block">
+        <span class="blk-icon">📈</span>
+        <span class="blk-name">在线学习</span>
+        <span class="blk-desc">Hebbian + novelty</span>
+      </div>
+    </div>
+
+    <div class="arch-flow-arrow">↓</div>
+
+    <!-- RETRIEVE layer -->
+    <div class="arch-block title">
+      <span class="blk-icon">🔍</span> 检索层 (RETRIEVE) — 13 MCP 工具
+    </div>
+    <div class="arch-row">
+      <div class="arch-block">
+        <span class="blk-icon">🔎</span>
+        <span class="blk-name">search_memory</span>
+        <span class="blk-desc">RRF 统一检索</span>
+      </div>
+      <div class="arch-block">
+        <span class="blk-icon">⬅️</span>
+        <span class="blk-name">trace_cause</span>
+        <span class="blk-desc">向后归因</span>
+      </div>
+      <div class="arch-block" style="border-color:rgba(240,185,11,0.3);background:rgba(240,185,11,0.05);">
+        <span class="blk-icon">➡️</span>
+        <span class="blk-name">intervention</span>
+        <span class="blk-desc">⚡ 向前模拟（独家）</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── S5: Edge types ── -->
+<div class="slide" id="s5">
+  <div class="kicker">🔗 7 种边类型</div>
   <h2>一切记忆<br>都是 <span class="hl">typed edge</span></h2>
-  <p class="sub">事实、因果、偏好、模式——全在同一张图上，统一检索、统一传播</p>
-  <div class="edge-container" id="edgeContainer">
+  <div class="edge-list">
     <div class="edge-item">
-      <div class="edge-pulse" style="background:var(--green);color:var(--green);"></div>
-      <div class="edge-info">
-        <div class="edge-label">caused</div>
-        <div class="edge-desc">A 导致了 B（决策→结果）</div>
-      </div>
+      <div class="edge-dot" style="background:var(--green)"></div>
+      <div class="edge-name">caused</div>
+      <div class="edge-desc">A 导致了 B</div>
       <div class="edge-val" style="color:var(--green)">+1.0</div>
     </div>
     <div class="edge-item">
-      <div class="edge-pulse" style="background:var(--blue);color:var(--blue);"></div>
-      <div class="edge-info">
-        <div class="edge-label">fact</div>
-        <div class="edge-desc">语义事实（用户偏好、属性）</div>
-      </div>
+      <div class="edge-dot" style="background:var(--blue)"></div>
+      <div class="edge-name">fact</div>
+      <div class="edge-desc">语义事实</div>
       <div class="edge-val" style="color:var(--blue)">+0.8</div>
     </div>
     <div class="edge-item">
-      <div class="edge-pulse" style="background:#7ee787;color:#7ee787;"></div>
-      <div class="edge-info">
-        <div class="edge-label">enabled</div>
-        <div class="edge-desc">A 使 B 成为可能</div>
-      </div>
+      <div class="edge-dot" style="background:#a0a0a0"></div>
+      <div class="edge-name">meta</div>
+      <div class="edge-desc">跨情景模式</div>
+      <div class="edge-val" style="color:#a0a0a0">+0.6</div>
+    </div>
+    <div class="edge-item">
+      <div class="edge-dot" style="background:#7ee787"></div>
+      <div class="edge-name">enabled</div>
+      <div class="edge-desc">A 使 B 可能</div>
       <div class="edge-val" style="color:#7ee787">+0.5</div>
     </div>
     <div class="edge-item">
-      <div class="edge-pulse" style="background:var(--purple);color:var(--purple);"></div>
-      <div class="edge-info">
-        <div class="edge-label">co-occurrence</div>
-        <div class="edge-desc">Hebbian 共现学习（动态权重）</div>
-      </div>
+      <div class="edge-dot" style="background:var(--purple)"></div>
+      <div class="edge-name">co-occur</div>
+      <div class="edge-desc">Hebbian 共现</div>
       <div class="edge-val" style="color:var(--purple)">+0.2</div>
     </div>
-    <div class="edge-item featured">
-      <div class="edge-pulse" style="background:var(--red);color:var(--red);"></div>
-      <div class="edge-info">
-        <div class="edge-label">prevented <span class="edge-badge">独家</span></div>
-        <div class="edge-desc">A 阻止了 B · GABA 抑制性负扩散</div>
-      </div>
+    <div class="edge-item hl">
+      <div class="edge-dot" style="background:var(--red);box-shadow:0 0 8px var(--red)"></div>
+      <div class="edge-name">prevented <span class="edge-tag">独家</span></div>
+      <div class="edge-desc">A 阻止 B · GABA 抑制</div>
       <div class="edge-val" style="color:var(--red)">−0.3</div>
     </div>
   </div>
-</section>
+</div>
 
-<!-- ═══ S5: BENCHMARK ═══ -->
-<section id="s5">
-  <div class="kicker">📊 Benchmark · 实测数据</div>
-  <h2>数据说话</h2>
-  <div class="bench-section">
+<!-- ── S6: Benchmark ── -->
+<div class="slide" id="s6">
+  <div class="kicker">📊 实测数据</div>
+  <h2>数据<span class="hl">说话</span></h2>
+  <div class="bench-wrap">
     <div class="bench-block">
-      <div class="bench-label-row">
-        <span class="bench-name">LongMemEval (500题)</span>
+      <div class="bench-row2">
+        <div class="bench-lbl"><span class="name">LongMemEval 500题</span></div>
       </div>
-      <div style="margin-bottom:8px;">
-        <div class="bench-label-row">
-          <span class="bench-name">causal-memory</span>
-          <span class="bench-score" style="color:var(--gold)">71.2%</span>
-        </div>
+      <div class="bench-row2">
+        <div class="bench-lbl"><span class="name">causal-memory</span><span class="score" style="color:var(--gold)">71.2%</span></div>
         <div class="bench-track"><div class="bench-fill gold" data-w="71"></div></div>
       </div>
-      <div>
-        <div class="bench-label-row">
-          <span class="bench-name muted">Mem0</span>
-          <span class="bench-score" style="color:var(--muted)">~64%</span>
-        </div>
+      <div class="bench-row2">
+        <div class="bench-lbl"><span class="name muted">Mem0</span><span class="score" style="color:var(--muted)">~64%</span></div>
         <div class="bench-track"><div class="bench-fill gray" data-w="64"></div></div>
       </div>
     </div>
-
     <div class="bench-block">
-      <div class="bench-label-row">
-        <span class="bench-name">LoCoMo (记忆基准)</span>
+      <div class="bench-row2">
+        <div class="bench-lbl"><span class="name">LoCoMo 记忆基准</span></div>
       </div>
-      <div style="margin-bottom:8px;">
-        <div class="bench-label-row">
-          <span class="bench-name">causal-memory</span>
-          <span class="bench-score" style="color:var(--gold)">84.1%</span>
-        </div>
+      <div class="bench-row2">
+        <div class="bench-lbl"><span class="name">causal-memory</span><span class="score" style="color:var(--gold)">84.1%</span></div>
         <div class="bench-track"><div class="bench-fill gold" data-w="84"></div></div>
       </div>
-      <div>
-        <div class="bench-label-row">
-          <span class="bench-name muted">行业最强 (OpenViking)</span>
-          <span class="bench-score" style="color:var(--muted)">91.6%</span>
-        </div>
+      <div class="bench-row2">
+        <div class="bench-lbl"><span class="name muted">行业最强</span><span class="score" style="color:var(--muted)">91.6%</span></div>
         <div class="bench-track"><div class="bench-fill gray" data-w="92"></div></div>
       </div>
     </div>
-
     <div class="stat-row">
-      <div class="stat-card">
-        <div class="stat-number" style="color:var(--gold)">0%</div>
-        <div class="stat-label">Agent 重复犯错率<br>（无记忆 20%）</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-number" style="color:var(--green)">+20.8pp</div>
-        <div class="stat-label">压缩生存率提升<br>（独家指标）</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-number" style="color:var(--blue)">88.6%</div>
-        <div class="stat-label">证据命中率<br>检索质量</div>
-      </div>
+      <div class="stat-card"><div class="stat-num" style="color:var(--gold)">0%</div><div class="stat-lbl">重复犯错率</div></div>
+      <div class="stat-card"><div class="stat-num" style="color:var(--green)">+20.8</div><div class="stat-lbl">压缩生存pp</div></div>
+      <div class="stat-card"><div class="stat-num" style="color:var(--blue)">88.6%</div><div class="stat-lbl">证据命中</div></div>
     </div>
   </div>
-</section>
+</div>
 
-<!-- ═══ S6: ReAct DEMO ═══ -->
-<section id="s6">
-  <div class="kicker">🤖 Agent 实战 · ReAct 推理</div>
-  <h2>用户说<span class="hl">"分析茅台"</span><br>Agent 自主推理</h2>
-  <div class="react-demo" id="reactDemo">
-    <div class="react-step thought">
-      <span class="react-icon">💭</span>
-      <span class="react-text">需要判断估值、趋势、催化、风险</span>
-    </div>
-    <div class="react-step tool">
-      <span class="react-icon">🔧</span>
-      <span class="react-text"><span class="mono">factor_analysis(600519)</span> → RSI 65 · MACD 金叉</span>
-    </div>
-    <div class="react-step thought">
-      <span class="react-icon">💭</span>
-      <span class="react-text">因子偏多，查因果风险</span>
-    </div>
-    <div class="react-step warn">
-      <span class="react-icon">⚠️</span>
-      <span class="react-text"><span class="mono">causal_search("茅台 风险")</span> → 消费降级 prevented CAR −2.1%</span>
-    </div>
-    <div class="react-step tool">
-      <span class="react-icon">🔧</span>
-      <span class="react-text"><span class="mono">risk_check(600519, 100股)</span> → ✅ 通过</span>
-    </div>
-    <div class="react-step result">
-      <span class="react-icon">✅</span>
-      <span class="react-text"><strong>评分 7.5/10 · 分批建仓 · 止损 1620</strong><br>推理 5 轮 · 调用 6 个工具 · 发现 1 个风险</span>
-    </div>
-  </div>
-</section>
-
-<!-- ═══ S7: UNIQUE ═══ -->
-<section id="s7">
+<!-- ── S7: Unique ── -->
+<div class="slide" id="s7">
   <div class="kicker">⚡ 独家能力</div>
   <h2>别人<span class="hl">做不到</span>的</h2>
-  <div class="unique-list" id="uniqueList">
+  <div class="unique-grid">
     <div class="unique-item">
       <div class="unique-num">01</div>
       <div class="unique-body">
         <h4>🚫 Prevented 负扩散</h4>
-        <p>GABA 抑制性类比 · 恶意/错误记忆被自动抑制 · 天然防御注入攻击</p>
-        <span class="unique-tag">无竞品</span>
+        <p>GABA 抑制性 · 错误记忆自动抑制 · 天然防御注入</p>
+        <span class="utag">无竞品</span>
       </div>
     </div>
     <div class="unique-item">
       <div class="unique-num">02</div>
       <div class="unique-body">
         <h4>🔮 前向模拟 (intervention_query)</h4>
-        <p>行动前预测后果 · 因果图 propagation · 世界模型能力</p>
-        <span class="unique-tag">零 benchmark · 蓝海</span>
+        <p>行动前预测后果 · 世界模型 · 因果图 propagation</p>
+        <span class="utag">零竞品 · 蓝海</span>
       </div>
     </div>
     <div class="unique-item">
       <div class="unique-num">03</div>
       <div class="unique-body">
         <h4>🌙 SWR 睡眠巩固</h4>
-        <p>LTP/LTD/GC 四阶段 · 产出新图不改原图 · 可审计可回滚</p>
-        <span class="unique-tag">Anthropic Dreams 对齐</span>
+        <p>LTP/LTD/GC · 产出新图不改原图 · 可回滚</p>
+        <span class="utag">Dreams 对齐</span>
       </div>
     </div>
     <div class="unique-item">
       <div class="unique-num">04</div>
       <div class="unique-body">
-        <h4>⚡ CSR 稀疏矩阵</h4>
-        <p>Cache-friendly 图传播 · 248K 节点 + 222K 边实时检索</p>
-        <span class="unique-tag">Rust 性能</span>
-      </div>
-    </div>
-    <div class="unique-item">
-      <div class="unique-num">05</div>
-      <div class="unique-body">
-        <h4>📈 在线进化</h4>
-        <p>Q-value Bellman + Hebbian LTP + novelty entropy 触发</p>
-        <span class="unique-tag">7×24 持续学习</span>
-      </div>
-    </div>
-    <div class="unique-item">
-      <div class="unique-num">06</div>
-      <div class="unique-body">
-        <h4>🔌 MCP 原生</h4>
-        <p>13 个 MCP 工具 · 任何 Agent 框架可接入 · 开箱即用</p>
-        <span class="unique-tag">13 Tools</span>
+        <h4>⚡ CSR 稀疏矩阵 + 在线进化</h4>
+        <p>248K 节点实时 · Q-value Bellman · Hebbian LTP</p>
+        <span class="utag">7×24 持续学习</span>
       </div>
     </div>
   </div>
-</section>
+</div>
 
-<!-- ═══ S8: CTA ═══ -->
-<section id="s8">
-  <canvas class="bg-canvas" id="neuralCanvas2"></canvas>
-  <div class="kicker">🚀 开源 · MIT License</div>
-  <h2 style="margin-bottom:8px;">让每个 AI Agent<br>都拥有<span class="hl">因果记忆</span></h2>
-  <div class="cta-numbers">
-    <div class="cta-stat">
-      <div class="cta-stat-num">206</div>
-      <div class="cta-stat-label">Tests</div>
-    </div>
-    <div class="cta-stat">
-      <div class="cta-stat-num">7</div>
-      <div class="cta-stat-label">Edge Types</div>
-    </div>
-    <div class="cta-stat">
-      <div class="cta-stat-num">13</div>
-      <div class="cta-stat-label">MCP Tools</div>
-    </div>
+<!-- ── S8: CTA ── -->
+<div class="slide" id="s8">
+  <canvas class="bg-canvas" id="nn2"></canvas>
+  <div class="kicker">🚀 MIT · 开源</div>
+  <h2 style="margin-bottom:12px;">让每个 AI Agent<br>都拥有<span class="hl">因果记忆</span></h2>
+  <div class="cta-stats">
+    <div class="cta-stat"><div class="cta-stat-num">206</div><div class="cta-stat-lbl">Tests</div></div>
+    <div class="cta-stat"><div class="cta-stat-num">7</div><div class="cta-stat-lbl">Edge Types</div></div>
+    <div class="cta-stat"><div class="cta-stat-num">13</div><div class="cta-stat-lbl">MCP Tools</div></div>
+    <div class="cta-stat"><div class="cta-stat-num">17</div><div class="cta-stat-lbl">Insights</div></div>
   </div>
-  <div class="cta-stack">
-    <a href="https://github.com/JingxuanC/causal-memory" class="cta-btn">⭐ GitHub Star</a>
-    <span class="cta-gh">github.com/JingxuanC/causal-memory</span>
-  </div>
-</section>
+  <a href="https://github.com/JingxuanC/causal-memory" class="cta-btn">⭐ GitHub Star</a>
+  <div class="cta-gh">github.com/JingxuanC/causal-memory</div>
+</div>
+
+</div>
+
+<!-- Nav -->
+<div class="nav-text" id="navText">1 / 8 →</div>
+<div class="nav" id="nav"></div>
 
 <script>
-// ── Typing effect ──
+// ── Typing ──
 const phrases = ['因果记忆', '世界模型', '海马体引擎'];
-let phraseIdx = 0, charIdx = 0, deleting = false;
-const typedEl = document.getElementById('typed');
-
-function typeLoop() {
-  const current = phrases[phraseIdx];
-  if (!deleting) {
-    typedEl.textContent = current.slice(0, charIdx + 1);
-    charIdx++;
-    if (charIdx >= current.length) {
-      deleting = true;
-      setTimeout(typeLoop, 2000);
-      return;
-    }
-  } else {
-    typedEl.textContent = current.slice(0, charIdx - 1);
-    charIdx--;
-    if (charIdx <= 0) {
-      deleting = false;
-      phraseIdx = (phraseIdx + 1) % phrases.length;
-    }
-  }
-  setTimeout(typeLoop, deleting ? 60 : 120);
+let pi = 0, ci = 0, del = false;
+const tEl = document.getElementById('typed');
+function type() {
+  const cur = phrases[pi];
+  if (!del) { tEl.textContent = cur.slice(0, ++ci); if (ci >= cur.length) { del = true; setTimeout(type, 2000); return; } }
+  else { tEl.textContent = cur.slice(0, --ci); if (ci <= 0) { del = false; pi = (pi+1)%phrases.length; } }
+  setTimeout(type, del ? 50 : 100);
 }
-typeLoop();
+type();
 
-// ── Neural network canvas ──
-function initNeural(canvasId) {
-  const canvas = document.getElementById(canvasId);
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  let w, h, nodes = [];
-
-  function resize() {
-    w = canvas.width = canvas.offsetWidth;
-    h = canvas.height = canvas.offsetHeight;
-    nodes = [];
-    const count = Math.floor(w * h / 12000);
-    for (let i = 0; i < count; i++) {
-      nodes.push({
-        x: Math.random() * w,
-        y: Math.random() * h,
-        vx: (Math.random() - 0.5) * 0.3,
-        vy: (Math.random() - 0.5) * 0.3,
-        r: Math.random() * 2 + 1,
-      });
-    }
+// ── Neural canvas ──
+function neural(id) {
+  const c = document.getElementById(id); if (!c) return;
+  const ctx = c.getContext('2d'); let w, h, nodes = [];
+  function rz() {
+    w = c.width = c.offsetWidth; h = c.height = c.offsetHeight; nodes = [];
+    for (let i = 0; i < Math.floor(w*h/14000); i++)
+      nodes.push({x:Math.random()*w, y:Math.random()*h, vx:(Math.random()-.5)*.3, vy:(Math.random()-.5)*.3, r:Math.random()*2+1});
   }
-  resize();
-  window.addEventListener('resize', resize);
-
+  rz(); window.addEventListener('resize', rz);
   function draw() {
-    ctx.clearRect(0, 0, w, h);
-
-    // Draw connections
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const dx = nodes[i].x - nodes[j].x;
-        const dy = nodes[i].y - nodes[j].y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < 120) {
-          const alpha = (1 - dist / 120) * 0.15;
-          ctx.strokeStyle = `rgba(240,185,11,${alpha})`;
-          ctx.lineWidth = 0.5;
-          ctx.beginPath();
-          ctx.moveTo(nodes[i].x, nodes[i].y);
-          ctx.lineTo(nodes[j].x, nodes[j].y);
-          ctx.stroke();
-        }
-      }
+    ctx.clearRect(0,0,w,h);
+    for (let i=0;i<nodes.length;i++) for (let j=i+1;j<nodes.length;j++) {
+      const dx=nodes[i].x-nodes[j].x, dy=nodes[i].y-nodes[j].y, d=Math.sqrt(dx*dx+dy*dy);
+      if (d<110) { ctx.strokeStyle=`rgba(240,185,11,${(1-d/110)*.12})`; ctx.lineWidth=.5; ctx.beginPath(); ctx.moveTo(nodes[i].x,nodes[i].y); ctx.lineTo(nodes[j].x,nodes[j].y); ctx.stroke(); }
     }
-
-    // Draw nodes
     for (const n of nodes) {
-      n.x += n.vx;
-      n.y += n.vy;
-      if (n.x < 0 || n.x > w) n.vx *= -1;
-      if (n.y < 0 || n.y > h) n.vy *= -1;
-
-      ctx.fillStyle = `rgba(240,185,11,${0.3 + n.r * 0.1})`;
-      ctx.beginPath();
-      ctx.arc(n.x, n.y, n.r, 0, Math.PI * 2);
-      ctx.fill();
+      n.x+=n.vx; n.y+=n.vy; if(n.x<0||n.x>w)n.vx*=-1; if(n.y<0||n.y>h)n.vy*=-1;
+      ctx.fillStyle=`rgba(240,185,11,${.3+n.r*.1})`; ctx.beginPath(); ctx.arc(n.x,n.y,n.r,0,6.28); ctx.fill();
     }
-
     requestAnimationFrame(draw);
   }
   draw();
 }
-initNeural('neuralCanvas');
-initNeural('neuralCanvas2');
+neural('nn1'); neural('nn2');
 
-// ── Scroll-triggered animations ──
-const observer = new IntersectionObserver((entries) => {
-  entries.forEach(entry => {
-    if (entry.isIntersecting) {
-      const el = entry.target;
+// ── Nav dots ──
+const deck = document.getElementById('deck');
+const slides = deck.querySelectorAll('.slide');
+const nav = document.getElementById('nav');
+const navText = document.getElementById('navText');
+slides.forEach((_, i) => {
+  const dot = document.createElement('div');
+  dot.className = 'nav-dot' + (i===0 ? ' active' : '');
+  dot.onclick = () => deck.scrollTo({ left: i * window.innerWidth, behavior: 'smooth' });
+  nav.appendChild(dot);
+});
+deck.addEventListener('scroll', () => {
+  const idx = Math.round(deck.scrollLeft / window.innerWidth);
+  nav.querySelectorAll('.nav-dot').forEach((d, i) => d.classList.toggle('active', i === idx));
+  navText.textContent = `${idx+1} / ${slides.length} →`;
+});
 
-      // Architecture cards
-      if (el.id === 'archStack') {
-        el.querySelectorAll('.arch-card').forEach(card => {
-          const delay = parseInt(card.dataset.delay || '0');
-          setTimeout(() => card.classList.add('visible'), delay);
-        });
-      }
-
-      // Edge items
-      if (el.id === 'edgeContainer') {
-        el.querySelectorAll('.edge-item').forEach((item, i) => {
-          setTimeout(() => item.classList.add('visible'), i * 100);
-        });
-      }
-
-      // Benchmark bars
-      if (el.classList.contains('bench-section') || el.querySelector('.bench-fill')) {
-        el.querySelectorAll('.bench-fill').forEach(bar => {
-          setTimeout(() => bar.style.width = bar.dataset.w + '%', 200);
-        });
-      }
-
-      // ReAct steps
-      if (el.id === 'reactDemo') {
-        el.querySelectorAll('.react-step').forEach((step, i) => {
-          setTimeout(() => step.classList.add('visible'), i * 400);
-        });
-      }
-
-      // Unique items
-      if (el.id === 'uniqueList') {
-        el.querySelectorAll('.unique-item').forEach((item, i) => {
-          setTimeout(() => item.classList.add('visible'), i * 80);
-        });
-      }
+// ── Benchmark animation on scroll ──
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      e.target.querySelectorAll('.bench-fill').forEach(f => {
+        const w = f.dataset.w; f.style.width = '0';
+        setTimeout(() => f.style.width = w + '%', 200);
+      });
     }
   });
-}, { threshold: 0.2 });
-
-document.querySelectorAll('#archStack, #edgeContainer, .bench-section, #reactDemo, #uniqueList').forEach(el => {
-  observer.observe(el);
-});
+}, { root: deck, threshold: 0.3 });
+document.querySelectorAll('.bench-wrap').forEach(el => obs.observe(el));
 </script>
 </body>
 </html>
