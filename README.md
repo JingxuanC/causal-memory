@@ -43,7 +43,7 @@ compaction cannot touch it.
 |---|---|---|---|---|
 | **LoCoMo** (1,986q, strict judge) | **79.1%** | 69.6% | +9.5pp | 91.6% (−12.5pp) |
 | **LoCoMo** (mem0-judge) | **84.1%** | — | — | 91.6% (−7.5pp) |
-| **LongMemEval** multi-session | **57.9%** | 41.4% | +16.5pp | — |
+| **LongMemEval** (500q, raw ingest) | **70.8%** overall / 88.6% evidence-hit | — | — | — |
 | **Memora** MPA (10 personas) | **67.4%** | 47.0% | +20.4pp | 71.8% (−4.4pp) |
 | **Memora** FAMA | **49.0** | 31.0 | +18.0 | — |
 | Compaction survival | **100%** | 45% | — | — |
