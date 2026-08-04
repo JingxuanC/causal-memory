@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>causal-memory · 7×24 AGI 记忆架构</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg: #0a0a0b;
+  --gold: #e0b437;
+  --gold-dim: #b8941e;
+  --green: #3fb950;
+  --red: #f85149;
+  --blue: #58a6ff;
+  --purple: #bc8cff;
+  --text: #f0f0f0;
+  --muted: #8b949e;
+  --card: #16161a;
+  --border: #30363d;
+}
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  overflow-x: hidden;
+  scroll-snap-type: y mandatory;
+  scroll-behavior: smooth;
+}
+section {
+  height: 100vh;
+  scroll-snap-align: start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 24px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ── Slide indicators ── */
+.indicator {
+  position: fixed;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 100;
+}
+.indicator-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.2);
+  transition: all 0.3s;
+}
+.indicator-dot.active {
+  background: var(--gold);
+  transform: scale(1.5);
+}
+
+/* ── S1: Hero ── */
+#s1 { background: radial-gradient(ellipse at 50% 30%, rgba(224,180,55,0.08), transparent 60%); }
+.hero-logo {
+  font-size: 14px;
+  letter-spacing: 6px;
+  color: var(--gold);
+  text-transform: uppercase;
+  margin-bottom: 16px;
+  opacity: 0;
+  animation: fadeUp 0.8s ease 0.2s forwards;
+}
+.hero-title {
+  font-size: clamp(40px, 12vw, 96px);
+  font-weight: 800;
+  letter-spacing: -2px;
+  line-height: 1;
+  background: linear-gradient(180deg, #fff, var(--gold));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  opacity: 0;
+  animation: fadeUp 0.8s ease 0.4s forwards;
+  text-align: center;
+}
+.hero-sub {
+  font-size: clamp(14px, 4vw, 20px);
+  color: var(--muted);
+  margin-top: 20px;
+  opacity: 0;
+  animation: fadeUp 0.8s ease 0.6s forwards;
+}
+.hero-tags {
+  display: flex;
+  gap: 12px;
+  margin-top: 24px;
+  flex-wrap: wrap;
+  justify-content: center;
+  opacity: 0;
+  animation: fadeUp 0.8s ease 0.8s forwards;
+}
+.hero-tag {
+  padding: 6px 16px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--muted);
+}
+.scroll-hint {
+  position: absolute;
+  bottom: 30px;
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.5;
+  animation: bounce 2s infinite;
+}
+
+/* ── S2: Problem ── */
+#s2 { background: var(--bg); }
+.section-tag {
+  font-size: 12px;
+  color: var(--gold);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  margin-bottom: 16px;
+}
+.section-title {
+  font-size: clamp(28px, 7vw, 52px);
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 40px;
+  line-height: 1.2;
+}
+.problem-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 500px;
+  width: 100%;
+}
+.problem-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px 24px;
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+.problem-icon {
+  font-size: 28px;
+  flex-shrink: 0;
+}
+.problem-text h3 { font-size: 15px; margin-bottom: 4px; }
+.problem-text p { font-size: 13px; color: var(--muted); line-height: 1.5; }
+
+/* ── S3: Architecture ── */
+#s3 { background: #0d0d0f; }
+.arch-diagram {
+  max-width: 100%;
+  width: 360px;
+  margin-top: 20px;
+}
+.arch-layer {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 8px;
+  text-align: center;
+  position: relative;
+}
+.arch-layer-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gold);
+  margin-bottom: 6px;
+}
+.arch-layer-desc {
+  font-size: 11px;
+  color: var(--muted);
+}
+.arch-arrow {
+  text-align: center;
+  color: var(--gold);
+  font-size: 16px;
+  margin: 2px 0;
+}
+
+/* ── S4: Edge Types ── */
+#s4 { background: var(--bg); }
+.edge-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  max-width: 440px;
+  width: 100%;
+}
+.edge-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 18px;
+  background: var(--card);
+  border-radius: 14px;
+  border: 1px solid var(--border);
+}
+.edge-dot {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.edge-name {
+  font-size: 14px;
+  font-weight: 600;
+  min-width: 90px;
+}
+.edge-weight {
+  font-size: 13px;
+  font-family: monospace;
+  color: var(--muted);
+  margin-left: auto;
+}
+.edge-desc {
+  font-size: 12px;
+  color: var(--muted);
+  display: block;
+  margin-top: 2px;
+}
+
+/* ── S5: Benchmark ── */
+#s5 { background: #0d0d0f; }
+.bench-table {
+  max-width: 480px;
+  width: 100%;
+}
+.bench-row {
+  display: flex;
+  align-items: center;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+.bench-name {
+  font-size: 13px;
+  min-width: 120px;
+}
+.bench-bar-bg {
+  flex: 1;
+  height: 28px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+}
+.bench-bar-fill {
+  height: 100%;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #000;
+  transition: width 1.5s ease;
+}
+.bench-row.highlight .bench-bar-fill {
+  background: linear-gradient(90deg, var(--gold-dim), var(--gold));
+}
+.bench-row .bench-bar-fill {
+  background: var(--border);
+  color: var(--muted);
+}
+
+/* ── S6: Unique ── */
+#s6 { background: var(--bg); }
+.unique-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  max-width: 440px;
+}
+.unique-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px 16px;
+  text-align: center;
+}
+.unique-icon { font-size: 32px; margin-bottom: 8px; }
+.unique-title { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+.unique-desc { font-size: 11px; color: var(--muted); line-height: 1.4; }
+
+/* ── S7: CTA ── */
+#s7 {
+  background: radial-gradient(ellipse at 50% 50%, rgba(224,180,55,0.06), transparent 60%);
+}
+.cta-title {
+  font-size: clamp(32px, 8vw, 64px);
+  font-weight: 800;
+  text-align: center;
+  line-height: 1.1;
+  margin-bottom: 16px;
+}
+.cta-sub {
+  font-size: 16px;
+  color: var(--muted);
+  margin-bottom: 32px;
+  text-align: center;
+}
+.cta-btn {
+  display: inline-block;
+  padding: 14px 40px;
+  background: var(--gold);
+  color: #000;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 700;
+  text-decoration: none;
+  transition: transform 0.2s;
+}
+.cta-btn:active { transform: scale(0.95); }
+.github-link {
+  display: block;
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ── Animations ── */
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(8px); }
+}
+
+/* ── Neural network background ── */
+.neural-bg {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  opacity: 0.15;
+  pointer-events: none;
+  overflow: hidden;
+}
+.node {
+  position: absolute;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  background: var(--gold);
+  animation: pulse 3s infinite;
+}
+.line {
+  position: absolute;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--gold), transparent);
+  opacity: 0.3;
+  animation: flow 4s infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 1; transform: scale(2); }
+}
+@keyframes flow {
+  0% { opacity: 0; }
+  50% { opacity: 0.3; }
+  100% { opacity: 0; }
+}
+</style>
+</head>
+<body>
+
+<!-- Indicator -->
+<div class="indicator" id="indicator"></div>
+
+<!-- ═══ S1: Hero ═══ -->
+<section id="s1">
+  <div class="neural-bg" id="neural-bg"></div>
+  <div class="hero-logo">⚡ CAUSAL · MEMORY</div>
+  <h1 class="hero-title">7×24<br>AGI 记忆</h1>
+  <p class="hero-sub">让 AI Agent 拥有因果记忆<br>不重复犯错 · 自主进化 · 预测未来</p>
+  <div class="hero-tags">
+    <span class="hero-tag">🔬 Rust 实现</span>
+    <span class="hero-tag">🧠 海马体架构</span>
+    <span class="hero-tag">⚡ MCP Server</span>
+    <span class="hero-tag">📊 206 Tests</span>
+  </div>
+  <div class="scroll-hint">↓ 向下滑动</div>
+</section>
+
+<!-- ═══ S2: Problem ═══ -->
+<section id="s2">
+  <div class="section-tag">❌ 当前 AI 的记忆问题</div>
+  <h2 class="section-title">AI 会忘记<br>但更糟的是<br>它会重复犯错</h2>
+  <div class="problem-cards">
+    <div class="problem-card">
+      <div class="problem-icon">🧠</div>
+      <div class="problem-text">
+        <h3>记忆 = 记事本</h3>
+        <p>现有系统只存"发生了什么"，不存"为什么"。记住事实，但不理解因果关系。</p>
+      </div>
+    </div>
+    <div class="problem-card">
+      <div class="problem-icon">🔁</div>
+      <div class="problem-text">
+        <h3>重复踩坑</h3>
+        <p>没有因果记忆的 Agent 重复犯错率 20%。有因果记忆后降到 0%。</p>
+      </div>
+    </div>
+    <div class="problem-card">
+      <div class="problem-icon">📉</div>
+      <div class="problem-text">
+        <h3>无法预测</h3>
+        <p>记住过去 ≠ 预测未来。没有因果推理，Agent 无法在行动前预见后果。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ S3: Architecture ═══ -->
+<section id="s3">
+  <div class="section-tag">🧠 架构设计</div>
+  <h2 class="section-title">模拟人脑海马体</h2>
+  <div class="arch-diagram">
+    <div class="arch-layer">
+      <div class="arch-layer-title">📝 RAW 记忆层</div>
+      <div class="arch-layer-desc">原始对话 · 每轮 verbatim 存储 · 可逆</div>
+    </div>
+    <div class="arch-arrow">↓ distill 提取</div>
+    <div class="arch-layer" style="border-color: var(--gold); background: rgba(224,180,55,0.05);">
+      <div class="arch-layer-title">🔗 因果记忆层</div>
+      <div class="arch-layer-desc">caused / enabled / prevented 边 · BM25+语义检索 · spreading activation</div>
+    </div>
+    <div class="arch-arrow">↓ SWR 巩固</div>
+    <div class="arch-layer">
+      <div class="arch-layer-title">🌙 睡眠巩固</div>
+      <div class="arch-layer-desc">LTP 强化 · LTD 弱化 · GC 清理 · Q-value 更新 · Hebbian 学习</div>
+    </div>
+    <div class="arch-arrow">↓ 在线进化</div>
+    <div class="arch-layer">
+      <div class="arch-layer-title">🔮 前向模拟</div>
+      <div class="arch-layer-desc">intervention_query · 行动前预测后果 · 世界模型</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ S4: Edge Types ═══ -->
+<section id="s4">
+  <div class="section-tag">🔗 统一记忆 · 7 种边类型</div>
+  <h2 class="section-title">一切记忆<br>都是 typed edge</h2>
+  <div class="edge-grid">
+    <div class="edge-row">
+      <div class="edge-dot" style="background:var(--green);box-shadow:0 0 8px var(--green);"></div>
+      <div><span class="edge-name">caused</span><span class="edge-weight">+1.0</span><span class="edge-desc">A 导致了 B（决策→结果）</span></div>
+    </div>
+    <div class="edge-row">
+      <div class="edge-dot" style="background:var(--blue);"></div>
+      <div><span class="edge-name">fact</span><span class="edge-weight">+0.8</span><span class="edge-desc">语义事实（用户偏好/属性）</span></div>
+    </div>
+    <div class="edge-row">
+      <div class="edge-dot" style="background:#a0a0a0;"></div>
+      <div><span class="edge-name">meta</span><span class="edge-weight">+0.6</span><span class="edge-desc">跨情景统计模式</span></div>
+    </div>
+    <div class="edge-row">
+      <div class="edge-dot" style="background:#7ee787;"></div>
+      <div><span class="edge-name">enabled</span><span class="edge-weight">+0.5</span><span class="edge-desc">A 使 B 成为可能</span></div>
+    </div>
+    <div class="edge-row">
+      <div class="edge-dot" style="background:var(--purple);"></div>
+      <div><span class="edge-name">co-occur</span><span class="edge-weight">+0.2</span><span class="edge-desc">Hebbian 共现（动态权重）</span></div>
+    </div>
+    <div class="edge-row">
+      <div class="edge-dot" style="background:var(--red);box-shadow:0 0 8px var(--red);"></div>
+      <div><span class="edge-name">prevented</span><span class="edge-weight">−0.3</span><span class="edge-desc">A 阻止了 B ⚡ 独家：GABA 抑制性负扩散</span></div>
+    </div>
+    <div class="edge-row">
+      <div class="edge-dot" style="background:#484f58;"></div>
+      <div><span class="edge-name">no_effect</span><span class="edge-weight">0.0</span><span class="edge-desc">A 对 B 无影响</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ S5: Benchmark ═══ -->
+<section id="s5">
+  <div class="section-tag">📊 Benchmark 成绩</div>
+  <h2 class="section-title">实测数据说话</h2>
+  <div class="bench-table">
+    <div class="bench-row highlight">
+      <div class="bench-name">causal-memory</div>
+      <div class="bench-bar-bg"><div class="bench-bar-fill" style="width:71%;">71.2%</div></div>
+    </div>
+    <div class="bench-row">
+      <div class="bench-name" style="color:var(--muted);">Mem0</div>
+      <div class="bench-bar-bg"><div class="bench-bar-fill" style="width:64%;">~64%</div></div>
+    </div>
+    <div class="bench-row" style="border-bottom: 1px solid var(--gold);">
+      <div class="bench-name" style="font-size:11px;color:var(--muted);">LongMemEval 500题</div>
+    </div>
+    <div style="height: 16px;"></div>
+    <div class="bench-row highlight">
+      <div class="bench-name">causal-memory</div>
+      <div class="bench-bar-bg"><div class="bench-bar-fill" style="width:84%;">84.1%</div></div>
+    </div>
+    <div class="bench-row">
+      <div class="bench-name" style="color:var(--muted);">行业最强</div>
+      <div class="bench-bar-bg"><div class="bench-bar-fill" style="width:92%;">91.6%</div></div>
+    </div>
+    <div class="bench-row" style="border-bottom: 1px solid var(--gold);">
+      <div class="bench-name" style="font-size:11px;color:var(--muted);">LoCoMo 记忆基准</div>
+    </div>
+    <div style="height: 24px;"></div>
+    <div style="text-align: center;">
+      <div style="font-size: 28px; font-weight: 800; color: var(--gold);">0%</div>
+      <div style="font-size: 13px; color: var(--muted); margin-top: 4px;">Agent 重复犯错率（对比无记忆 20%）</div>
+    </div>
+    <div style="height: 16px;"></div>
+    <div style="text-align: center;">
+      <div style="font-size: 28px; font-weight: 800; color: var(--green);">+20.8pp</div>
+      <div style="font-size: 13px; color: var(--muted); margin-top: 4px;">压缩生存率提升（独家指标）</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ S6: Unique ═══ -->
+<section id="s6">
+  <div class="section-tag">⚡ 独有能力 · 无竞品</div>
+  <h2 class="section-title">别人做不到的</h2>
+  <div class="unique-grid">
+    <div class="unique-card">
+      <div class="unique-icon">🚫</div>
+      <div class="unique-title">Prevented 负扩散</div>
+      <div class="unique-desc">GABA 抑制性类比 · 恶意记忆被自动抑制 · 天然防御注入攻击</div>
+    </div>
+    <div class="unique-card">
+      <div class="unique-icon">🔮</div>
+      <div class="unique-title">前向模拟</div>
+      <div class="unique-desc">行动前预测后果 · intervention_query · 世界模型能力</div>
+    </div>
+    <div class="unique-card">
+      <div class="unique-icon">🌙</div>
+      <div class="unique-title">睡眠巩固</div>
+      <div class="unique-desc">SWR 回放 · LTP/LTD/GC · 产出新图不改原图 · 可回滚</div>
+    </div>
+    <div class="unique-card">
+      <div class="unique-icon">📈</div>
+      <div class="unique-title">在线学习</div>
+      <div class="unique-desc">Q-value Bellman · Hebbian LTP · novelty entropy 触发</div>
+    </div>
+    <div class="unique-card">
+      <div class="unique-icon">⚡</div>
+      <div class="unique-title">CSR 稀疏矩阵</div>
+      <div class="unique-desc">Cache-friendly 图传播 · 248K 节点实时检索</div>
+    </div>
+    <div class="unique-card">
+      <div class="unique-icon">🔌</div>
+      <div class="unique-title">MCP 原生</div>
+      <div class="unique-desc">13 个 MCP 工具 · 任何 Agent 可接入 · 开箱即用</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══ S7: CTA ═══ -->
+<section id="s7">
+  <div class="neural-bg" id="neural-bg-2"></div>
+  <div class="section-tag" style="color: var(--gold);">🚀 开源 · MIT</div>
+  <h2 class="cta-title">让每个 AI Agent<br>都拥有<br><span style="color:var(--gold);">因果记忆</span></h2>
+  <p class="cta-sub">Rust 实现 · 206 测试 · MCP Server · 海马体架构</p>
+  <a href="https://github.com/JingxuanC/causal-memory" class="cta-btn">⭐ GitHub 开源</a>
+  <div class="github-link">github.com/JingxuanC/causal-memory</div>
+</section>
+
+<script>
+// ── Neural background ──
+function createNeuralBg(id) {
+  const bg = document.getElementById(id);
+  if (!bg) return;
+  for (let i = 0; i < 15; i++) {
+    const node = document.createElement('div');
+    node.className = 'node';
+    node.style.left = Math.random() * 100 + '%';
+    node.style.top = Math.random() * 100 + '%';
+    node.style.animationDelay = Math.random() * 3 + 's';
+    bg.appendChild(node);
+  }
+  for (let i = 0; i < 8; i++) {
+    const line = document.createElement('div');
+    line.className = 'line';
+    line.style.left = Math.random() * 80 + '%';
+    line.style.top = Math.random() * 100 + '%';
+    line.style.width = (50 + Math.random() * 100) + 'px';
+    line.style.transform = 'rotate(' + (Math.random() * 180) + 'deg)';
+    line.style.animationDelay = Math.random() * 4 + 's';
+    bg.appendChild(line);
+  }
+}
+createNeuralBg('neural-bg');
+createNeuralBg('neural-bg-2');
+
+// ── Slide indicator ──
+const sections = document.querySelectorAll('section');
+const indicator = document.getElementById('indicator');
+sections.forEach((_, i) => {
+  const dot = document.createElement('div');
+  dot.className = 'indicator-dot' + (i === 0 ? ' active' : '');
+  indicator.appendChild(dot);
+});
+
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      const idx = Array.from(sections).indexOf(entry.target);
+      document.querySelectorAll('.indicator-dot').forEach((dot, i) => {
+        dot.classList.toggle('active', i === idx);
+      });
+    }
+  });
+}, { threshold: 0.5 });
+sections.forEach(s => observer.observe(s));
+
+// ── Benchmark bar animation ──
+const benchObserver = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.querySelectorAll('.bench-bar-fill').forEach(bar => {
+        const w = bar.style.width;
+        bar.style.width = '0';
+        setTimeout(() => bar.style.width = w, 100);
+      });
+    }
+  });
+}, { threshold: 0.3 });
+const benchSection = document.getElementById('s5');
+if (benchSection) benchObserver.observe(benchSection);
+</script>
+</body>
+</html>
