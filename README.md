@@ -41,13 +41,16 @@ compaction cannot touch it.
 
 | Benchmark | Score | Baseline | Δ | vs mem0 |
 |---|---|---|---|---|
-| **LoCoMo** (1,986q, strict judge) | **79.1%** | 69.6% | +9.5pp | 91.6% (−12.5pp) |
+| **LoCoMo** (1,986q, strict judge, deepseek-v4-pro) | **79.1%** | 69.6% | +9.5pp | 91.6% (−12.5pp) |
 | **LoCoMo** (mem0-judge) | **84.1%** | — | — | 91.6% (−7.5pp) |
+| **LoCoMo** (1,986q, distill, v2, deepseek-chat, 2026-08-05) | **73.8%** | — | — | — |
 | **LongMemEval** (500q, raw ingest) | **70.8%** overall / 88.6% evidence-hit | — | — | — |
+| **LongMemEval** (500q, distill, v2, deepseek-chat, 2026-08-05) | **75.2%** | 74.4% (pre-fix) | +0.8pp | — |
 | **Memora** MPA (10 personas) | **67.4%** | 47.0% | +20.4pp | 71.8% (−4.4pp) |
 | **Memora** FAMA | **49.0** | 31.0 | +18.0 | — |
 | Compaction survival | **100%** | 45% | — | — |
 | Agent repeat-mistake | **33%** | 67% | −34pp | — |
+| **bench-memory** (synthetic, LLM end-to-end, deepseek-chat) | fact recall 80% · causal recall 100% · chain 100% | — | — | — |
 
 **Memora improvement breakdown** (47.0% → 67.4%, +20.4pp from 6 architecture changes):
 

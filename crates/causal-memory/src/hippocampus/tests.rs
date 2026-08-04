@@ -943,4 +943,99 @@ mod tests {
             "without inhibition: prevented target absent from results (no warning)"
         );
     }
+
+    // ─── P5: hybrid novelty gating (Nemori FEP prediction gap) ────────────
+
+    #[test]
+    fn test_needs_prediction_gap_borderline_band() {
+        // Confident entropy verdicts stand alone; borderline defers to LLM.
+        assert!(!needs_prediction_gap(0.0));
+        assert!(!needs_prediction_gap(0.39));
+        assert!(needs_prediction_gap(0.4), "borderline lower edge");
+        assert!(needs_prediction_gap(0.5));
+        assert!(needs_prediction_gap(0.7), "borderline upper edge");
+        assert!(!needs_prediction_gap(0.71));
+        assert!(!needs_prediction_gap(1.0));
+    }
+
+    #[test]
+    fn test_prediction_gap_mode_uses_llm_prediction() {
+        // A graph where the entropy check is uninformative (empty predictions)
+        // — the prediction-gap mode must still produce a verdict from the
+        // predictor alone.
+        let graph = CausalGraph::new();
+        let mut graph = graph;
+        let mut predict_matching = |_: &str| Some("the server restarted cleanly".to_string());
+        let rep = graph.detect_novelty_with_mode(
+            "deployed new build",
+            "the server restarted cleanly",
+            NoveltyMode::PredictionGap,
+            &mut predict_matching,
+        );
+        // Prediction matched reality → no surprise → do not record.
+        assert!(!rep.should_record);
+        assert!(rep.surprise < 0.5);
+
+        let mut predict_wrong = |_: &str| Some("the build broke production".to_string());
+        let rep = graph.detect_novelty_with_mode(
+            "deployed new build",
+            "the server restarted cleanly",
+            NoveltyMode::PredictionGap,
+            &mut predict_wrong,
+        );
+        // Prediction contradicted reality → high surprise → record.
+        assert!(rep.should_record);
+        assert!(rep.surprise > 0.5);
+    }
+
+    #[test]
+    fn test_prediction_gap_fallback_when_predictor_unavailable() {
+        let graph = CausalGraph::new();
+        let mut graph = graph;
+        let mut predict_none = |_: &str| None;
+        let rep = graph.detect_novelty_with_mode(
+            "did something",
+            "something happened",
+            NoveltyMode::PredictionGap,
+            &mut predict_none,
+        );
+        // No prediction → entropy report semantics (empty predictions →
+        // maximal surprise, but should_record stays a simple > 0.5 check).
+        assert_eq!(rep.surprise, 1.0);
+        assert!(rep.should_record);
+    }
+
+    #[test]
+    fn test_hybrid_mode_skips_llm_on_confident_entropy() {
+        // Build a tiny graph with one seedable node so entropy produces a
+        // confident verdict.
+        let nodes = vec![NodeData {
+            id: "n1".into(),
+            text: "deploy with tests passed".into(),
+            event_time: 0,
+            q_value: 0.5,
+            replay_count: 0,
+            last_activated: 0,
+            task_tag: None,
+        }];
+        let graph = CausalGraph::build(&nodes, &[]);
+        let mut graph = graph;
+        // Hybrid with a predictor that would OVERRIDE the verdict if called —
+        // but the entropy verdict here is confident (graph predicts nothing
+        // similar to the actual outcome → surprise 1.0 > 0.7 → NOT
+        // borderline), so the LLM must NOT be consulted.
+        let mut calls = 0;
+        let mut predict = |_: &str| {
+            calls += 1;
+            Some("deploy with tests passed".to_string())
+        };
+        let rep = graph.detect_novelty_with_mode(
+            "deploy with tests passed",
+            "deploy with tests passed",
+            NoveltyMode::Hybrid,
+            &mut predict,
+        );
+        assert_eq!(calls, 0, "confident entropy verdict must skip the LLM");
+        assert!(!rep.should_record, "outcome matched the graph prediction");
+    }
 }

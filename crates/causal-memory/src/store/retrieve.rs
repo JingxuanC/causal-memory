@@ -236,7 +236,7 @@ impl CausalStore {
         let mut stmt = conn.prepare(&sql)?;
         let bind_refs: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
         let rows = stmt.query_map(bind_refs.as_slice(), |row| {
-            Ok((entry_from_row(row)?, row.get::<_, Vec<u8>>(15)?))
+            Ok((entry_from_row(row)?, row.get::<_, Vec<u8>>(16)?))
         })?;
 
         let mut scored: Vec<(super::CausalEntry, f64)> = Vec::new();

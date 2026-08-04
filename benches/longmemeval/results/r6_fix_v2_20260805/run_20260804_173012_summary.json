@@ -1,0 +1,82 @@
+{
+  "run_id": "20260804_173012",
+  "date": "2026-08-04T17:33:26.425700+00:00",
+  "git_commit": "1fa462d",
+  "model": "deepseek-chat",
+  "judge_model": "deepseek-chat",
+  "temperature": 0.0,
+  "topk": 10,
+  "ingest": "distill",
+  "prompt_version": "v2",
+  "distill_ingest": {
+    "sessions": 23867,
+    "llm_calls": 0,
+    "facts_recorded": 0,
+    "episodes_recorded": 0,
+    "episodes_duplicate": 0,
+    "facts_retired": 0,
+    "superseded_invalidations": 0,
+    "skipped_existing": false
+  },
+  "data": "benches/longmemeval/data/longmemeval_s_cleaned.json",
+  "qtype_filter": null,
+  "total_questions": 500,
+  "correct": 376,
+  "incorrect": 124,
+  "error": 0,
+  "accuracy": 0.752,
+  "evidence_hit_rate": 0.876,
+  "avg_ctx_tokens": 10547.77,
+  "avg_ans_tokens": 20.012,
+  "per_question_type": {
+    "knowledge-update": {
+      "total": 78,
+      "correct": 65,
+      "incorrect": 13,
+      "error": 0,
+      "accuracy": 0.8333333333333334
+    },
+    "multi-session": {
+      "total": 133,
+      "correct": 78,
+      "incorrect": 55,
+      "error": 0,
+      "accuracy": 0.5864661654135338
+    },
+    "single-session-assistant": {
+      "total": 56,
+      "correct": 55,
+      "incorrect": 1,
+      "error": 0,
+      "accuracy": 0.9821428571428571
+    },
+    "single-session-preference": {
+      "total": 30,
+      "correct": 17,
+      "incorrect": 13,
+      "error": 0,
+      "accuracy": 0.5666666666666667
+    },
+    "single-session-user": {
+      "total": 70,
+      "correct": 68,
+      "incorrect": 2,
+      "error": 0,
+      "accuracy": 0.9714285714285714
+    },
+    "temporal-reasoning": {
+      "total": 133,
+      "correct": 93,
+      "incorrect": 40,
+      "error": 0,
+      "accuracy": 0.6992481203007519
+    }
+  },
+  "abstention": {
+    "total": 30,
+    "correct": 28,
+    "incorrect": 2,
+    "error": 0,
+    "accuracy": 0.9333333333333333
+  }
+}

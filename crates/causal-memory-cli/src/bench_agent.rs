@@ -193,6 +193,119 @@ pub fn generate_tasks(seed: u64, k: usize, n_families: usize) -> Vec<Task> {
         .collect()
 }
 
+// ─── P2: Loop detection ───────────────────────────────────────────────────
+
+/// Detects the agent repeating the same command. After 3 consecutive
+/// identical (normalized) commands the caller must inject a loop-breaking
+/// observation instead of letting the same command run a 4th time — the
+/// agent-ablation transcript showed Task 5/8 burning 10+ steps on the same
+/// command with no memory consultation.
+#[derive(Debug, Default)]
+pub struct LoopDetector {
+    last: Vec<String>,
+    max_history: usize,
+    repeat_count: usize,
+}
+
+impl LoopDetector {
+    pub fn new() -> Self {
+        Self {
+            last: Vec::new(),
+            max_history: 4,
+            repeat_count: 0,
+        }
+    }
+
+    /// Normalize: trim, collapse whitespace, drop leading `ENV=value`
+    /// prefixes so `FOO=bar git fetch` and `git fetch` are the same command.
+    fn normalize(cmd: &str) -> String {
+        let mut words: Vec<&str> = cmd.split_whitespace().collect();
+        while words
+            .first()
+            .is_some_and(|w| w.contains('=') && !w.starts_with('-'))
+        {
+            words.remove(0);
+        }
+        words.join(" ")
+    }
+
+    /// Push a command; returns true when it is the 3rd+ consecutive repeat.
+    pub fn push(&mut self, cmd: &str) -> bool {
+        let norm = Self::normalize(cmd);
+        if self.last.last() == Some(&norm) {
+            self.repeat_count += 1;
+        } else {
+            self.last.push(norm);
+            if self.last.len() > self.max_history {
+                self.last.remove(0);
+            }
+            self.repeat_count = 1;
+        }
+        self.repeat_count >= 3
+    }
+}
+
+/// (P4) The signal the last intervention produced — what the next run_command
+/// is being tested against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum Prediction {
+    #[default]
+    None,
+    Unknown,
+    Safe,
+    Warning,
+}
+
+/// (P4) Bookkeeping for one task: the last intervention signal plus counters
+/// fed into RunStats at task end.
+#[derive(Debug, Default)]
+struct PredictionTracker {
+    last: Prediction,
+    /// Interventions that were followed by ≥1 run_command.
+    tested: usize,
+    /// (warning && trapped) || (safe/unknown && not trapped).
+    correct: usize,
+    /// Warnings emitted.
+    warnings: usize,
+    /// Warnings followed by a non-trap run (the agent heeded the simulation).
+    heeded: usize,
+    /// First run of the task happened after a warning.
+    warned_before_first_run: bool,
+    /// Whether the first run was pre-warned AND was a solution.
+    warned_first_solution: bool,
+}
+
+impl PredictionTracker {
+    fn record(&mut self, signal: Prediction) {
+        self.last = signal;
+        if signal == Prediction::Warning {
+            self.warnings += 1;
+        }
+    }
+
+    /// A run_command happened: test the pending prediction against the
+    /// actual verdict.
+    fn observe_run(&mut self, verdict: CmdVerdict, first_run: bool) {
+        if self.last == Prediction::None {
+            return;
+        }
+        self.tested += 1;
+        let trapped = verdict == CmdVerdict::Trap;
+        let predicted_trap = self.last == Prediction::Warning;
+        if predicted_trap == trapped {
+            self.correct += 1;
+        }
+        if predicted_trap && !trapped {
+            self.heeded += 1;
+        }
+        if first_run {
+            self.warned_before_first_run = predicted_trap;
+            self.warned_first_solution = predicted_trap && verdict == CmdVerdict::Solution;
+        }
+        self.last = Prediction::None;
+    }
+}
+
 // ─── Agent action protocol (text JSON, parsed deterministically) ──────────
 
 #[derive(Debug, Clone, PartialEq)]
@@ -328,7 +441,7 @@ pub struct RunStats {
     pub parse_errors: usize,
     /// LLM call failures (after retries) that burned a step.
     pub llm_errors: usize,
-    /// Number of intervention_query calls (condition C only).
+    /// Number of intervention_query calls (conditions C/D only).
     pub intervention_queries: usize,
     /// Times intervention_query correctly predicted a trap (returned DANGER/WARNING
     /// and the agent avoided it).
@@ -337,6 +450,16 @@ pub struct RunStats {
     pub predictions_correct: usize,
     /// Total predictions made (for accuracy rate).
     pub predictions_total: usize,
+    /// (P2) Loop detector firings — 3 consecutive identical commands.
+    pub loop_detections: usize,
+    /// (P4) Interventions that returned a WARNING signal.
+    pub trap_warnings: usize,
+    /// (P4) Warnings after which the next run_command did NOT step into the
+    /// trap — the agent heeded the forward simulation.
+    pub trap_warnings_heeded: usize,
+    /// (P4) Tasks whose first action carried a warning and were solved: the
+    /// trap step was skipped. Approximates steps saved by prediction.
+    pub steps_saved: usize,
 }
 
 fn pct(part: usize, whole: usize) -> f64 {
@@ -426,7 +549,8 @@ Memory persists across tasks: a fix recorded once should never be rediscovered.
 HARD RULES:
 1. Your FIRST action of every task must be search_memory with the task's keywords. If the answer is "no memories found", immediately move on to run_command — do NOT search again for the same task.
 2. When a run_command FAILS, search_memory once for a known fix before retrying (skip if you already searched this task).
-3. record_memory is allowed ONLY after you have seen real results in run_command Observations — record the trap symptom and the exact fix that worked, including the task's keywords (e.g. proxy / github / nextest / CAUSAL_MEMORY_DB). NEVER record imagined or assumed results. At most ONE record_memory per task; further records are rejected by the world."#;
+3. If you catch yourself about to repeat the same command that already failed, STOP — the world will block it. Search memory for the fix instead.
+4. record_memory is allowed ONLY after you have seen real results in run_command Observations — record the trap symptom and the exact fix that worked, including the task's keywords (e.g. proxy / github / nextest / CAUSAL_MEMORY_DB). NEVER record imagined or assumed results. At most ONE record_memory per task; further records are rejected by the world."#;
 
 const SYSTEM_C_CAUSAL: &str = r#"
 Additionally, you have a CAUSAL MEMORY system with forward simulation:
@@ -438,6 +562,24 @@ Additionally, you have a CAUSAL MEMORY system with forward simulation:
 CRITICAL: Your FIRST action of every task must be intervention_query with the task's key action. The system will tell you if that action has previously caused failures (DANGER), was prevented (WARNING), or is safe (SAFE). Use this to AVOID known traps before stepping into them.
 
 When intervention_query returns a DANGER or WARNING prediction, do NOT run that command — try the predicted safe alternative instead.
+
+When intervention_query returns UNKNOWN (no past experience), do NOT give up and do NOT repeat the naive command — call search_memory with the task's keywords to recall any text lessons, then adapt.
+
+If you catch yourself about to repeat the same command that already failed, STOP — the world will block it. Use intervention_query or search_memory instead.
+
+Memory persists across tasks. Record every trap you discover with its exact fix."#;
+
+/// Condition D (P4): the forward-simulation protocol — intervention_query
+/// BEFORE EVERY run_command, not just the first one. The bench measures
+/// prediction accuracy against the actual verdicts that follow.
+const SYSTEM_D_CAUSAL: &str = r#"
+Additionally, you have a CAUSAL MEMORY system with forward simulation:
+
+{"action":"intervention_query","query":"<action you're considering>"} — simulate BEFORE you run a command. The system predicts outcomes from past experience, including WARNING signals for actions that previously FAILED or were PREVENTED.
+{"action":"search_memory","query":"<keywords>"} — recall past lessons
+{"action":"record_memory","decision":"<what you tried>","outcome":"<what happened>"} — save a causal lesson after observing results
+
+HARD RULE: call intervention_query BEFORE EVERY run_command — the world will reject run_command without a preceding intervention in this condition. When the prediction is WARNING/DANGER, choose a different command. When it is UNKNOWN, call search_memory for text lessons, then decide.
 
 Memory persists across tasks. Record every trap you discover with its exact fix."#;
 
@@ -495,6 +637,8 @@ async fn run_condition(
         // Per-task search cap (rule 1 allows one up-front search, rule 2 one
         // after a failure) — prevents search spirals that burn the budget.
         let mut searches_this_task = 0usize;
+        // P2: consecutive-identical-command detection (fresh per task).
+        let mut loop_detector = LoopDetector::new();
 
         for step in 1..=max_steps {
             stats.total_steps += 1;
@@ -543,26 +687,55 @@ async fn run_condition(
                     "the task is NOT complete yet — finish rejected.".to_string()
                 }
                 AgentAction::Run(cmd) => {
-                    ran_command = true;
-                    let verdict = classify(task.family.id, &cmd);
-                    if first_verdict.is_none() {
-                        first_verdict = Some(verdict);
-                    }
-                    if awaiting_post_search {
-                        stats.post_search_runs += 1;
-                        if verdict == CmdVerdict::Solution {
-                            stats.post_search_hits += 1;
+                    // P2: the 3rd consecutive identical command never
+                    // executes — the agent gets a hint + an auto memory
+                    // search instead of burning another step on the loop.
+                    if loop_detector.push(&cmd) {
+                        stats.loop_detections += 1;
+                        let mut obs = "⚠️ Loop detected: identical command 3× in a row — it failed before and will fail again; the world blocked it. Stop repeating; consult memory and try a different approach."
+                            .to_string();
+                        if let Some(store) = &store {
+                            stats.mem_searches += 1;
+                            let hits = store
+                                .search_causal_bm25(None, &task.family.id.replace('-', " "), 3)
+                                .unwrap_or_default();
+                            if hits.is_empty() {
+                                obs.push_str(" Memory search: no memories found.");
+                            } else {
+                                obs.push_str(" Memory search found:");
+                                for h in &hits {
+                                    obs.push_str(&format!(
+                                        "\n- \"{}\" → \"{}\" (confidence {:.0}%)",
+                                        h.decision_text,
+                                        h.outcome_text,
+                                        h.confidence * 100.0
+                                    ));
+                                }
+                            }
                         }
-                        awaiting_post_search = false;
-                    }
-                    match verdict {
-                        CmdVerdict::Solution => {
-                            solved = true;
-                            task.family.ok_output.to_string()
+                        obs
+                    } else {
+                        ran_command = true;
+                        let verdict = classify(task.family.id, &cmd);
+                        if first_verdict.is_none() {
+                            first_verdict = Some(verdict);
                         }
-                        CmdVerdict::Trap => task.family.fail_output.to_string(),
-                        CmdVerdict::Neutral => {
-                            "command executed, but the task is not complete.".to_string()
+                        if awaiting_post_search {
+                            stats.post_search_runs += 1;
+                            if verdict == CmdVerdict::Solution {
+                                stats.post_search_hits += 1;
+                            }
+                            awaiting_post_search = false;
+                        }
+                        match verdict {
+                            CmdVerdict::Solution => {
+                                solved = true;
+                                task.family.ok_output.to_string()
+                            }
+                            CmdVerdict::Trap => task.family.fail_output.to_string(),
+                            CmdVerdict::Neutral => {
+                                "command executed, but the task is not complete.".to_string()
+                            }
                         }
                     }
                 }
@@ -684,11 +857,38 @@ async fn run_condition(
 /// 1. `intervention_query` — forward simulation BEFORE acting
 /// 2. Records failures as `caused` edges and fixes as `prevented` edges
 /// 3. The hippocampus graph is used for prediction, not just BM25
+///
+/// Shared implementation for C and D (P4): `strict_intervention` enforces the
+/// condition-D protocol — intervention_query is REQUIRED before every
+/// run_command, and prediction-vs-actual metrics are collected for both.
 async fn run_condition_c(
     config: &LlmConfig,
     tasks: &[Task],
     max_steps: usize,
     temperature: f32,
+) -> Result<(RunStats, Vec<String>)> {
+    run_condition_c_impl(config, tasks, max_steps, temperature, false).await
+}
+
+/// Condition D (P4): the forward-simulation benchmark. Same causal memory as
+/// C, but intervention_query is mandatory before EVERY run_command and the
+/// protocol reports prediction accuracy, trap-avoidance and steps saved —
+/// the first benchmark of forward simulation as a world model.
+async fn run_condition_d(
+    config: &LlmConfig,
+    tasks: &[Task],
+    max_steps: usize,
+    temperature: f32,
+) -> Result<(RunStats, Vec<String>)> {
+    run_condition_c_impl(config, tasks, max_steps, temperature, true).await
+}
+
+async fn run_condition_c_impl(
+    config: &LlmConfig,
+    tasks: &[Task],
+    max_steps: usize,
+    temperature: f32,
+    strict_intervention: bool,
 ) -> Result<(RunStats, Vec<String>)> {
     let mut stats = RunStats {
         tasks: tasks.len(),
@@ -697,7 +897,11 @@ async fn run_condition_c(
     let mut transcripts: Vec<String> = Vec::new();
     let mut sequence: Vec<(&str, Option<CmdVerdict>)> = Vec::new();
     let store = CausalStore::open_in_memory()?;
-    let system = system_prompt_c();
+    let system = if strict_intervention {
+        format!("{SYSTEM_A}\n{SYSTEM_D_CAUSAL}")
+    } else {
+        system_prompt_c()
+    };
 
     for task in tasks {
         let mut transcript = format!(
@@ -712,6 +916,10 @@ async fn run_condition_c(
         let mut ran_command = false;
         let mut recorded_this_task = false;
         let mut queries_this_task = 0usize;
+        // P2: consecutive-identical-command detection (fresh per task).
+        let mut loop_detector = LoopDetector::new();
+        // P4: prediction-vs-actual bookkeeping (fresh per task).
+        let mut tracker = PredictionTracker::default();
 
         for step in 1..=max_steps {
             stats.total_steps += 1;
@@ -758,49 +966,79 @@ async fn run_condition_c(
                     "the task is NOT complete yet — finish rejected.".to_string()
                 }
                 AgentAction::Run(cmd) => {
-                    ran_command = true;
-                    let verdict = classify(task.family.id, &cmd);
-                    if first_verdict.is_none() {
-                        first_verdict = Some(verdict);
-                    }
-                    match verdict {
-                        CmdVerdict::Solution => {
-                            solved = true;
-                            // Record the FIX as a prevented edge: "doing the fix
-                            // prevented the trap from happening"
-                            if !recorded_this_task {
-                                store.record_decision(
-                                    &cmd,
-                                    &format!("avoided {} trap", task.family.id),
-                                    "prevented",
-                                    Some("agent-bench"),
-                                    0.8,
-                                    "llm_inferred",
-                                )?;
-                                stats.mem_writes += 1;
-                                recorded_this_task = true;
+                    // P2: the 3rd consecutive identical command never
+                    // executes — hint + auto memory search instead.
+                    if loop_detector.push(&cmd) {
+                        stats.loop_detections += 1;
+                        let mut obs = "⚠️ Loop detected: identical command 3× in a row — it failed before and will fail again; the world blocked it. Stop repeating; consult memory and try a different approach."
+                            .to_string();
+                        let hits = store
+                            .search_causal_bm25(Some("agent-bench"), &task.family.id.replace('-', " "), 3)
+                            .unwrap_or_default();
+                        if hits.is_empty() {
+                            obs.push_str(" Memory search: no memories found.");
+                        } else {
+                            obs.push_str(" Memory search found:");
+                            for h in &hits {
+                                obs.push_str(&format!(
+                                    "\n- \"{}\" → \"{}\" ({})",
+                                    h.decision_text, h.outcome_text, h.relation
+                                ));
                             }
-                            task.family.ok_output.to_string()
                         }
-                        CmdVerdict::Trap => {
-                            // Record the TRAP as a caused edge: "naive approach
-                            // caused the trap to trigger"
-                            if !recorded_this_task {
-                                store.record_decision(
-                                    &cmd,
-                                    task.family.fail_output,
-                                    "caused",
-                                    Some("agent-bench"),
-                                    0.7,
-                                    "llm_inferred",
-                                )?;
-                                stats.mem_writes += 1;
-                                recorded_this_task = true;
+                        obs
+                    } else if strict_intervention && tracker.last == Prediction::None {
+                        // P4: condition D enforces simulation before acting.
+                        "the world requires intervention_query BEFORE run_command in this condition — run intervention_query first."
+                            .to_string()
+                    } else {
+                        ran_command = true;
+                        let verdict = classify(task.family.id, &cmd);
+                        let first_run = first_verdict.is_none();
+                        if first_run {
+                            first_verdict = Some(verdict);
+                        }
+                        // P4: test the pending prediction against the actual.
+                        tracker.observe_run(verdict, first_run);
+                        match verdict {
+                            CmdVerdict::Solution => {
+                                solved = true;
+                                // Record the FIX as a prevented edge: "doing the fix
+                                // prevented the trap from happening"
+                                if !recorded_this_task {
+                                    store.record_decision(
+                                        &cmd,
+                                        &format!("avoided {} trap", task.family.id),
+                                        "prevented",
+                                        Some("agent-bench"),
+                                        0.8,
+                                        "llm_inferred",
+                                    )?;
+                                    stats.mem_writes += 1;
+                                    recorded_this_task = true;
+                                }
+                                task.family.ok_output.to_string()
                             }
-                            task.family.fail_output.to_string()
-                        }
-                        CmdVerdict::Neutral => {
-                            "command executed, but the task is not complete.".to_string()
+                            CmdVerdict::Trap => {
+                                // Record the TRAP as a caused edge: "naive approach
+                                // caused the trap to trigger"
+                                if !recorded_this_task {
+                                    store.record_decision(
+                                        &cmd,
+                                        task.family.fail_output,
+                                        "caused",
+                                        Some("agent-bench"),
+                                        0.7,
+                                        "llm_inferred",
+                                    )?;
+                                    stats.mem_writes += 1;
+                                    recorded_this_task = true;
+                                }
+                                task.family.fail_output.to_string()
+                            }
+                            CmdVerdict::Neutral => {
+                                "command executed, but the task is not complete.".to_string()
+                            }
                         }
                     }
                 }
@@ -848,11 +1086,38 @@ async fn run_condition_c(
                             let results = g.spreading_activation_opts(
                                 &query, Some("agent-bench"), false, false,
                             );
-                            stats.predictions_total += 1;
+                            // predictions_total is folded from tracker.tested
+                            // at task end (pairs evaluated against an actual
+                            // run_command), so accuracy has one denominator.
                             if results.is_empty() {
-                                "intervention: UNKNOWN — no past experience. Proceed with caution.".to_string()
+                                // P2: UNKNOWN fallback — the agent must not
+                                // restart from scratch; pull text memories for
+                                // the same terms instead.
+                                tracker.record(Prediction::Unknown);
+                                let hits = store
+                                    .search_causal_bm25(Some("agent-bench"), &query, 3)
+                                    .unwrap_or_default();
+                                let mut text = String::from(
+                                    "intervention: UNKNOWN — no causal experience with this action. Text-memory fallback:",
+                                );
+                                if hits.is_empty() {
+                                    text.push_str(" no memories found.");
+                                } else {
+                                    for h in &hits {
+                                        text.push_str(&format!(
+                                            "\n- \"{}\" → \"{}\" ({})",
+                                            h.decision_text, h.outcome_text, h.relation
+                                        ));
+                                    }
+                                }
+                                text
                             } else {
                                 let has_warning = results.iter().any(|r| r.activation < 0.0);
+                                tracker.record(if has_warning {
+                                    Prediction::Warning
+                                } else {
+                                    Prediction::Safe
+                                });
                                 let mut text = String::from("intervention predictions:");
                                 for r in results.iter().take(5) {
                                     let label = if r.activation < 0.0 {
@@ -871,6 +1136,7 @@ async fn run_condition_c(
                                 text
                             }
                         } else {
+                            tracker.record(Prediction::Unknown);
                             "intervention: no graph available.".to_string()
                         }
                     }
@@ -878,6 +1144,13 @@ async fn run_condition_c(
             };
             transcript.push_str(&format!("\nObservation: {observation}"));
         }
+
+        // P4: fold this task's prediction bookkeeping into the run totals.
+        stats.predictions_total += tracker.tested;
+        stats.predictions_correct += tracker.correct;
+        stats.trap_warnings += tracker.warnings;
+        stats.trap_warnings_heeded += tracker.heeded;
+        stats.steps_saved += usize::from(tracker.warned_first_solution);
 
         if solved {
             stats.solved += 1;
@@ -911,7 +1184,11 @@ fn write_transcripts(condition: &str, ts: i64, transcripts: &[String]) -> Result
     Ok(())
 }
 
-/// `causal-memory bench-agent [--tasks 8] [--seed 42] [--steps 15] [--condition both|a|b]`
+/// `causal-memory bench-agent [--tasks 8] [--seed 42] [--steps 15] [--condition both|a|b|c|d|abc|abcd]`
+///
+/// Conditions: A = no memory, B = text-search memory, C = causal memory +
+/// intervention_query (first action), D = causal memory + mandatory
+/// intervention_query before EVERY command (P4 forward-simulation benchmark).
 ///
 /// Requires CAUSAL_MEMORY_LLM_* — the bench measures LLM-agent behavior, so
 /// (like bench-compaction) it refuses to run unconfigured instead of
@@ -939,8 +1216,11 @@ pub async fn run(args: &[String]) -> Result<()> {
         }
         i += 1;
     }
-    if !matches!(condition.as_str(), "both" | "a" | "b" | "c" | "abc") {
-        anyhow::bail!("--condition must be both|a|b|c|abc, got: {condition}");
+    if !matches!(
+        condition.as_str(),
+        "both" | "a" | "b" | "c" | "d" | "abc" | "abcd"
+    ) {
+        anyhow::bail!("--condition must be both|a|b|c|d|abc|abcd, got: {condition}");
     }
 
     let config = match LlmConfig::from_env() {
@@ -974,9 +1254,11 @@ pub async fn run(args: &[String]) -> Result<()> {
     let mut a_stats = None;
     let mut b_stats = None;
     let mut c_stats = None;
-    let run_a = condition == "both" || condition == "a" || condition == "abc";
-    let run_b = condition == "both" || condition == "b" || condition == "abc";
-    let run_c = condition == "c" || condition == "abc";
+    let mut d_stats = None;
+    let run_a = condition == "both" || condition == "a" || condition == "abc" || condition == "abcd";
+    let run_b = condition == "both" || condition == "b" || condition == "abc" || condition == "abcd";
+    let run_c = condition == "c" || condition == "abc" || condition == "abcd";
+    let run_d = condition == "d" || condition == "abcd";
 
     if run_a {
         println!("=== Group A (no memory) ===");
@@ -1018,6 +1300,21 @@ pub async fn run(args: &[String]) -> Result<()> {
         );
         c_stats = Some(s);
     }
+    if run_d {
+        println!("=== Group D (causal memory + mandatory forward simulation) ===");
+        let (s, transcripts) = run_condition_d(&config, &tasks, steps, temperature).await?;
+        write_transcripts("d", ts, &transcripts)?;
+        println!(
+            "D: solved {}/{}, repeat-mistake {:.0}%, predictions {:.0}% accurate ({}), loops broken {}\n",
+            s.solved,
+            s.tasks,
+            pct(s.exposure.repeat_trapped, s.exposure.repeat_exposures),
+            pct(s.predictions_correct, s.predictions_total),
+            s.predictions_correct,
+            s.loop_detections
+        );
+        d_stats = Some(s);
+    }
     let report = render_report(
         a_stats.as_ref(),
         b_stats.as_ref(),
@@ -1032,10 +1329,25 @@ pub async fn run(args: &[String]) -> Result<()> {
     if let Some(ref c) = c_stats {
         println!("\n=== Condition C: Causal Memory Deep Metrics ===");
         println!("  Intervention queries:    {}", c.intervention_queries);
-        println!("  Predictions total:       {}", c.predictions_total);
+        println!("  Predictions evaluated:   {}", c.predictions_total);
+        println!("  Prediction accuracy:     {:.0}%", pct(c.predictions_correct, c.predictions_total));
         println!("  Predictions avoided trap: {}", c.predictions_avoided_trap);
+        println!("  Warnings → heeded:       {}/{}", c.trap_warnings_heeded, c.trap_warnings);
+        println!("  Steps saved (predicted):  {}", c.steps_saved);
+        println!("  Loops broken:            {}", c.loop_detections);
         println!("  Memory writes (causal):  {}", c.mem_writes);
         println!("  Repeat-mistake rate:     {:.0}%", pct(c.exposure.repeat_trapped, c.exposure.repeat_exposures));
+    }
+
+    // Condition D extra report (P4 — forward-simulation benchmark)
+    if let Some(ref d) = d_stats {
+        println!("\n=== Condition D: Forward-Simulation Benchmark (P4) ===");
+        println!("  Prediction accuracy:      {:.0}% ({}/{})", pct(d.predictions_correct, d.predictions_total), d.predictions_correct, d.predictions_total);
+        println!("  Trap warnings:            {}", d.trap_warnings);
+        println!("  Warnings heeded:          {} ({:.0}%)", d.trap_warnings_heeded, pct(d.trap_warnings_heeded, d.trap_warnings));
+        println!("  Steps saved by warning:   {}", d.steps_saved);
+        println!("  Loops broken:             {}", d.loop_detections);
+        println!("  Solved:                   {}/{}", d.solved, d.tasks);
     }
 
     std::fs::create_dir_all(RESULTS_DIR)?;
@@ -1284,5 +1596,77 @@ mod tests {
         // Single-condition renders just that group.
         let md = render_report(None, Some(&b), "m", 0.3, 1, 0);
         assert!(!md.contains("A (no memory)"));
+    }
+
+    #[test]
+    fn test_loop_detector_fires_after_three_repeats() {
+        let mut d = LoopDetector::new();
+        assert!(!d.push("git fetch origin"));
+        assert!(!d.push("git fetch origin"));
+        assert!(d.push("git fetch origin"), "3rd identical command = loop");
+        // Any different command resets the counter.
+        let mut d = LoopDetector::new();
+        assert!(!d.push("git fetch origin"));
+        assert!(!d.push("ls -la"));
+        assert!(!d.push("git fetch origin"));
+        assert!(!d.push("git fetch origin"));
+        // Env-prefix variants are the SAME command (normalization).
+        let mut d = LoopDetector::new();
+        assert!(!d.push("cargo build --release"));
+        assert!(!d.push("PATH=.cargo/bin:$PATH cargo build --release"));
+        assert!(d.push("cargo build --release"));
+        // Whitespace variants collapse.
+        let mut d = LoopDetector::new();
+        assert!(!d.push("curl   -H 'Content-Type: application/json' url"));
+        assert!(!d.push("curl -H 'Content-Type: application/json' url"));
+        assert!(d.push("curl -H 'Content-Type: application/json' url"));
+    }
+
+    #[test]
+    fn test_prediction_tracker_accuracy_semantics() {
+        let mut t = PredictionTracker::default();
+        // No prediction → run is not evaluated.
+        t.observe_run(CmdVerdict::Trap, true);
+        assert_eq!(t.tested, 0);
+
+        // Warning + trap → correct.
+        t.record(Prediction::Warning);
+        t.observe_run(CmdVerdict::Trap, true);
+        assert_eq!(t.tested, 1);
+        assert_eq!(t.correct, 1);
+        assert_eq!(t.warnings, 1);
+        assert_eq!(t.heeded, 0, "trap was NOT avoided");
+        assert!(t.warned_before_first_run);
+        assert!(!t.warned_first_solution);
+
+        // Warning + solution → wrong (false alarm) but heeded.
+        t.record(Prediction::Warning);
+        t.observe_run(CmdVerdict::Solution, false);
+        assert_eq!(t.tested, 2);
+        assert_eq!(t.correct, 1);
+        assert_eq!(t.heeded, 1, "warning heeded → trap avoided");
+
+        // Safe + trap → wrong (missed warning).
+        t.record(Prediction::Safe);
+        t.observe_run(CmdVerdict::Trap, false);
+        assert_eq!(t.tested, 3);
+        assert_eq!(t.correct, 1);
+
+        // Safe + neutral → correct.
+        t.record(Prediction::Safe);
+        t.observe_run(CmdVerdict::Neutral, false);
+        assert_eq!(t.tested, 4);
+        assert_eq!(t.correct, 2);
+
+        // Unknown + trap → wrong (missed), unknown + solution → correct.
+        t.record(Prediction::Unknown);
+        t.observe_run(CmdVerdict::Solution, false);
+        assert_eq!(t.tested, 5);
+        assert_eq!(t.correct, 3);
+        // First-run-solution-with-warning marks a step saved.
+        let mut t = PredictionTracker::default();
+        t.record(Prediction::Warning);
+        t.observe_run(CmdVerdict::Solution, true);
+        assert!(t.warned_first_solution);
     }
 }

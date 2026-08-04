@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS chunks (
 
 -- Session logs: raw conversation turns for audit/replay.
 -- Not searched by BM25; available for explicit history queries.
+-- v8: `embedding` is the per-turn semantic vector for the recurrence-
+-- triggered distill check (RecMem); `distilled_at` marks when the session's
+-- turn group was distilled (NULL = still awaiting its recurrence check).
 CREATE TABLE IF NOT EXISTS session_logs (
     id TEXT PRIMARY KEY,
     session_id INTEGER NOT NULL,
@@ -38,10 +41,13 @@ CREATE TABLE IF NOT EXISTS session_logs (
     speaker TEXT NOT NULL,
     text TEXT NOT NULL,
     event_time INTEGER NOT NULL,
-    task_tag TEXT
+    task_tag TEXT,
+    embedding BLOB,
+    distilled_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_session_logs_session ON session_logs(session_id);
 CREATE INDEX IF NOT EXISTS idx_session_logs_task ON session_logs(task_tag);
+CREATE INDEX IF NOT EXISTS idx_session_logs_distilled ON session_logs(distilled_at);
 
 -- Causal edges: decision → outcome
 -- Time fields:
@@ -66,6 +72,10 @@ CREATE TABLE IF NOT EXISTS causal_edges (
     access_count INTEGER NOT NULL DEFAULT 0,
     last_accessed_at INTEGER,
     outcome_polarity TEXT CHECK(outcome_polarity IN ('positive','negative','mixed','neutral')),
+    -- v8: id of the edge that superseded this one. Reversible consolidation:
+    -- supersession marks instead of deletes; `restore_edge` clears both this
+    -- and valid_to when later evidence proves the old memory right.
+    superseded_by INTEGER,
     FOREIGN KEY (from_id) REFERENCES chunks(id),
     FOREIGN KEY (to_id) REFERENCES chunks(id)
 );

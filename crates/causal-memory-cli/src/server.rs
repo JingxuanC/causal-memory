@@ -134,7 +134,7 @@ const RRF_K: f64 = 60.0;
 
 /// P5: Layered loading — format a causal entry at L0/L1/L2 detail.
 /// Returns (formatted_line, approx_token_count).
-fn format_entry_layered(entry: &CausalEntry, rank: usize, level: &str) -> (String, usize) {
+pub(crate) fn format_entry_layered(entry: &CausalEntry, rank: usize, level: &str) -> (String, usize) {
     let dt = entry.decision_text.as_str();
     let ot = entry.outcome_text.as_str();
     let tag = entry.task_tag.as_deref().unwrap_or("untagged");
@@ -197,7 +197,7 @@ impl TokenBudget {
 /// present in both lists scores from both — cross-layer agreement floats to
 /// the top. Returns keys with fused scores, sorted descending; ties keep
 /// first-seen order (stable sort).
-fn rrf_fuse(a: &[String], b: &[String]) -> Vec<(String, f64)> {
+pub(crate) fn rrf_fuse(a: &[String], b: &[String]) -> Vec<(String, f64)> {
     let mut scores: Vec<(String, f64)> = Vec::new();
     let add = |key: &str, rank: usize, scores: &mut Vec<(String, f64)>| {
         let s = 1.0 / (RRF_K + rank as f64 + 1.0);
@@ -1851,6 +1851,7 @@ mod tests {
             task_tag: Some("caching".into()), event_time: 0, valid_to: None,
             access_count: 0, last_accessed_at: None,
             discovered_by: "agent".into(), discovered_at: 0, outcome_polarity: None,
+            superseded_by: None,
         };
         let (l0, t0) = format_entry_layered(&entry, 1, "l0");
         let (l2, t2) = format_entry_layered(&entry, 1, "l2");

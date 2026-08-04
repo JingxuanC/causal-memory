@@ -36,6 +36,7 @@ use anyhow::{anyhow, Context, Result};
 use causal_memory::distill::{Distiller, ItemKind};
 use causal_memory::hippocampus::CausalGraph;
 use causal_memory::store::{CausalEntry, CausalStore};
+use causal_memory::token::estimate_tokens;
 use chrono::NaiveDateTime;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -559,7 +560,7 @@ async fn distill_question(
                     // (scores degrade toward the raw baseline), i.e. the
                     // reported +7.8pp is, if anything, conservative.
                     if let Some(hint) = item.supersedes.as_deref() {
-                        match store.retire_facts_by_hint(kind, &fact_scope, hint) {
+                        match store.retire_facts_by_hint(kind, &fact_scope, hint, None) {
                             Ok(n) => stats.facts_retired += n,
                             Err(e) => eprintln!(
                                 "warn: retire_facts_by_hint failed for {} ({e}); stale fact may stay live",
@@ -731,6 +732,7 @@ fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize) -> Result<Vec<Cau
             discovered_by: "session_expansion".into(),
             discovered_at: 0,
             outcome_polarity: None,
+            superseded_by: None,
         });
         synth_id -= 1;
     }
@@ -1189,6 +1191,10 @@ struct ResultRow {
     /// Session-level evidence (official answer_session_ids), for recall checks.
     answer_session_ids: Vec<String>,
     evidence_hit: bool,
+    /// (P6) Estimated context tokens fed to the answer LLM (system + user
+    /// prompt + memories) and estimated answer tokens produced.
+    ctx_tokens: usize,
+    ans_tokens: usize,
 }
 
 #[derive(Serialize)]
@@ -1226,6 +1232,9 @@ struct Summary {
     error: usize,
     accuracy: f64,
     evidence_hit_rate: f64,
+    /// (P6) Average estimated tokens per question (estimate_tokens, CJK-aware).
+    avg_ctx_tokens: f64,
+    avg_ans_tokens: f64,
     per_question_type: BTreeMap<String, TypeStats>,
     abstention: TypeStats,
 }
@@ -1236,6 +1245,9 @@ struct Acc {
     incorrect: usize,
     error: usize,
     hits: usize,
+    /// (P6) Summed token estimates for per-question averages.
+    ctx_tokens: usize,
+    ans_tokens: usize,
 }
 
 impl Acc {
@@ -1246,6 +1258,8 @@ impl Acc {
             incorrect: 0,
             error: 0,
             hits: 0,
+            ctx_tokens: 0,
+            ans_tokens: 0,
         }
     }
     fn add(&mut self, row: &ResultRow) {
@@ -1258,6 +1272,8 @@ impl Acc {
         if row.evidence_hit {
             self.hits += 1;
         }
+        self.ctx_tokens += row.ctx_tokens;
+        self.ans_tokens += row.ans_tokens;
     }
     fn accuracy(&self) -> f64 {
         let graded = self.correct + self.incorrect;
@@ -1380,6 +1396,8 @@ async fn answer_question(
 
     let system = answer_system_prompt(&q.question_type, prompt_version);
     let answer_user = answer_user_prompt(q, &memories);
+    // (P6) token accounting — estimated context cost of this question.
+    let ctx_tokens = estimate_tokens(&system) + estimate_tokens(&answer_user);
     let max_tokens = if prompt_version == LmePromptVersion::V2 { 800 } else { ANSWER_MAX_TOKENS };
     let raw_predicted = match chat(cfg, &system, &answer_user, max_tokens).await {
         Ok(s) => s,
@@ -1397,6 +1415,8 @@ async fn answer_question(
                 evidence_ids,
                 answer_session_ids: q.answer_session_ids.clone(),
                 evidence_hit,
+                ctx_tokens,
+                ans_tokens: 0,
             }
         }
     };
@@ -1412,6 +1432,10 @@ async fn answer_question(
     } else {
         raw_predicted
     };
+
+    // (P6) answer-token accounting — must precede the move of `predicted`
+    // into the result row.
+    let ans_tokens = estimate_tokens(&predicted);
 
     let judge_user = judge_user_prompt(q, &predicted);
     let (verdict, reason) =
@@ -1436,6 +1460,8 @@ async fn answer_question(
         evidence_ids,
         answer_session_ids: q.answer_session_ids.clone(),
         evidence_hit,
+        ctx_tokens,
+        ans_tokens,
     }
 }
 
@@ -1650,6 +1676,17 @@ async fn run(args: Args) -> Result<()> {
             0.0
         } else {
             overall.hits as f64 / overall.total as f64
+        },
+        // (P6) token-efficiency accounting (estimate_tokens, CJK-aware).
+        avg_ctx_tokens: if overall.total == 0 {
+            0.0
+        } else {
+            overall.ctx_tokens as f64 / overall.total as f64
+        },
+        avg_ans_tokens: if overall.total == 0 {
+            0.0
+        } else {
+            overall.ans_tokens as f64 / overall.total as f64
         },
         per_question_type: per_type
             .iter()
@@ -1886,3 +1923,33 @@ mod tests {
         assert!(!q.is_abstention());
     }
 }
+
+    // ─── P0: preference-prompt regression guard ───────────────────────────
+
+    #[test]
+    fn preference_prompt_v2_encourages_inference_not_refusal() {
+        // P0 (r4 vs r3, 2026-08-04): the new PREFERENCE_RULE moved preference
+        // accuracy 13.3% → 56.7% by banning the blanket refusal. This test
+        // pins that rule inside the V2 prompt path so a future refactor
+        // cannot silently regress it.
+        let p = answer_system_prompt("single-session-preference", LmePromptVersion::V2);
+        assert!(p.contains("DO NOT answer 'I don't have enough information'"));
+        assert!(p.contains("preference-grounded recommendation"));
+        assert!(p.starts_with(ANSWER_SYSTEM_PROMPT_V2));
+
+        // Structural side-effect guard: the rule is appended ONLY for
+        // preference questions — temporal/multi-session/knowledge-update
+        // never see it, so the +43.4pp gain cannot leak into other classes.
+        for other in ["temporal-reasoning", "multi-session", "knowledge-update", "single-session-user", "single-session-assistant"] {
+            let prompt = answer_system_prompt(other, LmePromptVersion::V2);
+            assert!(
+                !prompt.contains(PREFERENCE_RULE),
+                "{other} must not receive the preference rule"
+            );
+        }
+
+        // V1 keeps the same rule (the two versions share the type-specific
+        // append layer).
+        let p1 = answer_system_prompt("single-session-preference", LmePromptVersion::V1);
+        assert!(p1.contains(PREFERENCE_RULE));
+    }

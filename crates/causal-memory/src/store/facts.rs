@@ -63,7 +63,13 @@ impl CausalStore {
     ///   resurrection)
     ///
     /// Returns the number retired.
-    pub fn retire_facts_by_hint(&self, key: &str, scope: &str, hint: &str) -> Result<usize> {
+    pub fn retire_facts_by_hint(
+        &self,
+        key: &str,
+        scope: &str,
+        hint: &str,
+        exclude_fact_id: Option<i64>,
+    ) -> Result<usize> {
         let hint_tokens: std::collections::HashSet<String> =
             crate::patterns::tokenize(hint).into_iter().collect();
         if hint_tokens.len() < SUPERSEDES_MIN_SHARED_TOKENS {
@@ -73,6 +79,15 @@ impl CausalStore {
         let mut retired = 0;
         for fact in candidates {
             if fact.key != key {
+                continue;
+            }
+            // Bug fix (bench-memory, 2026-08-05): a transition fact like
+            // "switched from almond milk to oat milk" MENTIONS the old value,
+            // so the supersedes hint matched and retired the NEW fact itself —
+            // it vanished from retrieval. Edge-layer parity: the new item is
+            // never a retirement target (edge `invalidate_superseded` has the
+            // same exclude-chunk guard).
+            if Some(fact.id) == exclude_fact_id {
                 continue;
             }
             // Guard: retraction records are never targets (edge-layer parity).

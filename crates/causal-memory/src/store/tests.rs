@@ -2192,3 +2192,178 @@ fn test_trace_cause_cross_session_same_session_bridge_skipped() {
         "same-session bridges must be skipped"
     );
 }
+
+    #[test]
+    fn test_retire_facts_by_hint_excludes_new_fact() {
+        // Bug fix (bench-memory 2026-08-05): a transition fact like
+        // "switched from almond milk to oat milk" mentions the OLD value in
+        // its own text — the supersedes hint "almond milk" used to retire the
+        // NEW fact itself, hiding it from retrieval. The new fact must never
+        // be a retirement target (edge-layer parity: invalidate_superseded
+        // excludes the new chunk).
+        let store = CausalStore::open_in_memory().unwrap();
+
+        // Old fact: prefers almond milk (fact layer).
+        let _old_id = store
+            .record_fact("preference", "user prefers almond milk in their coffee", "user", "distill", 0.8)
+            .unwrap();
+
+        // New fact mentions the old value (transition) and carries the hint.
+        let new_id = store
+            .record_fact(
+                "preference",
+                "user switched from almond milk to oat milk in their coffee",
+                "user",
+                "distill",
+                0.8,
+            )
+            .unwrap();
+        let retired = store.retire_facts_by_hint("preference", "user", "almond milk", Some(new_id)).unwrap();
+
+        // The old fact (stored as a distilled preference fact) must be
+        // retired — it shares "almond milk" without being the new fact.
+        assert_eq!(retired, 1, "the old fact must be retired");
+        // The NEW fact must still be retrievable.
+        let hits = store.search_facts_bm25("oat milk", None, 10).unwrap();
+        assert!(
+            hits.iter().any(|h| h.value.contains("oat milk")),
+            "the new fact must survive its own supersedes hint"
+        );
+
+        // Without the exclusion the new fact retires itself (the old buggy
+        // behavior this guard fixes — demonstrated, not asserted away).
+        let retired_self = store
+            .retire_facts_by_hint("preference", "user", "almond milk", None)
+            .unwrap();
+        assert_eq!(retired_self, 1, "without the exclusion the new fact retires itself");
+        let hits = store.search_facts_bm25("oat milk", None, 10).unwrap();
+        assert!(!hits.iter().any(|h| h.value.contains("oat milk")));
+    }
+
+    // ─── v8: recurrence distill substrate (P1) ────────────────────────────
+
+    #[test]
+    fn test_log_session_turn_with_embedding_roundtrip() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let emb = vec![0.1f32, 0.2, 0.3, 0.4];
+        store
+            .log_session_turn("s1:0", 7, 0, "user", "hello", 1_700_000_000, None, Some(&emb))
+            .unwrap();
+        store
+            .log_session_turn("s1:1", 7, 1, "assistant", "hi", 1_700_000_001, None, None)
+            .unwrap();
+        // The session embedding rides on turn 0.
+        assert_eq!(store.session_embedding(7).unwrap(), Some(emb));
+        let turns = store.session_turns(7).unwrap();
+        assert_eq!(turns.len(), 2);
+        assert_eq!(turns[0].1, "hello");
+        assert_eq!(store.session_date(7).unwrap(), Some(1_700_000_000));
+    }
+
+    #[test]
+    fn test_undistilled_and_sessions_with_embeddings() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let emb = vec![0.5f32; 8];
+        store
+            .log_session_turn("a:0", 1, 0, "user", "a", 100, None, Some(&emb))
+            .unwrap();
+        store
+            .log_session_turn("b:0", 2, 0, "user", "b", 200, None, Some(&emb))
+            .unwrap();
+        // Both pending, oldest first.
+        assert_eq!(store.undistilled_session_ids(10).unwrap(), vec![1, 2]);
+        store.mark_session_distilled(1, Some(999)).unwrap();
+        // Only distilled sessions with an embedding are recurrence candidates.
+        let cands = store.sessions_with_embeddings(10).unwrap();
+        assert_eq!(cands.len(), 1);
+        assert_eq!(cands[0].0, 1);
+        assert_eq!(store.undistilled_session_ids(10).unwrap(), vec![2]);
+    }
+
+    #[test]
+    fn test_sessions_without_embeddings_skipped_from_candidates() {
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .log_session_turn("a:0", 1, 0, "user", "no embedding", 100, None, None)
+            .unwrap();
+        store.mark_session_distilled(1, Some(999)).unwrap();
+        assert!(store.sessions_with_embeddings(10).unwrap().is_empty());
+    }
+
+    // ─── v8: reversible consolidation (P3) ────────────────────────────────
+
+    #[test]
+    fn test_supersede_marks_and_restore_revives() {
+        use crate::distill::{ItemKind, MemoryItem};
+        let store = CausalStore::open_in_memory().unwrap();
+        // Old lesson: prefers coffee.
+        let old = MemoryItem {
+            kind: ItemKind::Preference,
+            text: "user prefers coffee".to_string(),
+            date: Some("2026-07-01".to_string()),
+            supersedes: None,
+            causal_relation: None,
+            decision: None,
+        };
+        let old_out = store.record_distilled(&old, None).unwrap();
+        assert!(!old_out.duplicate);
+        let old_edge = old_out.edge_id.unwrap();
+
+        // New lesson supersedes it: switched to tea.
+        let new = MemoryItem {
+            kind: ItemKind::Preference,
+            text: "user switched from coffee to tea".to_string(),
+            date: Some("2026-08-01".to_string()),
+            supersedes: Some("prefers coffee".to_string()),
+            causal_relation: None,
+            decision: None,
+        };
+        let new_out = store.record_distilled(&new, None).unwrap();
+        assert_eq!(new_out.invalidated_edge_ids, vec![old_edge]);
+
+        // Marked, not deleted: superseded_by records WHICH edge killed it,
+        // and it is invisible to search while superseded.
+        let e = store.get_edge(old_edge).unwrap().unwrap();
+        assert!(e.valid_to.is_some());
+        assert_eq!(e.superseded_by, new_out.edge_id);
+        let hits = store.search_causal_bm25(None, "coffee", 10).unwrap();
+        assert!(hits.iter().all(|h| h.edge_id != old_edge));
+
+        // Reversible: later evidence proves the old memory right.
+        assert!(store.restore_edge(old_edge).unwrap());
+        let e = store.get_edge(old_edge).unwrap().unwrap();
+        assert!(e.valid_to.is_none());
+        assert!(e.superseded_by.is_none());
+        let hits = store.search_causal_bm25(None, "coffee", 10).unwrap();
+        assert!(hits.iter().any(|h| h.edge_id == old_edge));
+        // A second restore is a no-op.
+        assert!(!store.restore_edge(old_edge).unwrap());
+    }
+
+    #[test]
+    fn test_superseded_edges_audit_view() {
+        use crate::distill::{ItemKind, MemoryItem};
+        let store = CausalStore::open_in_memory().unwrap();
+        let old = MemoryItem {
+            kind: ItemKind::Fact,
+            text: "server is node A".to_string(),
+            date: Some("2026-07-01".to_string()),
+            supersedes: None,
+            causal_relation: None,
+            decision: None,
+        };
+        let new = MemoryItem {
+            kind: ItemKind::Fact,
+            text: "server migrated to node B".to_string(),
+            date: Some("2026-08-01".to_string()),
+            supersedes: Some("server node A".to_string()),
+            causal_relation: None,
+            decision: None,
+        };
+        store.record_distilled(&old, None).unwrap();
+        store.record_distilled(&new, None).unwrap();
+        let superseded = store.superseded_edges(10).unwrap();
+        assert_eq!(superseded.len(), 1);
+        assert!(superseded[0].superseded_by.is_some());
+        assert!(superseded[0].valid_to.is_some());
+    }

@@ -428,6 +428,7 @@ fn ingest_session_raw(
             &text,
             ts,
             Some(persona),
+            None,
         )?;
         written += 1;
     }
@@ -627,7 +628,7 @@ async fn ingest_persona_distill(
                             // record_fact's upsert still revives an identical
                             // re-recorded value afterwards.
                             if let Some(hint) = it.supersedes.as_deref() {
-                                match store.retire_facts_by_hint(kind, "user", hint) {
+                                match store.retire_facts_by_hint(kind, "user", hint, None) {
                                     Ok(n) => stats.facts_retired += n,
                                     Err(e) => eprintln!(
                                         "warn: retire_facts_by_hint failed for {persona} ({e}); stale fact may stay live"
@@ -770,6 +771,7 @@ fn semantic_search(
                     discovered_by: String::new(),
                     discovered_at: 0,
                     outcome_polarity: None,
+                    superseded_by: None,
                 }, sim));
             }
         }
@@ -2109,7 +2111,7 @@ mod tests {
             )
             .unwrap();
         let retired = store
-            .retire_facts_by_hint("preference", "user", "likes jazz music")
+            .retire_facts_by_hint("preference", "user", "likes jazz music", None)
             .unwrap();
         assert_eq!(retired, 1);
         let hits = store

@@ -31,6 +31,42 @@ pub use types::{
     NodeData, NoveltyReport, Relation,
 };
 
+/// (P5) Novelty-gate modes (Nemori FEP, arXiv:2508.03341).
+///
+/// The cheap entropy check is word-frequency surprise; the prediction gap is
+/// SEMANTIC surprise — what the model expected to happen vs what actually
+/// happened. Hybrid runs entropy first and only pays for the LLM on
+/// borderline cases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NoveltyMode {
+    /// Word-frequency surprise (the existing `detect_novelty` behavior).
+    #[default]
+    Entropy,
+    /// Semantic surprise: an LLM predicts the outcome of the decision; the
+    /// gap between prediction and reality is the surprise.
+    PredictionGap,
+    /// Entropy first; borderline surprises (0.4..=0.7) defer to the LLM.
+    Hybrid,
+}
+
+impl NoveltyMode {
+    pub fn parse(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "prediction_gap" | "prediction-gap" | "gap" => Self::PredictionGap,
+            "hybrid" => Self::Hybrid,
+            _ => Self::Entropy,
+        }
+    }
+}
+
+/// (P5) Pure gate: does the entropy surprise need the expensive LLM
+/// prediction-gap check? Confident entropy verdicts (surprise ≤ 0.4 means
+/// "predicted it", > 0.7 means "genuinely new") stand on their own; the
+/// borderline band defers to semantic surprise.
+pub fn needs_prediction_gap(surprise: f32) -> bool {
+    (0.4..=0.7).contains(&surprise)
+}
+
 use types::AdjEdge;
 use utils::{rand_seed, simhash, text_jaccard_similarity, WEIGHT_CAP};
 
@@ -430,6 +466,77 @@ impl CausalGraph {
             should_record: surprise > 0.5,
             predicted_positive,
             predicted_negative,
+        }
+    }
+
+    // ─── P5: Hybrid novelty gating (Nemori FEP prediction gap) ────────────
+
+    /// (P5) Novelty detection with a pluggable prediction-gap fallback.
+    ///
+    /// `predict` is the semantic-prediction closure: given the decision text,
+    /// it returns what the model EXPECTS to happen (the caller wires the
+    /// llm::chat call; tests supply a stub). `None` = prediction unavailable,
+    /// the entropy verdict stands.
+    ///
+    /// - `Entropy`: existing word-frequency surprise, no LLM.
+    /// - `PredictionGap`: the LLM's predicted outcome vs the actual outcome —
+    ///   semantic surprise (Nemori's FEP prediction gap). Stronger but costs
+    ///   one LLM call per check.
+    /// - `Hybrid`: entropy first; only borderline surprises (0.4..=0.7)
+    ///   pay for the LLM disambiguation.
+    pub fn detect_novelty_with_mode(
+        &mut self,
+        decision_text: &str,
+        actual_outcome: &str,
+        mode: NoveltyMode,
+        predict: &mut dyn FnMut(&str) -> Option<String>,
+    ) -> NoveltyReport {
+        let entropy_report = self.detect_novelty(decision_text, actual_outcome);
+        match mode {
+            NoveltyMode::Entropy => entropy_report,
+            NoveltyMode::PredictionGap => {
+                Self::prediction_gap_report(entropy_report, decision_text, actual_outcome, predict)
+            }
+            NoveltyMode::Hybrid => {
+                if needs_prediction_gap(entropy_report.surprise) {
+                    Self::prediction_gap_report(
+                        entropy_report,
+                        decision_text,
+                        actual_outcome,
+                        predict,
+                    )
+                } else {
+                    entropy_report
+                }
+            }
+        }
+    }
+
+    /// (P5) Replace the entropy verdict with the semantic prediction-gap
+    /// verdict. Falls back to the entropy report when no prediction is
+    /// available.
+    fn prediction_gap_report(
+        entropy_report: NoveltyReport,
+        decision_text: &str,
+        actual_outcome: &str,
+        predict: &mut dyn FnMut(&str) -> Option<String>,
+    ) -> NoveltyReport {
+        match predict(decision_text) {
+            Some(predicted) => {
+                let similarity = text_jaccard_similarity(&predicted, actual_outcome);
+                let surprise = 1.0 - similarity;
+                NoveltyReport {
+                    surprise,
+                    should_record: surprise > 0.5,
+                    predicted_positive: if predicted.is_empty() {
+                        entropy_report.predicted_positive
+                    } else {
+                        vec![predicted]
+                    },
+                    predicted_negative: entropy_report.predicted_negative,
+                }
+            }
+            None => entropy_report,
         }
     }
 

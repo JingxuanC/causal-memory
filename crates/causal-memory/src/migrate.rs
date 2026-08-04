@@ -18,6 +18,10 @@
 //! - v5: adds stratified-replication fields to `meta_causal_edges`
 //!   (`strata_count` / `strata` / `confounded` / `simpson`; NULL = not yet
 //!   tested by the miner).
+//! - v8: reversible consolidation + recurrence distill —
+//!   `causal_edges.superseded_by` (which edge superseded this one),
+//!   `session_logs.embedding` (per-turn semantic vector for the RecMem
+//!   recurrence check), `session_logs.distilled_at` (pending-distill marker).
 
 use std::collections::HashSet;
 
@@ -27,7 +31,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 7;
+pub const SCHEMA_VERSION: u32 = 8;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -61,6 +65,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     if version < 7 {
         migrate_to_v7(&tx)?;
     }
+    if version < 8 {
+        migrate_to_v8(&tx)?;
+    }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
     tx.execute_batch(CAUSAL_SCHEMA_SQL)?;
@@ -82,7 +89,9 @@ fn detect_version(conn: &Connection) -> Result<u32> {
         return Ok(SCHEMA_VERSION);
     }
     let cols = table_columns(conn, "causal_edges")?;
-    if cols.contains("outcome_polarity") {
+    if cols.contains("superseded_by") {
+        Ok(8)
+    } else if cols.contains("outcome_polarity") {
         // v4 or v5: v5 added the stratification columns to meta_causal_edges.
         if table_exists(conn, "meta_causal_edges")?
             && table_columns(conn, "meta_causal_edges")?.contains("confounded")
@@ -237,6 +246,35 @@ fn migrate_to_v5(conn: &Connection) -> Result<()> {
 /// runs right after this in `migrate` for every upgrade path — so there is
 /// nothing to do here except keep the version gate for documentation value.
 fn migrate_to_v6(_conn: &Connection) -> Result<()> {
+    Ok(())
+}
+
+/// v7 → v8: reversible consolidation + recurrence distill.
+///
+/// - `causal_edges.superseded_by`: the id of the edge that superseded this
+///   one. Together with `valid_to` it makes supersession reversible —
+///   `restore_edge` clears both and the old lesson is live again.
+/// - `session_logs.embedding`: per-turn semantic vector, the substrate of the
+///   RecMem recurrence check (only distill when a session's topic repeats a
+///   prior one).
+/// - `session_logs.distilled_at`: NULL = session still awaits its recurrence
+///   check; set when distilled so batch mode can drain the pending queue.
+fn migrate_to_v8(conn: &Connection) -> Result<()> {
+    if table_exists(conn, "session_logs")? {
+        let cols = table_columns(conn, "session_logs")?;
+        if !cols.contains("embedding") {
+            conn.execute_batch("ALTER TABLE session_logs ADD COLUMN embedding BLOB")?;
+        }
+        if !cols.contains("distilled_at") {
+            conn.execute_batch("ALTER TABLE session_logs ADD COLUMN distilled_at INTEGER")?;
+        }
+    }
+    if table_exists(conn, "causal_edges")? {
+        let cols = table_columns(conn, "causal_edges")?;
+        if !cols.contains("superseded_by") {
+            conn.execute_batch("ALTER TABLE causal_edges ADD COLUMN superseded_by INTEGER")?;
+        }
+    }
     Ok(())
 }
 

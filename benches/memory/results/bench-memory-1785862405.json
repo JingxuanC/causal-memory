@@ -1,0 +1,47 @@
+{
+  "ingest": {
+    "distill_failures": 0,
+    "edges_written": 9,
+    "facts_written": 5,
+    "items_extracted": 14,
+    "supersedes_fired": 0
+  },
+  "metrics": {
+    "avg_ctx_tokens": 53.77777777777778,
+    "causal_recall": {
+      "hits": 4,
+      "total": 4
+    },
+    "chain_recall": {
+      "hits": 2,
+      "total": 2
+    },
+    "decision_attachment": {
+      "hits": 3,
+      "total": 4
+    },
+    "fact_recall": {
+      "hits": 4,
+      "total": 5
+    },
+    "relation_accuracy": {
+      "hits": 3,
+      "total": 4
+    },
+    "reversibility": {
+      "restored": true,
+      "superseded": true
+    },
+    "simulation_recall": {
+      "hits": 1,
+      "total": 4
+    },
+    "supersession_detected": false,
+    "supersession_note": "extracted as event/edge, not fact (new value present in 1 chunks)",
+    "warning_detected": true
+  },
+  "model": "deepseek-chat",
+  "seed": 42,
+  "temperature": 0.0,
+  "topk": 5
+}

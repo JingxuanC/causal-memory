@@ -475,6 +475,7 @@ fn semantic_search(store: &CausalStore, query_vec: &[f32], limit: usize) -> Resu
                     discovered_by: String::new(),
                     discovered_at: 0,
                     outcome_polarity: None,
+                    superseded_by: None,
                 }, sim));
             }
         }
@@ -876,7 +877,7 @@ async fn distill_conversation(
                     // fix; any self-retires there remove facts, so the
                     // reported +5.4pp is, if anything, conservative.
                     if let Some(hint) = item.supersedes.as_deref() {
-                        match store.retire_facts_by_hint(kind, "user", hint) {
+                        match store.retire_facts_by_hint(kind, "user", hint, None) {
                             Ok(n) => stats.facts_retired += n,
                             Err(e) => eprintln!(
                                 "warn: retire_facts_by_hint failed ({e}); stale fact may stay live"

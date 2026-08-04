@@ -1,0 +1,657 @@
+LLM: deepseek-chat @ https://api.deepseek.com/v1
+dataset: 500 questions, selected 500 (offset 0, limit None, qtype None)
+ingest e47becba: 550 chunks (53 sessions, 2 evidence turns)
+ingest 118b2229: 485 chunks (45 sessions, 1 evidence turns)
+ingest 51a45a95: 529 chunks (50 sessions, 1 evidence turns)
+ingest 58bf7951: 604 chunks (57 sessions, 1 evidence turns)
+ingest 1e043500: 498 chunks (50 sessions, 1 evidence turns)
+ingest c5e8278d: 469 chunks (44 sessions, 1 evidence turns)
+ingest 6ade9755: 513 chunks (51 sessions, 1 evidence turns)
+ingest 6f9b354f: 500 chunks (50 sessions, 1 evidence turns)
+ingest 58ef2f1c: 518 chunks (50 sessions, 1 evidence turns)
+ingest f8c5f88b: 487 chunks (46 sessions, 1 evidence turns)
+ingest 5d3d2817: 510 chunks (53 sessions, 1 evidence turns)
+ingest 7527f7e2: 490 chunks (45 sessions, 1 evidence turns)
+ingest c960da58: 504 chunks (46 sessions, 1 evidence turns)
+ingest 3b6f954b: 470 chunks (50 sessions, 1 evidence turns)
+ingest 726462e0: 501 chunks (48 sessions, 1 evidence turns)
+ingest 94f70d80: 510 chunks (49 sessions, 1 evidence turns)
+ingest 66f24dbb: 507 chunks (50 sessions, 1 evidence turns)
+ingest ad7109d1: 466 chunks (44 sessions, 1 evidence turns)
+ingest af8d2e46: 495 chunks (50 sessions, 1 evidence turns)
+ingest dccbc061: 505 chunks (49 sessions, 1 evidence turns)
+ingest c8c3f81d: 487 chunks (52 sessions, 1 evidence turns)
+ingest 8ebdbe50: 487 chunks (48 sessions, 1 evidence turns)
+ingest 6b168ec8: 482 chunks (50 sessions, 1 evidence turns)
+ingest 75499fd8: 491 chunks (52 sessions, 1 evidence turns)
+ingest 21436231: 512 chunks (50 sessions, 1 evidence turns)
+ingest 95bcc1c8: 487 chunks (46 sessions, 1 evidence turns)
+ingest 0862e8bf: 490 chunks (50 sessions, 1 evidence turns)
+ingest 853b0a1d: 512 chunks (52 sessions, 1 evidence turns)
+ingest a06e4cfe: 534 chunks (53 sessions, 1 evidence turns)
+ingest 37d43f65: 533 chunks (49 sessions, 1 evidence turns)
+ingest b86304ba: 456 chunks (41 sessions, 1 evidence turns)
+ingest d52b4f67: 479 chunks (52 sessions, 1 evidence turns)
+ingest 25e5aa4f: 506 chunks (45 sessions, 1 evidence turns)
+ingest caf9ead2: 466 chunks (43 sessions, 1 evidence turns)
+ingest 8550ddae: 453 chunks (42 sessions, 1 evidence turns)
+ingest 60d45044: 541 chunks (51 sessions, 1 evidence turns)
+ingest 3f1e9474: 515 chunks (52 sessions, 1 evidence turns)
+ingest 86b68151: 485 chunks (47 sessions, 1 evidence turns)
+ingest 577d4d32: 487 chunks (46 sessions, 1 evidence turns)
+ingest ec81a493: 495 chunks (51 sessions, 1 evidence turns)
+ingest 15745da0: 474 chunks (47 sessions, 1 evidence turns)
+ingest e01b8e2f: 523 chunks (53 sessions, 1 evidence turns)
+ingest bc8a6e93: 537 chunks (48 sessions, 1 evidence turns)
+ingest ccb36322: 471 chunks (46 sessions, 1 evidence turns)
+ingest 001be529: 508 chunks (51 sessions, 1 evidence turns)
+ingest b320f3f8: 463 chunks (46 sessions, 1 evidence turns)
+ingest 19b5f2b3: 482 chunks (43 sessions, 1 evidence turns)
+ingest 4fd1909e: 554 chunks (55 sessions, 1 evidence turns)
+ingest 545bd2b5: 461 chunks (44 sessions, 1 evidence turns)
+ingest 8a137a7f: 512 chunks (51 sessions, 1 evidence turns)
+ingest 76d63226: 489 chunks (48 sessions, 1 evidence turns)
+ingest 86f00804: 503 chunks (43 sessions, 1 evidence turns)
+ingest 8e9d538c: 486 chunks (48 sessions, 2 evidence turns)
+ingest 311778f1: 500 chunks (52 sessions, 1 evidence turns)
+ingest c19f7a0b: 478 chunks (46 sessions, 1 evidence turns)
+ingest 4100d0a0: 523 chunks (50 sessions, 1 evidence turns)
+ingest 29f2956b: 496 chunks (47 sessions, 1 evidence turns)
+ingest 1faac195: 494 chunks (45 sessions, 1 evidence turns)
+ingest faba32e5: 473 chunks (46 sessions, 1 evidence turns)
+ingest f4f1d8a4: 585 chunks (52 sessions, 1 evidence turns)
+ingest c14c00dd: 492 chunks (51 sessions, 1 evidence turns)
+ingest 36580ce8: 545 chunks (55 sessions, 1 evidence turns)
+ingest 3d86fd0a: 526 chunks (55 sessions, 1 evidence turns)
+ingest a82c026e: 476 chunks (47 sessions, 1 evidence turns)
+ingest 0862e8bf_abs: 523 chunks (52 sessions, 0 evidence turns)
+ingest 15745da0_abs: 547 chunks (50 sessions, 0 evidence turns)
+ingest bc8a6e93_abs: 493 chunks (47 sessions, 0 evidence turns)
+ingest 19b5f2b3_abs: 527 chunks (50 sessions, 0 evidence turns)
+ingest 29f2956b_abs: 494 chunks (50 sessions, 0 evidence turns)
+ingest f4f1d8a4_abs: 506 chunks (50 sessions, 0 evidence turns)
+ingest 0a995998: 484 chunks (44 sessions, 3 evidence turns)
+ingest 6d550036: 505 chunks (47 sessions, 4 evidence turns)
+ingest gpt4_59c863d7: 481 chunks (47 sessions, 5 evidence turns)
+ingest b5ef892d: 516 chunks (52 sessions, 2 evidence turns)
+ingest e831120c: 481 chunks (47 sessions, 2 evidence turns)
+ingest 3a704032: 479 chunks (48 sessions, 2 evidence turns)
+ingest gpt4_d84a3211: 495 chunks (48 sessions, 4 evidence turns)
+ingest aae3761f: 485 chunks (47 sessions, 3 evidence turns)
+ingest gpt4_f2262a51: 479 chunks (45 sessions, 5 evidence turns)
+ingest dd2973ad: 516 chunks (49 sessions, 2 evidence turns)
+ingest c4a1ceb8: 488 chunks (49 sessions, 4 evidence turns)
+ingest gpt4_a56e767c: 477 chunks (48 sessions, 6 evidence turns)
+ingest 6cb6f249: 470 chunks (41 sessions, 2 evidence turns)
+ingest 46a3abf7: 503 chunks (50 sessions, 3 evidence turns)
+ingest 36b9f61e: 490 chunks (47 sessions, 3 evidence turns)
+ingest 28dc39ac: 431 chunks (38 sessions, 5 evidence turns)
+ingest gpt4_2f8be40d: 474 chunks (46 sessions, 3 evidence turns)
+ingest 2e6d26dc: 494 chunks (54 sessions, 4 evidence turns)
+ingest gpt4_15e38248: 470 chunks (46 sessions, 5 evidence turns)
+ingest 88432d0a: 479 chunks (45 sessions, 4 evidence turns)
+ingest 80ec1f4f: 487 chunks (46 sessions, 2 evidence turns)
+ingest d23cf73b: 500 chunks (51 sessions, 4 evidence turns)
+ingest gpt4_7fce9456: 497 chunks (44 sessions, 6 evidence turns)
+ingest d682f1a2: 469 chunks (47 sessions, 3 evidence turns)
+ingest 7024f17c: 483 chunks (47 sessions, 2 evidence turns)
+ingest gpt4_5501fe77: 516 chunks (45 sessions, 3 evidence turns)
+ingest gpt4_2ba83207: 502 chunks (53 sessions, 4 evidence turns)
+ingest 2318644b: 523 chunks (41 sessions, 2 evidence turns)
+ingest 2ce6a0f2: 480 chunks (47 sessions, 4 evidence turns)
+ingest gpt4_d12ceb0e: 477 chunks (45 sessions, 3 evidence turns)
+ingest 00ca467f: 486 chunks (47 sessions, 2 evidence turns)
+ingest b3c15d39: 502 chunks (51 sessions, 2 evidence turns)
+ingest gpt4_31ff4165: 457 chunks (42 sessions, 6 evidence turns)
+ingest eeda8a6d: 513 chunks (49 sessions, 2 evidence turns)
+ingest 2788b940: 475 chunks (47 sessions, 5 evidence turns)
+ingest 60bf93ed: 494 chunks (51 sessions, 2 evidence turns)
+ingest 9d25d4e0: 493 chunks (44 sessions, 5 evidence turns)
+ingest 129d1232: 451 chunks (48 sessions, 3 evidence turns)
+ingest 60472f9c: 454 chunks (45 sessions, 2 evidence turns)
+ingest gpt4_194be4b3: 474 chunks (44 sessions, 4 evidence turns)
+ingest a9f6b44c: 476 chunks (45 sessions, 4 evidence turns)
+ingest d851d5ba: 533 chunks (46 sessions, 4 evidence turns)
+ingest 5a7937c8: 419 chunks (42 sessions, 3 evidence turns)
+ingest gpt4_ab202e7f: 481 chunks (46 sessions, 5 evidence turns)
+ingest gpt4_e05b82a6: 497 chunks (46 sessions, 4 evidence turns)
+ingest gpt4_731e37d7: 525 chunks (48 sessions, 4 evidence turns)
+ingest edced276: 482 chunks (46 sessions, 3 evidence turns)
+ingest 10d9b85a: 466 chunks (44 sessions, 2 evidence turns)
+ingest e3038f8c: 458 chunks (45 sessions, 4 evidence turns)
+ingest 2b8f3739: 491 chunks (47 sessions, 3 evidence turns)
+ingest 1a8a66a6: 501 chunks (51 sessions, 3 evidence turns)
+ingest c2ac3c61: 528 chunks (53 sessions, 2 evidence turns)
+ingest bf659f65: 516 chunks (52 sessions, 3 evidence turns)
+ingest gpt4_372c3eed: 465 chunks (45 sessions, 3 evidence turns)
+ingest gpt4_2f91af09: 515 chunks (53 sessions, 3 evidence turns)
+ingest 81507db6: 510 chunks (50 sessions, 3 evidence turns)
+ingest 88432d0a_abs: 510 chunks (44 sessions, 0 evidence turns)
+ingest 80ec1f4f_abs: 479 chunks (44 sessions, 0 evidence turns)
+ingest eeda8a6d_abs: 477 chunks (49 sessions, 0 evidence turns)
+ingest 60bf93ed_abs: 521 chunks (51 sessions, 0 evidence turns)
+ingest edced276_abs: 544 chunks (47 sessions, 1 evidence turns)
+ingest gpt4_372c3eed_abs: 490 chunks (44 sessions, 0 evidence turns)
+ingest 8a2466db: 508 chunks (50 sessions, 1 evidence turns)
+ingest 06878be2: 443 chunks (48 sessions, 3 evidence turns)
+ingest 75832dbd: 474 chunks (48 sessions, 1 evidence turns)
+ingest 0edc2aef: 475 chunks (46 sessions, 1 evidence turns)
+ingest 35a27287: 519 chunks (51 sessions, 3 evidence turns)
+ingest 32260d93: 524 chunks (46 sessions, 1 evidence turns)
+ingest 195a1a1b: 515 chunks (46 sessions, 1 evidence turns)
+ingest afdc33df: 502 chunks (46 sessions, 3 evidence turns)
+ingest caf03d32: 489 chunks (51 sessions, 2 evidence turns)
+ingest 54026fce: 472 chunks (49 sessions, 1 evidence turns)
+ingest 06f04340: 503 chunks (55 sessions, 1 evidence turns)
+ingest 6b7dfb22: 471 chunks (45 sessions, 1 evidence turns)
+ingest 1a1907b4: 532 chunks (48 sessions, 1 evidence turns)
+ingest 09d032c9: 481 chunks (43 sessions, 1 evidence turns)
+ingest 38146c39: 538 chunks (46 sessions, 1 evidence turns)
+ingest d24813b1: 485 chunks (44 sessions, 1 evidence turns)
+ingest 57f827a0: 495 chunks (51 sessions, 1 evidence turns)
+ingest 95228167: 507 chunks (49 sessions, 1 evidence turns)
+ingest 505af2f5: 501 chunks (53 sessions, 1 evidence turns)
+ingest 75f70248: 466 chunks (42 sessions, 1 evidence turns)
+ingest d6233ab6: 437 chunks (44 sessions, 2 evidence turns)
+ingest 1da05512: 462 chunks (47 sessions, 2 evidence turns)
+ingest fca70973: 442 chunks (45 sessions, 1 evidence turns)
+ingest b6025781: 460 chunks (47 sessions, 1 evidence turns)
+ingest a89d7624: 496 chunks (49 sessions, 2 evidence turns)
+ingest b0479f84: 502 chunks (48 sessions, 1 evidence turns)
+ingest 1d4e3b97: 474 chunks (45 sessions, 2 evidence turns)
+ingest 07b6f563: 524 chunks (52 sessions, 2 evidence turns)
+ingest 1c0ddc50: 548 chunks (51 sessions, 2 evidence turns)
+ingest 0a34ad58: 485 chunks (42 sessions, 2 evidence turns)
+ingest d3ab962e: 530 chunks (49 sessions, 2 evidence turns)
+ingest 2311e44b: 493 chunks (50 sessions, 2 evidence turns)
+ingest cc06de0d: 462 chunks (42 sessions, 2 evidence turns)
+ingest a11281a2: 457 chunks (50 sessions, 2 evidence turns)
+ingest 4f54b7c9: 491 chunks (45 sessions, 2 evidence turns)
+ingest 85fa3a3f: 493 chunks (47 sessions, 3 evidence turns)
+ingest 9aaed6a3: 541 chunks (51 sessions, 2 evidence turns)
+ingest 1f2b8d4f: 522 chunks (51 sessions, 2 evidence turns)
+ingest e6041065: 493 chunks (45 sessions, 2 evidence turns)
+ingest 51c32626: 490 chunks (51 sessions, 2 evidence turns)
+ingest d905b33f: 504 chunks (48 sessions, 2 evidence turns)
+ingest 7405e8b1: 469 chunks (48 sessions, 2 evidence turns)
+ingest f35224e0: 515 chunks (53 sessions, 2 evidence turns)
+ingest 6456829e: 488 chunks (47 sessions, 2 evidence turns)
+ingest a4996e51: 512 chunks (48 sessions, 2 evidence turns)
+ingest 3c1045c8: 542 chunks (52 sessions, 2 evidence turns)
+ingest 60036106: 483 chunks (44 sessions, 2 evidence turns)
+ingest 681a1674: 476 chunks (49 sessions, 2 evidence turns)
+ingest e25c3b8d: 530 chunks (48 sessions, 2 evidence turns)
+ingest 4adc0475: 490 chunks (45 sessions, 2 evidence turns)
+ingest 4bc144e2: 530 chunks (48 sessions, 2 evidence turns)
+ingest ef66a6e5: 445 chunks (45 sessions, 2 evidence turns)
+ingest 5025383b: 446 chunks (46 sessions, 2 evidence turns)
+ingest a1cc6108: 492 chunks (43 sessions, 2 evidence turns)
+ingest 9ee3ecd6: 476 chunks (50 sessions, 2 evidence turns)
+ingest 3fdac837: 453 chunks (44 sessions, 2 evidence turns)
+ingest 91b15a6e: 487 chunks (49 sessions, 2 evidence turns)
+ingest 27016adc: 491 chunks (45 sessions, 2 evidence turns)
+ingest 720133ac: 466 chunks (47 sessions, 2 evidence turns)
+ingest 77eafa52: 527 chunks (51 sessions, 2 evidence turns)
+ingest 8979f9ec: 469 chunks (43 sessions, 2 evidence turns)
+ingest 0100672e: 486 chunks (49 sessions, 2 evidence turns)
+ingest a96c20ee: 489 chunks (51 sessions, 2 evidence turns)
+ingest 92a0aa75: 455 chunks (42 sessions, 2 evidence turns)
+ingest 3fe836c9: 449 chunks (45 sessions, 2 evidence turns)
+ingest 1c549ce4: 462 chunks (45 sessions, 2 evidence turns)
+ingest 6c49646a: 429 chunks (43 sessions, 2 evidence turns)
+ingest 1192316e: 467 chunks (42 sessions, 2 evidence turns)
+ingest 0ea62687: 460 chunks (43 sessions, 2 evidence turns)
+ingest 67e0d0f2: 510 chunks (52 sessions, 2 evidence turns)
+ingest bb7c3b45: 495 chunks (47 sessions, 2 evidence turns)
+ingest ba358f49: 409 chunks (41 sessions, 2 evidence turns)
+ingest 61f8c8f8: 459 chunks (48 sessions, 2 evidence turns)
+ingest 60159905: 448 chunks (44 sessions, 2 evidence turns)
+ingest ef9cf60a: 522 chunks (54 sessions, 2 evidence turns)
+ingest 73d42213: 516 chunks (49 sessions, 2 evidence turns)
+ingest bc149d6b: 467 chunks (46 sessions, 2 evidence turns)
+ingest 099778bb: 466 chunks (46 sessions, 2 evidence turns)
+ingest 09ba9854: 479 chunks (44 sessions, 2 evidence turns)
+ingest d6062bb9: 532 chunks (50 sessions, 2 evidence turns)
+ingest 157a136e: 503 chunks (47 sessions, 3 evidence turns)
+ingest c18a7dc8: 509 chunks (49 sessions, 2 evidence turns)
+ingest a3332713: 467 chunks (42 sessions, 2 evidence turns)
+ingest 55241a1f: 514 chunks (49 sessions, 2 evidence turns)
+ingest a08a253f: 560 chunks (53 sessions, 2 evidence turns)
+ingest f0e564bc: 508 chunks (50 sessions, 2 evidence turns)
+warn: question 078150f1 has 501 chunks, expected 551 (outside ±28 tolerance); re-ingesting
+ingest 078150f1: 551 chunks (46 sessions, 3 evidence turns)
+ingest 8cf4d046: 468 chunks (45 sessions, 2 evidence turns)
+ingest a346bb18: 478 chunks (49 sessions, 2 evidence turns)
+ingest 37f165cf: 567 chunks (45 sessions, 2 evidence turns)
+ingest 8e91e7d9: 498 chunks (47 sessions, 2 evidence turns)
+ingest 87f22b4a: 474 chunks (47 sessions, 2 evidence turns)
+ingest e56a43b9: 448 chunks (45 sessions, 2 evidence turns)
+ingest efc3f7c2: 497 chunks (48 sessions, 2 evidence turns)
+ingest 21d02d0d: 497 chunks (47 sessions, 2 evidence turns)
+ingest 2311e44b_abs: 494 chunks (49 sessions, 0 evidence turns)
+ingest 6456829e_abs: 494 chunks (53 sessions, 1 evidence turns)
+ingest e5ba910e_abs: 522 chunks (48 sessions, 1 evidence turns)
+ingest a96c20ee_abs: 535 chunks (53 sessions, 0 evidence turns)
+ingest ba358f49_abs: 477 chunks (48 sessions, 0 evidence turns)
+ingest 09ba9854_abs: 513 chunks (50 sessions, 1 evidence turns)
+ingest gpt4_59149c77: 484 chunks (48 sessions, 2 evidence turns)
+ingest gpt4_f49edff3: 498 chunks (47 sessions, 3 evidence turns)
+ingest 71017276: 614 chunks (49 sessions, 1 evidence turns)
+ingest b46e15ed: 478 chunks (46 sessions, 5 evidence turns)
+ingest gpt4_fa19884c: 507 chunks (46 sessions, 2 evidence turns)
+ingest 0bc8ad92: 443 chunks (49 sessions, 3 evidence turns)
+ingest af082822: 495 chunks (43 sessions, 1 evidence turns)
+ingest gpt4_4929293a: 486 chunks (44 sessions, 2 evidence turns)
+ingest gpt4_b5700ca9: 537 chunks (52 sessions, 1 evidence turns)
+ingest 9a707b81: 530 chunks (54 sessions, 2 evidence turns)
+ingest gpt4_1d4ab0c9: 483 chunks (53 sessions, 2 evidence turns)
+ingest gpt4_e072b769: 444 chunks (45 sessions, 1 evidence turns)
+ingest 0db4c65d: 462 chunks (44 sessions, 2 evidence turns)
+ingest gpt4_1d80365e: 517 chunks (51 sessions, 2 evidence turns)
+ingest gpt4_7f6b06db: 558 chunks (52 sessions, 3 evidence turns)
+ingest gpt4_6dc9b45b: 565 chunks (48 sessions, 1 evidence turns)
+ingest gpt4_8279ba02: 489 chunks (47 sessions, 1 evidence turns)
+ingest gpt4_18c2b244: 495 chunks (44 sessions, 3 evidence turns)
+ingest gpt4_a1b77f9c: 498 chunks (49 sessions, 6 evidence turns)
+ingest gpt4_1916e0ea: 533 chunks (56 sessions, 2 evidence turns)
+ingest gpt4_7a0daae1: 561 chunks (61 sessions, 2 evidence turns)
+ingest gpt4_468eb063: 498 chunks (44 sessions, 1 evidence turns)
+ingest gpt4_7abb270c: 467 chunks (48 sessions, 6 evidence turns)
+ingest gpt4_1e4a8aeb: 479 chunks (48 sessions, 2 evidence turns)
+ingest gpt4_4fc4f797: 472 chunks (45 sessions, 2 evidence turns)
+ingest 4dfccbf7: 521 chunks (47 sessions, 2 evidence turns)
+ingest gpt4_61e13b3c: 467 chunks (48 sessions, 2 evidence turns)
+ingest gpt4_45189cb4: 501 chunks (45 sessions, 3 evidence turns)
+ingest 2ebe6c90: 485 chunks (43 sessions, 2 evidence turns)
+ingest gpt4_e061b84f: 467 chunks (46 sessions, 3 evidence turns)
+ingest 370a8ff4: 498 chunks (46 sessions, 2 evidence turns)
+ingest gpt4_d6585ce8: 491 chunks (50 sessions, 5 evidence turns)
+ingest gpt4_4ef30696: 520 chunks (49 sessions, 2 evidence turns)
+ingest gpt4_ec93e27f: 516 chunks (47 sessions, 2 evidence turns)
+ingest 6e984301: 513 chunks (50 sessions, 2 evidence turns)
+ingest 8077ef71: 554 chunks (47 sessions, 1 evidence turns)
+ingest gpt4_f420262c: 495 chunks (47 sessions, 5 evidence turns)
+ingest gpt4_8e165409: 480 chunks (47 sessions, 2 evidence turns)
+ingest gpt4_74aed68e: 480 chunks (45 sessions, 2 evidence turns)
+ingest bcbe585f: 453 chunks (48 sessions, 1 evidence turns)
+ingest gpt4_21adecb5: 511 chunks (52 sessions, 2 evidence turns)
+ingest 5e1b23de: 445 chunks (45 sessions, 1 evidence turns)
+ingest gpt4_98f46fc6: 490 chunks (49 sessions, 2 evidence turns)
+ingest gpt4_af6db32f: 476 chunks (42 sessions, 1 evidence turns)
+ingest eac54adc: 464 chunks (46 sessions, 2 evidence turns)
+ingest gpt4_7ddcf75f: 480 chunks (47 sessions, 1 evidence turns)
+ingest gpt4_a2d1d1f6: 476 chunks (44 sessions, 1 evidence turns)
+ingest gpt4_85da3956: 505 chunks (53 sessions, 1 evidence turns)
+ingest gpt4_b0863698: 457 chunks (42 sessions, 1 evidence turns)
+ingest gpt4_68e94287: 491 chunks (50 sessions, 2 evidence turns)
+ingest gpt4_e414231e: 507 chunks (46 sessions, 2 evidence turns)
+ingest gpt4_7ca326fa: 516 chunks (54 sessions, 3 evidence turns)
+ingest gpt4_7bc6cf22: 519 chunks (48 sessions, 1 evidence turns)
+ingest 2ebe6c92: 487 chunks (48 sessions, 2 evidence turns)
+ingest gpt4_e061b84g: 566 chunks (58 sessions, 1 evidence turns)
+ingest 71017277: 493 chunks (51 sessions, 1 evidence turns)
+ingest b46e15ee: 457 chunks (42 sessions, 1 evidence turns)
+ingest gpt4_d6585ce9: 438 chunks (42 sessions, 1 evidence turns)
+ingest gpt4_1e4a8aec: 498 chunks (50 sessions, 1 evidence turns)
+ingest gpt4_f420262d: 454 chunks (43 sessions, 3 evidence turns)
+ingest gpt4_59149c78: 497 chunks (51 sessions, 1 evidence turns)
+ingest gpt4_e414231f: 490 chunks (46 sessions, 1 evidence turns)
+ingest gpt4_4929293b: 467 chunks (49 sessions, 1 evidence turns)
+ingest gpt4_468eb064: 460 chunks (48 sessions, 1 evidence turns)
+ingest gpt4_fa19884d: 556 chunks (50 sessions, 1 evidence turns)
+ingest 9a707b82: 532 chunks (53 sessions, 1 evidence turns)
+ingest eac54add: 476 chunks (43 sessions, 1 evidence turns)
+ingest 4dfccbf8: 455 chunks (43 sessions, 1 evidence turns)
+ingest 0bc8ad93: 486 chunks (47 sessions, 1 evidence turns)
+ingest 6e984302: 460 chunks (43 sessions, 1 evidence turns)
+ingest gpt4_8279ba03: 500 chunks (43 sessions, 1 evidence turns)
+ingest gpt4_b5700ca0: 500 chunks (50 sessions, 1 evidence turns)
+ingest gpt4_68e94288: 459 chunks (44 sessions, 1 evidence turns)
+ingest gpt4_2655b836: 465 chunks (45 sessions, 2 evidence turns)
+ingest gpt4_2487a7cb: 495 chunks (47 sessions, 2 evidence turns)
+ingest gpt4_76048e76: 470 chunks (44 sessions, 2 evidence turns)
+ingest gpt4_2312f94c: 467 chunks (45 sessions, 2 evidence turns)
+ingest 0bb5a684: 463 chunks (42 sessions, 2 evidence turns)
+ingest 08f4fc43: 480 chunks (47 sessions, 2 evidence turns)
+ingest 2c63a862: 529 chunks (54 sessions, 2 evidence turns)
+ingest gpt4_385a5000: 493 chunks (51 sessions, 2 evidence turns)
+ingest 2a1811e2: 479 chunks (46 sessions, 2 evidence turns)
+ingest bbf86515: 487 chunks (45 sessions, 2 evidence turns)
+ingest gpt4_5dcc0aab: 547 chunks (50 sessions, 1 evidence turns)
+ingest gpt4_0b2f1d21: 497 chunks (53 sessions, 2 evidence turns)
+ingest f0853d11: 500 chunks (46 sessions, 2 evidence turns)
+ingest gpt4_6ed717ea: 489 chunks (46 sessions, 2 evidence turns)
+ingest gpt4_70e84552: 467 chunks (48 sessions, 2 evidence turns)
+ingest a3838d2b: 484 chunks (47 sessions, 6 evidence turns)
+ingest gpt4_93159ced: 444 chunks (42 sessions, 3 evidence turns)
+ingest gpt4_2d58bcd6: 483 chunks (46 sessions, 2 evidence turns)
+ingest gpt4_65aabe59: 452 chunks (42 sessions, 3 evidence turns)
+ingest 982b5123: 473 chunks (47 sessions, 2 evidence turns)
+ingest b9cfe692: 492 chunks (48 sessions, 2 evidence turns)
+ingest gpt4_4edbafa2: 460 chunks (41 sessions, 2 evidence turns)
+ingest c8090214: 459 chunks (47 sessions, 2 evidence turns)
+ingest gpt4_483dd43c: 532 chunks (52 sessions, 2 evidence turns)
+ingest e4e14d04: 461 chunks (45 sessions, 2 evidence turns)
+ingest c9f37c46: 511 chunks (50 sessions, 2 evidence turns)
+ingest gpt4_2c50253f: 591 chunks (56 sessions, 2 evidence turns)
+ingest dcfa8644: 470 chunks (46 sessions, 2 evidence turns)
+ingest gpt4_b4a80587: 542 chunks (47 sessions, 2 evidence turns)
+ingest gpt4_9a159967: 470 chunks (46 sessions, 3 evidence turns)
+ingest cc6d1ec1: 457 chunks (46 sessions, 2 evidence turns)
+ingest gpt4_8c8961ae: 485 chunks (50 sessions, 2 evidence turns)
+ingest gpt4_d9af6064: 534 chunks (51 sessions, 2 evidence turns)
+ingest gpt4_7de946e7: 533 chunks (49 sessions, 2 evidence turns)
+ingest d01c6aa8: 429 chunks (42 sessions, 2 evidence turns)
+ingest 993da5e2: 486 chunks (49 sessions, 2 evidence turns)
+ingest a3045048: 584 chunks (53 sessions, 2 evidence turns)
+ingest gpt4_d31cdae3: 480 chunks (50 sessions, 2 evidence turns)
+ingest gpt4_cd90e484: 508 chunks (52 sessions, 2 evidence turns)
+ingest gpt4_88806d6e: 493 chunks (49 sessions, 2 evidence turns)
+ingest gpt4_4cd9eba1: 500 chunks (45 sessions, 2 evidence turns)
+ingest gpt4_93f6379c: 445 chunks (42 sessions, 2 evidence turns)
+ingest b29f3365: 494 chunks (50 sessions, 2 evidence turns)
+ingest gpt4_2f56ae70: 458 chunks (45 sessions, 3 evidence turns)
+ingest 6613b389: 452 chunks (41 sessions, 2 evidence turns)
+ingest gpt4_78cf46a3: 505 chunks (49 sessions, 2 evidence turns)
+ingest gpt4_0a05b494: 506 chunks (45 sessions, 2 evidence turns)
+ingest gpt4_1a1dc16d: 453 chunks (46 sessions, 2 evidence turns)
+ingest gpt4_2f584639: 472 chunks (45 sessions, 2 evidence turns)
+ingest gpt4_213fd887: 446 chunks (45 sessions, 2 evidence turns)
+ingest gpt4_5438fa52: 513 chunks (50 sessions, 2 evidence turns)
+ingest gpt4_c27434e8: 500 chunks (51 sessions, 2 evidence turns)
+ingest gpt4_fe651585: 471 chunks (48 sessions, 2 evidence turns)
+ingest 8c18457d: 434 chunks (41 sessions, 3 evidence turns)
+ingest gpt4_70e84552_abs: 520 chunks (50 sessions, 1 evidence turns)
+ingest gpt4_93159ced_abs: 608 chunks (44 sessions, 0 evidence turns)
+ingest 982b5123_abs: 505 chunks (44 sessions, 1 evidence turns)
+ingest c8090214_abs: 506 chunks (53 sessions, 2 evidence turns)
+ingest gpt4_c27434e8_abs: 470 chunks (47 sessions, 1 evidence turns)
+ingest gpt4_fe651585_abs: 492 chunks (49 sessions, 1 evidence turns)
+ingest 6a1eabeb: 413 chunks (40 sessions, 2 evidence turns)
+ingest 6aeb4375: 468 chunks (47 sessions, 2 evidence turns)
+ingest 830ce83f: 511 chunks (47 sessions, 3 evidence turns)
+ingest 852ce960: 396 chunks (39 sessions, 2 evidence turns)
+ingest 945e3d21: 489 chunks (48 sessions, 2 evidence turns)
+ingest d7c942c3: 520 chunks (49 sessions, 2 evidence turns)
+ingest 71315a70: 514 chunks (53 sessions, 2 evidence turns)
+ingest 89941a93: 528 chunks (51 sessions, 2 evidence turns)
+ingest ce6d2d27: 521 chunks (51 sessions, 2 evidence turns)
+ingest 9ea5eabc: 537 chunks (53 sessions, 2 evidence turns)
+ingest 07741c44: 513 chunks (50 sessions, 2 evidence turns)
+ingest a1eacc2a: 474 chunks (44 sessions, 2 evidence turns)
+ingest 184da446: 473 chunks (42 sessions, 2 evidence turns)
+ingest 031748ae: 494 chunks (46 sessions, 2 evidence turns)
+ingest 4d6b87c8: 516 chunks (52 sessions, 2 evidence turns)
+ingest 0f05491a: 489 chunks (45 sessions, 2 evidence turns)
+ingest 08e075c7: 484 chunks (45 sessions, 2 evidence turns)
+ingest f9e8c073: 504 chunks (53 sessions, 2 evidence turns)
+ingest 41698283: 476 chunks (45 sessions, 2 evidence turns)
+ingest 2698e78f: 478 chunks (48 sessions, 2 evidence turns)
+ingest b6019101: 510 chunks (49 sessions, 2 evidence turns)
+ingest 45dc21b6: 485 chunks (49 sessions, 2 evidence turns)
+ingest 5a4f22c0: 487 chunks (49 sessions, 2 evidence turns)
+ingest 6071bd76: 482 chunks (46 sessions, 2 evidence turns)
+ingest e493bb7c: 506 chunks (51 sessions, 2 evidence turns)
+ingest 618f13b2: 506 chunks (49 sessions, 2 evidence turns)
+ingest 72e3ee87: 496 chunks (51 sessions, 2 evidence turns)
+ingest c4ea545c: 490 chunks (46 sessions, 2 evidence turns)
+ingest 01493427: 487 chunks (47 sessions, 2 evidence turns)
+ingest 6a27ffc2: 493 chunks (51 sessions, 2 evidence turns)
+ingest 2133c1b5: 523 chunks (51 sessions, 2 evidence turns)
+ingest 18bc8abd: 432 chunks (44 sessions, 2 evidence turns)
+ingest db467c8c: 475 chunks (48 sessions, 2 evidence turns)
+ingest 7a87bd0c: 506 chunks (48 sessions, 2 evidence turns)
+ingest e61a7584: 496 chunks (50 sessions, 2 evidence turns)
+ingest 1cea1afa: 485 chunks (49 sessions, 2 evidence turns)
+ingest ed4ddc30: 543 chunks (46 sessions, 2 evidence turns)
+ingest 8fb83627: 485 chunks (44 sessions, 3 evidence turns)
+ingest b01defab: 503 chunks (50 sessions, 2 evidence turns)
+ingest 22d2cb42: 473 chunks (48 sessions, 1 evidence turns)
+ingest 0e4e4c46: 481 chunks (49 sessions, 2 evidence turns)
+ingest 4b24c848: 514 chunks (51 sessions, 2 evidence turns)
+ingest 7e974930: 502 chunks (47 sessions, 2 evidence turns)
+ingest 603deb26: 472 chunks (48 sessions, 2 evidence turns)
+ingest 59524333: 528 chunks (44 sessions, 2 evidence turns)
+ingest 5831f84d: 422 chunks (40 sessions, 2 evidence turns)
+ingest eace081b: 489 chunks (47 sessions, 1 evidence turns)
+ingest affe2881: 484 chunks (44 sessions, 2 evidence turns)
+ingest 50635ada: 531 chunks (48 sessions, 2 evidence turns)
+ingest e66b632c: 506 chunks (47 sessions, 2 evidence turns)
+ingest 0ddfec37: 483 chunks (50 sessions, 2 evidence turns)
+ingest f685340e: 424 chunks (41 sessions, 2 evidence turns)
+ingest cc5ded98: 493 chunks (53 sessions, 2 evidence turns)
+ingest dfde3500: 480 chunks (47 sessions, 2 evidence turns)
+ingest 69fee5aa: 483 chunks (49 sessions, 2 evidence turns)
+ingest 7401057b: 446 chunks (47 sessions, 2 evidence turns)
+ingest cf22b7bf: 550 chunks (55 sessions, 2 evidence turns)
+ingest a2f3aa27: 448 chunks (44 sessions, 2 evidence turns)
+ingest c7dc5443: 466 chunks (46 sessions, 2 evidence turns)
+ingest 06db6396: 479 chunks (51 sessions, 2 evidence turns)
+ingest 3ba21379: 431 chunks (44 sessions, 2 evidence turns)
+ingest 9bbe84a2: 459 chunks (48 sessions, 2 evidence turns)
+ingest 10e09553: 472 chunks (45 sessions, 2 evidence turns)
+ingest dad224aa: 521 chunks (48 sessions, 2 evidence turns)
+ingest ba61f0b9: 454 chunks (45 sessions, 2 evidence turns)
+ingest 42ec0761: 521 chunks (48 sessions, 2 evidence turns)
+ingest 5c40ec5b: 479 chunks (51 sessions, 2 evidence turns)
+ingest c6853660: 477 chunks (46 sessions, 2 evidence turns)
+ingest 26bdc477: 498 chunks (48 sessions, 2 evidence turns)
+ingest 0977f2af: 484 chunks (44 sessions, 2 evidence turns)
+ingest 6aeb4375_abs: 521 chunks (46 sessions, 0 evidence turns)
+ingest 031748ae_abs: 523 chunks (52 sessions, 0 evidence turns)
+ingest 2698e78f_abs: 462 chunks (46 sessions, 0 evidence turns)
+ingest 2133c1b5_abs: 476 chunks (50 sessions, 0 evidence turns)
+ingest 0ddfec37_abs: 447 chunks (45 sessions, 0 evidence turns)
+ingest f685340e_abs: 456 chunks (43 sessions, 0 evidence turns)
+ingest 89941a94: 523 chunks (46 sessions, 2 evidence turns)
+ingest 07741c45: 527 chunks (49 sessions, 2 evidence turns)
+ingest 7161e7e2: 550 chunks (48 sessions, 1 evidence turns)
+ingest c4f10528: 485 chunks (44 sessions, 1 evidence turns)
+ingest 89527b6b: 467 chunks (45 sessions, 1 evidence turns)
+ingest e9327a54: 533 chunks (50 sessions, 1 evidence turns)
+ingest 4c36ccef: 521 chunks (49 sessions, 1 evidence turns)
+ingest 6ae235be: 454 chunks (48 sessions, 1 evidence turns)
+ingest 7e00a6cb: 564 chunks (62 sessions, 1 evidence turns)
+ingest 1903aded: 486 chunks (47 sessions, 1 evidence turns)
+ingest ceb54acb: 493 chunks (50 sessions, 1 evidence turns)
+ingest f523d9fe: 484 chunks (50 sessions, 1 evidence turns)
+ingest 0e5e2d1a: 450 chunks (46 sessions, 1 evidence turns)
+ingest fea54f57: 527 chunks (50 sessions, 1 evidence turns)
+ingest cc539528: 496 chunks (48 sessions, 1 evidence turns)
+ingest dc439ea3: 476 chunks (47 sessions, 1 evidence turns)
+ingest 18dcd5a5: 503 chunks (50 sessions, 1 evidence turns)
+ingest 488d3006: 509 chunks (47 sessions, 1 evidence turns)
+ingest 58470ed2: 471 chunks (50 sessions, 1 evidence turns)
+ingest 8cf51dda: 454 chunks (46 sessions, 1 evidence turns)
+ingest 1d4da289: 503 chunks (55 sessions, 1 evidence turns)
+ingest 8464fc84: 484 chunks (45 sessions, 1 evidence turns)
+ingest 8aef76bc: 492 chunks (48 sessions, 1 evidence turns)
+ingest 71a3fd6b: 439 chunks (44 sessions, 1 evidence turns)
+ingest 2bf43736: 478 chunks (44 sessions, 1 evidence turns)
+ingest 70b3e69b: 495 chunks (48 sessions, 1 evidence turns)
+ingest 8752c811: 493 chunks (56 sessions, 1 evidence turns)
+ingest 3249768e: 475 chunks (47 sessions, 1 evidence turns)
+ingest 1b9b7252: 466 chunks (46 sessions, 1 evidence turns)
+ingest 1568498a: 478 chunks (47 sessions, 1 evidence turns)
+ingest 6222b6eb: 497 chunks (46 sessions, 1 evidence turns)
+ingest e8a79c70: 483 chunks (44 sessions, 1 evidence turns)
+ingest d596882b: 474 chunks (44 sessions, 1 evidence turns)
+ingest e3fc4d6e: 519 chunks (53 sessions, 1 evidence turns)
+ingest 51b23612: 481 chunks (47 sessions, 1 evidence turns)
+ingest 3e321797: 490 chunks (50 sessions, 1 evidence turns)
+ingest e982271f: 589 chunks (54 sessions, 1 evidence turns)
+ingest 352ab8bd: 539 chunks (49 sessions, 1 evidence turns)
+ingest fca762bc: 459 chunks (42 sessions, 1 evidence turns)
+ingest 7a8d0b71: 489 chunks (45 sessions, 1 evidence turns)
+ingest a40e080f: 529 chunks (48 sessions, 1 evidence turns)
+ingest 8b9d4367: 537 chunks (53 sessions, 1 evidence turns)
+ingest 5809eb10: 606 chunks (52 sessions, 1 evidence turns)
+ingest 41275add: 531 chunks (53 sessions, 1 evidence turns)
+ingest 4388e9dd: 477 chunks (43 sessions, 1 evidence turns)
+ingest 4baee567: 514 chunks (49 sessions, 1 evidence turns)
+ingest 561fabcd: 495 chunks (49 sessions, 1 evidence turns)
+ingest b759caee: 516 chunks (53 sessions, 1 evidence turns)
+ingest ac031881: 529 chunks (47 sessions, 1 evidence turns)
+ingest 28bcfaac: 500 chunks (50 sessions, 1 evidence turns)
+ingest 16c90bf4: 509 chunks (55 sessions, 1 evidence turns)
+ingest c8f1aeed: 504 chunks (50 sessions, 1 evidence turns)
+ingest eaca4986: 513 chunks (47 sessions, 1 evidence turns)
+ingest c7cf7dfd: 520 chunks (51 sessions, 1 evidence turns)
+ingest e48988bc: 530 chunks (50 sessions, 1 evidence turns)
+ingest 1de5cff2: 473 chunks (45 sessions, 1 evidence turns)
+ingest 65240037: 489 chunks (51 sessions, 1 evidence turns)
+ingest 778164c6: 542 chunks (50 sessions, 1 evidence turns)
+distill progress: 10/500 questions
+distill progress: 20/500 questions
+distill progress: 30/500 questions
+distill progress: 40/500 questions
+distill progress: 50/500 questions
+distill progress: 60/500 questions
+distill progress: 70/500 questions
+distill progress: 80/500 questions
+distill progress: 90/500 questions
+distill progress: 100/500 questions
+distill progress: 110/500 questions
+distill progress: 120/500 questions
+distill progress: 130/500 questions
+distill progress: 140/500 questions
+distill progress: 150/500 questions
+distill progress: 160/500 questions
+distill progress: 170/500 questions
+distill progress: 180/500 questions
+distill progress: 190/500 questions
+distill progress: 200/500 questions
+distill progress: 210/500 questions
+distill progress: 220/500 questions
+distill progress: 230/500 questions
+distill progress: 240/500 questions
+distill progress: 250/500 questions
+distill progress: 260/500 questions
+distill progress: 270/500 questions
+distill progress: 280/500 questions
+distill progress: 290/500 questions
+distill progress: 300/500 questions
+distill progress: 310/500 questions
+distill progress: 320/500 questions
+distill progress: 330/500 questions
+distill progress: 340/500 questions
+distill progress: 350/500 questions
+distill progress: 360/500 questions
+distill progress: 370/500 questions
+distill progress: 380/500 questions
+distill progress: 390/500 questions
+distill progress: 400/500 questions
+distill progress: 410/500 questions
+distill progress: 420/500 questions
+distill progress: 430/500 questions
+distill progress: 440/500 questions
+distill progress: 450/500 questions
+distill progress: 460/500 questions
+distill progress: 470/500 questions
+distill progress: 480/500 questions
+distill progress: 490/500 questions
+distill progress: 500/500 questions
+building hippocampus graph for spreading activation...
+  graph: 321308 nodes, 293012 edges
+25/500 questions done
+50/500 questions done
+75/500 questions done
+100/500 questions done
+125/500 questions done
+150/500 questions done
+175/500 questions done
+200/500 questions done
+225/500 questions done
+250/500 questions done
+275/500 questions done
+300/500 questions done
+325/500 questions done
+350/500 questions done
+375/500 questions done
+400/500 questions done
+425/500 questions done
+450/500 questions done
+475/500 questions done
+500/500 questions done
+wrote benches/longmemeval/results/r3_distill_20260804/run_20260804_142625.jsonl
+{
+  "run_id": "20260804_142625",
+  "date": "2026-08-04T14:37:40.343608+00:00",
+  "git_commit": "a34f69c",
+  "model": "deepseek-chat",
+  "judge_model": "deepseek-chat",
+  "temperature": 0.0,
+  "topk": 10,
+  "ingest": "distill",
+  "prompt_version": "v2",
+  "distill_ingest": {
+    "sessions": 23867,
+    "llm_calls": 0,
+    "facts_recorded": 0,
+    "episodes_recorded": 0,
+    "episodes_duplicate": 0,
+    "facts_retired": 0,
+    "superseded_invalidations": 0,
+    "skipped_existing": false
+  },
+  "data": "benches/longmemeval/data/longmemeval_s_cleaned.json",
+  "qtype_filter": null,
+  "total_questions": 500,
+  "correct": 356,
+  "incorrect": 144,
+  "error": 0,
+  "accuracy": 0.712,
+  "evidence_hit_rate": 0.876,
+  "per_question_type": {
+    "knowledge-update": {
+      "total": 78,
+      "correct": 64,
+      "incorrect": 14,
+      "error": 0,
+      "accuracy": 0.8205128205128205
+    },
+    "multi-session": {
+      "total": 133,
+      "correct": 76,
+      "incorrect": 57,
+      "error": 0,
+      "accuracy": 0.5714285714285714
+    },
+    "single-session-assistant": {
+      "total": 56,
+      "correct": 55,
+      "incorrect": 1,
+      "error": 0,
+      "accuracy": 0.9821428571428571
+    },
+    "single-session-preference": {
+      "total": 30,
+      "correct": 4,
+      "incorrect": 26,
+      "error": 0,
+      "accuracy": 0.13333333333333333
+    },
+    "single-session-user": {
+      "total": 70,
+      "correct": 68,
+      "incorrect": 2,
+      "error": 0,
+      "accuracy": 0.9714285714285714
+    },
+    "temporal-reasoning": {
+      "total": 133,
+      "correct": 89,
+      "incorrect": 44,
+      "error": 0,
+      "accuracy": 0.6691729323308271
+    }
+  },
+  "abstention": {
+    "total": 30,
+    "correct": 27,
+    "incorrect": 3,
+    "error": 0,
+    "accuracy": 0.9
+  }
+}
+wrote benches/longmemeval/results/r3_distill_20260804/run_20260804_142625_summary.json

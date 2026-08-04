@@ -284,3 +284,22 @@ prevented → 负权重 → 传播时被抑制。
 ## 版本历史
 
 - 2026-08-04: 初版。基于 7 天调研（07-27 ~ 08-04）的 20+ 篇论文/框架。
+
+---
+
+## 实施状态 (2026-08-05)
+
+全部 Phase 已实现并验证:
+
+| Phase | 状态 | 交付物 | 验证 |
+|---|---|---|---|
+| P0 | ✅ | PREFERENCE_RULE 合入(v2 默认);r5 全量 500 验证 | **总准确率 74.4%**(r3 71.2% → +3.2pp);preference 13.3% → **60.0%**(+46.7pp);multi-session 59.4%、abstention 93.3%,无回归、0 error |
+| P1 | ✅ | v8 schema(session_logs.embedding/distilled_at);`distill_recurrence()`/`distill_undistilled_batch()`/`should_distill()`;CLI `distill --mode recurrence\|batch` | 173+ 库测试,含 recurrence 纯函数测试 |
+| P2 | ✅ | `LoopDetector`(3 连击阻断)+ UNKNOWN → search_memory fallback;B/C/D 全部接入 | `test_loop_detector_fires_after_three_repeats` |
+| P3 | ✅ | `causal_edges.superseded_by`;`restore_edge()`;`superseded_edges()`;CLI `restore <edge_id>`;supersede 标记而非删除 | `test_supersede_marks_and_restore_revives`(标记→不可见→恢复→可见) |
+| P4 | ✅ | Condition D(强制每次 run 前 intervention);PredictionTracker(预测 vs 实际);准确率/陷阱避免/步数节省指标 | `test_prediction_tracker_accuracy_semantics` |
+| P5 | ✅ | `NoveltyMode`(entropy/prediction_gap/hybrid);`detect_novelty_with_mode()` + `needs_prediction_gap()`;CLI `novelty` 子命令 | 4 个新测试(边界带、stub predictor、fallback、hybrid 跳过 LLM) |
+| P6 | ✅ | `token::estimate_tokens`(CJK 感知);LongMemEval 每问 ctx/ans token 记账;CLI `bench-tokens`(raw vs rrf vs layered) | 实测 2 问:layered 因同条目三级重复反而更贵 — 暴露真实问题 |
+| P7 | ✅ | `tests/memsec.rs` MemSecBench 协议 5 测试 | prevented → 负激活抑制;caused → 诚实局限;消融后防御消失;re-tag 翻转信号 |
+
+新增测试:206 → **232**(库 178 + 集成 54)。4 个 memora 失败为 HEAD 存量问题(与本次改动无关)。

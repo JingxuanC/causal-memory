@@ -283,6 +283,11 @@ impl Distiller {
         })
     }
 
+    /// The configured model name (for benchmark report headers).
+    pub fn model(&self) -> &str {
+        &self.config.model
+    }
+
     /// Distill one session's turns into memory items.
     ///
     /// `date` is the session date ("YYYY-MM-DD"); `turns` are
@@ -489,6 +494,257 @@ fn valid_ymd(s: &str) -> bool {
     chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok()
 }
 
+// ─── Recurrence-triggered distillation (RecMem, arXiv:2605.16045) ─────────
+//
+// Eager distill (every session → LLM) is the token whale of the write path.
+// RecMem shows only recurrence matters: a fact is worth distilling when the
+// same topic surfaces AGAIN — single-topic sessions that never repeat carry
+// nothing the store does not already know. The gate:
+//
+//   session end → log turns to session_logs (WITH the session embedding)
+//               → recurrence check: does this topic match a prior session?
+//                   YES → distill (this + matched session merged)
+//                   NO  → leave pending in session_logs
+//               → batch mode drains pending sessions that later become
+//                 recurrent (or fall back to eager for embedding-less ones)
+
+/// Outcome of one recurrence-gated distill decision.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecurrenceOutcome {
+    /// The session that was checked.
+    pub session_id: i64,
+    /// True when the session's topic repeated a prior session and was distilled.
+    pub distilled: bool,
+    /// The prior session whose topic matched (recurrence), if any.
+    pub matched_session: Option<i64>,
+    /// Cosine similarity of the best match, if any.
+    pub similarity: Option<f32>,
+    /// Items written by the distillation (empty when skipped).
+    pub items: Vec<MemoryItem>,
+}
+
+/// Aggregate of one batch drain run.
+#[derive(Debug, Default)]
+pub struct BatchOutcome {
+    /// Sessions distilled because their topic recurred.
+    pub distilled: Vec<RecurrenceOutcome>,
+    /// Sessions that had no embedding and fell back to eager distill.
+    pub eager_fallback: Vec<i64>,
+    /// Sessions still pending (no recurrence, no embedding).
+    pub still_pending: Vec<i64>,
+}
+
+/// Pure recurrence decision — unit-testable without a store or network.
+/// Returns the best (prior_session_id, cosine) at or above `min_similarity`,
+/// if any.
+pub fn should_distill(
+    current_embedding: &[f32],
+    prior_sessions: &[(i64, Vec<f32>)],
+    min_similarity: f32,
+) -> Option<(i64, f32)> {
+    prior_sessions
+        .iter()
+        .filter_map(|(sid, emb)| {
+            let sim = crate::embed::cosine_similarity(current_embedding, emb) as f32;
+            (sim >= min_similarity).then_some((*sid, sim))
+        })
+        .max_by(|a, b| a.1.total_cmp(&b.1))
+}
+
+/// Record distilled items through the same write path the eager CLI uses:
+/// facts/preferences → `record_fact`, lessons/events/causal → `record_distilled`.
+/// Returns the number of items written.
+pub fn record_items(
+    store: &crate::store::CausalStore,
+    items: &[MemoryItem],
+    task_tag: Option<&str>,
+) -> Result<usize> {
+    let mut written = 0;
+    for item in items {
+        match item.kind {
+            ItemKind::Fact | ItemKind::Preference => {
+                store.record_fact(
+                    match item.kind {
+                        ItemKind::Fact => "fact",
+                        ItemKind::Preference => "preference",
+                        _ => "fact",
+                    },
+                    &item.text,
+                    "user",
+                    "distill",
+                    0.8,
+                )?;
+            }
+            ItemKind::Lesson | ItemKind::Event | ItemKind::Causal => {
+                store.record_distilled(item, task_tag)?;
+            }
+        }
+        written += 1;
+    }
+    Ok(written)
+}
+
+/// Parse the session date of a stored session (its earliest turn) into
+/// "YYYY-MM-DD", falling back to `fallback`.
+fn session_date_str(store: &crate::store::CausalStore, session_id: i64, fallback: &str) -> String {
+    store
+        .session_date(session_id)
+        .ok()
+        .flatten()
+        .and_then(|ts| chrono::DateTime::from_timestamp(ts, 0))
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .filter(|s| valid_ymd(s))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+/// Recurrence-gated distill of ONE new session (the CLI-facing entry):
+///
+/// 1. Log the raw turns into `session_logs` — the session embedding rides on
+///    the first turn (turn_index 0), which `sessions_with_embeddings` reads.
+/// 2. Recurrence check against prior DISTILLED sessions. A match at or above
+///    `min_similarity` triggers distill of this session merged with the
+///    matched one (the LLM sees the earlier context and can confirm or
+///    transition); both sessions are marked distilled.
+/// 3. No match → the session stays pending in `session_logs`; `items` is
+///    empty and `distilled` is false. The daily batch drains it later.
+///
+/// `date` is "YYYY-MM-DD"; `session_embedding` is the embedding of the whole
+/// session (concatenated turns), `None` when no embedder is configured —
+/// the session then skips the recurrence gate and distills eagerly (the old
+/// behavior, so nothing is lost when embeddings are unavailable).
+pub async fn distill_recurrence(
+    store: &crate::store::CausalStore,
+    distiller: &Distiller,
+    session_id: i64,
+    turns: &[(String, String)],
+    date: &str,
+    session_embedding: Option<&[f32]>,
+    min_similarity: f32,
+) -> Result<RecurrenceOutcome> {
+    let event_time = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| d.and_hms_opt(0, 0, 0))
+        .map(|dt| dt.and_utc().timestamp())
+        .unwrap_or_else(|| chrono::Utc::now().timestamp());
+    for (i, (speaker, text)) in turns.iter().enumerate() {
+        store.log_session_turn(
+            &format!("{session_id}:{i}"),
+            session_id,
+            i as i64,
+            speaker,
+            text,
+            event_time,
+            None,
+            if i == 0 { session_embedding } else { None },
+        )?;
+    }
+    distill_recurrence_inner(store, distiller, session_id, date, session_embedding, min_similarity)
+        .await
+}
+
+/// Core of `distill_recurrence`, assuming the turns are already in
+/// `session_logs` (batch mode). Exposed for the batch drain; the public
+/// `distill_recurrence` = logging + this.
+async fn distill_recurrence_inner(
+    store: &crate::store::CausalStore,
+    distiller: &Distiller,
+    session_id: i64,
+    date: &str,
+    session_embedding: Option<&[f32]>,
+    min_similarity: f32,
+) -> Result<RecurrenceOutcome> {
+    // No embedding → no gate possible; eager distill (safe fallback).
+    let Some(embedding) = session_embedding else {
+        let turns = store.session_turns(session_id)?;
+        let items = distiller.distill_session(date, &turns).await?;
+        record_items(store, &items, None)?;
+        store.mark_session_distilled(session_id, None)?;
+        return Ok(RecurrenceOutcome {
+            session_id,
+            distilled: true,
+            matched_session: None,
+            similarity: None,
+            items,
+        });
+    };
+
+    let prior = store.sessions_with_embeddings(10_000)?;
+    let matched = should_distill(embedding, &prior, min_similarity);
+
+    let Some((matched_session, sim)) = matched else {
+        // Recurrence gate closed: leave pending for the next batch run.
+        return Ok(RecurrenceOutcome {
+            session_id,
+            distilled: false,
+            matched_session: None,
+            similarity: None,
+            items: Vec::new(),
+        });
+    };
+
+    // Recurrence fired: distill this session merged with the matched one, so
+    // the LLM sees the earlier context and can detect transitions instead of
+    // re-extracting duplicates.
+    let mut merged = store.session_turns(matched_session)?;
+    merged.extend(store.session_turns(session_id)?);
+    let items = distiller.distill_session(date, &merged).await?;
+    record_items(store, &items, None)?;
+    store.mark_session_distilled(session_id, None)?;
+    store.mark_session_distilled(matched_session, None)?;
+    Ok(RecurrenceOutcome {
+        session_id,
+        distilled: true,
+        matched_session: Some(matched_session),
+        similarity: Some(sim),
+        items,
+    })
+}
+
+/// Daily batch drain: distill every pending session that NOW repeats a prior
+/// distilled session (RecMem's ~0.13N sweet spot), and eagerly distill
+/// embedding-less pending sessions so nothing is lost.
+pub async fn distill_undistilled_batch(
+    store: &crate::store::CausalStore,
+    distiller: &Distiller,
+    date: &str,
+    limit: usize,
+    min_similarity: f32,
+) -> Result<BatchOutcome> {
+    let mut out = BatchOutcome::default();
+    for session_id in store.undistilled_session_ids(limit)? {
+        let stored = store.session_embedding(session_id)?;
+        match stored {
+            Some(emb) => {
+                let date = session_date_str(store, session_id, date);
+                let outcome = distill_recurrence_inner(
+                    store,
+                    distiller,
+                    session_id,
+                    &date,
+                    Some(&emb),
+                    min_similarity,
+                )
+                .await?;
+                if outcome.distilled {
+                    out.distilled.push(outcome);
+                } else {
+                    out.still_pending.push(session_id);
+                }
+            }
+            None => {
+                // No embedding ever stored → eager distill (old behavior).
+                let date = session_date_str(store, session_id, date);
+                let turns = store.session_turns(session_id)?;
+                let items = distiller.distill_session(&date, &turns).await?;
+                record_items(store, &items, None)?;
+                store.mark_session_distilled(session_id, None)?;
+                out.eager_fallback.push(session_id);
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,3 +847,73 @@ mod tests {
         assert!(Distiller::parse_items("[]", "2025-06-03").is_empty());
     }
 }
+
+    // ─── v8: recurrence-triggered distill (P1) ────────────────────────────
+
+    #[test]
+    fn test_should_distill_recurrence() {
+        let a = vec![1.0f32, 0.0, 0.0];
+        let prior = vec![
+            (1, vec![0.5f32, 0.5, 0.0]), // sim 0.707 — below a 0.9 gate
+            (2, vec![1.0f32, 0.0, 0.0]), // sim 1.0 — exact topic repeat
+        ];
+        // Above threshold → picks the BEST match.
+        assert_eq!(should_distill(&a, &prior, 0.9), Some((2, 1.0)));
+        // Lower threshold still picks the best.
+        assert_eq!(should_distill(&a, &prior, 0.6), Some((2, 1.0)));
+        // Strict gate rejects the 0.707 match.
+        assert_eq!(should_distill(&a, &prior, 0.99), Some((2, 1.0)));
+        assert_eq!(should_distill(&a, &prior, 1.01), None);
+        // Unrelated topic (orthogonal to every candidate) → no recurrence.
+        let b = vec![0.0f32, 0.0, 1.0];
+        assert_eq!(should_distill(&b, &prior, 0.5), None);
+        // Empty candidate set → never fires.
+        assert_eq!(should_distill(&a, &[], 0.1), None);
+    }
+
+    #[test]
+    fn test_record_items_splits_facts_and_edges() {
+        use crate::store::CausalStore;
+        let store = CausalStore::open_in_memory().unwrap();
+        let items = vec![
+            MemoryItem {
+                kind: ItemKind::Fact,
+                text: "user uses Arch Linux".to_string(),
+                date: Some("2026-08-01".to_string()),
+                supersedes: None,
+                causal_relation: None,
+                decision: None,
+            },
+            MemoryItem {
+                kind: ItemKind::Lesson,
+                text: "always pin dependency versions".to_string(),
+                date: Some("2026-08-01".to_string()),
+                supersedes: None,
+                causal_relation: None,
+                decision: None,
+            },
+            MemoryItem {
+                kind: ItemKind::Causal,
+                text: "production crash".to_string(),
+                date: Some("2026-08-01".to_string()),
+                supersedes: None,
+                causal_relation: Some(CausalRelation::Caused),
+                decision: Some("deployed without tests".to_string()),
+            },
+        ];
+        let n = record_items(&store, &items, None).unwrap();
+        assert_eq!(n, 3);
+        // Fact → agent_facts; lesson (self-edge) + causal (proper edge) → causal_edges.
+        let facts = store
+            .search_facts_bm25("Arch", None, 10)
+            .unwrap()
+            .len();
+        assert_eq!(facts, 1);
+        assert_eq!(store.count_edges().unwrap(), 2);
+        // The causal item formed a real decision → outcome edge.
+        let causal = store
+            .search_causal_bm25(None, "deployed without tests", 10)
+            .unwrap();
+        assert_eq!(causal.len(), 1);
+        assert_eq!(causal[0].relation, "caused");
+    }

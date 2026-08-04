@@ -7,8 +7,9 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
-    CausalStore, ID_COUNTER, SUPERSEDES_MIN_SHARED_TOKENS, SUPERSEDES_SIM_THRESHOLD,
-    containment_similarity, date_tokens, effective_polarity, is_retraction_record,
+    CausalStore, ENTRY_COLUMNS, ID_COUNTER, SUPERSEDES_MIN_SHARED_TOKENS,
+    SUPERSEDES_SIM_THRESHOLD, containment_similarity, date_tokens, effective_polarity,
+    entry_from_row, is_retraction_record,
 };
 
 impl CausalStore {
@@ -254,8 +255,11 @@ impl CausalStore {
             .or_else(|| is_retraction_record(&item.text).then(|| item.text.clone()));
         let invalidated_edge_ids = match &hint {
             Some(hint) => {
+                // v8: supersession is reversible — the killed edge records
+                // WHICH edge superseded it (superseded_by), so restore_edge
+                // can roll back when later evidence proves it right.
                 let killed = Self::invalidate_superseded(
-                    &conn, hint, task_tag, &chunk_id, &text, event_time, now,
+                    &conn, hint, task_tag, &chunk_id, &text, event_time, now, edge_id,
                 )?;
                 // Guard 3 — negation memory: invalidated entries must not
                 // silently vanish. Record one retrievable Event memory per
@@ -356,6 +360,7 @@ impl CausalStore {
         new_item_text: &str,
         item_event_time: i64,
         now: i64,
+        superseded_by: i64,
     ) -> Result<Vec<(i64, String)>> {
         let hint_tokens: Vec<String> = crate::patterns::tokenize(hint)
             .into_iter()
@@ -408,8 +413,10 @@ impl CausalStore {
         }
         for (edge_id, _) in &killed {
             conn.execute(
-                "UPDATE causal_edges SET valid_to = ?1 WHERE id = ?2 AND valid_to IS NULL",
-                params![now, edge_id],
+                "UPDATE causal_edges
+                 SET valid_to = ?1, superseded_by = ?2
+                 WHERE id = ?3 AND valid_to IS NULL",
+                params![now, superseded_by, edge_id],
             )?;
         }
         Ok(killed)
@@ -489,6 +496,12 @@ impl CausalStore {
     /// This is the write-time gatekeeping path: raw turns are stored for
     /// audit/replay but are NOT searchable via BM25. Only structured
     /// memories (facts, causal edges, distilled items) enter `chunks`.
+    ///
+    /// `embedding` (v8) is the turn's semantic vector, the substrate of the
+    /// recurrence-triggered distill check (RecMem): a session only gets
+    /// distilled when its topic semantically repeats a prior one. `None`
+    /// still logs the turn; the session then falls back to eager distill.
+    #[allow(clippy::too_many_arguments)]
     pub fn log_session_turn(
         &self,
         id: &str,
@@ -498,14 +511,159 @@ impl CausalStore {
         text: &str,
         event_time: i64,
         task_tag: Option<&str>,
+        embedding: Option<&[f32]>,
     ) -> Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let embedding_blob = embedding.map(crate::embed::vec_to_blob);
         conn.execute(
             "INSERT OR IGNORE INTO session_logs
-             (id, session_id, turn_index, speaker, text, event_time, task_tag)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, session_id, turn_index, speaker, text, event_time, task_tag],
+             (id, session_id, turn_index, speaker, text, event_time, task_tag, embedding)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id,
+                session_id,
+                turn_index,
+                speaker,
+                text,
+                event_time,
+                task_tag,
+                embedding_blob
+            ],
         )?;
         Ok(())
+    }
+
+    // ─── v8: Recurrence-triggered distill substrate (RecMem) ──────────────
+
+    /// Mark a session's turn group as distilled (recurrence check resolved).
+    pub fn mark_session_distilled(&self, session_id: i64, at: Option<i64>) -> Result<()> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let now = at.unwrap_or_else(|| chrono::Utc::now().timestamp());
+        conn.execute(
+            "UPDATE session_logs SET distilled_at = ?1 WHERE session_id = ?2",
+            params![now, session_id],
+        )?;
+        Ok(())
+    }
+
+    /// Session ids whose turns are still waiting for their distill decision,
+    /// oldest first (batch drain order), capped at `limit`.
+    pub fn undistilled_session_ids(&self, limit: usize) -> Result<Vec<i64>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT session_id FROM session_logs
+             WHERE distilled_at IS NULL
+             GROUP BY session_id
+             ORDER BY MIN(event_time) ASC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| row.get::<_, i64>(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Ordered (speaker, text) turns of one session.
+    pub fn session_turns(&self, session_id: i64) -> Result<Vec<(String, String)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT speaker, text FROM session_logs
+             WHERE session_id = ?1 ORDER BY turn_index ASC",
+        )?;
+        let rows = stmt.query_map(params![session_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Session date of a turn group (first turn's event_time), if any.
+    pub fn session_date(&self, session_id: i64) -> Result<Option<i64>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let ts: Option<i64> = conn
+            .query_row(
+                "SELECT MIN(event_time) FROM session_logs WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(ts)
+    }
+
+    /// The stored session embedding (ridding on turn_index 0, where
+    /// `distill_recurrence` puts it), if any.
+    pub fn session_embedding(&self, session_id: i64) -> Result<Option<Vec<f32>>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let blob: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT embedding FROM session_logs
+                 WHERE session_id = ?1 AND turn_index = 0",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        blob.map(|b| crate::embed::blob_to_vec(&b))
+            .transpose()
+            .map_err(|e| anyhow!("embedding decode: {e}"))
+    }
+
+    /// All (session_id, embedding) pairs for DISTILLED sessions that carry
+    /// one — the candidate set for the recurrence check.
+    pub fn sessions_with_embeddings(&self, limit: usize) -> Result<Vec<(i64, Vec<f32>)>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let mut stmt = conn.prepare(
+            "SELECT session_id, embedding FROM session_logs
+             WHERE embedding IS NOT NULL AND distilled_at IS NOT NULL AND turn_index = 0
+             GROUP BY session_id
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (sid, blob) = row.map_err(|e| anyhow!("Query failed: {e}"))?;
+            let Ok(vec) = crate::embed::blob_to_vec(&blob) else {
+                continue;
+            };
+            out.push((sid, vec));
+        }
+        Ok(out)
+    }
+
+    // ─── v8: Reversible consolidation ─────────────────────────────────────
+
+    /// Restore a superseded edge: clears `valid_to` and `superseded_by`, so
+    /// the old lesson is live again. Returns true when a row was actually
+    /// restored (false = no such edge, or it was never superseded).
+    ///
+    /// This is the rollback half of reversible consolidation (Oracle Agent
+    /// Memory): when later evidence proves the old memory right, the
+    /// supersession is undone instead of being permanent.
+    pub fn restore_edge(&self, edge_id: i64) -> Result<bool> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let n = conn.execute(
+            "UPDATE causal_edges
+             SET valid_to = NULL, superseded_by = NULL
+             WHERE id = ?1 AND valid_to IS NOT NULL",
+            params![edge_id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// All superseded edges (valid_to set AND superseded_by set), newest
+    /// first — the audit view of what reversible consolidation marked.
+    pub fn superseded_edges(&self, limit: usize) -> Result<Vec<super::CausalEntry>> {
+        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let sql = format!(
+            "SELECT {ENTRY_COLUMNS}
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             JOIN chunks ct ON ct.id = ce.to_id
+             WHERE ce.valid_to IS NOT NULL AND ce.superseded_by IS NOT NULL
+             ORDER BY ce.valid_to DESC
+             LIMIT ?1"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![limit as i64], entry_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))
     }
 }

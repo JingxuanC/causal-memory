@@ -1,0 +1,86 @@
+LLM: deepseek-chat @ https://api.deepseek.com/v1
+dataset: 500 questions, selected 30 (offset 0, limit None, qtype Some("single-session-preference"))
+ingest 8a2466db: 508 chunks (50 sessions, 1 evidence turns)
+ingest 06878be2: 443 chunks (48 sessions, 3 evidence turns)
+ingest 75832dbd: 474 chunks (48 sessions, 1 evidence turns)
+ingest 0edc2aef: 475 chunks (46 sessions, 1 evidence turns)
+ingest 35a27287: 519 chunks (51 sessions, 3 evidence turns)
+ingest 32260d93: 524 chunks (46 sessions, 1 evidence turns)
+ingest 195a1a1b: 515 chunks (46 sessions, 1 evidence turns)
+ingest afdc33df: 502 chunks (46 sessions, 3 evidence turns)
+ingest caf03d32: 489 chunks (51 sessions, 2 evidence turns)
+ingest 54026fce: 472 chunks (49 sessions, 1 evidence turns)
+ingest 06f04340: 503 chunks (55 sessions, 1 evidence turns)
+ingest 6b7dfb22: 471 chunks (45 sessions, 1 evidence turns)
+ingest 1a1907b4: 532 chunks (48 sessions, 1 evidence turns)
+ingest 09d032c9: 481 chunks (43 sessions, 1 evidence turns)
+ingest 38146c39: 538 chunks (46 sessions, 1 evidence turns)
+ingest d24813b1: 485 chunks (44 sessions, 1 evidence turns)
+ingest 57f827a0: 495 chunks (51 sessions, 1 evidence turns)
+ingest 95228167: 507 chunks (49 sessions, 1 evidence turns)
+ingest 505af2f5: 501 chunks (53 sessions, 1 evidence turns)
+ingest 75f70248: 466 chunks (42 sessions, 1 evidence turns)
+ingest d6233ab6: 437 chunks (44 sessions, 2 evidence turns)
+ingest 1da05512: 462 chunks (47 sessions, 2 evidence turns)
+ingest fca70973: 442 chunks (45 sessions, 1 evidence turns)
+ingest b6025781: 460 chunks (47 sessions, 1 evidence turns)
+ingest a89d7624: 496 chunks (49 sessions, 2 evidence turns)
+ingest b0479f84: 502 chunks (48 sessions, 1 evidence turns)
+ingest 1d4e3b97: 474 chunks (45 sessions, 2 evidence turns)
+ingest 07b6f563: 524 chunks (52 sessions, 2 evidence turns)
+ingest 1c0ddc50: 548 chunks (51 sessions, 2 evidence turns)
+ingest 0a34ad58: 485 chunks (42 sessions, 2 evidence turns)
+distill progress: 10/30 questions
+distill progress: 20/30 questions
+distill progress: 30/30 questions
+building hippocampus graph for spreading activation...
+  graph: 321308 nodes, 293012 edges
+25/30 questions done
+30/30 questions done
+wrote benches/longmemeval/results/r4_pref_v2_20260804/run_20260804_144523.jsonl
+{
+  "run_id": "20260804_144523",
+  "date": "2026-08-04T14:45:58.568194+00:00",
+  "git_commit": "a34f69c",
+  "model": "deepseek-chat",
+  "judge_model": "deepseek-chat",
+  "temperature": 0.0,
+  "topk": 10,
+  "ingest": "distill",
+  "prompt_version": "v2",
+  "distill_ingest": {
+    "sessions": 1427,
+    "llm_calls": 0,
+    "facts_recorded": 0,
+    "episodes_recorded": 0,
+    "episodes_duplicate": 0,
+    "facts_retired": 0,
+    "superseded_invalidations": 0,
+    "skipped_existing": false
+  },
+  "data": "benches/longmemeval/data/longmemeval_s_cleaned.json",
+  "qtype_filter": "single-session-preference",
+  "total_questions": 30,
+  "correct": 17,
+  "incorrect": 13,
+  "error": 0,
+  "accuracy": 0.5666666666666667,
+  "evidence_hit_rate": 0.6666666666666666,
+  "per_question_type": {
+    "single-session-preference": {
+      "total": 30,
+      "correct": 17,
+      "incorrect": 13,
+      "error": 0,
+      "accuracy": 0.5666666666666667
+    }
+  },
+  "abstention": {
+    "total": 0,
+    "correct": 0,
+    "incorrect": 0,
+    "error": 0,
+    "accuracy": 0.0
+  }
+}
+wrote benches/longmemeval/results/r4_pref_v2_20260804/run_20260804_144523_summary.json

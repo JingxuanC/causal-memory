@@ -55,7 +55,21 @@ fn migration_from_v1_file_db() {
     store
         .with_conn(|conn| {
             let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-            assert_eq!(version, 7, "migrated to schema v7");
+            assert_eq!(version, 8, "migrated to schema v8");
+            // v8: the reversible-consolidation and recurrence-distill columns exist.
+            let v8_columns: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('causal_edges') WHERE name = 'superseded_by'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(v8_columns, 1);
+            let sl_columns: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('session_logs')
+                 WHERE name IN ('embedding', 'distilled_at')",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(sl_columns, 2);
             // v6: the fact layer exists.
             let facts_tables: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table'

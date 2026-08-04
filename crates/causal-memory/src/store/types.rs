@@ -35,12 +35,15 @@ pub struct CausalEntry {
     pub discovered_at: i64,
     /// Stored write-time outcome polarity (v4); None for legacy rows.
     pub outcome_polarity: Option<String>,
+    /// v8: id of the edge that superseded this one (reversible consolidation).
+    /// Non-NULL implies `valid_to` is also set; `restore_edge` clears both.
+    pub superseded_by: Option<i64>,
 }
 
 /// Columns selected when materializing a `CausalEntry` (order matters, see `entry_from_row`).
 pub(crate) const ENTRY_COLUMNS: &str = "ce.id, cf.id, cf.text, ct.id, ct.text, ce.relation, ce.confidence,
          ce.task_tag, ce.event_time, ce.valid_to, ce.access_count, ce.last_accessed_at,
-         ce.discovered_by, ce.discovered_at, ce.outcome_polarity";
+         ce.discovered_by, ce.discovered_at, ce.outcome_polarity, ce.superseded_by";
 
 /// Map a row selected with `ENTRY_COLUMNS` (plus the standard chunk joins) to a `CausalEntry`.
 pub(crate) fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<CausalEntry> {
@@ -60,6 +63,7 @@ pub(crate) fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<CausalEntr
         discovered_by: row.get(12)?,
         discovered_at: row.get(13)?,
         outcome_polarity: row.get(14)?,
+        superseded_by: row.get(15)?,
     })
 }
 
