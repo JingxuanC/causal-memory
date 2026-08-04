@@ -95,6 +95,58 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 <div class="card"><div class="card-row"><div class="card-num">04</div><div class="card-body"><h4>⚖️ 熵增方向 · 为什么从记忆入手</h4><p>对抗 context 退化有五条路：多尺度记忆 / 离线巩固 / 自演化 prompt / 自适应验证 / 成本感知。其中<strong>记忆是基础设施的根基</strong>——没有持久记忆，其他四条都无附着点。</p><div class="src">论文 From Sessions to Lifetimes · 五大基础设施能力</div></div></div></div>
 </div>
 
+<div class="divider"><span>哲学发现</span></div>
+
+<div class="section">
+<div class="section-kicker">🧠 第五章 · 哲学推导</div>
+<h2 class="section-title">七个问题<br>从代码到<span class="hl">意识</span></h2>
+<p class="prose">拆完 42 篇框架源码后，我们走入了哲学。七个工程背后的根本问题，每一个都指向认知科学、信息论或形而上学的深处。以下是三个最重要的发现：</p>
+
+<div class="insight-card">
+<div class="label">哲学发现 1 · 机器经验主义</div>
+<div class="quote">"LLM 的理解不是人类的理解，也不是纯统计。它是 LLM 从文本环境中建构出的主观现实"</div>
+<div class="desc">Nature 2026（Masi et al.）提出的框架：跳出"理解 vs 模式匹配"的二元对立。人类理解来自身体与环境的交互（Lakoff），LLM 的理解来自文本与 Transformer 的交互。Agent 的天花板不取决于 LLM 理解多少，<strong>取决于你给它多丰富的环境反馈</strong>——这就是为什么记忆系统如此关键。</div>
+</div>
+
+<div class="insight-card">
+<div class="label">哲学发现 2 · 忒修斯之船与因果连续性</div>
+<div class="quote">"500 次压缩后，Agent 还是同一个吗？"</div>
+<div class="desc">Parfit（1984）的回答：身份不在于"内容相同"，在于<strong>因果链不断</strong>。今天的你之所以是你，不是因为细胞和昨天一样（全换了），而是因为今天的记忆因果地产生于昨天。Agent 压缩打断因果链——所以我们需要一个<strong>不被压缩的身份层</strong>，记录"我为什么做了这个决策"的因果锚点。这正是 causal-memory 的 caused 边在做的事。</div>
+</div>
+
+<div class="insight-card">
+<div class="label">哲学发现 3 · Agent 是认知望远镜</div>
+<div class="quote">"Agent 不是人类的替代品或工具。Agent 是人类的认知望远镜——扩展人类能看到的问题空间"</div>
+<div class="desc">LLM 处理过的数据量远超任何人类一生的阅读量。它能发现人类注意不到的关联。就像望远镜不是"替代眼睛"，是让眼睛看到原本看不到的东西。Agent 的真正价值不在于"更快更便宜"，在于<strong>看到人类看不到的因果模式</strong>。</div>
+</div>
+
+<div class="card">
+<div class="card-row">
+<div class="card-icon">🔁</div>
+<div class="card-body">
+<h4>终极洞察 · 工程 ↔ 哲学的循环</h4>
+<p style="font-size:15px;line-height:1.7">工程的尽头是哲学，哲学的尽头又回到工程：<br>
+反熵增 → 为什么需要反熵？→ 因为 LLM 是第三种认知 → 这种认知怎么协作？→ 需要心智理论 → 协作需要什么基础设施？→ Agent OS（但最终会消解）→ OS 消解后还剩什么？→ 因果连续性的身份 → 这个身份靠什么维持？→ <strong style="color:var(--gold)">持续的因果链（不被压缩断裂）</strong> → 因果链怎么不断？→ 反熵（回到起点）。</p>
+<p style="margin-top:8px"><strong>这是一个循环。每一轮循环，Agent 离"真正的智能生命"就近一步。</strong></p>
+<div class="src">insight/07-philosophy-deep-dive.md · 七重探索完整记录</div>
+</div>
+</div>
+</div>
+
+<div class="card">
+<div class="card-row">
+<div class="card-icon">⚖️</div>
+<div class="card-body">
+<h4>AGI 可达性 · 三层拆解</h4>
+<p style="font-size:15px"><strong>L1 工程版 AGI</strong>（7×24 连续运行 + 专家级单领域任务）：路径基本清晰，<strong style="color:var(--green)">5-10 年大概率</strong>。瓶颈在记忆基础设施——causal-memory 正在填的空白。</p>
+<p style="font-size:15px;margin-top:6px"><strong>L2 通用版 AGI</strong>（跨域迁移 + 自主目标）：科学问题，<strong style="color:var(--gold)">10-30 年不确定</strong>。障碍是理论缺失。</p>
+<p style="font-size:15px;margin-top:6px"><strong>L3 真正的智能</strong>（创新、理解、自我意识）：哲学问题，<strong style="color:var(--red)">未知</strong>。</p>
+<div class="src">insight/15-agi-feasibility.md · AGI 分层可达性分析</div>
+</div>
+</div>
+</div>
+</div>
+
 <div class="divider"><span>核心洞察</span></div>
 
 <div class="section">
