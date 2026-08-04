@@ -1,4 +1,7 @@
-<!DOCTYPE html>
+# Generate promo.html from template
+import textwrap
+
+html = r'''<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>causal-memory · 从源码拆解到因果记忆引擎</title>
 <style>
@@ -350,4 +353,8 @@ body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSy
 const obs=new IntersectionObserver(e=>{e.forEach(en=>{if(en.isIntersecting){en.target.querySelectorAll('.bench-fill').forEach(f=>{const w=f.dataset.w;f.style.width='0';setTimeout(()=>f.style.width=w+'%',200)})}})},{threshold:.2});
 document.querySelectorAll('.bench-block').forEach(el=>obs.observe(el));
 </script>
-</body></html>
+</body></html>'''
+
+with open('promo.html', 'w') as f:
+    f.write(html)
+print(f"Written {len(html)} bytes")
