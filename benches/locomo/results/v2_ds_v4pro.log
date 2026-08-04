@@ -1,0 +1,154 @@
+LLM: deepseek-v4-pro @ https://api.deepseek.com/v1
+conv 0: 419 chunks in benches/locomo/db/conv_0_distill.db
+conv 0: distill — 19 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 0: 199 questions
+conv 0: 50 questions done
+conv 0: 100 questions done
+conv 0: 150 questions done
+conv 0: wrote benches/locomo/results/v2_ds_v4pro/run_20260731_181214_conv0.jsonl
+conv 1: 369 chunks in benches/locomo/db/conv_1_distill.db
+conv 1: distill — 19 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 1: 105 questions
+conv 1: 50 questions done
+conv 1: 100 questions done
+conv 1: wrote benches/locomo/results/v2_ds_v4pro/run_20260731_181214_conv1.jsonl
+conv 2: 663 chunks in benches/locomo/db/conv_2_distill.db
+conv 2: distill — 32 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 2: 193 questions
+conv 2: 50 questions done
+conv 2: 100 questions done
+conv 2: 150 questions done
+conv 2: wrote benches/locomo/results/v2_ds_v4pro/run_20260731_181214_conv2.jsonl
+conv 3: 629 chunks in benches/locomo/db/conv_3_distill.db
+conv 3: distill — 29 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 3: 260 questions
+conv 3: 50 questions done
+conv 3: 100 questions done
+conv 3: 150 questions done
+conv 3: 200 questions done
+conv 3: 250 questions done
+conv 3: wrote benches/locomo/results/v2_ds_v4pro/run_20260731_181214_conv3.jsonl
+conv 4: 680 chunks in benches/locomo/db/conv_4_distill.db
+conv 4: distill — 29 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 4: 242 questions
+conv 4: 50 questions done
+conv 4: 100 questions done
+conv 4: 150 questions done
+conv 4: 200 questions done
+conv 4: wrote benches/locomo/results/v2_ds_v4pro/run_20260731_181214_conv4.jsonl
+conv 5: 675 chunks in benches/locomo/db/conv_5_distill.db
+conv 5: distill — 28 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 5: 158 questions
+conv 5: 50 questions done
+conv 5: 100 questions done
+conv 5: 150 questions done
+conv 5: wrote benches/locomo/results/v2_ds_v4pro/run_20260731_181214_conv5.jsonl
+conv 6: 689 chunks in benches/locomo/db/conv_6_distill.db
+conv 6: distill — 31 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 6: 190 questions
+conv 6: 50 questions done
+conv 6: 100 questions done
+conv 6: 150 questions done
+conv 6: wrote benches/locomo/results/v2_ds_v4pro/run_20260731_181214_conv6.jsonl
+conv 7: 681 chunks in benches/locomo/db/conv_7_distill.db
+conv 7: distill — 30 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 7: 239 questions
+conv 7: 50 questions done
+conv 7: 100 questions done
+conv 7: 150 questions done
+conv 7: 200 questions done
+conv 7: wrote benches/locomo/results/v2_ds_v4pro/run_20260731_181214_conv7.jsonl
+conv 8: 509 chunks in benches/locomo/db/conv_8_distill.db
+conv 8: distill — 25 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 8: 196 questions
+conv 8: 50 questions done
+conv 8: 100 questions done
+conv 8: 150 questions done
+conv 8: wrote benches/locomo/results/v2_ds_v4pro/run_20260731_181214_conv8.jsonl
+conv 9: 568 chunks in benches/locomo/db/conv_9_distill.db
+conv 9: distill — 30 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 9: 204 questions
+conv 9: 50 questions done
+conv 9: 100 questions done
+conv 9: 150 questions done
+conv 9: 200 questions done
+conv 9: wrote benches/locomo/results/v2_ds_v4pro/run_20260731_181214_conv9.jsonl
+{
+  "run_id": "20260731_181214",
+  "date": "2026-07-31T18:55:23.871383+00:00",
+  "git_commit": "dfba2ce",
+  "model": "deepseek-v4-pro",
+  "judge_model": "deepseek-v4-pro",
+  "temperature": 0.0,
+  "topk": 10,
+  "ingest": "distill",
+  "prompt_version": "v2",
+  "judge_style": "strict",
+  "distill_ingest": {
+    "sessions": 272,
+    "llm_calls": 0,
+    "facts_recorded": 0,
+    "episodes_recorded": 0,
+    "episodes_duplicate": 0,
+    "facts_retired": 0,
+    "superseded_invalidations": 0,
+    "skipped_existing": false
+  },
+  "data": "benches/locomo/data/locomo10.json",
+  "conversations": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9
+  ],
+  "total_questions": 1986,
+  "correct": 959,
+  "incorrect": 206,
+  "error": 821,
+  "accuracy": 0.8231759656652361,
+  "evidence_hit_rate": 0.7109768378650554,
+  "per_category": {
+    "1": {
+      "total": 282,
+      "correct": 46,
+      "incorrect": 81,
+      "error": 155,
+      "accuracy": 0.36220472440944884
+    },
+    "2": {
+      "total": 321,
+      "correct": 147,
+      "incorrect": 34,
+      "error": 140,
+      "accuracy": 0.8121546961325967
+    },
+    "3": {
+      "total": 96,
+      "correct": 23,
+      "incorrect": 15,
+      "error": 58,
+      "accuracy": 0.6052631578947368
+    },
+    "4": {
+      "total": 841,
+      "correct": 467,
+      "incorrect": 62,
+      "error": 312,
+      "accuracy": 0.8827977315689981
+    },
+    "5": {
+      "total": 446,
+      "correct": 276,
+      "incorrect": 14,
+      "error": 156,
+      "accuracy": 0.9517241379310345
+    }
+  }
+}
+wrote benches/locomo/results/v2_ds_v4pro/run_20260731_181214_summary.json

@@ -1,0 +1,7 @@
+LLM: deepseek-chat @ https://api.deepseek.com/v1
+warn: DB has 468 chunks, expected 419 (outside ±21 tolerance); re-ingesting from scratch
+Error: ingesting conversation 0
+
+Caused by:
+    0: FOREIGN KEY constraint failed
+    1: Error code 787: Foreign key constraint failed

@@ -1,0 +1,43 @@
+LLM: deepseek-v4-flash @ https://api.deepseek.com/v1
+seed=42 tasks=8 steps=15 condition=abc families: db-path, nextest, proxy-github
+
+=== Group A (no memory) ===
+  transcripts written to benches/agent/results/bench-agent-transcript-a-1785663975.md
+A: solved 5/8, repeat-mistake 0%
+
+=== Group B (text-search memory) ===
+  transcripts written to benches/agent/results/bench-agent-transcript-b-1785663975.md
+B: solved 4/8, repeat-mistake 0%, mem writes 0, searches 8
+
+=== Group C (causal memory + intervention_query) ===
+  transcripts written to benches/agent/results/bench-agent-transcript-c-1785663975.md
+C: solved 6/8, repeat-mistake 20%, interventions 8, predictions avoided 0
+
+# bench-agent results (trap-world ablation)
+
+- model: deepseek-v4-flash
+- temperature: 0.3
+- seed: 42
+- timestamp: 1785663975
+- protocol: task texts never mention traps/solutions; first-exposure failure is expected; B's memory persists across all tasks
+- note: the scenario is reproducible; LLM behavior is NOT (model/version dependent)
+
+| group | tasks solved | avg steps | first-exposure trap rate | repeat-mistake rate |
+|---|---|---|---|---|
+| A (no memory) | 5/8 | 14.4 | 0% (0/3) | 0% (0/5) |
+
+A failure modes: 3 unsolved (step budget exhausted) · 58 invalid-action steps · 0 LLM call failures (after retries)
+| B (causal memory) | 4/8 | 14.5 | 0% (0/3) | 0% (0/5) |
+
+B failure modes: 4 unsolved (step budget exhausted) · 67 invalid-action steps · 0 LLM call failures (after retries)
+
+B extras: memory writes 0 · searches 8 · post-search first-action hit rate 0% (0/8)
+
+
+=== Condition C: Causal Memory Deep Metrics ===
+  Intervention queries:    8
+  Predictions total:       8
+  Predictions avoided trap: 0
+  Memory writes (causal):  6
+  Repeat-mistake rate:     20%
+Report written to benches/agent/results/bench-agent-results-1785663975.md

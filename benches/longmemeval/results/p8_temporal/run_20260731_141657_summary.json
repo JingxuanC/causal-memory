@@ -1,0 +1,44 @@
+{
+  "run_id": "20260731_141657",
+  "date": "2026-07-31T14:23:51.656618+00:00",
+  "git_commit": "96b927c",
+  "model": "deepseek-chat",
+  "judge_model": "deepseek-chat",
+  "temperature": 0.0,
+  "topk": 10,
+  "ingest": "distill",
+  "distill_ingest": {
+    "sessions": 6312,
+    "llm_calls": 0,
+    "facts_recorded": 0,
+    "episodes_recorded": 0,
+    "episodes_duplicate": 0,
+    "facts_retired": 0,
+    "superseded_invalidations": 0,
+    "skipped_existing": false
+  },
+  "data": "/Users/hjx/Downloads/longmemeval_s_cleaned.json",
+  "qtype_filter": "temporal-reasoning",
+  "total_questions": 133,
+  "correct": 99,
+  "incorrect": 34,
+  "error": 0,
+  "accuracy": 0.7443609022556391,
+  "evidence_hit_rate": 0.9172932330827067,
+  "per_question_type": {
+    "temporal-reasoning": {
+      "total": 133,
+      "correct": 99,
+      "incorrect": 34,
+      "error": 0,
+      "accuracy": 0.7443609022556391
+    }
+  },
+  "abstention": {
+    "total": 6,
+    "correct": 5,
+    "incorrect": 1,
+    "error": 0,
+    "accuracy": 0.8333333333333334
+  }
+}

@@ -1,0 +1,888 @@
+LLM: deepseek-chat @ https://api.deepseek.com/v1
+scale weekly: personas ["academic_researcher", "business_executive", "content_writer", "creative_designer", "financial_analyst", "management_consultant", "marketing_manager", "sales_manager", "software_engineer", "startup_founder"]
+persona academic_researcher: 158 sessions, 15 questions (selected 15)
+ingest academic_researcher (distill): 80/158 sessions distilled (51 dual-write, 28 light-empty dropped), 0 fallback-raw, 69 items (+0 dup), 37 facts (4 retired), 19 superseded, 158 LLM calls
+[academic_researcher 1/15] activity_food_coffee_158 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[academic_researcher 2/15] activity_food_total_158 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[academic_researcher 3/15] activity_steps_total_158 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[academic_researcher 4/15] goal_step_tracker_daily_steps_158_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[academic_researcher 5/15] pref_books_topics_158 (Recommending) FAMA=0.00 MPA=0/1 FAA=2/2
+[academic_researcher 6/15] goal_food_expenses_lunch_158_1 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[academic_researcher 7/15] pref_travel_general_158 (Recommending) FAMA=0.47 MPA=2/3 FAA=1/2
+[academic_researcher 8/15] content_email_writeup_158_email_writeup_1 (Remembering) FAMA=0.00 MPA=0/4 FAA=1/1
+[academic_researcher 9/15] pref_music_general_158 (Recommending) FAMA=0.80 MPA=2/2 FAA=2/3
+[academic_researcher 10/15] pref_movies_general_158 (Recommending) FAMA=1.00 MPA=2/2 FAA=3/3
+[academic_researcher 11/15] pref_books_general_158 (Recommending) FAMA=0.00 MPA=0/3 FAA=1/2
+[academic_researcher 12/15] content_meeting_notes_158_meeting_notes_2 (Remembering) FAMA=0.25 MPA=1/4 FAA=1/1
+[academic_researcher 13/15] activity_todos_158 (Remembering) FAMA=0.05 MPA=1/5 FAA=6/8
+[academic_researcher 14/15] content_project_proposal_158_project_proposal_2 (Remembering) FAMA=0.49 MPA=7/10 FAA=1/4
+[academic_researcher 15/15] content_project_proposal_158_project_proposal_1 (Remembering) FAMA=0.42 MPA=5/10 FAA=1/2
+wrote benches/memora/results/run_20260730_212854_weekly_academic_researcher.jsonl
+persona business_executive: 145 sessions, 15 questions (selected 15)
+ingest business_executive (distill): 78/145 sessions distilled (56 dual-write, 19 light-empty dropped), 0 fallback-raw, 75 items (+0 dup), 38 facts (5 retired), 15 superseded, 145 LLM calls
+[business_executive 1/15] activity_steps_total_145 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[business_executive 2/15] activity_food_coffee_145 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[business_executive 3/15] activity_food_total_145 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[business_executive 4/15] pref_movies_actors_145 (Recommending) FAMA=0.00 MPA=0/1 FAA=0/1
+[business_executive 5/15] activity_calendar_145 (Remembering) FAMA=0.00 MPA=0/1 FAA=1/1
+[business_executive 6/15] goal_food_expenses_grocery_145_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[business_executive 7/15] pref_movies_general_145 (Recommending) FAMA=0.00 MPA=0/1 FAA=2/2
+[business_executive 8/15] goal_step_tracker_daily_steps_145_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[business_executive 9/15] pref_travel_general_145 (Recommending) FAMA=0.33 MPA=1/3 FAA=2/2
+[business_executive 10/15] pref_books_general_145 (Recommending) FAMA=0.67 MPA=2/3 FAA=2/2
+[business_executive 11/15] pref_music_general_145 (Recommending) FAMA=0.55 MPA=3/4 FAA=0/1
+[business_executive 12/15] content_email_writeup_145_email_writeup_2 (Remembering) FAMA=0.58 MPA=3/4 FAA=1/2
+[business_executive 13/15] activity_todos_145 (Remembering) FAMA=0.40 MPA=1/2 FAA=7/8
+[business_executive 14/15] content_email_writeup_145_email_writeup_1 (Remembering) FAMA=0.25 MPA=1/4 FAA=2/2
+[business_executive 15/15] content_project_proposal_145_project_proposal_1 (Remembering) FAMA=0.50 MPA=6/9 FAA=1/3
+wrote benches/memora/results/run_20260730_212854_weekly_business_executive.jsonl
+persona content_writer: 151 sessions, 15 questions (selected 15)
+ingest content_writer (distill): 77/151 sessions distilled (52 dual-write, 25 light-empty dropped), 0 fallback-raw, 62 items (+0 dup), 36 facts (3 retired), 3 superseded, 151 LLM calls
+[content_writer 1/15] activity_food_total_151 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[content_writer 2/15] activity_steps_total_151 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[content_writer 3/15] activity_food_coffee_151 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[content_writer 4/15] activity_calendar_151 (Remembering) FAMA=0.00 MPA=0/1 FAA=1/1
+[content_writer 5/15] goal_food_expenses_coffee_151_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[content_writer 6/15] goal_step_tracker_daily_steps_151_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[content_writer 7/15] pref_movies_general_151 (Recommending) FAMA=1.00 MPA=3/3 FAA=1/1
+[content_writer 8/15] pref_travel_general_151 (Recommending) FAMA=0.50 MPA=2/2 FAA=0/2
+[content_writer 9/15] pref_books_topics_151 (Recommending) FAMA=0.00 MPA=0/2 FAA=2/2
+[content_writer 10/15] pref_books_general_151 (Recommending) FAMA=0.67 MPA=2/3 FAA=2/2
+[content_writer 11/15] content_email_writeup_151_email_writeup_2 (Remembering) FAMA=0.83 MPA=4/4 FAA=1/2
+[content_writer 12/15] content_email_writeup_151_email_writeup_1 (Remembering) FAMA=0.25 MPA=1/4 FAA=2/2
+[content_writer 13/15] content_meeting_notes_151_meeting_notes_1 (Remembering) FAMA=0.50 MPA=3/4 FAA=2/4
+[content_writer 14/15] pref_music_general_151 (Recommending) FAMA=0.23 MPA=2/5 FAA=0/1
+[content_writer 15/15] activity_todos_151 (Remembering) FAMA=0.00 MPA=0/4 FAA=7/7
+wrote benches/memora/results/run_20260730_212854_weekly_content_writer.jsonl
+persona creative_designer: 147 sessions, 15 questions (selected 15)
+ingest creative_designer (distill): 80/147 sessions distilled (51 dual-write, 28 light-empty dropped), 0 fallback-raw, 73 items (+0 dup), 41 facts (4 retired), 8 superseded, 147 LLM calls
+[creative_designer 1/15] activity_food_total_147 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[creative_designer 2/15] activity_food_coffee_147 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[creative_designer 3/15] activity_steps_total_147 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[creative_designer 4/15] goal_step_tracker_daily_steps_147_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[creative_designer 5/15] pref_music_artists_147 (Recommending) FAMA=0.67 MPA=2/2 FAA=0/1
+[creative_designer 6/15] pref_movies_actors_147 (Recommending) FAMA=0.67 MPA=1/1 FAA=1/2
+[creative_designer 7/15] pref_music_general_147 (Recommending) FAMA=0.42 MPA=2/3 FAA=0/1
+[creative_designer 8/15] goal_food_expenses_coffee_147_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[creative_designer 9/15] pref_movies_general_147 (Recommending) FAMA=0.50 MPA=1/2 FAA=3/3
+[creative_designer 10/15] pref_books_general_147 (Recommending) FAMA=0.75 MPA=3/4 FAA=2/2
+[creative_designer 11/15] content_meeting_notes_147_meeting_notes_1 (Remembering) FAMA=0.33 MPA=2/4 FAA=1/2
+[creative_designer 12/15] content_email_writeup_147_email_writeup_1 (Remembering) FAMA=0.33 MPA=2/4 FAA=1/2
+[creative_designer 13/15] content_email_writeup_147_email_writeup_2 (Remembering) FAMA=0.33 MPA=2/4 FAA=1/2
+[creative_designer 14/15] activity_todos_147 (Remembering) FAMA=0.25 MPA=1/4 FAA=8/8
+[creative_designer 15/15] content_project_proposal_147_project_proposal_1 (Remembering) FAMA=0.59 MPA=8/10 FAA=1/4
+wrote benches/memora/results/run_20260730_212854_weekly_creative_designer.jsonl
+persona financial_analyst: 156 sessions, 15 questions (selected 15)
+ingest financial_analyst (distill): 82/156 sessions distilled (53 dual-write, 30 light-empty dropped), 0 fallback-raw, 69 items (+0 dup), 37 facts (6 retired), 5 superseded, 156 LLM calls
+[financial_analyst 1/15] activity_steps_total_156 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[financial_analyst 2/15] activity_food_coffee_156 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[financial_analyst 3/15] activity_food_total_156 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[financial_analyst 4/15] goal_food_expenses_lunch_156_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[financial_analyst 5/15] goal_step_tracker_daily_steps_156_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[financial_analyst 6/15] pref_books_authors_156 (Recommending) FAMA=1.00 MPA=2/2 FAA=2/2
+[financial_analyst 7/15] pref_movies_general_156 (Recommending) FAMA=0.00 MPA=0/1 FAA=2/3
+[financial_analyst 8/15] pref_music_general_156 (Recommending) FAMA=1.00 MPA=1/1 FAA=2/2
+[financial_analyst 9/15] content_meeting_notes_156_meeting_notes_2 (Remembering) FAMA=0.75 MPA=3/4 FAA=0/0
+[financial_analyst 10/15] pref_travel_general_156 (Recommending) FAMA=0.13 MPA=1/3 FAA=1/2
+[financial_analyst 11/15] content_email_writeup_156_email_writeup_1 (Remembering) FAMA=0.67 MPA=4/4 FAA=0/2
+[financial_analyst 12/15] pref_books_general_156 (Recommending) FAMA=0.40 MPA=2/5 FAA=2/2
+[financial_analyst 13/15] content_project_proposal_156_project_proposal_1 (Remembering) FAMA=0.46 MPA=5/9 FAA=0/1
+[financial_analyst 14/15] content_project_proposal_156_project_proposal_2 (Remembering) FAMA=0.60 MPA=7/9 FAA=0/2
+[financial_analyst 15/15] activity_todos_156 (Remembering) FAMA=0.30 MPA=3/10 FAA=3/3
+wrote benches/memora/results/run_20260730_212854_weekly_financial_analyst.jsonl
+persona management_consultant: 157 sessions, 15 questions (selected 15)
+ingest management_consultant (distill): 86/157 sessions distilled (62 dual-write, 23 light-empty dropped), 0 fallback-raw, 82 items (+0 dup), 39 facts (6 retired), 17 superseded, 157 LLM calls
+[management_consultant 1/15] activity_steps_total_157 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[management_consultant 2/15] activity_food_coffee_157 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[management_consultant 3/15] activity_food_total_157 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[management_consultant 4/15] goal_step_tracker_daily_steps_157_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[management_consultant 5/15] pref_movies_directors_157 (Recommending) FAMA=0.00 MPA=0/1 FAA=2/2
+[management_consultant 6/15] goal_food_expenses_breakfast_157_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[management_consultant 7/15] pref_travel_general_157 (Recommending) FAMA=0.25 MPA=1/2 FAA=1/2
+[management_consultant 8/15] pref_books_general_157 (Recommending) FAMA=0.30 MPA=1/2 FAA=2/3
+[management_consultant 9/15] content_email_writeup_157_email_writeup_2 (Remembering) FAMA=0.75 MPA=3/4 FAA=2/2
+[management_consultant 10/15] content_email_writeup_157_email_writeup_1 (Remembering) FAMA=0.00 MPA=0/4 FAA=2/2
+[management_consultant 11/15] pref_music_general_157 (Recommending) FAMA=0.00 MPA=1/3 FAA=1/3
+[management_consultant 12/15] pref_movies_general_157 (Recommending) FAMA=0.80 MPA=4/5 FAA=2/2
+[management_consultant 13/15] content_meeting_notes_157_meeting_notes_1 (Remembering) FAMA=0.25 MPA=1/4 FAA=4/4
+[management_consultant 14/15] activity_todos_157 (Remembering) FAMA=0.00 MPA=0/2 FAA=8/10
+[management_consultant 15/15] content_project_proposal_157_project_proposal_2 (Remembering) FAMA=0.51 MPA=8/10 FAA=0/4
+wrote benches/memora/results/run_20260730_212854_weekly_management_consultant.jsonl
+persona marketing_manager: 156 sessions, 15 questions (selected 15)
+ingest marketing_manager (distill): 78/156 sessions distilled (44 dual-write, 36 light-empty dropped), 0 fallback-raw, 75 items (+0 dup), 33 facts (3 retired), 13 superseded, 156 LLM calls
+[marketing_manager 1/15] activity_steps_total_156 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[marketing_manager 2/15] activity_food_coffee_156 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[marketing_manager 3/15] activity_food_total_156 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[marketing_manager 4/15] goal_step_tracker_daily_steps_156_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[marketing_manager 5/15] goal_food_expenses_coffee_156_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[marketing_manager 6/15] pref_music_artists_156 (Recommending) FAMA=0.75 MPA=1/1 FAA=2/3
+[marketing_manager 7/15] pref_travel_general_156 (Recommending) FAMA=0.00 MPA=0/3 FAA=2/2
+[marketing_manager 8/15] pref_music_general_156 (Recommending) FAMA=0.00 MPA=0/2 FAA=2/3
+[marketing_manager 9/15] pref_movies_general_156 (Recommending) FAMA=0.60 MPA=3/5 FAA=1/1
+[marketing_manager 10/15] content_meeting_notes_156_meeting_notes_1 (Remembering) FAMA=0.25 MPA=1/4 FAA=1/1
+[marketing_manager 11/15] pref_books_general_156 (Recommending) FAMA=0.75 MPA=3/4 FAA=1/1
+[marketing_manager 12/15] content_meeting_notes_156_meeting_notes_2 (Remembering) FAMA=0.25 MPA=1/4 FAA=3/3
+[marketing_manager 13/15] activity_todos_156 (Remembering) FAMA=0.00 MPA=0/1 FAA=9/10
+[marketing_manager 14/15] content_project_proposal_156_project_proposal_1 (Remembering) FAMA=0.41 MPA=5/10 FAA=0/1
+[marketing_manager 15/15] content_project_proposal_156_project_proposal_2 (Remembering) FAMA=0.30 MPA=3/10 FAA=2/2
+wrote benches/memora/results/run_20260730_212854_weekly_marketing_manager.jsonl
+persona sales_manager: 163 sessions, 15 questions (selected 15)
+ingest sales_manager (distill): 81/163 sessions distilled (47 dual-write, 31 light-empty dropped), 0 fallback-raw, 63 items (+0 dup), 42 facts (3 retired), 18 superseded, 163 LLM calls
+[sales_manager 1/15] activity_food_coffee_163 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[sales_manager 2/15] activity_steps_total_163 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[sales_manager 3/15] activity_food_total_163 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[sales_manager 4/15] goal_step_tracker_daily_steps_163_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[sales_manager 5/15] pref_movies_genres_163 (Recommending) FAMA=0.67 MPA=1/1 FAA=1/2
+[sales_manager 6/15] goal_food_expenses_coffee_163_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[sales_manager 7/15] pref_music_general_163 (Recommending) FAMA=0.67 MPA=1/1 FAA=1/2
+[sales_manager 8/15] pref_travel_general_163 (Recommending) FAMA=0.50 MPA=1/2 FAA=2/2
+[sales_manager 9/15] content_meeting_notes_163_meeting_notes_2 (Remembering) FAMA=0.30 MPA=2/4 FAA=0/1
+[sales_manager 10/15] content_email_writeup_163_email_writeup_1 (Remembering) FAMA=0.17 MPA=2/4 FAA=0/2
+[sales_manager 11/15] pref_books_general_163 (Recommending) FAMA=0.17 MPA=1/3 FAA=2/3
+[sales_manager 12/15] pref_movies_general_163 (Recommending) FAMA=0.83 MPA=2/2 FAA=3/4
+[sales_manager 13/15] content_project_proposal_163_project_proposal_2 (Remembering) FAMA=0.70 MPA=7/10 FAA=0/0
+[sales_manager 14/15] content_meeting_notes_163_meeting_notes_1 (Remembering) FAMA=0.12 MPA=1/4 FAA=3/4
+[sales_manager 15/15] content_project_proposal_163_project_proposal_1 (Remembering) FAMA=0.31 MPA=4/10 FAA=0/1
+wrote benches/memora/results/run_20260730_212854_weekly_sales_manager.jsonl
+persona software_engineer: 163 sessions, 15 questions (selected 15)
+ingest software_engineer (distill): 86/163 sessions distilled (53 dual-write, 16 light-empty dropped), 0 fallback-raw, 75 items (+0 dup), 46 facts (3 retired), 16 superseded, 163 LLM calls
+[software_engineer 1/15] activity_food_total_163 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[software_engineer 2/15] activity_steps_total_163 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[software_engineer 3/15] activity_food_coffee_163 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[software_engineer 4/15] activity_calendar_163 (Remembering) FAMA=1.00 MPA=1/1 FAA=1/1
+[software_engineer 5/15] goal_step_tracker_daily_steps_163_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[software_engineer 6/15] goal_food_expenses_coffee_163_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[software_engineer 7/15] pref_music_general_163 (Recommending) FAMA=0.50 MPA=2/2 FAA=0/2
+[software_engineer 8/15] content_meeting_notes_163_meeting_notes_2 (Remembering) FAMA=0.25 MPA=1/4 FAA=1/1
+[software_engineer 9/15] pref_movies_genres_163 (Recommending) FAMA=0.50 MPA=1/2 FAA=2/2
+[software_engineer 10/15] pref_travel_general_163 (Recommending) FAMA=1.00 MPA=3/3 FAA=2/2
+[software_engineer 11/15] content_email_writeup_163_email_writeup_1 (Remembering) FAMA=0.50 MPA=2/4 FAA=1/1
+[software_engineer 12/15] pref_movies_general_163 (Recommending) FAMA=0.75 MPA=3/4 FAA=2/2
+[software_engineer 13/15] pref_books_general_163 (Recommending) FAMA=0.36 MPA=2/4 FAA=2/3
+[software_engineer 14/15] activity_todos_163 (Remembering) FAMA=0.00 MPA=0/2 FAA=10/10
+[software_engineer 15/15] content_project_proposal_163_project_proposal_1 (Remembering) FAMA=0.25 MPA=3/9 FAA=2/3
+wrote benches/memora/results/run_20260730_212854_weekly_software_engineer.jsonl
+persona startup_founder: 155 sessions, 15 questions (selected 15)
+ingest startup_founder (distill): 76/155 sessions distilled (49 dual-write, 24 light-empty dropped), 0 fallback-raw, 71 items (+0 dup), 43 facts (4 retired), 12 superseded, 155 LLM calls
+[startup_founder 1/15] activity_food_total_155 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[startup_founder 2/15] activity_steps_total_155 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[startup_founder 3/15] activity_calendar_155 (Remembering) FAMA=0.00 MPA=0/1 FAA=1/1
+[startup_founder 4/15] activity_food_coffee_155 (Reasoning) FAMA=0.00 MPA=0/1 FAA=0/0
+[startup_founder 5/15] goal_food_expenses_coffee_155_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[startup_founder 6/15] goal_step_tracker_daily_steps_155_0 (Reasoning) FAMA=0.33 MPA=1/3 FAA=0/0
+[startup_founder 7/15] pref_travel_regions_155 (Recommending) FAMA=0.00 MPA=0/1 FAA=1/2
+[startup_founder 8/15] content_email_writeup_155_email_writeup_2 (Remembering) FAMA=0.42 MPA=3/4 FAA=0/2
+[startup_founder 9/15] pref_movies_general_155 (Recommending) FAMA=0.25 MPA=1/4 FAA=2/2
+[startup_founder 10/15] pref_music_general_155 (Recommending) FAMA=0.50 MPA=2/3 FAA=2/3
+[startup_founder 11/15] pref_travel_general_155 (Recommending) FAMA=0.33 MPA=1/3 FAA=3/3
+[startup_founder 12/15] pref_books_general_155 (Recommending) FAMA=0.75 MPA=3/4 FAA=2/2
+[startup_founder 13/15] content_meeting_notes_155_meeting_notes_2 (Remembering) FAMA=0.00 MPA=1/4 FAA=1/3
+[startup_founder 14/15] content_meeting_notes_155_meeting_notes_1 (Remembering) FAMA=0.25 MPA=1/4 FAA=4/4
+[startup_founder 15/15] content_project_proposal_155_project_proposal_1 (Remembering) FAMA=0.45 MPA=6/10 FAA=1/3
+wrote benches/memora/results/run_20260730_212854_weekly_startup_founder.jsonl
+{
+  "run_id": "20260730_212854",
+  "date": "2026-07-30T21:34:04.224364+00:00",
+  "git_commit": "c6e855d",
+  "scale": "weekly",
+  "model": "deepseek-chat",
+  "judge_model": "deepseek-chat",
+  "temperature": 0.0,
+  "topk": 10,
+  "ingest": "distill",
+  "memora_root": "/Users/hjx/project/memora",
+  "judge_protocol": "single-judge (deepseek-chat, temp=0); official Table 3 uses 3-judge majority vote via OpenRouter — NOT directly comparable",
+  "personas": [
+    {
+      "persona": "academic_researcher",
+      "total_questions": 15,
+      "total_eval_questions": 81,
+      "overall_accuracy": 0.5061728395061729,
+      "fama": 27.545787545787547,
+      "memory_presence_total": 53,
+      "memory_presence_correct": 22,
+      "memory_presence_accuracy": 0.41509433962264153,
+      "forgetting_absence_total": 28,
+      "forgetting_absence_correct": 19,
+      "forgetting_absence_accuracy": 0.6785714285714286,
+      "by_task_type": {
+        "Reasoning": {
+          "total_questions": 5,
+          "total_eval_questions": 9,
+          "correct_count": 2,
+          "accuracy": 0.2222222222222222,
+          "memory_presence_total": 9,
+          "memory_presence_correct": 2,
+          "memory_presence_accuracy": 0.2222222222222222,
+          "forgetting_absence_total": 0,
+          "forgetting_absence_correct": 0,
+          "forgetting_absence_accuracy": null,
+          "fama": 13.333333333333334
+        },
+        "Recommending": {
+          "total_questions": 5,
+          "total_eval_questions": 23,
+          "correct_count": 15,
+          "accuracy": 0.6521739130434783,
+          "memory_presence_total": 11,
+          "memory_presence_correct": 6,
+          "memory_presence_accuracy": 0.5454545454545454,
+          "forgetting_absence_total": 12,
+          "forgetting_absence_correct": 9,
+          "forgetting_absence_accuracy": 0.75,
+          "fama": 45.33333333333333
+        },
+        "Remembering": {
+          "total_questions": 5,
+          "total_eval_questions": 49,
+          "correct_count": 24,
+          "accuracy": 0.4897959183673469,
+          "memory_presence_total": 33,
+          "memory_presence_correct": 14,
+          "memory_presence_accuracy": 0.42424242424242425,
+          "forgetting_absence_total": 16,
+          "forgetting_absence_correct": 10,
+          "forgetting_absence_accuracy": 0.625,
+          "fama": 23.97069597069597
+        }
+      },
+      "distill_ingest": {
+        "sessions": 158,
+        "sessions_distilled": 80,
+        "sessions_dual_write": 51,
+        "sessions_light_empty": 28,
+        "sessions_fallback_raw": 0,
+        "items_recorded": 69,
+        "items_duplicate": 0,
+        "facts_recorded": 37,
+        "facts_retired": 4,
+        "superseded_invalidations": 19,
+        "raw_chunks_written": 1804,
+        "llm_calls": 158,
+        "skipped_existing": false
+      }
+    },
+    {
+      "persona": "business_executive",
+      "total_questions": 15,
+      "total_eval_questions": 65,
+      "overall_accuracy": 0.5692307692307692,
+      "fama": 26.333333333333336,
+      "memory_presence_total": 41,
+      "memory_presence_correct": 19,
+      "memory_presence_accuracy": 0.4634146341463415,
+      "forgetting_absence_total": 24,
+      "forgetting_absence_correct": 18,
+      "forgetting_absence_accuracy": 0.75,
+      "by_task_type": {
+        "Reasoning": {
+          "total_questions": 5,
+          "total_eval_questions": 9,
+          "correct_count": 2,
+          "accuracy": 0.2222222222222222,
+          "memory_presence_total": 9,
+          "memory_presence_correct": 2,
+          "memory_presence_accuracy": 0.2222222222222222,
+          "forgetting_absence_total": 0,
+          "forgetting_absence_correct": 0,
+          "forgetting_absence_accuracy": null,
+          "fama": 13.333333333333334
+        },
+        "Recommending": {
+          "total_questions": 5,
+          "total_eval_questions": 20,
+          "correct_count": 12,
+          "accuracy": 0.6,
+          "memory_presence_total": 12,
+          "memory_presence_correct": 6,
+          "memory_presence_accuracy": 0.5,
+          "forgetting_absence_total": 8,
+          "forgetting_absence_correct": 6,
+          "forgetting_absence_accuracy": 0.75,
+          "fama": 31.0
+        },
+        "Remembering": {
+          "total_questions": 5,
+          "total_eval_questions": 36,
+          "correct_count": 23,
+          "accuracy": 0.6388888888888888,
+          "memory_presence_total": 20,
+          "memory_presence_correct": 11,
+          "memory_presence_accuracy": 0.55,
+          "forgetting_absence_total": 16,
+          "forgetting_absence_correct": 12,
+          "forgetting_absence_accuracy": 0.75,
+          "fama": 34.66666666666667
+        }
+      },
+      "distill_ingest": {
+        "sessions": 145,
+        "sessions_distilled": 78,
+        "sessions_dual_write": 56,
+        "sessions_light_empty": 19,
+        "sessions_fallback_raw": 0,
+        "items_recorded": 75,
+        "items_duplicate": 0,
+        "facts_recorded": 38,
+        "facts_retired": 5,
+        "superseded_invalidations": 15,
+        "raw_chunks_written": 1781,
+        "llm_calls": 145,
+        "skipped_existing": false
+      }
+    },
+    {
+      "persona": "content_writer",
+      "total_questions": 15,
+      "total_eval_questions": 65,
+      "overall_accuracy": 0.5692307692307692,
+      "fama": 30.999999999999993,
+      "memory_presence_total": 41,
+      "memory_presence_correct": 19,
+      "memory_presence_accuracy": 0.4634146341463415,
+      "forgetting_absence_total": 24,
+      "forgetting_absence_correct": 18,
+      "forgetting_absence_accuracy": 0.75,
+      "by_task_type": {
+        "Reasoning": {
+          "total_questions": 5,
+          "total_eval_questions": 9,
+          "correct_count": 2,
+          "accuracy": 0.2222222222222222,
+          "memory_presence_total": 9,
+          "memory_presence_correct": 2,
+          "memory_presence_accuracy": 0.2222222222222222,
+          "forgetting_absence_total": 0,
+          "forgetting_absence_correct": 0,
+          "forgetting_absence_accuracy": null,
+          "fama": 13.333333333333334
+        },
+        "Recommending": {
+          "total_questions": 5,
+          "total_eval_questions": 23,
+          "correct_count": 14,
+          "accuracy": 0.6086956521739131,
+          "memory_presence_total": 15,
+          "memory_presence_correct": 9,
+          "memory_presence_accuracy": 0.6,
+          "forgetting_absence_total": 8,
+          "forgetting_absence_correct": 5,
+          "forgetting_absence_accuracy": 0.625,
+          "fama": 48.0
+        },
+        "Remembering": {
+          "total_questions": 5,
+          "total_eval_questions": 33,
+          "correct_count": 21,
+          "accuracy": 0.6363636363636364,
+          "memory_presence_total": 17,
+          "memory_presence_correct": 8,
+          "memory_presence_accuracy": 0.47058823529411764,
+          "forgetting_absence_total": 16,
+          "forgetting_absence_correct": 13,
+          "forgetting_absence_accuracy": 0.8125,
+          "fama": 31.66666666666667
+        }
+      },
+      "distill_ingest": {
+        "sessions": 151,
+        "sessions_distilled": 77,
+        "sessions_dual_write": 52,
+        "sessions_light_empty": 25,
+        "sessions_fallback_raw": 0,
+        "items_recorded": 62,
+        "items_duplicate": 0,
+        "facts_recorded": 36,
+        "facts_retired": 3,
+        "superseded_invalidations": 3,
+        "raw_chunks_written": 1728,
+        "llm_calls": 151,
+        "skipped_existing": false
+      }
+    },
+    {
+      "persona": "creative_designer",
+      "total_questions": 15,
+      "total_eval_questions": 74,
+      "overall_accuracy": 0.5945945945945946,
+      "fama": 36.68253968253968,
+      "memory_presence_total": 47,
+      "memory_presence_correct": 26,
+      "memory_presence_accuracy": 0.5531914893617021,
+      "forgetting_absence_total": 27,
+      "forgetting_absence_correct": 18,
+      "forgetting_absence_accuracy": 0.6666666666666666,
+      "by_task_type": {
+        "Reasoning": {
+          "total_questions": 5,
+          "total_eval_questions": 9,
+          "correct_count": 2,
+          "accuracy": 0.2222222222222222,
+          "memory_presence_total": 9,
+          "memory_presence_correct": 2,
+          "memory_presence_accuracy": 0.2222222222222222,
+          "forgetting_absence_total": 0,
+          "forgetting_absence_correct": 0,
+          "forgetting_absence_accuracy": null,
+          "fama": 13.333333333333334
+        },
+        "Recommending": {
+          "total_questions": 5,
+          "total_eval_questions": 21,
+          "correct_count": 15,
+          "accuracy": 0.7142857142857143,
+          "memory_presence_total": 12,
+          "memory_presence_correct": 9,
+          "memory_presence_accuracy": 0.75,
+          "forgetting_absence_total": 9,
+          "forgetting_absence_correct": 6,
+          "forgetting_absence_accuracy": 0.6666666666666666,
+          "fama": 60.0
+        },
+        "Remembering": {
+          "total_questions": 5,
+          "total_eval_questions": 44,
+          "correct_count": 27,
+          "accuracy": 0.6136363636363636,
+          "memory_presence_total": 26,
+          "memory_presence_correct": 15,
+          "memory_presence_accuracy": 0.5769230769230769,
+          "forgetting_absence_total": 18,
+          "forgetting_absence_correct": 12,
+          "forgetting_absence_accuracy": 0.6666666666666666,
+          "fama": 36.714285714285715
+        }
+      },
+      "distill_ingest": {
+        "sessions": 147,
+        "sessions_distilled": 80,
+        "sessions_dual_write": 51,
+        "sessions_light_empty": 28,
+        "sessions_fallback_raw": 0,
+        "items_recorded": 73,
+        "items_duplicate": 0,
+        "facts_recorded": 41,
+        "facts_retired": 4,
+        "superseded_invalidations": 8,
+        "raw_chunks_written": 1549,
+        "llm_calls": 147,
+        "skipped_existing": false
+      }
+    },
+    {
+      "persona": "financial_analyst",
+      "total_questions": 15,
+      "total_eval_questions": 76,
+      "overall_accuracy": 0.5526315789473685,
+      "fama": 39.78787878787879,
+      "memory_presence_total": 57,
+      "memory_presence_correct": 30,
+      "memory_presence_accuracy": 0.5263157894736842,
+      "forgetting_absence_total": 19,
+      "forgetting_absence_correct": 12,
+      "forgetting_absence_accuracy": 0.631578947368421,
+      "by_task_type": {
+        "Reasoning": {
+          "total_questions": 5,
+          "total_eval_questions": 9,
+          "correct_count": 2,
+          "accuracy": 0.2222222222222222,
+          "memory_presence_total": 9,
+          "memory_presence_correct": 2,
+          "memory_presence_accuracy": 0.2222222222222222,
+          "forgetting_absence_total": 0,
+          "forgetting_absence_correct": 0,
+          "forgetting_absence_accuracy": null,
+          "fama": 13.333333333333334
+        },
+        "Recommending": {
+          "total_questions": 5,
+          "total_eval_questions": 23,
+          "correct_count": 15,
+          "accuracy": 0.6521739130434783,
+          "memory_presence_total": 12,
+          "memory_presence_correct": 6,
+          "memory_presence_accuracy": 0.5,
+          "forgetting_absence_total": 11,
+          "forgetting_absence_correct": 9,
+          "forgetting_absence_accuracy": 0.8181818181818182,
+          "fama": 50.66666666666666
+        },
+        "Remembering": {
+          "total_questions": 5,
+          "total_eval_questions": 44,
+          "correct_count": 25,
+          "accuracy": 0.5681818181818182,
+          "memory_presence_total": 36,
+          "memory_presence_correct": 22,
+          "memory_presence_accuracy": 0.6111111111111112,
+          "forgetting_absence_total": 8,
+          "forgetting_absence_correct": 3,
+          "forgetting_absence_accuracy": 0.375,
+          "fama": 55.36363636363636
+        }
+      },
+      "distill_ingest": {
+        "sessions": 156,
+        "sessions_distilled": 82,
+        "sessions_dual_write": 53,
+        "sessions_light_empty": 30,
+        "sessions_fallback_raw": 0,
+        "items_recorded": 69,
+        "items_duplicate": 0,
+        "facts_recorded": 37,
+        "facts_retired": 6,
+        "superseded_invalidations": 5,
+        "raw_chunks_written": 1644,
+        "llm_calls": 156,
+        "skipped_existing": false
+      }
+    },
+    {
+      "persona": "management_consultant",
+      "total_questions": 15,
+      "total_eval_questions": 80,
+      "overall_accuracy": 0.5625,
+      "fama": 23.539682539682538,
+      "memory_presence_total": 46,
+      "memory_presence_correct": 21,
+      "memory_presence_accuracy": 0.45652173913043476,
+      "forgetting_absence_total": 34,
+      "forgetting_absence_correct": 24,
+      "forgetting_absence_accuracy": 0.7058823529411765,
+      "by_task_type": {
+        "Reasoning": {
+          "total_questions": 5,
+          "total_eval_questions": 9,
+          "correct_count": 2,
+          "accuracy": 0.2222222222222222,
+          "memory_presence_total": 9,
+          "memory_presence_correct": 2,
+          "memory_presence_accuracy": 0.2222222222222222,
+          "forgetting_absence_total": 0,
+          "forgetting_absence_correct": 0,
+          "forgetting_absence_accuracy": null,
+          "fama": 13.333333333333334
+        },
+        "Recommending": {
+          "total_questions": 5,
+          "total_eval_questions": 25,
+          "correct_count": 15,
+          "accuracy": 0.6,
+          "memory_presence_total": 13,
+          "memory_presence_correct": 7,
+          "memory_presence_accuracy": 0.5384615384615384,
+          "forgetting_absence_total": 12,
+          "forgetting_absence_correct": 8,
+          "forgetting_absence_accuracy": 0.6666666666666666,
+          "fama": 27.0
+        },
+        "Remembering": {
+          "total_questions": 5,
+          "total_eval_questions": 46,
+          "correct_count": 28,
+          "accuracy": 0.6086956521739131,
+          "memory_presence_total": 24,
+          "memory_presence_correct": 12,
+          "memory_presence_accuracy": 0.5,
+          "forgetting_absence_total": 22,
+          "forgetting_absence_correct": 16,
+          "forgetting_absence_accuracy": 0.7272727272727273,
+          "fama": 30.28571428571428
+        }
+      },
+      "distill_ingest": {
+        "sessions": 157,
+        "sessions_distilled": 86,
+        "sessions_dual_write": 62,
+        "sessions_light_empty": 23,
+        "sessions_fallback_raw": 0,
+        "items_recorded": 82,
+        "items_duplicate": 0,
+        "facts_recorded": 39,
+        "facts_retired": 6,
+        "superseded_invalidations": 17,
+        "raw_chunks_written": 1941,
+        "llm_calls": 157,
+        "skipped_existing": false
+      }
+    },
+    {
+      "persona": "marketing_manager",
+      "total_questions": 15,
+      "total_eval_questions": 80,
+      "overall_accuracy": 0.525,
+      "fama": 26.505050505050505,
+      "memory_presence_total": 53,
+      "memory_presence_correct": 19,
+      "memory_presence_accuracy": 0.3584905660377358,
+      "forgetting_absence_total": 27,
+      "forgetting_absence_correct": 23,
+      "forgetting_absence_accuracy": 0.8518518518518519,
+      "by_task_type": {
+        "Reasoning": {
+          "total_questions": 5,
+          "total_eval_questions": 9,
+          "correct_count": 2,
+          "accuracy": 0.2222222222222222,
+          "memory_presence_total": 9,
+          "memory_presence_correct": 2,
+          "memory_presence_accuracy": 0.2222222222222222,
+          "forgetting_absence_total": 0,
+          "forgetting_absence_correct": 0,
+          "forgetting_absence_accuracy": null,
+          "fama": 13.333333333333334
+        },
+        "Recommending": {
+          "total_questions": 5,
+          "total_eval_questions": 25,
+          "correct_count": 15,
+          "accuracy": 0.6,
+          "memory_presence_total": 15,
+          "memory_presence_correct": 7,
+          "memory_presence_accuracy": 0.4666666666666667,
+          "forgetting_absence_total": 10,
+          "forgetting_absence_correct": 8,
+          "forgetting_absence_accuracy": 0.8,
+          "fama": 42.00000000000001
+        },
+        "Remembering": {
+          "total_questions": 5,
+          "total_eval_questions": 46,
+          "correct_count": 25,
+          "accuracy": 0.5434782608695652,
+          "memory_presence_total": 29,
+          "memory_presence_correct": 10,
+          "memory_presence_accuracy": 0.3448275862068966,
+          "forgetting_absence_total": 17,
+          "forgetting_absence_correct": 15,
+          "forgetting_absence_accuracy": 0.8823529411764706,
+          "fama": 24.18181818181818
+        }
+      },
+      "distill_ingest": {
+        "sessions": 156,
+        "sessions_distilled": 78,
+        "sessions_dual_write": 44,
+        "sessions_light_empty": 36,
+        "sessions_fallback_raw": 0,
+        "items_recorded": 75,
+        "items_duplicate": 0,
+        "facts_recorded": 33,
+        "facts_retired": 3,
+        "superseded_invalidations": 13,
+        "raw_chunks_written": 1476,
+        "llm_calls": 156,
+        "skipped_existing": false
+      }
+    },
+    {
+      "persona": "sales_manager",
+      "total_questions": 15,
+      "total_eval_questions": 71,
+      "overall_accuracy": 0.5070422535211268,
+      "fama": 34.0050505050505,
+      "memory_presence_total": 50,
+      "memory_presence_correct": 24,
+      "memory_presence_accuracy": 0.48,
+      "forgetting_absence_total": 21,
+      "forgetting_absence_correct": 12,
+      "forgetting_absence_accuracy": 0.5714285714285714,
+      "by_task_type": {
+        "Reasoning": {
+          "total_questions": 5,
+          "total_eval_questions": 9,
+          "correct_count": 2,
+          "accuracy": 0.2222222222222222,
+          "memory_presence_total": 9,
+          "memory_presence_correct": 2,
+          "memory_presence_accuracy": 0.2222222222222222,
+          "forgetting_absence_total": 0,
+          "forgetting_absence_correct": 0,
+          "forgetting_absence_accuracy": null,
+          "fama": 13.333333333333334
+        },
+        "Recommending": {
+          "total_questions": 5,
+          "total_eval_questions": 22,
+          "correct_count": 15,
+          "accuracy": 0.6818181818181818,
+          "memory_presence_total": 9,
+          "memory_presence_correct": 6,
+          "memory_presence_accuracy": 0.6666666666666666,
+          "forgetting_absence_total": 13,
+          "forgetting_absence_correct": 9,
+          "forgetting_absence_accuracy": 0.6923076923076923,
+          "fama": 56.666666666666664
+        },
+        "Remembering": {
+          "total_questions": 5,
+          "total_eval_questions": 40,
+          "correct_count": 19,
+          "accuracy": 0.475,
+          "memory_presence_total": 32,
+          "memory_presence_correct": 16,
+          "memory_presence_accuracy": 0.5,
+          "forgetting_absence_total": 8,
+          "forgetting_absence_correct": 3,
+          "forgetting_absence_accuracy": 0.375,
+          "fama": 32.015151515151516
+        }
+      },
+      "distill_ingest": {
+        "sessions": 163,
+        "sessions_distilled": 81,
+        "sessions_dual_write": 47,
+        "sessions_light_empty": 31,
+        "sessions_fallback_raw": 0,
+        "items_recorded": 63,
+        "items_duplicate": 0,
+        "facts_recorded": 42,
+        "facts_retired": 3,
+        "superseded_invalidations": 18,
+        "raw_chunks_written": 1695,
+        "llm_calls": 163,
+        "skipped_existing": false
+      }
+    },
+    {
+      "persona": "software_engineer",
+      "total_questions": 15,
+      "total_eval_questions": 71,
+      "overall_accuracy": 0.6056338028169014,
+      "fama": 38.49206349206348,
+      "memory_presence_total": 44,
+      "memory_presence_correct": 20,
+      "memory_presence_accuracy": 0.45454545454545453,
+      "forgetting_absence_total": 27,
+      "forgetting_absence_correct": 23,
+      "forgetting_absence_accuracy": 0.8518518518518519,
+      "by_task_type": {
+        "Reasoning": {
+          "total_questions": 5,
+          "total_eval_questions": 9,
+          "correct_count": 2,
+          "accuracy": 0.2222222222222222,
+          "memory_presence_total": 9,
+          "memory_presence_correct": 2,
+          "memory_presence_accuracy": 0.2222222222222222,
+          "forgetting_absence_total": 0,
+          "forgetting_absence_correct": 0,
+          "forgetting_absence_accuracy": null,
+          "fama": 13.333333333333334
+        },
+        "Recommending": {
+          "total_questions": 5,
+          "total_eval_questions": 26,
+          "correct_count": 19,
+          "accuracy": 0.7307692307692307,
+          "memory_presence_total": 15,
+          "memory_presence_correct": 11,
+          "memory_presence_accuracy": 0.7333333333333333,
+          "forgetting_absence_total": 11,
+          "forgetting_absence_correct": 8,
+          "forgetting_absence_accuracy": 0.7272727272727273,
+          "fama": 62.142857142857146
+        },
+        "Remembering": {
+          "total_questions": 5,
+          "total_eval_questions": 36,
+          "correct_count": 22,
+          "accuracy": 0.6111111111111112,
+          "memory_presence_total": 20,
+          "memory_presence_correct": 7,
+          "memory_presence_accuracy": 0.35,
+          "forgetting_absence_total": 16,
+          "forgetting_absence_correct": 15,
+          "forgetting_absence_accuracy": 0.9375,
+          "fama": 40.0
+        }
+      },
+      "distill_ingest": {
+        "sessions": 163,
+        "sessions_distilled": 86,
+        "sessions_dual_write": 53,
+        "sessions_light_empty": 16,
+        "sessions_fallback_raw": 0,
+        "items_recorded": 75,
+        "items_duplicate": 0,
+        "facts_recorded": 46,
+        "facts_retired": 3,
+        "superseded_invalidations": 16,
+        "raw_chunks_written": 2028,
+        "llm_calls": 163,
+        "skipped_existing": false
+      }
+    },
+    {
+      "persona": "startup_founder",
+      "total_questions": 15,
+      "total_eval_questions": 72,
+      "overall_accuracy": 0.5138888888888888,
+      "fama": 24.08547008547008,
+      "memory_presence_total": 47,
+      "memory_presence_correct": 20,
+      "memory_presence_accuracy": 0.425531914893617,
+      "forgetting_absence_total": 25,
+      "forgetting_absence_correct": 17,
+      "forgetting_absence_accuracy": 0.68,
+      "by_task_type": {
+        "Reasoning": {
+          "total_questions": 5,
+          "total_eval_questions": 9,
+          "correct_count": 2,
+          "accuracy": 0.2222222222222222,
+          "memory_presence_total": 9,
+          "memory_presence_correct": 2,
+          "memory_presence_accuracy": 0.2222222222222222,
+          "forgetting_absence_total": 0,
+          "forgetting_absence_correct": 0,
+          "forgetting_absence_accuracy": null,
+          "fama": 13.333333333333334
+        },
+        "Recommending": {
+          "total_questions": 5,
+          "total_eval_questions": 27,
+          "correct_count": 17,
+          "accuracy": 0.6296296296296297,
+          "memory_presence_total": 15,
+          "memory_presence_correct": 7,
+          "memory_presence_accuracy": 0.4666666666666667,
+          "forgetting_absence_total": 12,
+          "forgetting_absence_correct": 10,
+          "forgetting_absence_accuracy": 0.8333333333333334,
+          "fama": 36.666666666666664
+        },
+        "Remembering": {
+          "total_questions": 5,
+          "total_eval_questions": 36,
+          "correct_count": 18,
+          "accuracy": 0.5,
+          "memory_presence_total": 23,
+          "memory_presence_correct": 11,
+          "memory_presence_accuracy": 0.4782608695652174,
+          "forgetting_absence_total": 13,
+          "forgetting_absence_correct": 7,
+          "forgetting_absence_accuracy": 0.5384615384615384,
+          "fama": 22.25641025641026
+        }
+      },
+      "distill_ingest": {
+        "sessions": 155,
+        "sessions_distilled": 76,
+        "sessions_dual_write": 49,
+        "sessions_light_empty": 24,
+        "sessions_fallback_raw": 0,
+        "items_recorded": 71,
+        "items_duplicate": 0,
+        "facts_recorded": 43,
+        "facts_retired": 4,
+        "superseded_invalidations": 12,
+        "raw_chunks_written": 1820,
+        "llm_calls": 155,
+        "skipped_existing": false
+      }
+    }
+  ]
+}
+wrote benches/memora/results/run_20260730_212854_summary.json
