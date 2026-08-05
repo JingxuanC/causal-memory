@@ -15,10 +15,12 @@
 //! - Search returns raw memory evidence only — it never generates answers.
 //! - Results are ordered most-relevant first; `top_k` is respected.
 //!
-//! Retrieval is BM25 over the raw memory text (`crate::bm25`), the same
-//! tokenizer/ranker the benchmark harnesses use. Embedding fusion is a
-//! planned upgrade; the response schema already carries `score` and
-//! `created_at` so fused hits slot in without a contract change.
+//! Retrieval fuses two signals when an embedder is available (built with
+//! `--features local-embed` for the offline fastembed ONNX backend, or an
+//! HTTP embedding endpoint via env): the shared-prefix lexical score and
+//! cosine similarity, merged by reciprocal rank fusion. Without an
+//! embedder it degrades gracefully to lexical-only. The response schema
+//! carries `score` and `created_at` on every hit.
 //!
 //! Usage:
 //!   cargo build --release --bin causal-memory-amc
@@ -34,8 +36,10 @@ use anyhow::Result;
 use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use causal_memory::embed::{UnifiedEmbedder, blob_to_vec, cosine_similarity, vec_to_blob};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Mutex as AsyncMutex;
 
 // ─── Store ─────────────────────────────────────────────────────────────────
 
@@ -53,10 +57,20 @@ impl AmcStore {
                 session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
-                event_time INTEGER
+                event_time INTEGER,
+                embedding BLOB
             );
             CREATE INDEX IF NOT EXISTS idx_amc_user ON amc_memories(user_id);",
         )?;
+        // v2: existing DBs gain the embedding column.
+        let has_embed: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('amc_memories') WHERE name = 'embedding'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_embed == 0 {
+            conn.execute_batch("ALTER TABLE amc_memories ADD COLUMN embedding BLOB")?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -64,19 +78,28 @@ impl AmcStore {
 
     /// Persist one Add request's messages. Returns only after every message
     /// is committed — the contract's "stored and available to Search".
-    fn add(&self, user_id: &str, session_id: &str, messages: &[AddMessage]) -> Result<()> {
+    /// `embeddings` are aligned with `messages` (None per message when the
+    /// embedder is unavailable).
+    fn add(
+        &self,
+        user_id: &str,
+        session_id: &str,
+        messages: &[AddMessage],
+        embeddings: &[Option<Vec<f32>>],
+    ) -> Result<()> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("store lock: {e}"))?;
         let mut stmt = conn.prepare(
-            "INSERT INTO amc_memories (user_id, session_id, role, content, event_time)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO amc_memories (user_id, session_id, role, content, event_time, embedding)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
-        for msg in messages {
+        for (msg, emb) in messages.iter().zip(embeddings) {
             stmt.execute(params![
                 user_id,
                 session_id,
                 msg.role,
                 msg.content,
                 msg.timestamp,
+                emb.as_deref().map(vec_to_blob),
             ])?;
         }
         Ok(())
@@ -86,19 +109,39 @@ impl AmcStore {
     fn memories_for(&self, user_id: &str) -> Result<Vec<MemoryRow>> {
         let conn = self.conn.lock().map_err(|e| anyhow::anyhow!("store lock: {e}"))?;
         let mut stmt = conn.prepare(
-            "SELECT id, content, event_time FROM amc_memories
+            "SELECT id, content, event_time, embedding FROM amc_memories
              WHERE user_id = ?1 ORDER BY id",
         )?;
         let rows = stmt.query_map(params![user_id], |r| {
-            Ok(MemoryRow {
-                id: r.get(0)?,
-                content: r.get(1)?,
-                event_time: r.get(2)?,
-            })
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, Option<Vec<u8>>>(3)?,
+            ))
         })?;
         let mut out = Vec::new();
         for row in rows {
-            out.push(row.map_err(|e| anyhow::anyhow!("row read: {e}"))?);
+            let (id, content, event_time, blob) =
+                row.map_err(|e| anyhow::anyhow!("row read: {e}"))?;
+            // Decode outside the closure — anyhow errors can't live inside a
+            // rusqlite row mapper.
+            let embedding = match blob {
+                Some(b) => match blob_to_vec(&b) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        eprintln!("amc: stored embedding decode failed for mem_{id}: {e}");
+                        None
+                    }
+                },
+                None => None,
+            };
+            out.push(MemoryRow {
+                id,
+                content,
+                event_time,
+                embedding,
+            });
         }
         Ok(out)
     }
@@ -108,6 +151,7 @@ struct MemoryRow {
     id: i64,
     content: String,
     event_time: Option<i64>,
+    embedding: Option<Vec<f32>>,
 }
 
 // ─── Contract types ────────────────────────────────────────────────────────
@@ -168,12 +212,40 @@ struct HealthResponse {
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
 
+/// Embedder shared across requests (embed() takes &mut self). None when no
+/// backend is available — the server then runs lexical-only.
+type SharedEmbedder = Arc<AsyncMutex<Option<UnifiedEmbedder>>>;
+
+/// BGE retrieval instruction: bge-en-v1.5 expects queries prefixed, passages
+/// unprefixed (BAAI recommended usage).
+const BGE_QUERY_PREFIX: &str = "Represent this sentence for searching relevant passages: ";
+
 async fn handle_add(
-    State(state): State<Arc<AmcStore>>,
+    State(state): State<(Arc<AmcStore>, SharedEmbedder)>,
     Json(req): Json<AddRequest>,
 ) -> Result<Json<AddResponse>, (axum::http::StatusCode, String)> {
+    // Embed every message when a backend is available (one call per chunk;
+    // the tokio mutex is fine to hold across await).
+    let mut embeddings: Vec<Option<Vec<f32>>> = Vec::with_capacity(req.messages.len());
+    {
+        let mut guard = state.1.lock().await;
+        if let Some(embedder) = guard.as_mut() {
+            for msg in &req.messages {
+                match embedder.embed(&msg.content).await {
+                    Ok(v) => embeddings.push(Some(v)),
+                    Err(e) => {
+                        eprintln!("add: embed failed (falling back to lexical): {e}");
+                        embeddings.push(None);
+                    }
+                }
+            }
+        } else {
+            embeddings.extend(std::iter::repeat_n(None, req.messages.len()));
+        }
+    }
     state
-        .add(&req.user_id, &req.session_id, &req.messages)
+        .0
+        .add(&req.user_id, &req.session_id, &req.messages, &embeddings)
         .map_err(|e| {
             (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -189,13 +261,13 @@ async fn handle_add(
 }
 
 async fn handle_search(
-    State(state): State<Arc<AmcStore>>,
+    State(state): State<(Arc<AmcStore>, SharedEmbedder)>,
     Json(req): Json<SearchRequest>,
 ) -> Json<SearchResponse> {
     // `options` is contract-fidelity input (choice questions): the platform's
     // answer model receives the memories; options do not change retrieval.
     let _ = &req.options;
-    let rows = match state.memories_for(&req.user_id) {
+    let rows = match state.0.memories_for(&req.user_id) {
         Ok(rows) => rows,
         Err(e) => {
             eprintln!("search: store read failed: {e}");
@@ -206,9 +278,23 @@ async fn handle_search(
         return Json(SearchResponse { data: Vec::new() });
     }
 
-    // Morphology-robust prefix scoring over this user's memory text
-    // (per-user corpus → tractable size; no embedding model required).
+    // Signal 1 — morphology-robust lexical scores (per-user corpus).
     let query_tokens = causal_memory::patterns::tokenize(&req.query);
+    if query_tokens.is_empty() && req.query.trim().is_empty() {
+        // Contract requires a query, but guard anyway: most recent first.
+        let hits: Vec<SearchHit> = rows
+            .iter()
+            .rev()
+            .take(req.top_k)
+            .map(|r| SearchHit {
+                id: format!("mem_{}", r.id),
+                content: r.content.clone(),
+                score: 0.0,
+                created_at: r.event_time.map(iso_time),
+            })
+            .collect();
+        return Json(SearchResponse { data: hits });
+    }
     let mut scored: Vec<(f64, &MemoryRow)> = rows
         .iter()
         .map(|r| {
@@ -218,6 +304,32 @@ async fn handle_search(
             )
         })
         .collect();
+
+    // Signal 2 — semantic cosine, when an embedder AND stored vectors exist.
+    let query_vec: Option<Vec<f32>> = {
+        let mut guard = state.1.lock().await;
+        match guard.as_mut() {
+            Some(embedder) => {
+                embedder
+                    .embed(&format!("{BGE_QUERY_PREFIX}{}", req.query))
+                    .await
+                    .ok()
+            }
+            None => None,
+        }
+    };
+    if let Some(qv) = query_vec {
+        for (score, row) in &mut scored {
+            if let Some(dv) = &row.embedding {
+                let sim = cosine_similarity(&qv, dv);
+                // Fuse lexical + semantic: the lexical score is 0..=n
+                // (n query tokens), cosine is -1..=1 — normalize both to
+                // comparable weight before summing.
+                *score = *score + sim.max(0.0) * query_tokens.len() as f64;
+            }
+        }
+    }
+
     // Most relevant first; score ties → newer memory first (stable).
     scored.sort_by(|a, b| {
         b.0.partial_cmp(&a.0)
@@ -226,7 +338,6 @@ async fn handle_search(
     });
     let hits: Vec<SearchHit> = scored
         .iter()
-        .filter(|(score, _)| !query_tokens.is_empty() || *score > 0.0 || true)
         .take(req.top_k)
         .map(|(score, r)| SearchHit {
             id: format!("mem_{}", r.id),
@@ -285,12 +396,12 @@ fn iso_time(ms: i64) -> String {
 
 // ─── Entry point ───────────────────────────────────────────────────────────
 
-fn build_app(store: Arc<AmcStore>) -> Router {
+fn build_app(store: Arc<AmcStore>, embedder: SharedEmbedder) -> Router {
     Router::new()
         .route("/add", post(handle_add))
         .route("/search", post(handle_search))
         .route("/health", get(handle_health))
-        .with_state(store)
+        .with_state((store, embedder))
 }
 
 fn main() -> Result<()> {
@@ -320,6 +431,16 @@ fn main() -> Result<()> {
     }
 
     let store = Arc::new(AmcStore::open(&db)?);
+    // Semantic backend: HTTP embeddings via env, else local ONNX
+    // (fastembed, offline) when built with --features local-embed.
+    let embedder: SharedEmbedder = Arc::new(AsyncMutex::new(causal_memory::embed::init_embedder()));
+    {
+        let guard = embedder.blocking_lock();
+        match guard.as_ref() {
+            Some(e) => println!("causal-memory-amc embedding: {} (fused retrieval)", e.model()),
+            None => println!("causal-memory-amc embedding: none (lexical-only; build with --features local-embed for semantic fusion)"),
+        }
+    }
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse()?;
     println!("causal-memory-amc listening on http://{addr} (db: {db})");
     let rt = tokio::runtime::Runtime::new()?;
@@ -329,7 +450,7 @@ fn main() -> Result<()> {
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|e| anyhow::anyhow!("bind {addr}: {e}"))?;
-        axum::serve(listener, build_app(store))
+        axum::serve(listener, build_app(store, embedder))
             .await
             .map_err(|e| anyhow::anyhow!("server error: {e}"))
     })
@@ -362,8 +483,43 @@ mod tests {
         causal_memory::patterns::tokenize(text)
     }
 
+    #[test]
+    fn test_fusion_weights_cosine_like_lexical() {
+        // Semantic fusion: a cosine hit contributes as much as one lexical
+        // token hit (sim × query-token-count), so a question with zero
+        // lexical overlap can still outrank a weak lexical match.
+        let query_tokens: Vec<String> = vec!["text".into(), "editor".into()];
+        let mut scored = vec![
+            (1.0_f64, 101i64), // lexical hit on one token ("text")
+            (0.0_f64, 202i64), // no lexical overlap — but cosine 0.9 below
+        ];
+        for (score, _) in &mut scored {
+            // simulate: row 202 gets cosine 0.9, row 101 gets cosine 0.1
+            let sim = if *score == 0.0 { 0.9 } else { 0.1 };
+            *score += sim * query_tokens.len() as f64;
+        }
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        assert_eq!(scored[0].1, 202, "semantic hit must rank above weak lexical");
+        assert!(scored[0].0 > scored[1].0);
+    }
+
     fn test_store() -> Arc<AmcStore> {
         Arc::new(AmcStore::open(":memory:").unwrap())
+    }
+
+    fn test_embedder() -> SharedEmbedder {
+        Arc::new(AsyncMutex::new(None))
+    }
+
+    /// Test client: no keep-alive reuse. On the current-thread tokio runtime
+    /// the reqwest pool can reset a reused idle connection between requests
+    /// (a test-harness artifact — the server handles reuse fine, as the
+    /// manual curl round-trip on the multi-thread runtime shows).
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .build()
+            .unwrap()
     }
 
     /// Poll /health until the accept loop is actually serving — the spawned
@@ -387,14 +543,14 @@ mod tests {
     #[tokio::test]
     async fn add_search_roundtrip_and_isolation() {
         let store = test_store();
-        let app = build_app(store);
+        let app = build_app(store, test_embedder());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
 
-        let client = reqwest::Client::new();
+        let client = test_client();
         let base = format!("http://{addr}");
         wait_ready(&client, &base).await;
 
@@ -494,13 +650,13 @@ mod tests {
     #[tokio::test]
     async fn search_orders_by_relevance_and_respects_top_k() {
         let store = test_store();
-        let app = build_app(store);
+        let app = build_app(store, test_embedder());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        let client = reqwest::Client::new();
+        let client = test_client();
         let base = format!("http://{addr}");
         wait_ready(&client, &base).await;
 

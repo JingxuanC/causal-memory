@@ -36,6 +36,12 @@ path = "../../benches/memory/main.rs"
 name = "causal-memory-amc"
 path = "src/amc.rs"
 
+[features]
+# Local ONNX embedding (fastembed, bge-small-en-v1.5) for the AMC server —
+# pass-through of the library's local-embed feature. Build with:
+#   cargo build --release --bin causal-memory-amc --features local-embed
+local-embed = ["causal-memory/local-embed"]
+
 [dependencies]
 causal-memory.workspace = true
 rmcp.workspace = true

@@ -16,7 +16,8 @@ FROM rust:1.92-bookworm AS builder
 WORKDIR /build
 COPY . .
 # The workspace lints deny correctness issues; release profile is LTO+stripped.
-RUN cargo build --release --bin causal-memory-amc
+# local-embed: offline fastembed (bge-small-en-v1.5, ONNX) for semantic fusion.
+RUN cargo build --release --bin causal-memory-amc --features local-embed
 
 # ── Runtime: Debian bookworm (non-slim) already ships ca-certificates and
 #    libssl3, which the linked HTTP stack needs — no apt in the image. ──────
