@@ -12,16 +12,22 @@
 #         (the DB lives at /data/amc.db; override with AMC_DB)
 
 # ── Builder: compile the workspace, take only the amc binary ───────────────
-FROM rust:1.92-bookworm AS builder
+FROM rust:1.92-trixie AS builder
 WORKDIR /build
 COPY . .
 # The workspace lints deny correctness issues; release profile is LTO+stripped.
 # local-embed: offline fastembed (bge-small-en-v1.5, ONNX) for semantic fusion.
+# CARGO_BUILD_JOBS: cap compilation parallelism — ONNX Runtime's C++ build is
+# memory-hungry and can OOM small Docker VMs (3.8GB default) at full -jN.
+ARG CARGO_BUILD_JOBS=2
+ENV CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS
 RUN cargo build --release --bin causal-memory-amc --features local-embed
 
-# ── Runtime: Debian bookworm (non-slim) already ships ca-certificates and
-#    libssl3, which the linked HTTP stack needs — no apt in the image. ──────
-FROM debian:bookworm
+# ── Runtime: Debian trixie (non-slim) ships ca-certificates + libssl3 AND a
+#    GCC-14 libstdc++ — the bundled ONNX Runtime was built with GCC 13+ and
+#    its C++ symbols (__cxa_call_terminate, _M_replace_cold) do not exist in
+#    bookworm's libstdc++. No apt in the image. ─────────────────────────────
+FROM debian:trixie
 COPY --from=builder /build/target/release/causal-memory-amc /usr/local/bin/causal-memory-amc
 
 ENV AMC_DB=/data/amc.db \
