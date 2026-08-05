@@ -290,6 +290,21 @@ cargo test --features local-embed       # Run with ONNX embedding tests
 cargo clippy --workspace -- -D warnings # Lint
 ```
 
+## Agent Memory Challenge (AMC/01)
+
+causal-memory enters the [Agent Memory Leaderboard](https://agentmemories.ai/competition/)
+first evaluation cycle via a standalone Add/Search integration server:
+
+```bash
+cargo build --release --bin causal-memory-amc
+./target/release/causal-memory-amc --db amc.db --port 8787
+# POST /add (store memory, user_id-isolated) · POST /search (ordered evidence) · GET /health
+```
+
+Docker route: `docker build -t causal-memory-amc . && docker run -p 8787:8787 -v amc-data:/data causal-memory-amc`.
+Submission details, method description, and the participation checklist live in
+[`docs/amc-2026.md`](docs/amc-2026.md).
+
 Test suite breakdown:
 - **166** library unit tests (types, store, distill, patterns, hippocampus)
 - **12** causal capability tests (prevented warning, trace-cause, multi-hop, mixed-signal)

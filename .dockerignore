@@ -1,0 +1,12 @@
+# Keep the build context small and the workspace parse-able.
+# NOTE: bench .rs files must stay (the CLI manifest references their paths),
+# but datasets/results/dbs are pure runtime artifacts — excluded.
+.git
+target
+.claude
+*.db
+benches/*/data
+benches/*/results
+benches/*/db
+nohup.out
+*.log
