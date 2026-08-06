@@ -4,7 +4,11 @@ use crate::store::CausalEntry;
 
 pub fn rrf_merge_many(lists: &[&[CausalEntry]], limit: usize) -> Vec<CausalEntry> {
     use std::collections::HashMap;
-    let k = 60.0;
+    // CAUSAL_MEMORY_RRF_K overrides the default 60 (param sweep harness).
+    let k = std::env::var("CAUSAL_MEMORY_RRF_K")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .unwrap_or(60.0);
     let mut scores: HashMap<i64, f64> = HashMap::new(); // edge_id → Σ 1/(k+rank+1)
 
     for list in lists {

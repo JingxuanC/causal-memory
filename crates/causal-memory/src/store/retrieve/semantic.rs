@@ -67,7 +67,11 @@ impl CausalStore {
         task_tag: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(crate::store::CausalEntry, f64)>> {
-        const ENTITY_BOOST: f64 = 0.5;
+        // CAUSAL_MEMORY_ENTITY_BOOST overrides the default 0.5 (param sweep harness).
+        let entity_boost = std::env::var("CAUSAL_MEMORY_ENTITY_BOOST")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.5);
         let q_entities = crate::patterns::entity_tokens(query);
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
 
@@ -99,7 +103,7 @@ impl CausalStore {
             let mut ents = crate::patterns::entity_tokens(&entry.decision_text);
             ents.extend(crate::patterns::entity_tokens(&entry.outcome_text));
             let overlap = q_entities.iter().filter(|q| ents.contains(q)).count();
-            scored.push((entry, sim * (1.0 + ENTITY_BOOST * overlap as f64)));
+            scored.push((entry, sim * (1.0 + entity_boost * overlap as f64)));
         }
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(limit);

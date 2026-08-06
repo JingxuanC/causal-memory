@@ -154,6 +154,21 @@ impl LocalEmbedder {
         let model_name = std::env::var("CAUSAL_MEMORY_LOCAL_EMBED_MODEL")
             .unwrap_or_else(|_| "BAAI/bge-small-en-v1.5".into());
         let model_enum = Self::resolve_model(&model_name);
+        // Fail fast when the model is not cached locally: fastembed would
+        // otherwise attempt a network download that can hang for minutes on
+        // unreachable hosts (HF is blocked in some environments — measured
+        // 150s stall). Cache root resolves exactly like fastembed's
+        // `get_cache_dir()` (FASTEMBED_CACHE_DIR, default `.fastembed_cache`).
+        // Pre-creating the cache dir is the opt-in for download-on-first-use.
+        let cache_root = std::env::var("FASTEMBED_CACHE_DIR")
+            .unwrap_or_else(|_| ".fastembed_cache".to_string());
+        if !std::path::Path::new(&cache_root).is_dir() {
+            anyhow::bail!(
+                "local embedding model not cached (missing {cache_root}/); \
+                 set FASTEMBED_CACHE_DIR to a cache containing the model, or \
+                 create the directory to allow download-on-first-use"
+            );
+        }
         let model = fastembed::TextEmbedding::try_new(
             fastembed::TextInitOptions::new(model_enum),
         )?;
