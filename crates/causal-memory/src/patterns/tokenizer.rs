@@ -100,3 +100,57 @@ pub(crate) fn normalize(text: &str) -> String {
         .join(" ")
         .to_lowercase()
 }
+
+/// Mid-sentence capitalized words (person/place/entity names), stoplist
+/// filtered, lowercase-normalized (`Melanie's` → `melanie`). Sentence-initial
+/// words are excluded — sentence caps are capitalization noise, not entities.
+///
+/// Deliberately frequency-favoring: an entity appearing in many chunks is
+/// exactly what multi-hop person-anchored retrieval needs, so no IDF
+/// weighting is applied (the entity signal is the inverse of the lexical one).
+pub fn entity_tokens(text: &str) -> Vec<String> {
+    const ENTITY_STOP: &[&str] = &[
+        "the", "a", "an", "and", "but", "so", "or", "if", "then", "than",
+        "she", "he", "they", "we", "i", "you", "me", "us", "her", "him", "his",
+        "hers", "their", "my", "your", "our", "its",
+        "what", "when", "where", "why", "how", "who", "which", "that", "this",
+        "these", "those", "there", "here", "it", "as", "at", "of", "in", "on",
+        "to", "for", "with", "by", "from", "do", "does", "did", "have", "has",
+        "had", "was", "were", "will", "would", "shall", "should", "can",
+        "could", "may", "might", "must", "is", "are", "be", "been", "being",
+        "yes", "no", "ok", "okay", "hi", "hey", "hello", "thanks", "thank",
+        "please", "like", "going", "got", "get", "go", "went", "one", "two",
+        "three", "first", "last", "today", "tomorrow", "yesterday", "sunday",
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
+        "january", "february", "march", "april", "may", "june", "july",
+        "august", "september", "october", "november", "december",
+    ];
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if !chars[i].is_ascii_alphabetic() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '\'') {
+            i += 1;
+        }
+        let raw: String = chars[start..i].iter().collect();
+        let word = raw.strip_suffix("'s").unwrap_or(&raw);
+        let upper_initial = chars[start].is_ascii_uppercase();
+        // Sentence-initial: preceded by start-of-text or sentence punctuation.
+        let prev = (0..start).rev().find(|&j| !chars[j].is_whitespace());
+        let sentence_start = match prev {
+            None => true,
+            Some(j) => matches!(chars[j], '.' | '!' | '?' | '"' | '\u{201c}' | '\u{201d}'),
+        };
+        let w = word.to_lowercase();
+        if upper_initial && !sentence_start && w.len() >= 2 && !ENTITY_STOP.contains(&w.as_str())
+        {
+            out.push(w);
+        }
+    }
+    out
+}

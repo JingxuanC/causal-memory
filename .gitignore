@@ -12,3 +12,5 @@ benches/longmemeval/results/*.jsonl
 /bench-results-*.md
 /bench-agent-*.md
 benches/memora/results/*.jsonl
+.claude/
+benches/locomo/db/

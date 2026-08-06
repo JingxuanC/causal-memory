@@ -202,7 +202,7 @@ impl CausalStore {
 // Submodules — each adds methods to `impl CausalStore`.
 mod embed;
 mod facts;
-mod retrieve;
+pub mod retrieve;
 mod types;
 mod utils;
 mod write;

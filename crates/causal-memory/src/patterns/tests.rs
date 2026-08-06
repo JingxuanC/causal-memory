@@ -674,3 +674,21 @@ fn test_max_pairs_global_cap() {
     assert_eq!(report.capped, 1);
     assert_eq!(meta_count(&store), 3);
 }
+
+// ── entity_tokens ─────────────────────────────────────────────────────
+
+#[test]
+fn test_entity_tokens_names_and_noise() {
+    // Mid-sentence names are entities; possessives normalized.
+    assert_eq!(entity_tokens("I talked to Melanie's kids today"), vec!["melanie"]);
+    // Sentence-initial caps are capitalization noise, not entities.
+    assert!(entity_tokens("Melanie went hiking.").is_empty());
+    // Mixed sentence: mid-sentence names survive, sentence-initial ones drop.
+    let toks = entity_tokens("I talked to Caroline yesterday. She mentioned Yosemite camping.");
+    assert!(toks.contains(&"caroline".to_string()));
+    assert!(toks.contains(&"yosemite".to_string()));
+    assert!(!toks.iter().any(|t| t == "she"));
+    // Stoplist + no proper nouns → no entities.
+    assert!(entity_tokens("What is the name of the city?").is_empty());
+    assert!(entity_tokens("which editor does the user prefer").is_empty());
+}

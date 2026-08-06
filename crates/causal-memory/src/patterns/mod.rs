@@ -42,7 +42,7 @@ mod classify;
 mod tokenizer;
 
 pub use tokenizer::{
-    boilerplate_tokens, content_tokens, jaccard, tokenize,
+    boilerplate_tokens, content_tokens, entity_tokens, jaccard, tokenize,
 };
 
 use classify::{classify_pair, pair_signature, PatternHit, StrataAcc, StrataVerdict};

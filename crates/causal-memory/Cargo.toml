@@ -21,8 +21,12 @@ tokio = { workspace = true, features = ["time"] }
 
 # Local embedding via ONNX (optional). Enable with --features local-embed.
 # Uses fastembed-rs (BAAI/bge-small-en-v1.5, 384 dims, ~130MB, downloads on first use).
-# On macOS, build.rs links CoreML framework (required by ort-sys).
-fastembed = { version = "5", optional = true }
+# `ort-load-dynamic` (instead of download-binaries): the prebuilt
+# aarch64-apple-darwin ONNX Runtime only ships with the CoreML execution
+# provider, whose symbols (MLComputePlan — macOS 14+) do not exist on macOS 13
+# SDKs; static linking fails on CLT-only machines. load-dynamic dlopens a
+# system onnxruntime dylib at runtime instead (point ORT_DYLIB_PATH at it).
+fastembed = { version = "5", optional = true, default-features = false, features = ["ort-load-dynamic", "hf-hub-native-tls"] }
 
 [features]
 default = []

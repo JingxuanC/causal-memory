@@ -2367,3 +2367,97 @@ fn test_trace_cause_cross_session_same_session_bridge_skipped() {
         assert!(superseded[0].superseded_by.is_some());
         assert!(superseded[0].valid_to.is_some());
     }
+
+#[test]
+fn test_entity_boost_amplifies_semantic_scores() {
+    let store = CausalStore::open_in_memory().unwrap();
+    for (dec, out) in [
+        ("went camping with Melanie at Yosemite", "loved it"),
+        ("Switched to oat milk", "tastes fine"),
+    ] {
+        store
+            .record_decision(dec, out, "caused", None, 0.8, "rule")
+            .unwrap();
+    }
+    // Identical synthetic embeddings for both edges: plain semantic ties;
+    // only the entity boost can separate them.
+    let edges = store.all_valid_edges().unwrap();
+    for e in &edges {
+        store.put_embedding(e.edge_id, "test", &[1.0f32, 0.0, 0.0, 0.0]).unwrap();
+    }
+
+    let qv = [1.0f32, 0.0, 0.0, 0.0];
+    let boosted = store
+        .search_causal_semantic_entity_boosted(&qv, "Where has Melanie camped?", None, 10)
+        .unwrap();
+    assert_eq!(boosted.len(), 2);
+    assert!(
+        boosted[0].0.decision_text.contains("Melanie"),
+        "entity-boosted edge must win the tie: {:?}",
+        boosted[0].0.decision_text
+    );
+    assert!(boosted[0].1 > boosted[1].1);
+
+    // No-entity query → boost 1.0 → identical to plain semantic (tie).
+    let plain = store.search_causal_semantic(&qv, None, 10).unwrap();
+    assert_eq!(plain.len(), 2);
+}
+
+/// Test helper: insert a raw chunk-to-chunk causal edge, creating chunks on
+/// demand (text-derived ids). Defined here for tests that build clean
+/// multi-hop graphs; `record_decision` creates fresh chunk ids per call.
+#[allow(dead_code)]
+fn hop_link(store: &CausalStore, from: &str, to: &str, conf: f64) -> i64 {
+    store
+        .with_conn(|conn| {
+            for text in [from, to] {
+                conn.execute(
+                    "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, 1000)",
+                    params![format!("chunk:{text}"), text],
+                )?;
+            }
+            conn.execute(
+                "INSERT INTO causal_edges (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at)
+                 VALUES (?1, ?2, 'caused', ?3, 'rule', 1000, 1000)",
+                params![format!("chunk:{from}"), format!("chunk:{to}"), conf],
+            )?;
+            Ok(conn.last_insert_rowid())
+        })
+        .unwrap()
+}
+
+#[test]
+fn test_search_causal_hop_expands_chain() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Chunk ids are text-derived (hop_link): shared text = shared node, so
+    // adjacency is real — like turn chunks in the LoCoMo harness.
+    let id_a = hop_link(&store, "went camping with Melanie at Yosemite", "Melanie loved the trip", 0.9);
+    hop_link(&store, "Melanie loved the trip", "booked another camping trip", 0.8);
+    hop_link(&store, "booked another camping trip", "flew to Banff", 0.7);
+    // 无关边,不应出现在 hop 结果里
+    hop_link(&store, "Switched to oat milk", "tastes fine", 0.8);
+
+    let hop = store
+        .search_causal_hop("Where has Melanie camped?", &[id_a], 10)
+        .unwrap();
+    // 1-hop: 共享 "Melanie loved the trip" 节点的边在结果里;无关边不在。
+    assert!(!hop.is_empty());
+    assert!(hop.iter().any(|e| e.outcome_text.contains("booked another")));
+    assert!(!hop.iter().any(|e| e.outcome_text.contains("tastes fine")));
+
+    // 2-hop 需要 distill 边:造一条 2 跳可达的蒸馏边,验证精度闸门
+    // (banff 与问题无共享 token → 被过滤)。
+    store.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO causal_edges (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at)
+             VALUES ('chunk:booked another camping trip', 'chunk:flew to Banff', 'caused', 0.9, 'distill', 1000, 1000)",
+            [],
+        )?;
+        Ok(())
+    })
+    .unwrap();
+    let gated = store
+        .search_causal_hop("Where has Melanie camped?", &[id_a], 10)
+        .unwrap();
+    assert!(!gated.iter().any(|e| e.outcome_text.contains("Banff")));
+}
