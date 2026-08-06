@@ -26,7 +26,9 @@ pub const CAUSAL_SCHEMA_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS chunks (
     id TEXT PRIMARY KEY,
     text TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    q_value REAL NOT NULL DEFAULT 0.5,
+    sparse_code TEXT
 );
 
 -- Session logs: raw conversation turns for audit/replay.

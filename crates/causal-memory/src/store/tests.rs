@@ -2461,3 +2461,82 @@ fn test_search_causal_hop_expands_chain() {
         .unwrap();
     assert!(!gated.iter().any(|e| e.outcome_text.contains("Banff")));
 }
+
+#[test]
+fn test_record_decision_reuses_identical_text_chunk() {
+    let store = CausalStore::open_in_memory().unwrap();
+    let id1 = store
+        .record_decision("switched to oat milk", "tastes fine", "caused", None, 0.8, "rule")
+        .unwrap();
+    let id2 = store
+        .record_decision("switched to oat milk", "tastes fine", "caused", None, 0.9, "rule")
+        .unwrap();
+    // v9: identical text reuses the SAME chunk ids — one fact, one node.
+    assert_eq!(id1, id2, "identical decision text must reuse the chunk id");
+    // Both edges still exist (reuse is at the chunk level, not dedup).
+    let n = store.all_valid_edges().unwrap().len();
+    assert_eq!(n, 2);
+    // sparse_code persisted on the reused chunk.
+    let code: String = store
+        .with_conn(|c| {
+            c.query_row("SELECT sparse_code FROM chunks WHERE id = ?1", params![id1], |r| r.get(0))
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        })
+        .unwrap();
+    assert_eq!(code.len(), 32, "128-bit simhash hex");
+}
+
+#[test]
+fn test_q_value_persists_and_reinforces() {
+    let store = CausalStore::open_in_memory().unwrap();
+    store
+        .record_decision("deployed without tests", "prod incident", "caused", None, 0.9, "user_feedback")
+        .unwrap();
+    store
+        .record_decision("added integration tests", "no more prod incidents", "caused", None, 0.7, "rule")
+        .unwrap();
+
+    // Baseline: all chunks start at default 0.5.
+    let q0: f64 = store
+        .with_conn(|c| {
+            c.query_row("SELECT q_value FROM chunks LIMIT 1", [], |r| r.get(0))
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        })
+        .unwrap();
+    assert_eq!(q0, 0.5);
+
+    // Consolidate with a low protect threshold so the high-confidence edge is
+    // replayed → its endpoint chunks get Bellman reward (Q > 0.5).
+    use crate::consolidate::{consolidate, ConsolidateConfig};
+    let report = consolidate(
+        &store,
+        &ConsolidateConfig {
+            replay_protect_score: 0.5,
+            ..ConsolidateConfig::default()
+        },
+        false,
+        1000,
+    )
+    .unwrap();
+    assert!(
+        report.q_updates > 0,
+        "protected edges must trigger Q reinforcement (q_updates={})",
+        report.q_updates
+    );
+
+    // Persisted: at least one chunk's Q value rose above the 0.5 default.
+    let max_q: f64 = store
+        .with_conn(|c| {
+            c.query_row("SELECT MAX(q_value) FROM chunks", [], |r| r.get(0))
+                .map_err(|e| anyhow::anyhow!("{e}"))
+        })
+        .unwrap();
+    assert!(max_q > 0.5, "Bellman reward must persist to chunks.q_value");
+
+    // The graph loads the persisted Q (from_store reads the column).
+    let graph = crate::hippocampus::CausalGraph::from_store(&store).unwrap();
+    let max_q = (0..graph.num_nodes())
+        .map(|i| graph.node_q_value(i))
+        .fold(0.0f32, f32::max);
+    assert!(max_q > 0.5, "graph must load persisted Q values");
+}

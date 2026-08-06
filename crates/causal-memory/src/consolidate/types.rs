@@ -24,6 +24,13 @@ pub struct ConsolidateConfig {
     /// Default 1.0: reached by failure lessons (conf ≥ 0.5 + 0.5), most
     /// user_feedback edges, and high-confidence contradicted edges.
     pub replay_protect_score: f64,
+    /// Bellman learning rate for Q-value reinforcement (stage 1.5).
+    pub q_alpha: f64,
+    /// Bellman discount for Q-value reinforcement (stage 1.5).
+    pub q_gamma: f64,
+    /// Minimum recent-experience diversity (0..1) below which consolidation
+    /// skips as a no-op (P6 novelty trigger). 0.0 = always consolidate.
+    pub min_diversity: f64,
     /// Decay-days divisor for replay-protected edges (stage 3): 2.0 = half-rate
     /// decay.
     pub replay_decay_divisor: f64,
@@ -45,6 +52,9 @@ impl Default for ConsolidateConfig {
             replay_protect_score: 1.0,
             replay_decay_divisor: 2.0,
             replay_gc_threshold: 0.1,
+            q_alpha: 0.1,
+            q_gamma: 0.9,
+            min_diversity: 0.0,
             miner: MinerConfig::default(),
         }
     }
@@ -82,6 +92,12 @@ pub struct ConsolidateReport {
     pub gc_invalidated: usize,
     /// Stage 4: cross-domain transfer meta edges written.
     pub rem_transfers: usize,
+    /// Stage 1.5: chunk Q-values reinforced (Bellman) and persisted.
+    pub q_updates: usize,
+    /// P6: token-level diversity of recent experience (0..1).
+    pub diversity: f64,
+    /// P6: consolidation skipped because diversity < min_diversity.
+    pub skipped_low_diversity: bool,
     pub dry_run: bool,
 }
 

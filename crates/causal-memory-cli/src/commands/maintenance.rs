@@ -203,19 +203,41 @@ fn parse_db_flags(args: &[String], usage: &str) -> anyhow::Result<DbFlags> {
 pub(crate) fn run_sleep(args: &[String]) -> anyhow::Result<()> {
     use causal_memory::consolidate::{consolidate, ConsolidateConfig};
 
-    let flags = parse_db_flags(args, "Usage: causal-memory sleep [--db <PATH>] [--dry-run]")?;
+    let auto = args.iter().any(|a| a == "--auto");
+    // --auto is sleep-specific: strip it before the shared flag parser.
+    let filtered: Vec<String> = args.iter().filter(|a| *a != "--auto").cloned().collect();
+    let flags = parse_db_flags(&filtered, "Usage: causal-memory sleep [--db <PATH>] [--dry-run] [--auto]")?;
     if let Some(parent) = flags.db.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let store = CausalStore::open(&flags.db)?;
     let now = chrono::Utc::now().timestamp();
-    let report = consolidate(&store, &ConsolidateConfig::default(), flags.dry_run, now)?;
+    // --auto: P6 novelty gate — skip the cycle when recent experience is too
+    // uniform to have consolidation material (min_diversity = 0.4).
+    let config = if auto {
+        ConsolidateConfig {
+            min_diversity: 0.4,
+            ..ConsolidateConfig::default()
+        }
+    } else {
+        ConsolidateConfig::default()
+    };
+    let report = consolidate(&store, &config, flags.dry_run, now)?;
+
+    if report.skipped_low_diversity {
+        println!("=== Sleep Consolidation: SKIPPED (recent diversity {:.2} < 0.4) — nothing new to consolidate ===", report.diversity);
+        return Ok(());
+    }
 
     println!(
         "=== Sleep Consolidation Report{} ===",
         if report.dry_run { " (DRY RUN)" } else { "" }
     );
-    println!("DB: {}\n", flags.db.display());
+    println!(
+        "DB: {} (recent diversity {:.2})\n",
+        flags.db.display(),
+        report.diversity
+    );
 
     println!(
         "① Reactivation (replay priority, top {}):",
@@ -263,6 +285,7 @@ pub(crate) fn run_sleep(args: &[String]) -> anyhow::Result<()> {
 
     println!("\n④ REM integration:");
     println!("  cross-domain transfers: {}", report.rem_transfers);
+    println!("⑤ Q-value reinforcement (Bellman): {} chunk(s) updated", report.q_updates);
 
     if report.dry_run {
         println!("\n(dry run — no changes were written)");

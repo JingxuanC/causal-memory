@@ -39,6 +39,8 @@ mod types;
 
 pub use types::{ConsolidateConfig, ConsolidateReport, ReactivationEntry};
 
+use rusqlite::params;
+
 use stages::{
     downscale, merge_redundant_edges, rem_integrate, replay_writeback, score_reactivation,
     snapshot_meta_edges,
@@ -59,6 +61,16 @@ pub fn consolidate(
         ..Default::default()
     };
 
+    // ── Stage 0: P6 novelty gate — diverse recent experience? ────────────
+    // Token-level Shannon entropy over the most recent chunks, normalized to
+    // 0..1. Near-uniform recent text means there is nothing new to
+    // consolidate: skip the whole cycle as a no-op (sleep --auto).
+    report.diversity = recent_diversity(store, 64)?;
+    if report.diversity < config.min_diversity {
+        report.skipped_low_diversity = true;
+        return Ok(report);
+    }
+
     // ── Stage 1: Reactivation (score → protect in stage 3 → write back) ──
     let scored = score_reactivation(store, config, now)?;
     let protected: HashSet<i64> = scored
@@ -67,6 +79,38 @@ pub fn consolidate(
         .map(|e| e.edge_id)
         .collect();
     report.reactivated = scored.into_iter().take(20).collect();
+
+    // ── Stage 1.5: Q-value reinforcement (Bellman) ───────────────────────
+    // Replay-protected edges are the "useful" lessons: reward their endpoint
+    // chunks (Q ← Q + α·(r + γ·max_next_Q − Q), r = 1.0) and persist to
+    // chunks.q_value so the hippocampus seeding (0.5 + 0.5·Q) favors them in
+    // the next session. The in-memory graph dies with the process otherwise.
+    if !protected.is_empty() {
+        if let Ok(mut graph) = crate::hippocampus::CausalGraph::from_store(store) {
+            for &edge_id in &protected {
+                let Ok(Some(entry)) = store.get_edge(edge_id) else {
+                    continue;
+                };
+                if graph.update_q_value_by_chunk_id(
+                    &entry.decision_id,
+                    1.0,
+                    config.q_alpha as f32,
+                    config.q_gamma as f32,
+                ) {
+                    report.q_updates += 1;
+                }
+                graph.update_q_value_by_chunk_id(
+                    &entry.outcome_id,
+                    1.0,
+                    config.q_alpha as f32,
+                    config.q_gamma as f32,
+                );
+            }
+            if !dry_run {
+                graph.persist_q_values(store)?;
+            }
+        }
+    }
 
     // ── Stage 2: Generalization ─────────────────────────────────────────
     report.merged_edges = merge_redundant_edges(store, dry_run, now)?;
@@ -94,3 +138,34 @@ pub fn consolidate(
 
 #[cfg(test)]
 mod tests;
+
+/// P6: token-level diversity over the `n` most recent chunks — Shannon
+/// entropy of the token distribution, normalized by ln(unique tokens) so a
+/// uniform distribution scores 1.0. The production novelty signal: high
+/// diversity = the store accumulated genuinely new material worth
+/// consolidating; near-uniform recent text = nothing new (skip as no-op).
+pub fn recent_diversity(store: &CausalStore, n: usize) -> Result<f64> {
+    store.with_conn(|conn| {
+        let mut stmt = conn.prepare("SELECT text FROM chunks ORDER BY created_at DESC LIMIT ?1")?;
+        let rows = stmt.query_map(params![n as i64], |r| r.get::<_, String>(0))?;
+        let mut freq: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut total = 0usize;
+        for text in rows {
+            for tok in crate::patterns::tokenize(&text?) {
+                *freq.entry(tok).or_insert(0) += 1;
+                total += 1;
+            }
+        }
+        if total == 0 {
+            return Ok(0.0);
+        }
+        let mut entropy = 0.0;
+        for &c in freq.values() {
+            let p = c as f64 / total as f64;
+            entropy -= p * p.ln();
+        }
+        let unique = freq.len() as f64;
+        Ok(if unique > 1.0 { entropy / unique.ln() } else { 0.0 })
+    })
+}
+

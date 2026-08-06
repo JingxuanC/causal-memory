@@ -31,7 +31,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 8;
+pub const SCHEMA_VERSION: u32 = 9;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -68,6 +68,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     if version < 8 {
         migrate_to_v8(&tx)?;
     }
+    if version < 9 {
+        migrate_to_v9(&tx)?;
+    }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
     tx.execute_batch(CAUSAL_SCHEMA_SQL)?;
@@ -90,7 +93,13 @@ fn detect_version(conn: &Connection) -> Result<u32> {
     }
     let cols = table_columns(conn, "causal_edges")?;
     if cols.contains("superseded_by") {
-        Ok(8)
+        // v8 or v9: v9 added q_value + sparse_code to chunks (guard: some
+        // hand-built test DBs predate the chunks table entirely).
+        if table_exists(conn, "chunks")? && table_columns(conn, "chunks")?.contains("q_value") {
+            Ok(9)
+        } else {
+            Ok(8)
+        }
     } else if cols.contains("outcome_polarity") {
         // v4 or v5: v5 added the stratification columns to meta_causal_edges.
         if table_exists(conn, "meta_causal_edges")?
@@ -817,4 +826,26 @@ mod tests {
         migrate(&conn).unwrap();
         assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
     }
+}
+
+/// v8 → v9: chunk-level learning state. `q_value` persists the hippocampus
+/// Q-learning (Bellman) signal across sessions; `sparse_code` persists the DG
+/// SimHash code for write-path near-duplicate detection. Both are maintained
+/// by the write/consolidate paths.
+fn migrate_to_v9(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "chunks")? {
+        // Hand-built pre-v3 test DBs may lack the chunks table entirely; the
+        // base schema (CAUSAL_SCHEMA_SQL) creates it with the v9 columns.
+        return Ok(());
+    }
+    let cols = table_columns(conn, "chunks")?;
+    if !cols.contains("q_value") {
+        conn.execute_batch(
+            "ALTER TABLE chunks ADD COLUMN q_value REAL NOT NULL DEFAULT 0.5",
+        )?;
+    }
+    if !cols.contains("sparse_code") {
+        conn.execute_batch("ALTER TABLE chunks ADD COLUMN sparse_code TEXT")?;
+    }
+    Ok(())
 }

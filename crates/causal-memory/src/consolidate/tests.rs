@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::consolidate::{consolidate, ConsolidateConfig};
+use crate::consolidate::{consolidate, recent_diversity, ConsolidateConfig};
 use crate::store::CausalStore;
 const NOW: i64 = 1_700_000_000;
 const DAY: i64 = 86_400;
@@ -690,4 +690,56 @@ fn test_dry_run_does_not_mark_replayed() {
     let edge = store.get_edge(id).unwrap().unwrap();
     assert!((edge.confidence - 0.5).abs() < 1e-12);
     assert_eq!(edge.last_accessed_at, None);
+}
+
+#[test]
+fn test_diversity_gate_skips_uniform_experience() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Near-uniform recent text (many tokens shared) → low diversity → gate
+    // skips the cycle. (Pure repetition now dedupes to one chunk via v9 text
+    // reuse, so the skew must come from similar-but-distinct texts.)
+    for i in 0..20 {
+        store
+            .record_decision(
+                &format!("routine maintenance task number {i}"),
+                "completed as expected",
+                "caused",
+                None,
+                0.8,
+                "rule",
+            )
+            .unwrap();
+    }
+    let report = consolidate(
+        &store,
+        &ConsolidateConfig {
+            min_diversity: 0.9,
+            ..ConsolidateConfig::default()
+        },
+        false,
+        1000,
+    )
+    .unwrap();
+    assert!(report.skipped_low_diversity);
+    assert_eq!(report.q_updates, 0, "skipped cycle must not reinforce Q");
+    assert!(report.diversity < 0.9);
+}
+
+#[test]
+fn test_diversity_high_when_varied() {
+    let store = CausalStore::open_in_memory().unwrap();
+    for i in 0..20 {
+        store
+            .record_decision(
+                &format!("distinct decision number {i}"),
+                &format!("distinct outcome number {i}"),
+                "caused",
+                None,
+                0.8,
+                "rule",
+            )
+            .unwrap();
+    }
+    let d = recent_diversity(&store, 64).unwrap();
+    assert!(d > 0.5, "varied recent text must score high diversity (got {d:.2})");
 }

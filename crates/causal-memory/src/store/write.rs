@@ -81,14 +81,15 @@ impl CausalStore {
         let dec_id = format!("d{}{}", event_time, seq);
         let out_id = format!("o{}{}", event_time, seq);
 
-        conn.execute(
-            "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
-            params![&dec_id, decision, event_time],
-        )?;
-        conn.execute(
-            "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
-            params![&out_id, outcome, event_time],
-        )?;
+        // v9: exact-text chunk reuse — the same fact stays ONE node. Identical
+        // text reuses the existing chunk id instead of creating a duplicate
+        // (previously every call minted fresh nodes; tests had to work around
+        // it). Contradiction/supersede queries already match on text, so reuse
+        // is consistent and sharpens them. SimHash codes are persisted for
+        // near-duplicate detection (observability; reuse stays exact-text to
+        // avoid conflating distinct facts that share wording).
+        let dec_id = Self::reuse_or_create_chunk(&conn, decision, event_time, &dec_id)?;
+        let out_id = Self::reuse_or_create_chunk(&conn, outcome, event_time, &out_id)?;
         // Contradiction short-circuit (rule-based, no LLM): if the same decision
         // already has valid edges whose outcome is contradicted by the new one,
         // the old lesson is falsified by the new evidence — soft-invalidate it.
@@ -665,5 +666,58 @@ impl CausalStore {
         let rows = stmt.query_map(params![limit as i64], entry_from_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| anyhow!("Query failed: {e}"))
+    }
+
+    /// v9: exact-text chunk reuse + DG SimHash maintenance.
+    ///
+    /// Identical text maps to the SAME chunk id (one fact, one node). New
+    /// chunks persist their SimHash sparse code; near-duplicates (hamming ≤ 2,
+    /// both texts ≥ 20 chars) are detected and logged for observability —
+    /// reuse itself stays exact-text so distinct facts that merely share
+    /// wording are never conflated.
+    fn reuse_or_create_chunk(
+        conn: &Connection,
+        text: &str,
+        event_time: i64,
+        fallback_id: &str,
+    ) -> Result<String> {
+        // Exact reuse: same text → same node (oldest first).
+        let existing: Option<String> = conn
+            .query_row(
+                "SELECT id FROM chunks WHERE text = ?1 ORDER BY created_at ASC LIMIT 1",
+                params![text],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(id) = existing {
+            return Ok(id);
+        }
+        let code = crate::hippocampus::utils::simhash(text);
+        // Near-duplicate observability (long texts only — short texts collide
+        // in 128-bit simhash buckets far too often to be meaningful).
+        if text.chars().count() >= 20 {
+            let mut stmt = conn.prepare(
+                "SELECT id, sparse_code FROM chunks
+                 WHERE sparse_code IS NOT NULL AND length(text) >= 20",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (id, code_hex) = row?;
+                if let Ok(other) = u128::from_str_radix(&code_hex, 16) {
+                    if (code ^ other).count_ones() <= 2 {
+                        eprintln!(
+                            "chunk reuse: near-duplicate of {id} (hamming ≤ 2) — exact text differs, keeping separate node"
+                        );
+                    }
+                }
+            }
+        }
+        conn.execute(
+            "INSERT INTO chunks (id, text, created_at, sparse_code) VALUES (?1, ?2, ?3, ?4)",
+            params![fallback_id, text, event_time, format!("{:032x}", code)],
+        )?;
+        Ok(fallback_id.to_string())
     }
 }

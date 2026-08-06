@@ -24,7 +24,7 @@
 use std::collections::HashMap;
 
 mod types;
-mod utils;
+pub(crate) mod utils;
 
 pub use types::{
     ActivationResult, ConsolidationDelta, ConsolidationResult, ConsolidationStats, EdgeData,
@@ -808,6 +808,42 @@ impl CausalGraph {
         self.node_q_value[idx] = new_q.clamp(0.0, 1.0);
     }
 
+    /// Q-learning by chunk id — the production entry point. Consolidation
+    /// rewards the endpoint chunks of replay-protected edges; the server's
+    /// seeding (`0.5 + 0.5·Q`) then favors proven-useful nodes on the next
+    /// activation. Returns false when the chunk is not a graph node.
+    pub fn update_q_value_by_chunk_id(
+        &mut self,
+        chunk_id: &str,
+        reward: f32,
+        alpha: f32,
+        gamma: f32,
+    ) -> bool {
+        match self.node_id_to_idx.get(chunk_id) {
+            Some(&idx) => {
+                self.update_q_value(idx, reward, alpha, gamma);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Write the graph's Q values back to `chunks.q_value` (v9 persistence) —
+    /// without this, Bellman updates die with the in-memory graph and the
+    /// learned utility never reaches the next session.
+    pub fn persist_q_values(&self, store: &crate::store::CausalStore) -> anyhow::Result<()> {
+        store.with_conn(|conn| {
+            let mut stmt = conn.prepare("UPDATE chunks SET q_value = ?1 WHERE id = ?2")?;
+            for (id, &idx) in &self.node_id_to_idx {
+                stmt.execute(rusqlite::params![
+                    self.node_q_value[idx as usize],
+                    id
+                ])?;
+            }
+            Ok(())
+        })
+    }
+
     // ─── P6: Novelty-entropy trigger ──────────────────────────────────────
 
     /// Entropy over replay-count buckets. High = diverse/surprising recent
@@ -967,25 +1003,26 @@ impl CausalGraph {
         store.with_conn(|conn| {
             // Load chunks
             let mut node_stmt =
-                conn.prepare("SELECT id, text, created_at FROM chunks ORDER BY created_at ASC")?;
+                conn.prepare("SELECT id, text, created_at, q_value FROM chunks ORDER BY created_at ASC")?;
             let node_rows = node_stmt.query_map([], |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
                     row.get::<_, i64>(2)?,
+                    row.get::<_, f32>(3)?,
                 ))
             })?;
 
             let mut nodes: Vec<NodeData> = Vec::new();
             let mut id_to_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
             for row in node_rows {
-                let (id, text, event_time) = row?;
+                let (id, text, event_time, q_value) = row?;
                 id_to_idx.insert(id.clone(), nodes.len());
                 nodes.push(NodeData {
                     id,
                     text,
                     event_time,
-                    q_value: 0.5,
+                    q_value,
                     replay_count: 0,
                     last_activated: 0,
                     task_tag: None,

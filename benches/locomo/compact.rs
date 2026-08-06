@@ -804,11 +804,13 @@ mod tests {
         let edge_n = record_original_turn_edges(&store, &sessions).unwrap();
         assert_eq!(edge_n, 2);
 
-        // Chunks: 1 compressed summary + 2 edges x (decision + outcome).
+        // Chunks: 1 compressed summary + 3 distinct turns. The middle turn
+        // ("second turn") is BOTH edge 1's outcome and edge 2's decision —
+        // v9 text reuse keeps it ONE node (previously 2 duplicate chunks).
         let chunk_count: i64 = store
             .with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?))
             .unwrap();
-        assert_eq!(chunk_count, 5);
+        assert_eq!(chunk_count, 4, "shared turn text must be a single node");
         assert_eq!(store.all_valid_edges().unwrap().len(), 2);
     }
 }
