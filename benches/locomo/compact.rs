@@ -435,6 +435,8 @@ fn print_comparison(summary: &CompactSummary) {
 
 pub(crate) async fn run(args: CompactArgs) -> Result<()> {
     let cfg = LlmConfig::from_env()?;
+    let embedder: crate::SharedEmbedder =
+        std::sync::Arc::new(tokio::sync::Mutex::new(causal_memory::embed::init_embedder()));
     eprintln!("LLM: {} @ {}", cfg.model, cfg.api_base);
     eprintln!(
         "compact: k={} prompt={} (topk={})",
@@ -526,6 +528,7 @@ pub(crate) async fn run(args: CompactArgs) -> Result<()> {
         let rows_a = answer_all(
             &cfg,
             &store_a,
+            &embedder,
             conv_idx,
             qas.clone(),
             COMPACT_TOPK,
@@ -533,6 +536,7 @@ pub(crate) async fn run(args: CompactArgs) -> Result<()> {
             false, // compact experiment is causal/text-only; no fact layer
             PromptVersion::V1, // compact experiment uses legacy prompt
             crate::JudgeStyle::Strict,
+            false, // search_only: compact experiment always answers+judges
         )
         .await;
         write_rows(&args.out_dir, &run_id, conv_idx, "A", &rows_a)?;
@@ -552,6 +556,7 @@ pub(crate) async fn run(args: CompactArgs) -> Result<()> {
         let rows_b = answer_all(
             &cfg,
             &store_b,
+            &embedder,
             conv_idx,
             qas,
             COMPACT_TOPK,
@@ -559,6 +564,7 @@ pub(crate) async fn run(args: CompactArgs) -> Result<()> {
             false, // compact experiment is causal/text-only; no fact layer
             PromptVersion::V1, // compact experiment uses legacy prompt
             crate::JudgeStyle::Strict,
+            false, // search_only: compact experiment always answers+judges
         )
         .await;
         write_rows(&args.out_dir, &run_id, conv_idx, "B", &rows_b)?;

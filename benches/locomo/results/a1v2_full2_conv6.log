@@ -1,0 +1,109 @@
+LLM: deepseek-v4-flash @ https://api.deepseek.com/v1
+[causal-memory] local embedding initialized: BAAI/bge-small-en-v1.5 (384 dims)
+conv 6: 689 chunks in benches/locomo/db/conv_6_distill.db
+conv 6: distill — 31 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 6: 190 questions
+judge: unparseable attempt 1/3: We need to judge: Gold answer: "Stout, lager". Predicted: "McGee's bar serves stout (dark beer), lig
+conv 6: 50 questions done
+judge: unparseable attempt 2/3: We need to evaluate if predicted answer matches gold answer. Gold: Stout, lager. Predicted: stout, l
+judge: unparseable attempt 1/3: We need answer as judge. Need compare predicted answer to gold. Predicted answer given? Wait in prom
+judge: unparseable attempt 2/3: We need output JSON verdict. Need determine correctness.
+
+Predicted answer: "We need answer question
+judge: unparseable attempt 3/3: We need answer question. Need parse. "What was James' big moment with Samantha in October 2023?" Mem
+judge: unparseable attempt 1/3: {"verdict": "incorrect", "reason": "The predicted answer does not state that John organized a CS:GO 
+judge: unparseable attempt 2/3: We need to judge if predicted answer matches gold answer. The question: "What did John organize with
+conv 6: 100 questions done
+judge: unparseable attempt 1/3: We need to judge if predicted answer matches gold. Gold: "catching frisbees in mid-air". Predicted: 
+judge: unparseable attempt 2/3: We need to evaluate if the predicted answer matches the gold answer. Gold: "catching frisbees in mid
+judge: unparseable attempt 3/3: We need to evaluate if the predicted answer conveys the same information as the gold answer. Gold: "
+judge: unparseable attempt 1/3: We need to evaluate if predicted answer conveys the same info as gold answer. Gold answer: "Omelette
+conv 6: 150 questions done
+judge: unparseable attempt 1/3: We need answer based on memories. The predicted answer says "James didn't create it; John did." Is t
+judge: unparseable attempt 1/3: We need answer JSON. Need determine predicted answer? The user provided question and predicted answe
+judge: unparseable attempt 2/3: We need answer user. Need evaluate predicted answer? The instruction: We are judge. Need respond JSO
+judge: unparseable attempt 2/3: We need to output JSON with verdict. The predicted answer is a long reasoning, but it ends with "Ver
+judge: unparseable attempt 3/3: We need to evaluate the predicted answer. The question is adversarial: asks about James creating som
+judge: unparseable attempt 1/3: We need answer question. Need judge predicted answer. But user provides context? The prompt: "Questi
+judge: unparseable attempt 1/3: We need to output JSON with verdict. The predicted answer says "We need answer... But memory: John s
+judge: unparseable attempt 1/3: We need to judge the predicted answer. The predicted answer is a bit rambling, but it states: "We ne
+judge: unparseable attempt 1/3: We need answer as JSON verdict. Need inspect predicted answer? The user provided predicted answer: "
+judge: unparseable attempt 1/3: We need answer? Need evaluate predicted answer. But predicted answer text is incomplete: "We need an
+judge: unparseable attempt 2/3: We need to evaluate if the predicted answer is correct. The user says: "We need answer question: ...
+judge: unparseable attempt 2/3: We need to evaluate the predicted answer. The predicted answer says: "We need answer question. Need 
+judge: unparseable attempt 3/3: We need answer question: "What does James feel about starting the journey as a programming mentor fo
+judge: unparseable attempt 1/3: We need answer JSON. Need evaluate predicted answer. Need see conversation? We have only question an
+judge: unparseable attempt 3/3: We need to output JSON with verdict and reason. The predicted answer seems incomplete: "We need answ
+judge: unparseable attempt 2/3: We need to output JSON only. We must determine if the predicted answer correctly handles the adversa
+judge: unparseable attempt 3/3: We need to output JSON. The predicted answer analyzes and concludes unknown? Actually predicted answ
+conv 6: wrote benches/locomo/results/a1v2_full2_20260806/run_20260806_013917_conv6.jsonl
+{
+  "run_id": "20260806_013917",
+  "date": "2026-08-06T01:44:11.572539+00:00",
+  "git_commit": "f4625d1",
+  "model": "deepseek-v4-flash",
+  "judge_model": "deepseek-v4-flash",
+  "temperature": 0.0,
+  "topk": 10,
+  "ingest": "distill",
+  "prompt_version": "v2",
+  "judge_style": "strict",
+  "distill_ingest": {
+    "sessions": 31,
+    "llm_calls": 0,
+    "facts_recorded": 0,
+    "episodes_recorded": 0,
+    "episodes_duplicate": 0,
+    "facts_retired": 0,
+    "superseded_invalidations": 0,
+    "skipped_existing": false
+  },
+  "data": "benches/locomo/data/locomo10.json",
+  "conversations": [
+    6
+  ],
+  "total_questions": 190,
+  "correct": 139,
+  "incorrect": 45,
+  "error": 6,
+  "accuracy": 0.7554347826086957,
+  "evidence_hit_rate": 0.7684210526315789,
+  "per_category": {
+    "1": {
+      "total": 20,
+      "correct": 10,
+      "incorrect": 10,
+      "error": 0,
+      "accuracy": 0.5
+    },
+    "2": {
+      "total": 34,
+      "correct": 23,
+      "incorrect": 10,
+      "error": 1,
+      "accuracy": 0.696969696969697
+    },
+    "3": {
+      "total": 13,
+      "correct": 7,
+      "incorrect": 6,
+      "error": 0,
+      "accuracy": 0.5384615384615384
+    },
+    "4": {
+      "total": 83,
+      "correct": 75,
+      "incorrect": 7,
+      "error": 1,
+      "accuracy": 0.9146341463414634
+    },
+    "5": {
+      "total": 40,
+      "correct": 24,
+      "incorrect": 12,
+      "error": 4,
+      "accuracy": 0.6666666666666666
+    }
+  }
+}
+wrote benches/locomo/results/a1v2_full2_20260806/run_20260806_013917_summary.json

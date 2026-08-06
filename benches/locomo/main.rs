@@ -27,7 +27,8 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use causal_memory::distill::{Distiller, ItemKind};
-use causal_memory::embed::{cosine_similarity, blob_to_vec, EmbedConfig, Embedder};
+// Embedders go through causal_memory::embed::init_embedder() — HTTP first,
+// local ONNX (--features local-embed) second. No harness-local embedder.
 use causal_memory::store::{CausalEntry, CausalStore};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use futures::StreamExt;
@@ -46,7 +47,9 @@ const TURN_EDGE_DISCOVERED_BY: &str = "temporal";
 /// LLM answer generation settings (LoCoMo protocol).
 const ANSWER_MAX_TOKENS: u32 = 200;
 const ANSWER_MAX_TOKENS_V2: u32 = 800; // 7-step reasoning needs budget; final answer still short
-const JUDGE_MAX_TOKENS: u32 = 200;
+/// 200 was truncating judge JSON mid-`reason` (62 errors in the 20260805 run);
+/// 512 covers a long reason plus the verdict object with room to spare.
+const JUDGE_MAX_TOKENS: u32 = 512;
 const LLM_TEMPERATURE: f32 = 0.0;
 const LLM_RETRIES: usize = 3;
 
@@ -155,6 +158,8 @@ fn usage() {
     eprintln!("  --ingest MODE       raw (default) | distill (raw + LLM-distilled facts/");
     eprintln!("                      episodes on top; separate *_distill.db)");
     eprintln!("  --ingest-only       ingest (+ distill) and exit; skip QA");
+    eprintln!("  --search-only       retrieval + evidence_hit only (zero LLM calls)");
+    eprintln!("  --reembed           re-embed all edges with the local ONNX embedder");
     eprintln!("  --prompt-version VER  v1 (legacy) | v2 (7-step reasoning, default)");
     eprintln!("  --judge-style STYLE  strict (default) | mem0 (lenient: partial credit, ±14d dates)");
     eprintln!("  rejudge --input results/<run>.jsonl --judge-style mem0  (re-judge without re-answering)");
@@ -416,110 +421,48 @@ fn ingest_conversation(store: &CausalStore, conv: &LocomoConversation) -> Result
 /// fan-out of per-word LIKE ranked by hit count): natural-language questions
 /// almost never appear verbatim in turn text, and the fan-out had no IDF or
 /// length normalization — BM25 fixes both while staying dependency-free.
+/// All retrieval signals come from the system (store), not harness-local
+/// copies — the harness measures the product, it does not re-implement it.
 fn retrieve(store: &CausalStore, question: &str, topk: usize, query_vec: Option<&[f32]>) -> Result<Vec<CausalEntry>> {
     let bm25_results = store.search_causal_bm25(None, question, topk)?;
+    let mut lists: Vec<&[CausalEntry]> = vec![&bm25_results];
 
-    // Semantic + BM25 RRF fusion (query_vec pre-computed in async context)
-    if let Some(qv) = query_vec {
-        let semantic = semantic_search(store, qv, topk * 2).unwrap_or_default();
-        if !semantic.is_empty() {
-            return Ok(rrf_merge(&bm25_results, &semantic, topk));
-        }
+    // Semantic list with entity boost (query_vec pre-computed in async
+    // context). The boost is multiplicative on cosine similarity — a
+    // similarity backbone with the entity signal as rank amplifier, never a
+    // standalone list (measured regression when fused as a peer RRF list).
+    let semantic: Vec<CausalEntry> = query_vec
+        .map(|qv| {
+            store
+                .search_causal_semantic_entity_boosted(qv, question, None, topk * 2)
+                .map(|hits| hits.into_iter().map(|(e, _)| e).collect::<Vec<_>>())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    if !semantic.is_empty() {
+        lists.push(&semantic);
     }
 
-    Ok(bm25_results)
+    // A2: hop expansion — 1-hop adjacency + 2-hop distilled causal jumps from
+    // the primary seeds, fused as a recall list (system-side, deterministic).
+    let primary = causal_memory::store::retrieve::rrf_merge_many(&lists, topk);
+    let seed_ids: Vec<i64> = primary.iter().map(|e| e.edge_id).collect();
+    let hop = store
+        .search_causal_hop(question, &seed_ids, topk * 2)
+        .unwrap_or_default();
+    if !hop.is_empty() {
+        lists.push(&hop);
+    }
+
+    Ok(causal_memory::store::retrieve::rrf_merge_many(&lists, topk))
 }
 
-/// Brute-force cosine search over edge_embeddings (mirrors store::search_causal_semantic
-/// but works from the harness without going through the MCP server).
-fn semantic_search(store: &CausalStore, query_vec: &[f32], limit: usize) -> Result<Vec<CausalEntry>> {
-    store.with_conn(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT ee.edge_id, ee.vector, cf.text, ct.text, e.relation, e.confidence, e.task_tag
-             FROM edge_embeddings ee
-             JOIN causal_edges e ON e.id = ee.edge_id
-             JOIN chunks cf ON cf.id = e.from_id
-             JOIN chunks ct ON ct.id = e.to_id
-             WHERE e.valid_to IS NULL"
-        )?;
-        let mut scored: Vec<(CausalEntry, f64)> = Vec::new();
-        let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, Vec<u8>>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, f64>(5)?,
-                row.get::<_, Option<String>>(6)?,
-            ))
-        })?;
-        let row_data: Vec<(i64, Vec<u8>, String, String, String, f64, Option<String>)> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-        drop(stmt);
-        for (edge_id, blob, dec_text, out_text, relation, confidence, task_tag) in row_data {
-            if let Ok(vec) = blob_to_vec(&blob) {
-                let sim = cosine_similarity(query_vec, &vec);
-                scored.push((CausalEntry {
-                    edge_id,
-                    decision_id: String::new(),
-                    decision_text: dec_text,
-                    outcome_id: String::new(),
-                    outcome_text: out_text,
-                    relation,
-                    confidence,
-                    task_tag,
-                    event_time: 0,
-                    valid_to: None,
-                    access_count: 0,
-                    last_accessed_at: None,
-                    discovered_by: String::new(),
-                    discovered_at: 0,
-                    outcome_polarity: None,
-                    superseded_by: None,
-                }, sim));
-            }
-        }
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(limit);
-        Ok(scored.into_iter().map(|(e, _)| e).collect())
-    })
-}
+// (semantic retrieval now delegates to `store.search_causal_semantic` — the
+// harness-local brute-force copy was removed; the system is the single source.)
 
-/// RRF merge of two ranked lists (same logic as the MCP server's search_memory).
-fn rrf_merge(bm25: &[CausalEntry], semantic: &[CausalEntry], limit: usize) -> Vec<CausalEntry> {
-    use std::collections::HashMap;
-    let k = 60.0;
-    let mut scores: HashMap<i64, (f64, usize)> = HashMap::new(); // edge_id → (rrf_score, bm25_index)
-
-    // Score from BM25 list
-    for (i, entry) in bm25.iter().enumerate() {
-        let s = 1.0 / (k + i as f64 + 1.0);
-        scores.insert(entry.edge_id, (s, i));
-    }
-    // Score from semantic list
-    for (i, entry) in semantic.iter().enumerate() {
-        let s = 1.0 / (k + i as f64 + 1.0);
-        match scores.get_mut(&entry.edge_id) {
-            Some((acc, _)) => *acc += s,
-            None => { scores.insert(entry.edge_id, (s, usize::MAX)); } // not in BM25
-        }
-    }
-
-    // Build merged result: sort by score desc, take top-k
-    let mut ranked: Vec<(i64, f64)> = scores.into_iter().map(|(id, (s, _))| (id, s)).collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-    // Materialize: prefer BM25 entry (has full chunk ids), fall back to semantic
-    let mut result = Vec::new();
-    for (edge_id, _) in ranked.into_iter().take(limit) {
-        if let Some(entry) = bm25.iter().find(|e| e.edge_id == edge_id) {
-            result.push(entry.clone());
-        } else if let Some(entry) = semantic.iter().find(|e| e.edge_id == edge_id) {
-            result.push(entry.clone());
-        }
-    }
-    result
-}
+// Entity extraction (`patterns::entity_tokens`), entity-anchored retrieval
+// (`store::search_causal_entity`), and RRF fusion (`store::retrieve::rrf_merge_many`)
+// live in the system crate — the harness calls them, it does not copy them.
 
 /// Chunk ids covered by the retrieval result (decision + outcome endpoints).
 fn retrieved_chunk_ids(entries: &[CausalEntry]) -> Vec<String> {
@@ -583,6 +526,11 @@ struct ChatRequest<'a> {
     messages: Vec<ChatMessage<'a>>,
     max_tokens: u32,
     temperature: f32,
+    /// JSON mode (DeepSeek/OpenAI `response_format`): the API guarantees the
+    /// reply is a single parseable JSON object. Judge calls only — free-form
+    /// answer generation must leave this unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    response_format: Option<serde_json::Value>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -618,6 +566,7 @@ async fn chat_once(
     system: &str,
     user: &str,
     max_tokens: u32,
+    json_object: bool,
 ) -> Result<String> {
     let req = ChatRequest {
         model: &cfg.model,
@@ -633,6 +582,7 @@ async fn chat_once(
         ],
         max_tokens,
         temperature: LLM_TEMPERATURE,
+        response_format: json_object.then(|| serde_json::json!({"type": "json_object"})),
     };
     let url = format!("{}/chat/completions", cfg.api_base.trim_end_matches('/'));
     let resp = client
@@ -670,10 +620,28 @@ async fn chat_once(
 
 /// Chat with up to LLM_RETRIES retries and exponential backoff (1s, 2s, 4s).
 async fn chat(cfg: &LlmConfig, system: &str, user: &str, max_tokens: u32) -> Result<String> {
+    chat_with_retries(cfg, system, user, max_tokens, false).await
+}
+
+/// Same as [`chat`] but in JSON mode (`response_format: json_object`): the
+/// provider guarantees a parseable JSON object — used for judge calls where
+/// the old free-form path yielded 275 prose-only replies per run.
+async fn chat_json(cfg: &LlmConfig, system: &str, user: &str, max_tokens: u32) -> Result<String> {
+    chat_with_retries(cfg, system, user, max_tokens, true).await
+}
+
+/// Shared retry loop for both chat modes.
+async fn chat_with_retries(
+    cfg: &LlmConfig,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+    json_object: bool,
+) -> Result<String> {
     let client = reqwest::Client::new();
     let mut last_err = anyhow!("no attempt made");
     for attempt in 0..=LLM_RETRIES {
-        match chat_once(&client, cfg, system, user, max_tokens).await {
+        match chat_once(&client, cfg, system, user, max_tokens, json_object).await {
             Ok(s) => return Ok(s),
             Err(e) => {
                 let retryable = !e.to_string().contains("not retryable");
@@ -738,6 +706,48 @@ fn parse_judge_output(raw: &str) -> Option<(Verdict, String)> {
         .unwrap_or("")
         .to_string();
     Some((verdict, reason))
+}
+
+/// Judge call with format-level retries: JSON-mode LLM call + strict parse,
+/// re-asking with a nudge when the model answers in prose (275 of the 337
+/// errors in the 20260805 run were prose replies, not rate limits). Returns
+/// Verdict::Error only when every attempt fails.
+async fn judge_with_retry(
+    cfg: &LlmConfig,
+    judge_style: JudgeStyle,
+    judge_user: &str,
+) -> (Verdict, String) {
+    const RETRIES: usize = 3;
+    let mut last_raw = String::new();
+    for attempt in 0..RETRIES {
+        let user = if attempt == 0 {
+            judge_user.to_string()
+        } else {
+            format!("{judge_user}\n\nRespond with ONLY the JSON object. No other text.")
+        };
+        match chat_json(cfg, judge_style.system_prompt(), &user, JUDGE_MAX_TOKENS).await {
+            Ok(raw) => match parse_judge_output(&raw) {
+                Some(parsed) => return parsed,
+                None => {
+                    last_raw = raw.clone();
+                    eprintln!(
+                        "judge: unparseable attempt {}/{}: {}",
+                        attempt + 1,
+                        RETRIES,
+                        raw.chars().take(100).collect::<String>()
+                    );
+                }
+            },
+            Err(e) => {
+                last_raw = format!("judge LLM failed: {e}");
+                eprintln!("judge: {last_raw}");
+            }
+        }
+        if attempt + 1 < RETRIES {
+            tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
+        }
+    }
+    (Verdict::Error, format!("unparseable judge output: {last_raw}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -919,6 +929,13 @@ struct Args {
     /// Ingest (+ distill) only; skip the QA phase. Used to warm the
     /// per-conversation distill DBs in cheap chunks before one full QA run.
     ingest_only: bool,
+    /// Retrieval only: report evidence_hit with zero LLM calls (no answer,
+    /// no judge). The cheap iteration mode for retrieval work.
+    search_only: bool,
+    /// Re-embed every valid edge with the local ONNX embedder (overwrites
+    /// stored vectors). Use when the DB's vectors came from a different
+    /// model (e.g. an HTTP endpoint that is no longer configured).
+    reembed: bool,
     /// E1: answer prompt version. v1 = legacy one-paragraph; v2 = 7-step
     /// reasoning (mem0-aligned). Default v2.
     prompt_version: PromptVersion,
@@ -964,6 +981,8 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
     let mut concurrency = 8usize;
     let mut ingest = IngestMode::Raw;
     let mut ingest_only = false;
+    let mut search_only = false;
+    let mut reembed = false;
     let mut prompt_version = PromptVersion::V2;
     let mut judge_style = JudgeStyle::Strict;
     let mut topk_cutoffs: Vec<usize> = Vec::new();
@@ -999,6 +1018,8 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
                 }
             }
             "--ingest-only" => ingest_only = true,
+            "--search-only" => search_only = true,
+            "--reembed" => reembed = true,
             "--prompt-version" => {
                 prompt_version = match take(&mut i, "--prompt-version")?.as_str() {
                     "v1" => PromptVersion::V1,
@@ -1043,6 +1064,8 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
         concurrency,
         ingest,
         ingest_only,
+        search_only,
+        reembed,
         prompt_version,
         judge_style,
         topk_cutoffs,
@@ -1126,6 +1149,8 @@ impl Acc {
         match row.verdict.as_str() {
             "correct" => self.correct += 1,
             "incorrect" => self.incorrect += 1,
+            // --search-only rows carry no verdict; they only count hits.
+            "search_only" => {}
             _ => self.error += 1,
         }
         if row.evidence_hit {
@@ -1153,22 +1178,37 @@ fn git_commit() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+/// One embedder shared across concurrent tasks (same pattern as the AMC
+/// server): a local ONNX instance loads the full model — creating one per
+/// question blew memory on an 8GB box (133MB model × concurrency).
+pub(crate) type SharedEmbedder =
+    Arc<tokio::sync::Mutex<Option<causal_memory::embed::UnifiedEmbedder>>>;
+
 async fn answer_question(
     cfg: &LlmConfig,
     store: &CausalStore,
+    embedder: &SharedEmbedder,
     conv_idx: usize,
     qa: &Qa,
     topk: usize,
     with_facts: bool,
     prompt_version: PromptVersion,
     judge_style: JudgeStyle,
+    search_only: bool,
 ) -> ResultRow {
-    // Pre-compute query embedding in async context (avoids block_in_place deadlock)
-    let query_vec = if let Some(config) = EmbedConfig::from_env() {
-        let embedder = Embedder::new(config);
-        embedder.embed(&qa.question).await.ok()
-    } else {
-        None
+    // Pre-compute query embedding in async context (avoids block_in_place
+    // deadlock). HTTP endpoint first, then the local ONNX embedder
+    // (--features local-embed). Also runs in --search-only mode: local
+    // embedding costs no LLM calls, and without it the semantic signal
+    // (and the A1 entity boost) cannot be measured at all.
+    // One embedder is shared across all tasks: a LocalEmbedder per question
+    // reloads the 130MB ONNX model per call (memory blowup on an 8GB box).
+    let query_vec = {
+        let mut guard = embedder.lock().await;
+        match guard.as_mut() {
+            Some(e) => e.embed(&qa.question).await.ok(),
+            None => None,
+        }
     };
     let mut retrieved = retrieve(store, &qa.question, topk, query_vec.as_deref()).unwrap_or_default();
     let retrieved_ids = retrieved_chunk_ids(&retrieved);
@@ -1176,6 +1216,23 @@ async fn answer_question(
         .evidence
         .iter()
         .any(|e| retrieved_ids.iter().any(|r| r == e));
+
+    // --search-only: report retrieval quality (evidence_hit) with zero LLM
+    // calls — the cheap iteration mode for the A1/A2 retrieval work.
+    if search_only {
+        return ResultRow {
+            conv: conv_idx,
+            category: qa.category,
+            question: qa.question.clone(),
+            gold: qa.answer.as_ref().map(answer_to_string),
+            predicted: String::new(),
+            verdict: "search_only".into(),
+            judge_reason: String::new(),
+            retrieved_ids,
+            evidence_ids: qa.evidence.clone(),
+            evidence_hit,
+        };
+    }
 
     // E1: V2 presents memories in chronological order (event_time ascending)
     // to prevent lost-in-the-middle and narrative drift. Facts stay first.
@@ -1285,12 +1342,7 @@ async fn answer_question(
             predicted
         )
     };
-    let (verdict, reason) =
-        match chat(cfg, judge_style.system_prompt(), &judge_user, JUDGE_MAX_TOKENS).await {
-            Ok(raw) => parse_judge_output(&raw)
-                .unwrap_or((Verdict::Error, format!("unparseable judge output: {raw}"))),
-            Err(e) => (Verdict::Error, format!("judge LLM failed: {e}")),
-        };
+    let (verdict, reason) = judge_with_retry(cfg, judge_style, &judge_user).await;
 
     ResultRow {
         conv: conv_idx,
@@ -1306,12 +1358,42 @@ async fn answer_question(
     }
 }
 
+/// Re-embed every valid edge with the local ONNX embedder (overwrites the
+/// edge_embeddings table). Needed when the DB's stored vectors came from a
+/// different model — cosine requires query and document in the same space.
+async fn reembed_all(store: &CausalStore, embedder: &SharedEmbedder) -> Result<()> {
+    let mut guard = embedder.lock().await;
+    let embedder = match guard.as_mut() {
+        Some(e) => e,
+        None => {
+            eprintln!("reembed: no embedder available (build with --features local-embed)");
+            return Ok(());
+        }
+    };
+    let edges = store.all_valid_edges()?;
+    eprintln!("reembed: {} edges with {}", edges.len(), embedder.model());
+    let mut failures = 0usize;
+    for e in &edges {
+        let text = format!("{} {}", e.decision_text, e.outcome_text);
+        match embedder.embed(&text).await {
+            Ok(v) => store.put_embedding(e.edge_id, "bge-small-en-v1.5", &v)?,
+            Err(err) => {
+                failures += 1;
+                eprintln!("reembed: edge {} failed: {err}", e.edge_id);
+            }
+        }
+    }
+    eprintln!("reembed: done ({} failures)", failures);
+    Ok(())
+}
+
 /// Answer + judge a batch of questions against one store, in parallel.
 /// Shared by `run` and the compact experiment's QA phase.
 #[allow(clippy::too_many_arguments, reason = "benchmark harness; params are independent")]
 pub(crate) async fn answer_all(
     cfg: &LlmConfig,
     store: &CausalStore,
+    embedder: &SharedEmbedder,
     conv_idx: usize,
     qas: Vec<Qa>,
     topk: usize,
@@ -1319,14 +1401,16 @@ pub(crate) async fn answer_all(
     with_facts: bool,
     prompt_version: PromptVersion,
     judge_style: JudgeStyle,
+    search_only: bool,
 ) -> Vec<ResultRow> {
     let done = Arc::new(AtomicUsize::new(0));
     futures::stream::iter(qas.into_iter().map(|qa| {
         let cfg = cfg.clone();
         let store = store.clone();
+        let embedder = embedder.clone();
         let done = done.clone();
         async move {
-            let row = answer_question(&cfg, &store, conv_idx, &qa, topk, with_facts, prompt_version, judge_style).await;
+            let row = answer_question(&cfg, &store, &embedder, conv_idx, &qa, topk, with_facts, prompt_version, judge_style, search_only).await;
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d.is_multiple_of(50) {
                 eprintln!("conv {conv_idx}: {d} questions done");
@@ -1369,6 +1453,9 @@ async fn run(args: Args) -> Result<()> {
     let mut per_cat: BTreeMap<u32, Acc> = BTreeMap::new();
     let mut ran_convs = Vec::new();
     let mut distill_totals = DistillStats::default();
+    // One embedder for the whole run (HTTP or local ONNX); see SharedEmbedder.
+    let embedder: SharedEmbedder =
+        Arc::new(tokio::sync::Mutex::new(causal_memory::embed::init_embedder()));
 
     for conv_idx in conv_indices {
         let conv = &conversations[conv_idx];
@@ -1383,6 +1470,9 @@ async fn run(args: Args) -> Result<()> {
 
         let n = ingest_conversation(&store, conv)
             .with_context(|| format!("ingesting conversation {conv_idx}"))?;
+        if args.reembed {
+            reembed_all(&store, &embedder).await?;
+        }
         eprintln!("conv {conv_idx}: {n} chunks in {}", db_path.display());
 
         let mut distill_stats = None;
@@ -1431,6 +1521,7 @@ async fn run(args: Args) -> Result<()> {
         let rows: Vec<ResultRow> = answer_all(
             &cfg,
             &store,
+            &embedder,
             conv_idx,
             qas,
             args.topk,
@@ -1438,6 +1529,7 @@ async fn run(args: Args) -> Result<()> {
             with_facts,
             args.prompt_version,
             args.judge_style,
+            args.search_only,
         )
         .await;
 
@@ -1632,17 +1724,10 @@ async fn rejudge(argv: &[String]) -> Result<()> {
                             row.question, row.predicted
                         )
                     };
-                    match chat(&cfg, judge_style.system_prompt(), &judge_user, JUDGE_MAX_TOKENS).await {
-                        Ok(raw_judge) => {
-                            let (verdict, reason) = parse_judge_output(&raw_judge)
-                                .unwrap_or((Verdict::Incorrect, raw_judge.clone()));
-                            row.verdict = verdict.as_str().into();
-                            row.judge_reason = reason;
-                        }
-                        Err(e) => {
-                            row.judge_reason = format!("re-judge LLM failed: {e}");
-                        }
-                    }
+                    let (verdict, reason) =
+                        judge_with_retry(&cfg, judge_style, &judge_user).await;
+                    row.verdict = verdict.as_str().into();
+                    row.judge_reason = reason;
                     let d = done.fetch_add(1, Ordering::Relaxed) + 1;
                     if d.is_multiple_of(200) { eprintln!("    {d}/{total}"); }
                     row

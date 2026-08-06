@@ -1,0 +1,112 @@
+LLM: deepseek-v4-flash @ https://api.deepseek.com/v1
+[causal-memory] local embedding initialized: BAAI/bge-small-en-v1.5 (384 dims)
+conv 7: 681 chunks in benches/locomo/db/conv_7_distill.db
+conv 7: distill — 30 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 7: 239 questions
+judge: unparseable attempt 1/3: We need answer with JSON verdict. Need evaluate predicted answer? Wait the user provided a question 
+judge: unparseable attempt 1/3: We need to determine if the predicted answer "1 February 2023" conveys the same information as the g
+judge: unparseable attempt 2/3: We need to evaluate if predicted answer "1 February 2023" matches gold "Wednesday before 9 February,
+judge: unparseable attempt 1/3: We need to evaluate the predicted answer against the gold answer. Gold answer lists techniques: Pomo
+judge: unparseable attempt 1/3: We need to evaluate if the predicted answer conveys the same information as the gold answer. Gold: c
+conv 7: 50 questions done
+judge: unparseable attempt 1/3: We need answer with JSON. Need decide correct/incorrect. Predicted answer text? The user says: "Pred
+judge: unparseable attempt 1/3: We need to compare: Gold answer says "in 2021", predicted says "2021-08-01". The date includes day a
+judge: unparseable attempt 2/3: We need judge if predicted answer is correct. Predicted answer is "We need answer from memories..." 
+judge: unparseable attempt 2/3: We need to evaluate if "2021-08-01" is equivalent to "in 2021". The gold answer says "in 2021" which
+judge: unparseable attempt 3/3: We need to judge predicted answer vs gold answer. Gold: May 2023. Predicted: "We need answer from me
+judge: unparseable attempt 3/3: We need to evaluate if predicted answer "2021-08-01" is correct relative to gold answer "in 2021". T
+judge: unparseable attempt 1/3: We need to judge if predicted answer matches gold. Gold: "developing renewable energy finding ways t
+judge: unparseable attempt 1/3: We need answer question. Need reason with memories. Need determine country Jolene located in during 
+judge: unparseable attempt 2/3: We need to judge if predicted answer matches gold answer. Gold: developing renewable energy and find
+judge: unparseable attempt 1/3: We need to evaluate if predicted answer "Friday 1 September 2023" conveys same as gold "last week of
+judge: unparseable attempt 2/3: {"verdict": "correct",
+judge: unparseable attempt 1/3: We need to evaluate if predicted answer conveys same info as gold. Gold: developing renewable energy
+conv 7: 100 questions done
+judge: unparseable attempt 1/3: {"verdict": "incorrect", "reason": "The predicted answer does not provide the requested content; it 
+judge: unparseable attempt 1/3: We need answer question from memories. Need infer what discussed as helpful strategy for studying an
+judge: unparseable attempt 1/3: We need to evaluate whether the predicted answer conveys the same information as the gold answer. Th
+judge: unparseable attempt 1/3: We need to evaluate if the predicted answer conveys the same information as the gold answer. The gol
+judge: unparseable attempt 2/3: We need answer question. Need infer expected answer. Since we have memory list. Need determine likel
+judge: unparseable attempt 3/3: We need answer whether predicted answer correctly answers question. Need compare predicted vs gold. 
+judge: unparseable attempt 1/3: We need answer user asks "Which new yoga pose did Deborah share a photo of?" Gold answer: tree pose.
+conv 7: 150 questions done
+judge: unparseable attempt 1/3: We need to judge if the predicted answer conveys the same information as the gold answer. Gold: "Sus
+judge: unparseable attempt 1/3: We need to judge if predicted answer conveys same info as gold. Gold: "A tranquil spot by a pond" Pr
+judge: unparseable attempt 2/3: We need to evaluate if the predicted answer matches the gold answer. The gold answer says "Sustainab
+judge: unparseable attempt 3/3: {"verdict": "
+judge: unparseable attempt 1/3: {"verdict": "incorrect", "reason": "Predicted answer adds an extra claim about appreciating the jour
+judge: unparseable attempt 1/3: We need to evaluate whether predicted answer conveys same info as gold answer. Gold: "Cooking". Pred
+conv 7: 200 questions done
+judge: unparseable attempt 1/3: We need to evaluate the predicted answer against the question. The question is adversarial: it asks 
+judge: unparseable attempt 1/3: We need to output JSON with verdict. Need to answer the meta-question: The predicted answer is "We n
+conv 7: wrote benches/locomo/results/a1v2_full2_20260806/run_20260806_014427_conv7.jsonl
+{
+  "run_id": "20260806_014427",
+  "date": "2026-08-06T01:50:12.925672+00:00",
+  "git_commit": "f4625d1",
+  "model": "deepseek-v4-flash",
+  "judge_model": "deepseek-v4-flash",
+  "temperature": 0.0,
+  "topk": 10,
+  "ingest": "distill",
+  "prompt_version": "v2",
+  "judge_style": "strict",
+  "distill_ingest": {
+    "sessions": 30,
+    "llm_calls": 0,
+    "facts_recorded": 0,
+    "episodes_recorded": 0,
+    "episodes_duplicate": 0,
+    "facts_retired": 0,
+    "superseded_invalidations": 0,
+    "skipped_existing": false
+  },
+  "data": "benches/locomo/data/locomo10.json",
+  "conversations": [
+    7
+  ],
+  "total_questions": 239,
+  "correct": 189,
+  "incorrect": 46,
+  "error": 4,
+  "accuracy": 0.8042553191489362,
+  "evidence_hit_rate": 0.803347280334728,
+  "per_category": {
+    "1": {
+      "total": 21,
+      "correct": 10,
+      "incorrect": 11,
+      "error": 0,
+      "accuracy": 0.47619047619047616
+    },
+    "2": {
+      "total": 42,
+      "correct": 35,
+      "incorrect": 5,
+      "error": 2,
+      "accuracy": 0.875
+    },
+    "3": {
+      "total": 10,
+      "correct": 7,
+      "incorrect": 3,
+      "error": 0,
+      "accuracy": 0.7
+    },
+    "4": {
+      "total": 118,
+      "correct": 96,
+      "incorrect": 20,
+      "error": 2,
+      "accuracy": 0.8275862068965517
+    },
+    "5": {
+      "total": 48,
+      "correct": 41,
+      "incorrect": 7,
+      "error": 0,
+      "accuracy": 0.8541666666666666
+    }
+  }
+}
+wrote benches/locomo/results/a1v2_full2_20260806/run_20260806_014427_summary.json

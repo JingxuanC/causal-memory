@@ -1,0 +1,105 @@
+LLM: deepseek-v4-flash @ https://api.deepseek.com/v1
+[causal-memory] local embedding initialized: BAAI/bge-small-en-v1.5 (384 dims)
+conv 8: 509 chunks in benches/locomo/db/conv_8_distill.db
+conv 8: distill — 25 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 8: 196 questions
+judge: unparseable attempt 1/3: We need answer question: "How many Prius has Evan owned?" Need infer from memories. Need count disti
+judge: unparseable attempt 1/3: We need answer question from conversation. Need evaluate predicted answer. Predicted answer is a lon
+judge: unparseable attempt 2/3: We need answer as judge. Need output JSON verdict correct/incorrect reason. Need evaluate predicted 
+judge: unparseable attempt 1/3: We need to evaluate if predicted answer conveys same info as gold. Gold: weight problem. Predicted m
+judge: unparseable attempt 1/3: We need answer as JSON with verdict correct/incorrect and reason. Need determine if predicted answer
+judge: unparseable attempt 2/3: We need answer to user query: "What kind of healthy meals did Sam start eating after getting a healt
+judge: unparseable attempt 3/3: We need answer question: "What kind of healthy meals did Sam start eating after getting a health sca
+judge: unparseable attempt 1/3: We need to evaluate if the predicted answer conveys the same information as the gold answer. Gold an
+conv 8: 50 questions done
+judge: unparseable attempt 1/3: {"verdict": "inc
+judge: unparseable attempt 1/3: We need answer as judge. Need decide if predicted answer "We need answer question: ..." not actually
+judge: unparseable attempt 2/3: We need answer question: "Which new activity does Sam take up in October 2023?" Need use memories. L
+judge: unparseable attempt 1/3: {"verdict": "correct", "reason": "Christmas season" is equivalent to "Christmas"."}
+judge: unparseable attempt 1/3: We need to judge if predicted answer "Watercolor painting (and sometimes going for a drive)." matche
+judge: unparseable attempt 2/3: {"verdict": "correct", "reason": "Watercolor painting is a form of drawing and going for a drive is 
+judge: unparseable attempt 3/3: We need to evaluate whether the predicted answer "Watercolor painting (and sometimes going for a dri
+conv 8: 100 questions done
+judge: unparseable attempt 1/3: We need answer with JSON object only. Need evaluate predicted answer vs gold answer. Need decide cor
+judge: unparseable attempt 1/3: We need to evaluate whether predicted answer is correct. Gold answer: "Keep trying new things". Pred
+judge: unparseable attempt 1/3: We need to evaluate whether the predicted answer matches the gold answer. The question: "What did Ev
+conv 8: 150 questions done
+judge: unparseable attempt 1/3: We need to judge if predicted answer conveys same info as gold. Gold: swimming, yoga, walking. Predi
+judge: unparseable attempt 2/3: We need to evaluate if predicted answer matches gold. Gold: swimming, yoga, walking. Predicted: swim
+judge: unparseable attempt 1/3: We need to evaluate the predicted answer against the question and context. The question asks where S
+judge: unparseable attempt 3/3: We need to compare gold answer: "swimming, yoga, walking" with predicted answer: "Evan suggested swi
+judge: unparseable attempt 2/3: We need to evaluate the predicted answer. The predicted answer says: "It was Evan, not Sam, who took
+judge: unparseable attempt 3/3: We need to judge if predicted answer is correct. The question asks where Sam took his family on 24 M
+judge: unparseable attempt 1/3: We need to evaluate the predicted answer against the question. The question asks: "Who helped Sam ge
+judge: unparseable attempt 1/3: We need answer to user. Need judge predicted answer? Wait user gives question and predicted answer? 
+conv 8: wrote benches/locomo/results/a1v2_full2_20260806/run_20260806_015028_conv8.jsonl
+{
+  "run_id": "20260806_015028",
+  "date": "2026-08-06T01:55:25.305369+00:00",
+  "git_commit": "f4625d1",
+  "model": "deepseek-v4-flash",
+  "judge_model": "deepseek-v4-flash",
+  "temperature": 0.0,
+  "topk": 10,
+  "ingest": "distill",
+  "prompt_version": "v2",
+  "judge_style": "strict",
+  "distill_ingest": {
+    "sessions": 25,
+    "llm_calls": 0,
+    "facts_recorded": 0,
+    "episodes_recorded": 0,
+    "episodes_duplicate": 0,
+    "facts_retired": 0,
+    "superseded_invalidations": 0,
+    "skipped_existing": false
+  },
+  "data": "benches/locomo/data/locomo10.json",
+  "conversations": [
+    8
+  ],
+  "total_questions": 196,
+  "correct": 138,
+  "incorrect": 54,
+  "error": 4,
+  "accuracy": 0.71875,
+  "evidence_hit_rate": 0.7448979591836735,
+  "per_category": {
+    "1": {
+      "total": 37,
+      "correct": 19,
+      "incorrect": 16,
+      "error": 2,
+      "accuracy": 0.5428571428571428
+    },
+    "2": {
+      "total": 33,
+      "correct": 21,
+      "incorrect": 12,
+      "error": 0,
+      "accuracy": 0.6363636363636364
+    },
+    "3": {
+      "total": 13,
+      "correct": 7,
+      "incorrect": 6,
+      "error": 0,
+      "accuracy": 0.5384615384615384
+    },
+    "4": {
+      "total": 73,
+      "correct": 58,
+      "incorrect": 14,
+      "error": 1,
+      "accuracy": 0.8055555555555556
+    },
+    "5": {
+      "total": 40,
+      "correct": 33,
+      "incorrect": 6,
+      "error": 1,
+      "accuracy": 0.8461538461538461
+    }
+  }
+}
+wrote benches/locomo/results/a1v2_full2_20260806/run_20260806_015028_summary.json

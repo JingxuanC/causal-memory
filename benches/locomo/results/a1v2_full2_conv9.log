@@ -1,0 +1,139 @@
+LLM: deepseek-v4-flash @ https://api.deepseek.com/v1
+[causal-memory] local embedding initialized: BAAI/bge-small-en-v1.5 (384 dims)
+conv 9: 568 chunks in benches/locomo/db/conv_9_distill.db
+conv 9: distill — 30 sessions, 0 facts (0 retired), 0 episodes (skipped: existing)
+conv 9: 204 questions
+judge: unparseable attempt 1/3: We need to compare gold answer: "on the weekend before March 26, 2023" which means the weekend prior
+judge: unparseable attempt 1/3: We need to evaluate if the predicted answer conveys the same information as the gold answer. Gold: m
+judge: unparseable attempt 1/3: We need to evaluate if predicted answer matches gold. Gold: "between 26 March and 20 April 2023". Pr
+judge: unparseable attempt 2/3: We are evaluating whether a predicted answer correctly answers the question: "When did Calvin first 
+judge: unparseable attempt 1/3: We need to evaluate whether predicted answer "Classic cars." is correct compared to gold answer "cla
+judge: unparseable attempt 3/3: We need to evaluate whether the predicted answer matches the gold answer. Gold: "between 26 March an
+judge: unparseable attempt 1/3: We need answer as judge. Need output JSON with verdict and reason. Need determine if predicted answe
+judge: unparseable attempt 1/3: We need answer. Need infer from memories. Need know Calvin location Oct 3 2023. Memories: Calvin sta
+judge: unparseable attempt 1/3: We need to evaluate if "Working on cars (car projects/repairs)" is equivalent to "Restoring cars". R
+judge: unparseable attempt 2/3: We need answer: "Which city was Calvin at on October 3, 2023?" Gold answer: Boston. Predicted answer
+judge: unparseable attempt 1/3: We need answer with JSON. Need evaluate predicted answer vs gold answer. Need parse question. Need d
+judge: unparseable attempt 1/3: We need to evaluate whether the predicted answer conveys the same information as the gold answer. Go
+judge: unparseable attempt 2/3: We need to evaluate if predicted answer matches gold answer. Gold: "Restoring cars". Predicted: "Wor
+judge: unparseable attempt 2/3: We need answer question from memories. Need count car shows Dave attended. Need enumerate distinct i
+judge: unparseable attempt 3/3: We need to evaluate if "Working on cars (car projects/repairs)" conveys same as "Restoring cars". Re
+conv 9: 50 questions done
+judge: unparseable attempt 1/3: We need answer the user's question "Who supports Calvin in tough times?" with gold answer "friends a
+judge: unparseable attempt 1/3: We need to evaluate if the predicted answer conveys the same information as the gold answer. Gold: "
+judge: unparseable attempt 2/3: We need answer who supports Calvin in tough times. Gold answer: friends and team. Predicted answer: 
+judge: unparseable attempt 2/3: We need to evaluate the predicted answer against the gold answer. The gold answer says Calvin stays 
+judge: unparseable attempt 3/3: We need to evaluate if the predicted answer is correct. The gold answer is "friends and team". The p
+judge: unparseable attempt 3/3: We need to evaluate the predicted answer against the gold answer. Gold answer: Calvin stays connecte
+judge: unparseable attempt 1/3: We need to compare the gold answer and predicted answer. Gold: weekly visits to local parks, country
+judge: unparseable attempt 1/3: We need answer whether predicted answer matches gold. Gold answer is "Tokyo". Predicted answer is a 
+judge: unparseable attempt 1/3: We need answer as judge. Need compare predicted answer? Wait user asks: "Question: Which band was Da
+judge: unparseable attempt 1/3: We need to compare. Gold: "a gold necklace with a diamond pendant". Predicted: "A necklace with a di
+judge: unparseable attempt 2/3: The user asks: "Which band was Dave's favorite at the music festival in April 2023?" Gold answer: "A
+judge: unparseable attempt 1/3: We need to judge if predicted answer matches gold. Gold: "explore other things and have some fun". P
+judge: unparseable attempt 1/3: We need to evaluate whether the predicted answer conveys the same information as the gold answer. Go
+judge: unparseable attempt 1/3: We need answer must be JSON. Need decide verdict. Let's carefully analyze. User asks: "Question: Wha
+judge: unparseable attempt 1/3: We need answer as judge. Need compare predicted answer to gold answer. But user only provided questi
+judge: unparseable attempt 2/3: We need answer question: "What did Calvin and his friends arrange for in the park?" Gold answer: reg
+judge: unparseable attempt 1/3: We need answer question from memories. Need find what Dave says is important for making his custom c
+judge: unparseable attempt 3/3: We need to evaluate if the predicted answer correctly answers the question based on the gold answer 
+conv 9: 100 questions done
+judge: unparseable attempt 2/3: We need answer from memories. Question: "What does Dave say is important for making his custom cars 
+judge: unparseable attempt 1/3: We need to judge if predicted answer "Shinjuku (and Shibuya Crossing)" is correct compared to gold "
+judge: unparseable attempt 1/3: We need to judge if predicted answer matches gold. Gold says "at a festival". Predicted says "At a m
+judge: unparseable attempt 2/3: We need to judge if predicted answer "Shinjuku (and Shibuya Crossing)" matches gold "Shinjuku". The 
+judge: unparseable attempt 2/3: We need to evaluate if the predicted answer matches the gold answer. Gold: "at a festival". Predicte
+judge: unparseable attempt 1/3: We need to evaluate whether the predicted answer conveys the same information as the gold answer. Go
+judge: unparseable attempt 3/3: We need to evaluate if the predicted answer "At a music festival in Tokyo." matches the gold answer 
+judge: unparseable attempt 1/3: We need to judge if predicted answer matches gold answer. Gold: "Last year" (i.e., last year relativ
+judge: unparseable attempt 2/3: We need to evaluate if the predicted answer matches the gold answer. The question asks "When did Dav
+judge: unparseable attempt 3/3: We need to evaluate if predicted answer matches gold answer. Gold: "Last year." Predicted: "In 2022,
+conv 9: 150 questions done
+judge: unparseable attempt 1/3: We need answer JSON. Need determine if predicted answer "We need answer question from memories. Need
+judge: unparseable attempt 2/3: We need answer the user's question. Need judge predicted answer vs gold. Need respond JSON. Need det
+judge: unparseable attempt 1/3: We need answer JSON. Need inspect predicted answer? The user provided "Predicted answer: We need ans
+judge: unparseable attempt 1/3: We need to judge the predicted answer. The question asks: "What color glow did Dave customize his gu
+judge: unparseable attempt 1/3: We need to evaluate the predicted answer. The predicted answer is a reasoning that says the memory s
+judge: unparseable attempt 2/3: We need to output JSON verdict. The predicted answer says "We need answer question. Memories say Cal
+judge: unparseable attempt 2/3: We need to judge the predicted answer. The question asks what color glow Dave customized his guitar 
+judge: unparseable attempt 2/3: {"verdict":"correct","reason":"The predicted answer correctly notes that the memory attributes the S
+judge: unparseable attempt 3/3: We need respond with JSON verdict and reason. Need evaluate predicted answer? Wait user gave "Predic
+judge: unparseable attempt 3/3: We need to evaluate the predicted answer. The predicted answer says: "We need to answer... Wait, mem
+judge: unparseable attempt 3/3: We need to evaluate the predicted answer against the question and the adversarial nature. The questi
+judge: unparseable attempt 1/3: We need to respond with JSON. Need evaluate predicted answer. The predicted answer seems to be a rea
+judge: unparseable attempt 2/3: We need to evaluate the predicted answer. The predicted answer says: "We need answer based on memori
+judge: unparseable attempt 1/3: We need answer question: "What type of videos does Dave usually watch on his television?" Based on m
+judge: unparseable attempt 3/3: {"verdict": "correct", "reason": "The predicted answer correctly clarifies that the October festival
+judge: unparseable attempt 1/3: We need answer as JSON. Need evaluate predicted answer. The predicted answer is a long reasoning, no
+conv 9: 200 questions done
+conv 9: wrote benches/locomo/results/a1v2_full2_20260806/run_20260806_015551_conv9.jsonl
+{
+  "run_id": "20260806_015551",
+  "date": "2026-08-06T02:01:53.411162+00:00",
+  "git_commit": "f4625d1",
+  "model": "deepseek-v4-flash",
+  "judge_model": "deepseek-v4-flash",
+  "temperature": 0.0,
+  "topk": 10,
+  "ingest": "distill",
+  "prompt_version": "v2",
+  "judge_style": "strict",
+  "distill_ingest": {
+    "sessions": 30,
+    "llm_calls": 0,
+    "facts_recorded": 0,
+    "episodes_recorded": 0,
+    "episodes_duplicate": 0,
+    "facts_retired": 0,
+    "superseded_invalidations": 0,
+    "skipped_existing": false
+  },
+  "data": "benches/locomo/data/locomo10.json",
+  "conversations": [
+    9
+  ],
+  "total_questions": 204,
+  "correct": 149,
+  "incorrect": 44,
+  "error": 11,
+  "accuracy": 0.772020725388601,
+  "evidence_hit_rate": 0.7598039215686274,
+  "per_category": {
+    "1": {
+      "total": 32,
+      "correct": 14,
+      "incorrect": 15,
+      "error": 3,
+      "accuracy": 0.4827586206896552
+    },
+    "2": {
+      "total": 32,
+      "correct": 23,
+      "incorrect": 8,
+      "error": 1,
+      "accuracy": 0.7419354838709677
+    },
+    "3": {
+      "total": 7,
+      "correct": 6,
+      "incorrect": 1,
+      "error": 0,
+      "accuracy": 0.8571428571428571
+    },
+    "4": {
+      "total": 87,
+      "correct": 71,
+      "incorrect": 13,
+      "error": 3,
+      "accuracy": 0.8452380952380952
+    },
+    "5": {
+      "total": 46,
+      "correct": 35,
+      "incorrect": 7,
+      "error": 4,
+      "accuracy": 0.8333333333333334
+    }
+  }
+}
+wrote benches/locomo/results/a1v2_full2_20260806/run_20260806_015551_summary.json
