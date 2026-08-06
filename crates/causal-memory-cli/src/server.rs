@@ -192,12 +192,12 @@ impl TokenBudget {
     }
 }
 
-/// Fuse two ranked key lists by Reciprocal Rank Fusion:
+/// Fuse N ranked key lists by Reciprocal Rank Fusion:
 /// `score(key) = Σ_lists 1 / (RRF_K + rank)` with 1-based ranks. A key
-/// present in both lists scores from both — cross-layer agreement floats to
-/// the top. Returns keys with fused scores, sorted descending; ties keep
+/// present in multiple lists scores from each — cross-layer agreement floats
+/// to the top. Returns keys with fused scores, sorted descending; ties keep
 /// first-seen order (stable sort).
-pub(crate) fn rrf_fuse(a: &[String], b: &[String]) -> Vec<(String, f64)> {
+pub(crate) fn rrf_fuse_many(lists: &[&[String]]) -> Vec<(String, f64)> {
     let mut scores: Vec<(String, f64)> = Vec::new();
     let add = |key: &str, rank: usize, scores: &mut Vec<(String, f64)>| {
         let s = 1.0 / (RRF_K + rank as f64 + 1.0);
@@ -206,14 +206,18 @@ pub(crate) fn rrf_fuse(a: &[String], b: &[String]) -> Vec<(String, f64)> {
             None => scores.push((key.to_string(), s)),
         }
     };
-    for (i, k) in a.iter().enumerate() {
-        add(k, i, &mut scores);
-    }
-    for (i, k) in b.iter().enumerate() {
-        add(k, i, &mut scores);
+    for list in lists {
+        for (i, k) in list.iter().enumerate() {
+            add(k, i, &mut scores);
+        }
     }
     scores.sort_by(|x, y| y.1.partial_cmp(&x.1).unwrap_or(std::cmp::Ordering::Equal));
     scores
+}
+
+/// Two-list convenience wrapper (kept for tests).
+pub(crate) fn rrf_fuse(a: &[String], b: &[String]) -> Vec<(String, f64)> {
+    rrf_fuse_many(&[a, b])
 }
 
 /// Write-time outcome polarity: LLM judge when an LLM is configured, falling
@@ -730,7 +734,7 @@ impl CausalMemoryServer {
                 // search finds it. Silent on any failure — embedding must never
                 // block recording; the `causal-memory embed` CLI backfills
                 // anything missed.
-                if let Some(embedder) = EmbedConfig::from_env().map(Embedder::new) {
+                if let Some(mut embedder) = causal_memory::embed::init_embedder() {
                     let text = format!("{} {}", params.decision, params.outcome);
                     if let Ok(vec) = block_on(embedder.embed(&text)) {
                         // record_decision returns the decision chunk id; resolve
@@ -804,10 +808,15 @@ impl CausalMemoryServer {
             // ── Semantic path: embed + cosine ──
             // Requires a configured embedding endpoint; any failure falls back to
             // the BM25 path below.
-            if let Some(embedder) = EmbedConfig::from_env().map(Embedder::new) {
+            if let Some(mut embedder) = causal_memory::embed::init_embedder() {
                 let semantic = block_on(embedder.embed(query)).ok().and_then(|vec| {
                     self.store
-                        .search_causal_semantic(&vec, params.task_tag.as_deref(), limit)
+                        .search_causal_semantic_entity_boosted(
+                            &vec,
+                            query,
+                            params.task_tag.as_deref(),
+                            limit,
+                        )
                         .ok()
                 });
                 if let Some(results) = semantic {
@@ -943,7 +952,7 @@ impl CausalMemoryServer {
 
         // Opportunistic embedding (silent on any failure — must never block
         // recording; a CLI backfill path can catch up later).
-        if let Some(embedder) = EmbedConfig::from_env().map(Embedder::new) {
+        if let Some(mut embedder) = causal_memory::embed::init_embedder() {
             let text = format!("{} {}", params.key.replace('_', " "), params.value);
             if let Ok(vec) = block_on(embedder.embed(&text)) {
                 let _ = self
@@ -983,7 +992,7 @@ impl CausalMemoryServer {
 
         if let Some(query) = params.query.as_deref().filter(|q| !q.trim().is_empty()) {
             // Semantic path: embed + cosine (requires a configured endpoint).
-            if let Some(embedder) = EmbedConfig::from_env().map(Embedder::new) {
+            if let Some(mut embedder) = causal_memory::embed::init_embedder() {
                 let semantic = block_on(embedder.embed(query))
                     .ok()
                     .and_then(|vec| self.store.search_facts_semantic(&vec, scope, limit).ok());
@@ -1072,9 +1081,8 @@ impl CausalMemoryServer {
         // serves both layers. Per-layer fallthrough: an empty/failed
         // semantic result (e.g. records stored without embeddings) degrades
         // that layer to BM25 instead of silently missing hits.
-        let query_vec = EmbedConfig::from_env()
-            .map(Embedder::new)
-            .and_then(|e| block_on(e.embed(&params.query)).ok());
+        let query_vec = causal_memory::embed::init_embedder()
+            .and_then(|mut e| block_on(e.embed(&params.query)).ok());
 
         let mut used_semantic = false;
         let facts: Vec<AgentFact> = match &query_vec {
@@ -1102,7 +1110,12 @@ impl CausalMemoryServer {
             Some(v) => {
                 let sem: Vec<CausalEntry> = self
                     .store
-                    .search_causal_semantic(v, params.task_tag.as_deref(), per_layer)
+                    .search_causal_semantic_entity_boosted(
+                        v,
+                        &params.query,
+                        params.task_tag.as_deref(),
+                        per_layer,
+                    )
                     .map(|hits| hits.into_iter().map(|(e, _)| e).collect())
                     .unwrap_or_default();
                 if sem.is_empty() {
@@ -1127,6 +1140,26 @@ impl CausalMemoryServer {
             );
         }
 
+        // A2: hop expansion from the causal seeds — 1-hop adjacency + 2-hop
+        // distilled causal jumps. System-side, deterministic, LLM-free
+        // multi-hop recall (new edges join the fused pool).
+        let mut causal_by_id: HashMap<i64, CausalEntry> = HashMap::new();
+        for e in &causal {
+            causal_by_id.insert(e.edge_id, e.clone());
+        }
+        let seed_ids: Vec<i64> = causal.iter().map(|e| e.edge_id).collect();
+        let hop = self
+            .store
+            .search_causal_hop(&params.query, &seed_ids, per_layer)
+            .unwrap_or_default();
+        let mut hop_keys: Vec<String> = Vec::new();
+        for e in &hop {
+            if !causal_by_id.contains_key(&e.edge_id) {
+                causal_by_id.insert(e.edge_id, e.clone());
+                hop_keys.push(format!("causal:{}", e.edge_id));
+            }
+        }
+
         // RRF fusion over layer-prefixed keys. Keys are namespaced per
         // layer (a fact and a causal edge never share a key), so fusion is
         // rank-interleaving: each item scores by its own layer's rank.
@@ -1135,7 +1168,7 @@ impl CausalMemoryServer {
             .iter()
             .map(|e| format!("causal:{}", e.edge_id))
             .collect();
-        let fused = rrf_fuse(&fact_keys, &causal_keys);
+        let fused = rrf_fuse_many(&[&fact_keys, &causal_keys, &hop_keys]);
         let rank_of: HashMap<&str, usize> = fused
             .iter()
             .enumerate()
@@ -1149,10 +1182,14 @@ impl CausalMemoryServer {
             .iter()
             .filter(|f| keep(&format!("fact:{}", f.id)))
             .collect();
-        let causal_kept: Vec<&CausalEntry> = causal
+        // Materialize from the merged causal pool (primary + hop neighbors),
+        // displayed in fused-rank order.
+        let mut causal_kept: Vec<&CausalEntry> = causal_by_id
             .iter()
-            .filter(|e| keep(&format!("causal:{}", e.edge_id)))
+            .filter(|(id, _)| keep(&format!("causal:{id}")))
+            .map(|(_, e)| e)
             .collect();
+        causal_kept.sort_by_key(|e| rank_of[format!("causal:{}", e.edge_id).as_str()]);
 
         let layers = usize::from(!facts_kept.is_empty()) + usize::from(!causal_kept.is_empty());
         let total = facts_kept.len() + causal_kept.len();
