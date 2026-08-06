@@ -98,6 +98,24 @@ Give a direct, specific answer after "ANSWER:". NEVER say "not specified", "not 
 - NEVER invent specific names, titles, places, or dates that do not appear in any memory. If no memory contains the requested detail, answer with what the memories DO contain.
 - Keep the final answer short: a few words or one or two sentences."#;
 
+/// A3: category-specific instructions appended to V2. cat1 (multi-hop):
+/// multi-session composition + explicit assertion + answer discipline.
+/// cat3 (open-domain): inference from profile + knowledge.
+const STEP8_MULTI_SESSION: &str = r#"
+## Step 8: MULTI-SESSION COMPOSITION
+- This question may require facts from MULTIPLE memories in DIFFERENT sessions — memories carry a [session_N <date>] prefix; use ALL of them.
+- If the answer is a LIST, scan every memory for each item and output ALL items you find. Missing even one item makes the answer wrong — enumerate completely, then stop.
+- State the answer EXPLICITLY. If the answer is a single word or number ("Single", "2"), write that word — do not describe around it.
+- After "ANSWER:", give the final answer directly. Never repeat the question, never discuss the process, never say "the memories indicate" — just answer.
+- IRON RULE: your response MUST contain the marker "ANSWER:" followed by the final answer as the LAST line. Anything before it is discarded, so put the answer there and nowhere else."#;
+
+const STEP8_INFERENCE: &str = r#"
+## Step 8: OPEN-DOMAIN INFERENCE
+- The exact answer may NOT appear verbatim in the memories. Infer it from the person's profile (interests, history, activities) and general knowledge.
+- State the inferred answer directly and confidently — do not hedge with "possibly", "might", or "likely".
+- After "ANSWER:", give the final answer directly.
+- IRON RULE: your response MUST contain the marker "ANSWER:" followed by the final answer as the LAST line."#;
+
 const JUDGE_SYSTEM_PROMPT: &str = r#"You are an impartial judge evaluating whether a predicted answer correctly answers a question about a conversation.
 
 Respond with ONLY a JSON object (no markdown, no extra text):
@@ -247,6 +265,22 @@ impl LocomoConversation {
             });
         }
         Ok(sessions)
+    }
+}
+
+/// A3: judge-side gold preprocessing. cat3 (open-domain) golds are long
+/// semicolon-separated lists; a correct partial answer must not be marked
+/// wrong for missing trailing items (mem0's preprocess_answer convention).
+fn preprocess_gold(qa: &Qa) -> String {
+    let raw = qa
+        .answer
+        .as_ref()
+        .map(answer_to_string)
+        .unwrap_or_else(|| "(missing gold)".into());
+    if qa.category == 3 {
+        raw.split(';').next().unwrap_or(&raw).trim().to_string()
+    } else {
+        raw
     }
 }
 
@@ -1270,11 +1304,16 @@ async fn answer_question(
     // E1: select prompt by version and question category.
     // cat5 (adversarial) always uses the abstention-capable prompt.
     let (system_prompt, max_tokens) = if qa.category == 5 {
-        (ANSWER_SYSTEM_PROMPT_ADVERSARIAL, ANSWER_MAX_TOKENS)
+        (ANSWER_SYSTEM_PROMPT_ADVERSARIAL.to_string(), ANSWER_MAX_TOKENS)
     } else {
         match prompt_version {
-            PromptVersion::V1 => (ANSWER_SYSTEM_PROMPT, ANSWER_MAX_TOKENS),
-            PromptVersion::V2 => (ANSWER_SYSTEM_PROMPT_V2, ANSWER_MAX_TOKENS_V2),
+            PromptVersion::V1 => (ANSWER_SYSTEM_PROMPT.to_string(), ANSWER_MAX_TOKENS),
+            // A3: cat1 gets composition/assertion, cat3 gets inference.
+            PromptVersion::V2 => match qa.category {
+                1 => (format!("{ANSWER_SYSTEM_PROMPT_V2}{STEP8_MULTI_SESSION}"), ANSWER_MAX_TOKENS_V2),
+                3 => (format!("{ANSWER_SYSTEM_PROMPT_V2}{STEP8_INFERENCE}"), ANSWER_MAX_TOKENS_V2),
+                _ => (ANSWER_SYSTEM_PROMPT_V2.to_string(), ANSWER_MAX_TOKENS_V2),
+            },
         }
     };
 
@@ -1282,7 +1321,7 @@ async fn answer_question(
         "Memories:\n{memories}\n\nQuestion: {}\nAnswer:",
         qa.question
     );
-    let raw_predicted = match chat(cfg, system_prompt, &answer_user, max_tokens).await {
+    let raw_predicted = match chat(cfg, &system_prompt, &answer_user, max_tokens).await {
         Ok(s) => s,
         Err(e) => {
             return ResultRow {
@@ -1335,10 +1374,7 @@ async fn answer_question(
              The prediction is \"correct\" if it conveys the same information as the gold \
              answer (wording may differ); otherwise \"incorrect\".",
             qa.question,
-            qa.answer
-                .as_ref()
-                .map(answer_to_string)
-                .unwrap_or_else(|| "(missing gold)".into()),
+            preprocess_gold(qa),
             predicted
         )
     };

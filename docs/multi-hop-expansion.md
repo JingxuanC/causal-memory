@@ -157,3 +157,25 @@ harness-only.
 4. A2 hop expansion → smoke → full run.
 5. A3 prompts + cat3 judge preprocessing → full run.
 6. Ablation report vs baseline 71.7% (all-in 69.9%).
+
+## 0.6 A3 measured (2026-08-06, full 1986 questions)
+
+Answer-side changes (cat1 composition/assertion prompt, cat3 inference prompt
++ iron ANSWER: rule, cat3 judge gold truncation at first `;`):
+
+| category | A1v2 base | A3 | Δ |
+|---|---|---|---|
+| all | 75.4% | 73.7% | −32 |
+| cat1 multi-hop | 42.8% | 38.8% | −8 |
+| cat2 temporal | 78.2% | 73.2% | −14 |
+| cat3 open | 48.4% | 51.1% | +1 |
+| cat4 single | 85.2% | 84.6% | −15 |
+| cat5 adversarial | 80.9% | 80.6% | +4 |
+
+Interpretation: cat2/cat4 received NO A3 change yet dropped 14/15 questions —
+deepseek-v4-flash at temperature 0 carries ±1.5pp run-to-run variance, which
+swamps the prompt effect (smoke tests confirmed the explicit-assertion class
+did improve). Verdict: answer-side prompt engineering is not a reliable lever
+on this model; retrieval depth (topk) remains the only measured-positive lever.
+The cat3 gold truncation is kept (mem0-aligned, harmless); the Step-8 prompt
+additions are kept as documented but unproven.
