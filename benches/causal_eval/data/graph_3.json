@@ -21,23 +21,23 @@
       {
         "id": 2,
         "person": "Joanna",
-        "action": "kept the end-to-end tests in the pipeline",
-        "polarity": "neutral",
+        "action": "the breakage hit every new session for a week",
+        "polarity": "negative",
         "order": 2,
         "task_tag": "testing"
       },
       {
         "id": 3,
         "person": "Joanna",
-        "action": "the app stayed healthy after release",
-        "polarity": "positive",
+        "action": "kept the end-to-end tests in the pipeline",
+        "polarity": "neutral",
         "order": 3,
         "task_tag": "testing"
       },
       {
         "id": 4,
         "person": "Joanna",
-        "action": "kept the end-to-end tests in the pipeline",
+        "action": "the app stayed healthy after release",
         "polarity": "positive",
         "order": 4,
         "task_tag": "testing"
@@ -45,18 +45,50 @@
       {
         "id": 5,
         "person": "Joanna",
-        "action": "ran the migration during peak traffic",
-        "polarity": "negative",
+        "action": "ran the full regression suite before release",
+        "polarity": "positive",
         "order": 5,
-        "task_tag": "data-migration"
+        "task_tag": "testing"
       },
       {
         "id": 6,
         "person": "Joanna",
-        "action": "the migration locked the database",
+        "action": "migrated the schema without a backup",
         "polarity": "negative",
         "order": 6,
         "task_tag": "data-migration"
+      },
+      {
+        "id": 7,
+        "person": "Joanna",
+        "action": "the migration corrupted customer records",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 8,
+        "person": "Joanna",
+        "action": "took a full snapshot before the migration",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 9,
+        "person": "Joanna",
+        "action": "the migration could always be rolled back",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 10,
+        "person": "Joanna",
+        "action": "adopted a stricter policy that also covers the deployment window",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "testing"
       }
     ],
     "edges": [
@@ -66,19 +98,39 @@
         "relation": "caused"
       },
       {
-        "from": 2,
-        "to": 3,
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
         "relation": "enabled"
       },
       {
-        "from": 4,
-        "to": 1,
+        "from": 5,
+        "to": 2,
         "relation": "prevented"
       },
       {
-        "from": 5,
-        "to": 6,
+        "from": 6,
+        "to": 7,
         "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
       }
     ]
   },
@@ -88,83 +140,99 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2024-03-12 10:15",
+          "date_time": "2024-03-04 10:15",
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Hey Joanna, quick question — I saw you removed the e2e suite from the pipeline yesterday. What's the deal?"
+              "text": "Hey Joanna, quick question — did you see the alert from last night? The app started throwing 500s right after the 9pm release."
             },
             {
               "speaker": "Joanna",
-              "text": "Oh, yeah. They were taking like 20 minutes per run and blocking every merge. I figured we could ship faster without them, you know? Just for now."
+              "text": "Yeah, I saw it. That was my fault, honestly. I deleted the end-to-end tests to save time before shipping. Thought I could get away with just unit tests."
             },
             {
               "speaker": "Marcus",
-              "text": "Hmm, I get the speed thing, but those tests catch real regressions. You sure you want to go without them?"
+              "text": "Ouch. How bad did it get?"
             },
             {
               "speaker": "Joanna",
-              "text": "Honestly, we've been fine for weeks. I'll add them back if anything breaks. Promise."
+              "text": "Bad. Every new session for a week was hitting a broken auth flow. We didn't catch it until Monday because nobody logs in on weekends."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "That's brutal. So what's the plan going forward?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "I already put the end-to-end tests back in the pipeline — they're not optional anymore. And I'm running the full regression suite before every release, no exceptions."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2024-03-15 16:40",
+          "date_time": "2024-03-18 14:30",
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "So... the app broke right after release. Like, 20 minutes ago. Check the error logs."
+              "text": "Hey, I saw the release went out this morning. Looks like the app stayed healthy — no alerts from my side."
             },
             {
               "speaker": "Joanna",
-              "text": "What? No way. What's failing?"
+              "text": "Yeah, it's been smooth. I ran the full regression suite before release, and the end-to-end tests are still in the pipeline. Feels good to not be on fire."
             },
             {
               "speaker": "Marcus",
-              "text": "The checkout flow — looks like a race condition we never caught. And guess what? The e2e tests would've caught it. The ones you deleted."
+              "text": "Nice. So you're sticking with the stricter policy?"
             },
             {
               "speaker": "Joanna",
-              "text": "Ugh. You're right. I'm putting them back in the pipeline right now. And I'll write a new test for this exact scenario."
+              "text": "Absolutely. And I'm extending it — the policy now also covers the deployment window, not just pre-merge. So if anything changes during deploy, we catch it immediately."
             },
             {
               "speaker": "Marcus",
-              "text": "Good call. Better late than never, I guess."
+              "text": "Smart. That would've saved you last week."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Tell me about it. Lesson learned the hard way."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2024-03-20 11:05",
+          "date_time": "2024-04-02 11:00",
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Hey, just saw the release went out clean this morning. App's been healthy all day — nice work on bringing the tests back."
+              "text": "Hey, I heard you're doing the customer DB migration today. You got a backup plan?"
             },
             {
               "speaker": "Joanna",
-              "text": "Thanks. Yeah, I kept the e2e tests in the pipeline this time, no shortcuts. Feels way more solid."
+              "text": "Funny you ask — last time I migrated a schema without a backup, it corrupted customer records. Total nightmare."
             },
             {
               "speaker": "Marcus",
-              "text": "Glad to hear it. Also, I noticed you ran the database migration during peak traffic yesterday. That was... bold."
+              "text": "Wait, that was you? I thought that was a third-party issue."
             },
             {
               "speaker": "Joanna",
-              "text": "I thought it'd be fine — the migration was supposed to be non-blocking. But it locked the database for like 15 minutes. Orders were stuck."
+              "text": "Nope, all me. But this time I took a full snapshot before the migration, so it can always be rolled back if anything goes sideways."
             },
             {
               "speaker": "Marcus",
-              "text": "Ouch. Did anyone notice?"
+              "text": "Good call. So you're not repeating that mistake."
             },
             {
               "speaker": "Joanna",
-              "text": "A few support tickets, but we rolled back fast. Lesson learned — never again during peak hours. I'll schedule it for 2 AM next time."
+              "text": "Never again. Snapshot first, migrate second, verify third. And if it breaks, I just restore and we're back to normal."
             },
             {
               "speaker": "Marcus",
-              "text": "Yeah, that's probably wise. At least the app's healthy now, so we're back on track."
+              "text": "That's the way. Let me know if you need a second pair of eyes during the window."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Will do. Thanks, Marcus."
             }
           ]
         }
@@ -174,20 +242,21 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did the app broke right after release happen?",
-      "answer": "Joanna caused it: deleted the end-to-end tests to save time → the app broke right after release",
+      "question": "Why did the breakage hit every new session for a week?",
+      "answer": "deleted the end-to-end tests to save time → the app broke right after release → the breakage hit every new session for a week",
       "evidence_nodes": [
         0,
-        1
+        1,
+        2
       ]
     },
     {
       "category": 12,
-      "question": "If Joanna does this again — deleted the end-to-end tests to save time — what will happen?",
-      "answer": "the app broke right after release",
+      "question": "If Joanna does deleted the end-to-end tests to save time again without any other changes, what will happen?",
+      "answer": "the breakage hit every new session for a week",
       "evidence_nodes": [
         0,
-        1
+        2
       ]
     },
     {
@@ -196,18 +265,18 @@
       "answer": "kept the end-to-end tests in the pipeline (the app stayed healthy after release)",
       "evidence_nodes": [
         0,
-        1,
         2,
-        3
+        3,
+        4
       ]
     },
     {
       "category": 14,
-      "question": "What stopped the app broke right after release from happening again?",
-      "answer": "kept the end-to-end tests in the pipeline",
+      "question": "What stopped the breakage hit every new session for a week from happening again?",
+      "answer": "ran the full regression suite before release",
       "evidence_nodes": [
-        4,
-        1
+        5,
+        2
       ]
     },
     {
@@ -221,18 +290,21 @@
     },
     {
       "category": 16,
-      "question": "Facing a similar situation in a different area, what should Joanna avoid doing?",
-      "answer": "ran the migration during peak traffic",
+      "question": "In data-migration, Joanna faces a situation like the one in testing where deleted the end-to-end tests to save time failed. What should Joanna do?",
+      "answer": "took a full snapshot before the migration",
       "evidence_nodes": [
-        5
+        6,
+        7,
+        8,
+        9
       ]
     },
     {
       "category": 17,
-      "question": "After everything, what does Joanna now believe is the right way to handle deployments?",
-      "answer": "kept the end-to-end tests in the pipeline",
+      "question": "After the latest development, what does Joanna now believe is the right way to handle testing?",
+      "answer": "adopted a stricter policy that also covers the deployment window",
       "evidence_nodes": [
-        2
+        10
       ]
     }
   ]

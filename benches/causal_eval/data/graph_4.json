@@ -21,23 +21,23 @@
       {
         "id": 2,
         "person": "Priya",
-        "action": "ran the migration in a maintenance window",
-        "polarity": "neutral",
+        "action": "the corruption spread to the backups and took days to repair",
+        "polarity": "negative",
         "order": 2,
         "task_tag": "data-migration"
       },
       {
         "id": 3,
         "person": "Priya",
-        "action": "the migration finished without locking anything",
-        "polarity": "positive",
+        "action": "ran the migration in a maintenance window",
+        "polarity": "neutral",
         "order": 3,
         "task_tag": "data-migration"
       },
       {
         "id": 4,
         "person": "Priya",
-        "action": "ran the migration in a maintenance window",
+        "action": "the migration finished without locking anything",
         "polarity": "positive",
         "order": 4,
         "task_tag": "data-migration"
@@ -45,18 +45,50 @@
       {
         "id": 5,
         "person": "Priya",
-        "action": "ran the deployment during peak hours",
-        "polarity": "negative",
+        "action": "took a full snapshot before the migration",
+        "polarity": "positive",
         "order": 5,
-        "task_tag": "deployment"
+        "task_tag": "data-migration"
       },
       {
         "id": 6,
         "person": "Priya",
-        "action": "the release caused an outage",
+        "action": "deleted the end-to-end tests to save time",
         "polarity": "negative",
         "order": 6,
-        "task_tag": "deployment"
+        "task_tag": "testing"
+      },
+      {
+        "id": 7,
+        "person": "Priya",
+        "action": "the app broke right after release",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "testing"
+      },
+      {
+        "id": 8,
+        "person": "Priya",
+        "action": "kept the end-to-end tests in the pipeline",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "testing"
+      },
+      {
+        "id": 9,
+        "person": "Priya",
+        "action": "the app stayed healthy after release",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "testing"
+      },
+      {
+        "id": 10,
+        "person": "Priya",
+        "action": "adopted a stricter policy that also covers the deployment window",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "data-migration"
       }
     ],
     "edges": [
@@ -66,19 +98,39 @@
         "relation": "caused"
       },
       {
-        "from": 2,
-        "to": 3,
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
         "relation": "enabled"
       },
       {
-        "from": 4,
-        "to": 1,
+        "from": 5,
+        "to": 2,
         "relation": "prevented"
       },
       {
-        "from": 5,
-        "to": 6,
+        "from": 6,
+        "to": 7,
         "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
       }
     ]
   },
@@ -92,111 +144,91 @@
           "turns": [
             {
               "speaker": "Priya",
-              "text": "Hey Marcus, you got a sec? I need to run something by you."
+              "text": "Morning, Sam. You look like you've seen a ghost."
             },
             {
-              "speaker": "Marcus",
-              "text": "Sure, what's up? You look like you've been staring at a screen for twelve hours."
-            },
-            {
-              "speaker": "Priya",
-              "text": "Close. I just finished the schema migration for the customer service DB. It's live now."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "Wait, you did that already? I thought we were reviewing the rollback plan on Thursday."
+              "speaker": "Sam",
+              "text": "Just got the alert from the overnight batch. Customer records are a mess — duplicates, missing fields, some accounts pointing to the wrong addresses. Did you touch the schema last night?"
             },
             {
               "speaker": "Priya",
-              "text": "Yeah, I know, but the maintenance window opened at 2 AM and I figured I'd just get it done. It went smoothly — no locks, nothing blocked. The whole thing finished without locking a single table."
+              "text": "Yeah, I ran the migration in the maintenance window. It finished without locking anything, which I thought was a win. But I didn't take a backup first — I figured the window was short and we'd be fine."
             },
             {
-              "speaker": "Marcus",
-              "text": "That's... good? But did you take a backup first? Because the last time we did a schema change without one, we had to rebuild three days of transactions."
+              "speaker": "Sam",
+              "text": "No backup? Priya, that's the first rule. And now the corruption is spreading — I checked the DR site, and the snapshots from last week are showing the same bad data. It's going to take days to repair."
             },
             {
               "speaker": "Priya",
-              "text": "Honestly? I didn't. I thought the snapshot from last week was enough. But I checked the data after, and it looks fine."
+              "text": "Days? That's... worse than I thought. I did take a full snapshot before the migration, but I guess it was already too late — the corruption must have hit the source before the snapshot finished."
             },
             {
-              "speaker": "Marcus",
-              "text": "Priya, 'looks fine' is not a backup. If something's corrupted, we're dead in the water. Let me pull a quick sanity check on a few customer records."
+              "speaker": "Sam",
+              "text": "So the snapshot is useless. And you deleted the end-to-end tests to save time, right? I saw the commit."
+            },
+            {
+              "speaker": "Priya",
+              "text": "I did. I thought they were overkill for a simple column rename. Clearly I was wrong."
+            },
+            {
+              "speaker": "Sam",
+              "text": "We'll talk about the policy after we fix this. For now, let's get the restore team on it."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2025-03-12 14:30",
+          "date_time": "2025-03-14 16:40",
           "turns": [
             {
-              "speaker": "Marcus",
-              "text": "Okay, I ran a sample query on the customer table. We have a problem."
+              "speaker": "Sam",
+              "text": "Good news — the repair scripts finally finished. But the app broke right after the release this morning. Did you see the error rates?"
             },
             {
               "speaker": "Priya",
-              "text": "What kind of problem?"
+              "text": "Yeah, I saw. The new schema doesn't match what the API expects. I should have kept the end-to-end tests in the pipeline — they would have caught that before we shipped."
             },
             {
-              "speaker": "Marcus",
-              "text": "About 200 records have null addresses and mismatched account IDs. The migration corrupted them. I'm looking at the logs now — it looks like the foreign key constraints got dropped mid-write."
-            },
-            {
-              "speaker": "Priya",
-              "text": "Oh no. That's... that's bad. I really thought the no-lock thing meant it was safe."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "No-lock just means it didn't block other queries. It doesn't mean it was correct. We need to restore from that old snapshot, but you said you didn't take a fresh backup."
+              "speaker": "Sam",
+              "text": "At least you're owning it. But we need to make sure this never happens again. I'm drafting a stricter policy that also covers the deployment window — no schema changes without a verified backup, and tests stay mandatory."
             },
             {
               "speaker": "Priya",
-              "text": "I know. I'm an idiot. Can we at least fix the corrupted rows manually? I have the original CSV exports from last month."
+              "text": "Agreed. And I'll add a pre-flight check that validates the backup actually restores, not just that it exists."
             },
             {
-              "speaker": "Marcus",
-              "text": "That's a band-aid. But let's do it — and then we need to tell the team. Also, for the love of god, never run a migration without a backup again."
+              "speaker": "Sam",
+              "text": "That's a good start. Let's get the policy reviewed by the team tomorrow."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2025-03-14 11:00",
+          "date_time": "2025-03-17 11:00",
           "turns": [
             {
               "speaker": "Priya",
-              "text": "Hey, so I fixed the corrupted records last night. But I have to confess something else."
+              "text": "Hey, just wanted to update you — I re-ran the migration on a staging copy with the new policy in place. Took a snapshot, verified it, and kept the end-to-end tests in the pipeline."
             },
             {
-              "speaker": "Marcus",
-              "text": "What now?"
-            },
-            {
-              "speaker": "Priya",
-              "text": "When I deployed the fix to production, I did it during peak hours — around 10 AM. I thought it was a small patch, so it wouldn't matter."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "You did what? Peak hours? Priya, that's when we have the most traffic. Did you even check the load balancer?"
+              "speaker": "Sam",
+              "text": "And?"
             },
             {
               "speaker": "Priya",
-              "text": "I didn't. And... the release caused an outage. For about twenty minutes, the entire customer portal was down. I got three alerts and then my phone wouldn't stop buzzing."
+              "text": "The app stayed healthy after release. No errors, no corruption. The tests caught a minor issue with a date format, but we fixed it before it hit production."
             },
             {
-              "speaker": "Marcus",
-              "text": "So let me get this straight: you migrated without a backup, corrupted records, ran it in a maintenance window but didn't lock anything, and then deployed during peak hours and took down the site. Is that about right?"
-            },
-            {
-              "speaker": "Priya",
-              "text": "Yes. That's exactly right. I'm sorry. I think I need to step back and write a proper runbook before I touch anything else."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "Yeah, you do. And I'm going to be the one reviewing it. Let's start with a checklist: backup, lock, test, deploy off-peak. In that order."
+              "speaker": "Sam",
+              "text": "That's the way it should have been from the start. I'm glad you're taking the stricter policy seriously."
             },
             {
               "speaker": "Priya",
-              "text": "Deal. And thank you for not yelling at me more than I already am yelling at myself."
+              "text": "I learned my lesson the hard way. Never skipping backups or tests again — even if it means the maintenance window runs a little longer."
+            },
+            {
+              "speaker": "Sam",
+              "text": "Good. Now let's grab coffee and pretend last week didn't happen."
             }
           ]
         }
@@ -206,20 +238,21 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did the migration corrupted customer records happen?",
-      "answer": "Priya caused it: migrated the schema without a backup → the migration corrupted customer records",
+      "question": "Why did the corruption spread to the backups and took days to repair?",
+      "answer": "migrated the schema without a backup → the migration corrupted customer records → the corruption spread to the backups and took days to repair",
       "evidence_nodes": [
         0,
-        1
+        1,
+        2
       ]
     },
     {
       "category": 12,
-      "question": "If Priya does this again — migrated the schema without a backup — what will happen?",
-      "answer": "the migration corrupted customer records",
+      "question": "If Priya does migrated the schema without a backup again without any other changes, what will happen?",
+      "answer": "the corruption spread to the backups and took days to repair",
       "evidence_nodes": [
         0,
-        1
+        2
       ]
     },
     {
@@ -228,18 +261,18 @@
       "answer": "ran the migration in a maintenance window (the migration finished without locking anything)",
       "evidence_nodes": [
         0,
-        1,
         2,
-        3
+        3,
+        4
       ]
     },
     {
       "category": 14,
-      "question": "What stopped the migration corrupted customer records from happening again?",
-      "answer": "ran the migration in a maintenance window",
+      "question": "What stopped the corruption spread to the backups and took days to repair from happening again?",
+      "answer": "took a full snapshot before the migration",
       "evidence_nodes": [
-        4,
-        1
+        5,
+        2
       ]
     },
     {
@@ -253,18 +286,21 @@
     },
     {
       "category": 16,
-      "question": "Facing a similar situation in a different area, what should Priya avoid doing?",
-      "answer": "ran the deployment during peak hours",
+      "question": "In testing, Priya faces a situation like the one in data-migration where migrated the schema without a backup failed. What should Priya do?",
+      "answer": "kept the end-to-end tests in the pipeline",
       "evidence_nodes": [
-        5
+        6,
+        7,
+        8,
+        9
       ]
     },
     {
       "category": 17,
-      "question": "After everything, what does Priya now believe is the right way to handle deployments?",
-      "answer": "ran the migration in a maintenance window",
+      "question": "After the latest development, what does Priya now believe is the right way to handle data-migration?",
+      "answer": "adopted a stricter policy that also covers the deployment window",
       "evidence_nodes": [
-        2
+        10
       ]
     }
   ]

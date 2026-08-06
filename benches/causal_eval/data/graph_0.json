@@ -21,23 +21,23 @@
       {
         "id": 2,
         "person": "Nate",
-        "action": "waited for the cluster health check before switching DNS",
-        "polarity": "neutral",
+        "action": "the outage lasted for hours and hit every region",
+        "polarity": "negative",
         "order": 2,
         "task_tag": "infra"
       },
       {
         "id": 3,
         "person": "Nate",
-        "action": "traffic moved over without a hitch",
-        "polarity": "positive",
+        "action": "waited for the cluster health check before switching DNS",
+        "polarity": "neutral",
         "order": 3,
         "task_tag": "infra"
       },
       {
         "id": 4,
         "person": "Nate",
-        "action": "waited for the cluster health check before switching DNS",
+        "action": "traffic moved over without a hitch",
         "polarity": "positive",
         "order": 4,
         "task_tag": "infra"
@@ -45,18 +45,50 @@
       {
         "id": 5,
         "person": "Nate",
-        "action": "logged sensitive data to the query log",
-        "polarity": "negative",
+        "action": "enabled autoscaling on the instances",
+        "polarity": "positive",
         "order": 5,
-        "task_tag": "api"
+        "task_tag": "infra"
       },
       {
         "id": 6,
         "person": "Nate",
-        "action": "customer data leaked into the logs",
+        "action": "shipped the API without pagination",
         "polarity": "negative",
         "order": 6,
         "task_tag": "api"
+      },
+      {
+        "id": 7,
+        "person": "Nate",
+        "action": "the API timed out under load",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "api"
+      },
+      {
+        "id": 8,
+        "person": "Nate",
+        "action": "added pagination to the API",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "api"
+      },
+      {
+        "id": 9,
+        "person": "Nate",
+        "action": "the API held up under heavy load",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "api"
+      },
+      {
+        "id": 10,
+        "person": "Nate",
+        "action": "adopted a stricter policy that also covers the deployment window",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "infra"
       }
     ],
     "edges": [
@@ -66,19 +98,39 @@
         "relation": "caused"
       },
       {
-        "from": 2,
-        "to": 3,
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
         "relation": "enabled"
       },
       {
-        "from": 4,
-        "to": 1,
+        "from": 5,
+        "to": 2,
         "relation": "prevented"
       },
       {
-        "from": 5,
-        "to": 6,
+        "from": 6,
+        "to": 7,
         "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
       }
     ]
   },
@@ -92,111 +144,123 @@
           "turns": [
             {
               "speaker": "Nate",
-              "text": "Hey, you got a sec? I need to run something by you about the DNS cutover."
+              "text": "Hey Kim, got a minute? I need to vent about the cluster migration."
             },
             {
               "speaker": "Kim",
-              "text": "Sure, what's up? I thought we were doing that next week."
+              "text": "Sure, what happened? I saw the incident report pop up yesterday."
             },
             {
               "speaker": "Nate",
-              "text": "Yeah, well, I got impatient. I pointed the DNS at the new cluster this morning before it was fully ready."
+              "text": "Yeah, so I pointed DNS at the new cluster before it was actually ready. My bad — I thought the health checks were green, but they weren't."
             },
             {
               "speaker": "Kim",
-              "text": "Oh no. Please tell me you didn't send live traffic to it."
+              "text": "Oof. So traffic hit a cluster that couldn't serve it? How long did that last?"
             },
             {
               "speaker": "Nate",
-              "text": "I did. And guess what? It couldn't serve it. I saw the error rates spike in the dashboard and flipped it back within five minutes."
+              "text": "Hours. And it hit every region, not just one. Total mess. We had to roll back DNS manually while the old cluster was still up."
             },
             {
               "speaker": "Kim",
-              "text": "That's a classic. You're lucky it wasn't worse. So what's the plan now?"
+              "text": "That's rough. But at least you caught it. What's the fix going forward?"
             },
             {
               "speaker": "Nate",
-              "text": "I'm going to wait for the cluster health check to pass before I even think about switching DNS again. I learned my lesson."
+              "text": "I'm going to wait for the cluster health check to pass before switching DNS next time. No more cowboy moves."
             },
             {
               "speaker": "Kim",
-              "text": "Good. Let me know when you're ready to retry. I can help you watch the metrics."
+              "text": "Good call. Also, maybe add a manual approval step in the runbook? I can help with that if you want."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Appreciate it. I'll take you up on that later this week."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2025-03-14 14:30",
+          "date_time": "2025-03-19 14:30",
           "turns": [
             {
               "speaker": "Nate",
-              "text": "Alright, the health check finally went green. I'm about to switch DNS now."
+              "text": "Hey, quick update — the DNS switch finally went clean. Traffic moved over without a hitch this time."
             },
             {
               "speaker": "Kim",
-              "text": "Nice. You waited this time, right?"
+              "text": "Nice! So the health check wait paid off?"
             },
             {
               "speaker": "Nate",
-              "text": "Yep, waited for the full health check to pass. No shortcuts this time."
+              "text": "Exactly. And I also enabled autoscaling on the instances, so we shouldn't get caught flat-footed again."
             },
             {
               "speaker": "Kim",
-              "text": "Okay, I'm watching the traffic graphs. Go ahead."
+              "text": "Good. That should help with the load spikes we saw during the outage. Speaking of load — how's the API holding up? I heard you shipped it without pagination last sprint."
             },
             {
               "speaker": "Nate",
-              "text": "Done. Traffic moved over without a hitch. Latency looks stable, no errors."
+              "text": "Yeah, that was a mistake. The API timed out under load because it was returning everything at once. I added pagination yesterday, so it's much better now."
             },
             {
               "speaker": "Kim",
-              "text": "Beautiful. See? Patience pays off. Now we can finally retire the old cluster."
+              "text": "Did you test it under heavy load? I don't want another surprise."
             },
             {
               "speaker": "Nate",
-              "text": "Yeah, I'll start the decommission process tomorrow. Thanks for keeping an eye on things."
+              "text": "I did — ran a load test with 10x normal traffic. The API held up under heavy load, no timeouts. Pagination did the trick."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Great. So we're good on that front. Any other lessons learned?"
+            },
+            {
+              "speaker": "Nate",
+              "text": "Yeah, I'm adopting a stricter policy that also covers the deployment window — no DNS changes or API releases within 30 minutes of a health check failure. I'll send the doc around."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Sounds solid. Let me know if you need a second pair of eyes on it."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2025-03-17 09:45",
+          "date_time": "2025-03-26 09:45",
           "turns": [
             {
               "speaker": "Kim",
-              "text": "Hey, I was digging through the query logs from the new cluster and I found something concerning."
+              "text": "Morning, Nate. Saw the postmortem for the cluster incident — looks like you've been busy."
             },
             {
               "speaker": "Nate",
-              "text": "What do you mean? I thought everything was clean after the cutover."
+              "text": "Morning. Yeah, I've been tightening everything up. The new policy I mentioned is live now, and it covers the deployment window too, so no more last-minute changes."
             },
             {
               "speaker": "Kim",
-              "text": "Well, I noticed you logged sensitive data to the query log. Like, full customer payloads with PII."
+              "text": "Good. And I noticed the autoscaling metrics look healthy — no more near-misses?"
             },
             {
               "speaker": "Nate",
-              "text": "Wait, what? I didn't think I had verbose logging enabled. That's bad."
+              "text": "Right, the autoscaling kicked in during a spike yesterday and handled it fine. And the API with pagination is still holding up — we had a 5x load burst and it didn't blink."
             },
             {
               "speaker": "Kim",
-              "text": "It's worse than bad. Customer data leaked into the logs. I'm seeing email addresses and account numbers in there."
+              "text": "That's a relief. So the whole saga ended well, even if the start was rough."
             },
             {
               "speaker": "Nate",
-              "text": "Oh no. I must have left the debug flag on from the testing phase. I need to purge those logs immediately."
+              "text": "Yeah, but I'm not going to forget pointing DNS at a dead cluster anytime soon. The health check wait is now non-negotiable for me."
             },
             {
               "speaker": "Kim",
-              "text": "You need to do more than purge. We have to notify security and probably the affected customers. This is a data breach."
+              "text": "Ha, I'll hold you to that. Want to grab coffee and review the runbook changes together?"
             },
             {
               "speaker": "Nate",
-              "text": "You're right. I'll escalate this right now. I'm sorry, Kim. I really screwed up."
-            },
-            {
-              "speaker": "Kim",
-              "text": "We'll get through it. But let's fix the logging config first, then deal with the fallout."
+              "text": "Sure, let's do it. I'll bring the notes."
             }
           ]
         }
@@ -206,20 +270,21 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did traffic hit a cluster that could not serve it happen?",
-      "answer": "Nate caused it: pointed DNS at the new cluster before it was ready → traffic hit a cluster that could not serve it",
+      "question": "Why did the outage lasted for hours and hit every region?",
+      "answer": "pointed DNS at the new cluster before it was ready → traffic hit a cluster that could not serve it → the outage lasted for hours and hit every region",
       "evidence_nodes": [
         0,
-        1
+        1,
+        2
       ]
     },
     {
       "category": 12,
-      "question": "If Nate does this again — pointed DNS at the new cluster before it was ready — what will happen?",
-      "answer": "traffic hit a cluster that could not serve it",
+      "question": "If Nate does pointed DNS at the new cluster before it was ready again without any other changes, what will happen?",
+      "answer": "the outage lasted for hours and hit every region",
       "evidence_nodes": [
         0,
-        1
+        2
       ]
     },
     {
@@ -228,18 +293,18 @@
       "answer": "waited for the cluster health check before switching DNS (traffic moved over without a hitch)",
       "evidence_nodes": [
         0,
-        1,
         2,
-        3
+        3,
+        4
       ]
     },
     {
       "category": 14,
-      "question": "What stopped traffic hit a cluster that could not serve it from happening again?",
-      "answer": "waited for the cluster health check before switching DNS",
+      "question": "What stopped the outage lasted for hours and hit every region from happening again?",
+      "answer": "enabled autoscaling on the instances",
       "evidence_nodes": [
-        4,
-        1
+        5,
+        2
       ]
     },
     {
@@ -253,18 +318,21 @@
     },
     {
       "category": 16,
-      "question": "Facing a similar situation in a different area, what should Nate avoid doing?",
-      "answer": "logged sensitive data to the query log",
+      "question": "In api, Nate faces a situation like the one in infra where pointed DNS at the new cluster before it was ready failed. What should Nate do?",
+      "answer": "added pagination to the API",
       "evidence_nodes": [
-        5
+        6,
+        7,
+        8,
+        9
       ]
     },
     {
       "category": 17,
-      "question": "After everything, what does Nate now believe is the right way to handle deployments?",
-      "answer": "waited for the cluster health check before switching DNS",
+      "question": "After the latest development, what does Nate now believe is the right way to handle infra?",
+      "answer": "adopted a stricter policy that also covers the deployment window",
       "evidence_nodes": [
-        2
+        10
       ]
     }
   ]

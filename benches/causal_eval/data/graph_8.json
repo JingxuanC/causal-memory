@@ -21,23 +21,23 @@
       {
         "id": 2,
         "person": "Caroline",
-        "action": "added pagination to the API",
-        "polarity": "neutral",
+        "action": "the leaked data was exposed to every engineer with log access",
+        "polarity": "negative",
         "order": 2,
         "task_tag": "api"
       },
       {
         "id": 3,
         "person": "Caroline",
-        "action": "the API held up under heavy load",
-        "polarity": "positive",
+        "action": "added pagination to the API",
+        "polarity": "neutral",
         "order": 3,
         "task_tag": "api"
       },
       {
         "id": 4,
         "person": "Caroline",
-        "action": "added pagination to the API",
+        "action": "the API held up under heavy load",
         "polarity": "positive",
         "order": 4,
         "task_tag": "api"
@@ -45,18 +45,50 @@
       {
         "id": 5,
         "person": "Caroline",
-        "action": "left debug credentials in production",
-        "polarity": "negative",
+        "action": "removed sensitive fields from the logs",
+        "polarity": "positive",
         "order": 5,
-        "task_tag": "auth"
+        "task_tag": "api"
       },
       {
         "id": 6,
         "person": "Caroline",
-        "action": "an attacker found the debug account",
+        "action": "pointed DNS at the new cluster before it was ready",
         "polarity": "negative",
         "order": 6,
-        "task_tag": "auth"
+        "task_tag": "infra"
+      },
+      {
+        "id": 7,
+        "person": "Caroline",
+        "action": "traffic hit a cluster that could not serve it",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "infra"
+      },
+      {
+        "id": 8,
+        "person": "Caroline",
+        "action": "enabled autoscaling on the instances",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "infra"
+      },
+      {
+        "id": 9,
+        "person": "Caroline",
+        "action": "the service absorbed the traffic spike",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "infra"
+      },
+      {
+        "id": 10,
+        "person": "Caroline",
+        "action": "adopted a stricter policy that also covers the deployment window",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "api"
       }
     ],
     "edges": [
@@ -66,19 +98,39 @@
         "relation": "caused"
       },
       {
-        "from": 2,
-        "to": 3,
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
         "relation": "enabled"
       },
       {
-        "from": 4,
-        "to": 1,
+        "from": 5,
+        "to": 2,
         "relation": "prevented"
       },
       {
-        "from": 5,
-        "to": 6,
+        "from": 6,
+        "to": 7,
         "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
       }
     ]
   },
@@ -88,111 +140,135 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2025-03-12 10:15",
+          "date_time": "2025-03-04 10:15",
           "turns": [
             {
               "speaker": "Caroline",
-              "text": "Hey Marcus, quick heads-up — I added pagination to the /users endpoint this morning. Should be live in staging."
+              "text": "Hey, you got a sec? I need to flag something weird I just noticed in the query log."
             },
             {
               "speaker": "Marcus",
-              "text": "Nice, that was overdue. Did you test it with the big dataset? I remember that query was slow."
+              "text": "Sure, what's up? I was just about to grab coffee, but this sounds more interesting."
             },
             {
               "speaker": "Caroline",
-              "text": "Yeah, I ran a load test with 10k concurrent requests. The API held up under heavy load — p99 stayed under 200ms. I was honestly surprised."
+              "text": "So, I was debugging a slow endpoint and I saw that some sensitive customer data got logged — like full PII, not just IDs. It's sitting in the query log right now."
             },
             {
               "speaker": "Marcus",
-              "text": "Good to hear. But hey, I noticed something weird in the query log earlier — there were some customer email addresses in there. That shouldn't be logged."
+              "text": "Oh no. How did that happen? Did someone add a debug statement?"
             },
             {
               "speaker": "Caroline",
-              "text": "Oh no, really? I think I accidentally logged sensitive data to the query log when I was debugging the pagination. I must have included the full row instead of just the IDs."
+              "text": "I think it was a logging line I added last week for a trace — I didn't scrub the fields. And since we log at DEBUG level in staging, it went straight to the log aggregator."
             },
             {
               "speaker": "Marcus",
-              "text": "Yeah, that's a problem. Customer data leaked into the logs — we need to scrub those ASAP. Can you check if any of that hit production?"
+              "text": "Wait, so that means every engineer with log access can see it? That's a leak, Caroline. We need to rotate those logs and scrub the fields immediately."
             },
             {
               "speaker": "Caroline",
-              "text": "I'll pull the logs and redact them right now. Also, I'll add a filter to prevent that from happening again. Sorry about that."
+              "text": "Yeah, I know. I already removed the sensitive fields from the logging config, but the damage is done — the data's been exposed for the last two days. I'm drafting a postmortem now."
             },
             {
               "speaker": "Marcus",
-              "text": "No worries, just be careful. We don't want a repeat of the debug credentials incident."
+              "text": "Good call. Let's also add a check to the CI pipeline that fails if any field name matches a PII pattern. And we should probably review who has log access."
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Agreed. I'll set up a meeting with the security team for tomorrow. Thanks for not yelling at me."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "We've all done worse. Just fix it and move on."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2025-03-14 14:30",
+          "date_time": "2025-03-12 14:30",
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Hey Caroline, did you manage to clean up those logs?"
+              "text": "Hey, I saw you pushed the pagination change to the API. How's it looking under load?"
             },
             {
               "speaker": "Caroline",
-              "text": "Yes, I scrubbed all the customer emails from the query log and rotated the log files. Also added a whitelist for log fields."
+              "text": "Actually, it's holding up great. We ran a load test with 10x normal traffic, and the API didn't even blink. The pagination cut the response size by 80%."
             },
             {
               "speaker": "Marcus",
-              "text": "Good. But I have to ask — did you ever remove those debug credentials from production? I saw a suspicious login attempt this morning."
+              "text": "Nice. But I heard you had a little DNS scare yesterday?"
             },
             {
               "speaker": "Caroline",
-              "text": "Wait, what? I thought I removed them. I left debug credentials in production after the last hotfix — I completely forgot to disable that account."
+              "text": "Ugh, don't remind me. I pointed DNS at the new cluster before it was ready — I thought the health checks were passing, but they weren't. So for about ten minutes, traffic hit a cluster that couldn't serve it."
             },
             {
               "speaker": "Marcus",
-              "text": "Well, an attacker found the debug account. They tried to log in with the default password. The IDS flagged it, but we need to disable it now."
+              "text": "Yikes. What happened? Did you get paged?"
             },
             {
               "speaker": "Caroline",
-              "text": "Oh god, I'm so sorry. I'll disable it immediately and rotate all related keys. Let me check if they got any data."
+              "text": "Yeah, the error rate spiked, but I caught it fast. I rolled back the DNS and then enabled autoscaling on the instances — that was the real fix. Once the autoscaler kicked in, the service absorbed the traffic spike like a champ."
             },
             {
               "speaker": "Marcus",
-              "text": "They didn't get in — the account was locked after three failed attempts. But this is a serious wake-up call. We need a better credential management process."
+              "text": "So the autoscaling saved you. Good thing you added it before the load test."
             },
             {
               "speaker": "Caroline",
-              "text": "Agreed. I'll write a post-mortem and propose a checklist for production deployments. And I'll double-check the pagination code too — make sure nothing else is exposed."
+              "text": "Exactly. But I'm not making that mistake again. I've adopted a stricter policy that also covers the deployment window — no DNS changes until the cluster passes a full smoke test, and we have a manual approval step."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "That's smart. We should probably document that in the runbook so everyone follows it."
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Already did. I'll send you the link."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2025-03-17 09:45",
+          "date_time": "2025-03-20 09:45",
           "turns": [
             {
               "speaker": "Caroline",
-              "text": "Morning Marcus. I've finished the post-mortem and the new deployment checklist. Also, I re-verified the pagination — it's solid, no data leaks."
+              "text": "Morning. Quick update on the log leak follow-up — I've finished scrubbing the historical logs and rotated all the access keys."
             },
             {
               "speaker": "Marcus",
-              "text": "Thanks. And the debug account is fully disabled, right?"
+              "text": "Good. Did you also check if any of that leaked data got used maliciously?"
             },
             {
               "speaker": "Caroline",
-              "text": "Yes, disabled and removed from the user table. I also added a scheduled job that scans for any leftover debug accounts."
+              "text": "We did a full audit. No signs of external access, but we can't be 100% sure. The good news is that the stricter policy I mentioned is now live — it covers not just logging but also the deployment window, so no one can push a change that logs raw fields without a review."
             },
             {
               "speaker": "Marcus",
-              "text": "Good. Let's make sure the API holds up under heavy load again after those changes — I don't want any regressions."
+              "text": "That's a solid improvement. And the pagination work — did you get a chance to deploy it to production?"
             },
             {
               "speaker": "Caroline",
-              "text": "I'll run the load test again this afternoon. And I'll keep an eye on the query log to make sure no sensitive data sneaks in."
+              "text": "Yes, it went out last night. And I'm happy to report that the API held up under heavy load during the evening peak — we saw a 40% reduction in latency."
             },
             {
               "speaker": "Marcus",
-              "text": "Sounds good. Let's grab a coffee after — you've earned it after this mess."
+              "text": "Awesome. So we've got the leak fixed, the API faster, and the autoscaling working. Feels like we're finally in a good place."
             },
             {
               "speaker": "Caroline",
-              "text": "Ha, thanks. I'll take you up on that."
+              "text": "For now. But I'm keeping an eye on the logs — literally, I added a dashboard that alerts on any PII pattern. No more surprises."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Let's hope so. Coffee?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Definitely."
             }
           ]
         }
@@ -202,20 +278,21 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did customer data leaked into the logs happen?",
-      "answer": "Caroline caused it: logged sensitive data to the query log → customer data leaked into the logs",
+      "question": "Why did the leaked data was exposed to every engineer with log access?",
+      "answer": "logged sensitive data to the query log → customer data leaked into the logs → the leaked data was exposed to every engineer with log access",
       "evidence_nodes": [
         0,
-        1
+        1,
+        2
       ]
     },
     {
       "category": 12,
-      "question": "If Caroline does this again — logged sensitive data to the query log — what will happen?",
-      "answer": "customer data leaked into the logs",
+      "question": "If Caroline does logged sensitive data to the query log again without any other changes, what will happen?",
+      "answer": "the leaked data was exposed to every engineer with log access",
       "evidence_nodes": [
         0,
-        1
+        2
       ]
     },
     {
@@ -224,18 +301,18 @@
       "answer": "added pagination to the API (the API held up under heavy load)",
       "evidence_nodes": [
         0,
-        1,
         2,
-        3
+        3,
+        4
       ]
     },
     {
       "category": 14,
-      "question": "What stopped customer data leaked into the logs from happening again?",
-      "answer": "added pagination to the API",
+      "question": "What stopped the leaked data was exposed to every engineer with log access from happening again?",
+      "answer": "removed sensitive fields from the logs",
       "evidence_nodes": [
-        4,
-        1
+        5,
+        2
       ]
     },
     {
@@ -249,18 +326,21 @@
     },
     {
       "category": 16,
-      "question": "Facing a similar situation in a different area, what should Caroline avoid doing?",
-      "answer": "left debug credentials in production",
+      "question": "In infra, Caroline faces a situation like the one in api where logged sensitive data to the query log failed. What should Caroline do?",
+      "answer": "enabled autoscaling on the instances",
       "evidence_nodes": [
-        5
+        6,
+        7,
+        8,
+        9
       ]
     },
     {
       "category": 17,
-      "question": "After everything, what does Caroline now believe is the right way to handle deployments?",
-      "answer": "added pagination to the API",
+      "question": "After the latest development, what does Caroline now believe is the right way to handle api?",
+      "answer": "adopted a stricter policy that also covers the deployment window",
       "evidence_nodes": [
-        2
+        10
       ]
     }
   ]

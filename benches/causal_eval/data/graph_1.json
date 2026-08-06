@@ -21,23 +21,23 @@
       {
         "id": 2,
         "person": "Joanna",
-        "action": "set up a CI gate that blocks merges without tests",
-        "polarity": "neutral",
+        "action": "the regression reached every user and forced a full rollback",
+        "polarity": "negative",
         "order": 2,
         "task_tag": "deployment"
       },
       {
         "id": 3,
         "person": "Joanna",
-        "action": "untested code never reached production",
-        "polarity": "positive",
+        "action": "set up a CI gate that blocks merges without tests",
+        "polarity": "neutral",
         "order": 3,
         "task_tag": "deployment"
       },
       {
         "id": 4,
         "person": "Joanna",
-        "action": "set up a CI gate that blocks merges without tests",
+        "action": "untested code never reached production",
         "polarity": "positive",
         "order": 4,
         "task_tag": "deployment"
@@ -45,18 +45,50 @@
       {
         "id": 5,
         "person": "Joanna",
-        "action": "shipped the API without pagination",
-        "polarity": "negative",
+        "action": "scheduled deployments for off-peak hours",
+        "polarity": "positive",
         "order": 5,
-        "task_tag": "api"
+        "task_tag": "deployment"
       },
       {
         "id": 6,
         "person": "Joanna",
-        "action": "the API timed out under load",
+        "action": "stored passwords without hashing",
         "polarity": "negative",
         "order": 6,
-        "task_tag": "api"
+        "task_tag": "auth"
+      },
+      {
+        "id": 7,
+        "person": "Joanna",
+        "action": "user accounts were compromised",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "auth"
+      },
+      {
+        "id": 8,
+        "person": "Joanna",
+        "action": "removed debug credentials from production",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "auth"
+      },
+      {
+        "id": 9,
+        "person": "Joanna",
+        "action": "no backdoor account was left exposed",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "auth"
+      },
+      {
+        "id": 10,
+        "person": "Joanna",
+        "action": "adopted a stricter policy that also covers the deployment window",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "deployment"
       }
     ],
     "edges": [
@@ -66,19 +98,39 @@
         "relation": "caused"
       },
       {
-        "from": 2,
-        "to": 3,
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
         "relation": "enabled"
       },
       {
-        "from": 4,
-        "to": 1,
+        "from": 5,
+        "to": 2,
         "relation": "prevented"
       },
       {
-        "from": 5,
-        "to": 6,
+        "from": 6,
+        "to": 7,
         "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
       }
     ]
   },
@@ -88,139 +140,127 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2025-03-12 10:15",
+          "date_time": "2023-05-08 09:00",
           "turns": [
             {
               "speaker": "Joanna",
-              "text": "Hey Marcus, you got a sec? I need to confess something."
+              "text": "Morning, Marcus. You look like you've been up all night."
             },
             {
               "speaker": "Marcus",
-              "text": "Uh oh. What did you break this time?"
+              "text": "Because I have. The 2 AM deploy — the one you pushed without running the test suite — broke the login flow for every user. We had to do a full rollback at 3:30."
             },
             {
               "speaker": "Joanna",
-              "text": "So... I deployed the auth service this morning without running the test suite. I was in a rush, and I thought, 'what's the worst that could happen?'"
+              "text": "Oh god. I'm so sorry. I was rushing to get the feature out before the demo, and I skipped the tests. I thought it was a small change."
             },
             {
               "speaker": "Marcus",
-              "text": "Joanna. Seriously? You know that's exactly how we got that regression last month. The one that slipped into production and broke login for half our users."
+              "text": "Small change, huge regression. It hit every single account. We're lucky we caught it before the morning rush, but the damage is done — support tickets are flooding in."
             },
             {
               "speaker": "Joanna",
-              "text": "I know, I know. And I feel terrible. But I've already set up a CI gate that blocks merges without tests. No more bypassing. It's mandatory now."
+              "text": "I take full responsibility. I'm going to set up a CI gate that blocks merges without tests. No exceptions, even for me."
             },
             {
               "speaker": "Marcus",
-              "text": "Good. That's actually a solid move. But did anything actually break this time?"
+              "text": "That's a good start. But honestly, we need to talk about the password storage too. I saw the logs — you stored plaintext passwords in the dev database."
             },
             {
               "speaker": "Joanna",
-              "text": "No, thankfully. Untested code never reached production — the deploy went through clean. But I'm not taking that risk again."
+              "text": "Wait, what? No, that was a temporary script for local testing. I never pushed that to production."
             },
             {
               "speaker": "Marcus",
-              "text": "Alright, I'll hold you to that. And hey, while we're on the topic of risky moves — what's the deal with the new API endpoint you shipped? I heard it's been timing out under load."
+              "text": "You didn't push it, but the script was still running on the staging server. Three user accounts got compromised before we killed it."
             },
             {
               "speaker": "Joanna",
-              "text": "Yeah... that one's on me too. I shipped the API without pagination. It works fine for small requests, but once we hit real traffic, it just chokes. Timeouts everywhere."
+              "text": "Jesus. I'm so sorry. I'll remove those debug credentials from production right now, and I'll audit every environment for any leftover backdoors."
             },
             {
               "speaker": "Marcus",
-              "text": "Classic. Well, at least you're owning it. Let's get pagination in before the next release, okay?"
+              "text": "Please do. And after that, we need a stricter policy — not just for tests, but for the deployment window. No more 2 AM pushes without a checklist."
             },
             {
               "speaker": "Joanna",
-              "text": "Absolutely. I've already got a branch started. And this time, I'll run the tests. Promise."
+              "text": "Agreed. I'll draft that policy today. And I'll make sure untested code never reaches production again — the CI gate will enforce it."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2025-03-14 14:30",
+          "date_time": "2023-05-10 14:30",
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Hey, saw your PR for the pagination fix. Looks good. Did you run the full suite this time?"
+              "text": "Hey, I saw your CI gate is live. Nice work — it blocked my own merge this morning because I forgot a unit test."
             },
             {
               "speaker": "Joanna",
-              "text": "Ha, yes. Twice. And the CI gate is still active, so it wouldn't let me merge without passing anyway."
+              "text": "Ha, sorry about that. But that's the point. It's already caught two other PRs. No more untested code slipping through."
             },
             {
               "speaker": "Marcus",
-              "text": "Nice. So we're good on the timeout issue?"
+              "text": "Good. And I checked the production logs — no backdoor account left exposed. You cleaned up all the debug credentials?"
             },
             {
               "speaker": "Joanna",
-              "text": "Should be. I load-tested it with 500 concurrent users and it held up. No more API timing out under load."
+              "text": "Every single one. I also rotated all the API keys and forced a password reset for the affected users. They've been notified."
             },
             {
               "speaker": "Marcus",
-              "text": "Great. And just to be clear — you're not going to pull another 'deploy without tests' stunt, right?"
+              "text": "That's solid. Now, about the deployment window — I saw you scheduled the next release for 6 AM on Saturday. Off-peak, but not the middle of the night."
             },
             {
               "speaker": "Joanna",
-              "text": "Never again. That regression taught me a lesson. Plus, now the gate blocks me anyway. I literally can't merge without tests."
+              "text": "Yeah, I figured 6 AM gives us the whole day to monitor if something breaks, and it's still low traffic. Plus, the new policy requires a second pair of eyes on every deploy."
             },
             {
               "speaker": "Marcus",
-              "text": "Good. That's the kind of self-sabotage prevention I like to see."
+              "text": "I like it. And that stricter policy — does it cover the deployment window itself? Like, no deploys after 4 PM on Fridays?"
             },
             {
               "speaker": "Joanna",
-              "text": "Yeah, well, better late than never. I just wish I'd done it before the whole production meltdown."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "Live and learn. At least now we have a safety net."
+              "text": "Exactly. It covers the window, the test requirement, and the rollback plan. I'll send you the doc for review."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2025-03-18 09:45",
+          "date_time": "2023-05-12 11:15",
           "turns": [
             {
-              "speaker": "Joanna",
-              "text": "Morning, Marcus. Quick update — the pagination fix is live, and I've also added a load test to the CI pipeline."
-            },
-            {
               "speaker": "Marcus",
-              "text": "Nice. So we're covered on both fronts: no untested code, and no more timeouts."
+              "text": "Just read your policy doc. It's thorough. I especially like the part about mandatory smoke tests after every deploy."
             },
             {
               "speaker": "Joanna",
-              "text": "Exactly. And I double-checked — the CI gate is still blocking any merge without tests. It's become second nature now."
+              "text": "Thanks. I learned my lesson the hard way. That regression that hit everyone — I never want that again."
             },
             {
               "speaker": "Marcus",
-              "text": "Honestly, I'm impressed. You went from 'deploy and pray' to 'CI gate evangelist' in like a week."
+              "text": "And the password hashing requirement — that's non-negotiable now, right? No more plaintext anywhere, even in dev."
             },
             {
               "speaker": "Joanna",
-              "text": "Desperation is a great motivator. That regression slipping into production was embarrassing. I never want to be that person again."
+              "text": "Correct. I've already updated the dev environment to use the same hashing library as prod. And I added a lint rule that fails if anyone tries to store a raw password."
             },
             {
               "speaker": "Marcus",
-              "text": "Well, you're not. And the API is actually stable now. I checked the metrics this morning — zero timeouts."
+              "text": "Good. So, to recap: CI gate blocks merges without tests, untested code never reaches production, deployments are scheduled for off-peak hours, and no debug credentials or backdoors exist."
             },
             {
               "speaker": "Joanna",
-              "text": "Music to my ears. Thanks for not letting me off the hook, by the way. You could've just let me keep making mistakes."
+              "text": "That's the new normal. And the stricter policy covers the deployment window too — so no more 2 AM surprises."
             },
             {
               "speaker": "Marcus",
-              "text": "Nah, we're a team. Plus, I like sleeping at night without pager alerts."
+              "text": "I'm impressed, Joanna. You turned a disaster into a solid process. Let's grab coffee and celebrate — after you run the test suite, of course."
             },
             {
               "speaker": "Joanna",
-              "text": "Fair. Coffee's on me today."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "Deal."
+              "text": "Deal. And I'll bring the rollback runbook I wrote, just in case."
             }
           ]
         }
@@ -230,20 +270,21 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did a regression slipped into production happen?",
-      "answer": "Joanna caused it: deployed without running the test suite → a regression slipped into production",
+      "question": "Why did the regression reached every user and forced a full rollback?",
+      "answer": "deployed without running the test suite → a regression slipped into production → the regression reached every user and forced a full rollback",
       "evidence_nodes": [
         0,
-        1
+        1,
+        2
       ]
     },
     {
       "category": 12,
-      "question": "If Joanna does this again — deployed without running the test suite — what will happen?",
-      "answer": "a regression slipped into production",
+      "question": "If Joanna does deployed without running the test suite again without any other changes, what will happen?",
+      "answer": "the regression reached every user and forced a full rollback",
       "evidence_nodes": [
         0,
-        1
+        2
       ]
     },
     {
@@ -252,18 +293,18 @@
       "answer": "set up a CI gate that blocks merges without tests (untested code never reached production)",
       "evidence_nodes": [
         0,
-        1,
         2,
-        3
+        3,
+        4
       ]
     },
     {
       "category": 14,
-      "question": "What stopped a regression slipped into production from happening again?",
-      "answer": "set up a CI gate that blocks merges without tests",
+      "question": "What stopped the regression reached every user and forced a full rollback from happening again?",
+      "answer": "scheduled deployments for off-peak hours",
       "evidence_nodes": [
-        4,
-        1
+        5,
+        2
       ]
     },
     {
@@ -277,18 +318,21 @@
     },
     {
       "category": 16,
-      "question": "Facing a similar situation in a different area, what should Joanna avoid doing?",
-      "answer": "shipped the API without pagination",
+      "question": "In auth, Joanna faces a situation like the one in deployment where deployed without running the test suite failed. What should Joanna do?",
+      "answer": "removed debug credentials from production",
       "evidence_nodes": [
-        5
+        6,
+        7,
+        8,
+        9
       ]
     },
     {
       "category": 17,
-      "question": "After everything, what does Joanna now believe is the right way to handle deployments?",
-      "answer": "set up a CI gate that blocks merges without tests",
+      "question": "After the latest development, what does Joanna now believe is the right way to handle deployment?",
+      "answer": "adopted a stricter policy that also covers the deployment window",
       "evidence_nodes": [
-        2
+        10
       ]
     }
   ]

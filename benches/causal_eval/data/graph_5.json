@@ -21,23 +21,23 @@
       {
         "id": 2,
         "person": "Priya",
-        "action": "removed debug credentials from production",
-        "polarity": "neutral",
+        "action": "the attacker moved laterally inside the network",
+        "polarity": "negative",
         "order": 2,
         "task_tag": "auth"
       },
       {
         "id": 3,
         "person": "Priya",
-        "action": "no backdoor account was left exposed",
-        "polarity": "positive",
+        "action": "removed debug credentials from production",
+        "polarity": "neutral",
         "order": 3,
         "task_tag": "auth"
       },
       {
         "id": 4,
         "person": "Priya",
-        "action": "removed debug credentials from production",
+        "action": "no backdoor account was left exposed",
         "polarity": "positive",
         "order": 4,
         "task_tag": "auth"
@@ -45,18 +45,50 @@
       {
         "id": 5,
         "person": "Priya",
-        "action": "shipped the API without pagination",
-        "polarity": "negative",
+        "action": "hashed passwords before storing them",
+        "polarity": "positive",
         "order": 5,
-        "task_tag": "api"
+        "task_tag": "auth"
       },
       {
         "id": 6,
         "person": "Priya",
-        "action": "the API timed out under load",
+        "action": "ran the migration during peak traffic",
         "polarity": "negative",
         "order": 6,
-        "task_tag": "api"
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 7,
+        "person": "Priya",
+        "action": "the migration locked the database",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 8,
+        "person": "Priya",
+        "action": "ran the migration in a maintenance window",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 9,
+        "person": "Priya",
+        "action": "the migration finished without locking anything",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 10,
+        "person": "Priya",
+        "action": "adopted a stricter policy that also covers the deployment window",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "auth"
       }
     ],
     "edges": [
@@ -66,19 +98,39 @@
         "relation": "caused"
       },
       {
-        "from": 2,
-        "to": 3,
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
         "relation": "enabled"
       },
       {
-        "from": 4,
-        "to": 1,
+        "from": 5,
+        "to": 2,
         "relation": "prevented"
       },
       {
-        "from": 5,
-        "to": 6,
+        "from": 6,
+        "to": 7,
         "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
       }
     ]
   },
@@ -88,135 +140,135 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2023-05-08 09:00",
+          "date_time": "2025-03-12 10:15",
           "turns": [
             {
               "speaker": "Priya",
-              "text": "Morning, Marcus. You got a sec? I need to confess something before it bites us."
+              "text": "Hey Marcus, you got a sec? I need to confess something before it bites us."
             },
             {
               "speaker": "Marcus",
-              "text": "Uh oh. That tone never means good news. What's up?"
+              "text": "Uh oh, that tone. What's up?"
             },
             {
               "speaker": "Priya",
-              "text": "So... remember when I pushed that hotfix last week? I left the debug credentials in the production config. The ones with the hardcoded admin password."
+              "text": "So... I left debug credentials in the production config. I know, I know. I thought I'd cleaned them out, but they were still in the env file."
             },
             {
               "speaker": "Marcus",
-              "text": "Wait, the ones we use for local dev? You left those in prod? Please tell me nobody found them."
+              "text": "Wait, seriously? Those are usually admin-level. Did anyone find them?"
             },
             {
               "speaker": "Priya",
-              "text": "That's the thing. An attacker found the debug account yesterday. They got in, poked around the user table, but didn't change anything. Logs show they were in for about four minutes."
+              "text": "Yeah, that's the bad part. An attacker found the debug account yesterday. They got in with it."
             },
             {
               "speaker": "Marcus",
-              "text": "Jesus, Priya. Okay. What did you do?"
+              "text": "Oh no. How far did they get?"
             },
             {
               "speaker": "Priya",
-              "text": "I already removed the debug credentials from production this morning. Rotated the keys, killed the session, and ran a full audit. No backdoor account was left exposed — I triple-checked the config and the database."
+              "text": "They moved laterally inside the network — hit a couple of internal services before our IDS flagged it. I've already pulled the credentials from production, so that door is shut."
             },
             {
               "speaker": "Marcus",
-              "text": "Good. That's the right move. But we need to tell the security team and probably write a postmortem. Also, maybe we should add a CI check that blocks those keys from ever hitting prod again."
+              "text": "Good. But did they leave anything behind? A backdoor?"
             },
             {
               "speaker": "Priya",
-              "text": "Agreed. I'll draft the postmortem today. And I'm sorry — that was a rookie mistake."
+              "text": "No backdoor account was left exposed — I checked the auth logs and user tables. They didn't create any persistence. We got lucky."
             },
             {
               "speaker": "Marcus",
-              "text": "We all make them. Just glad you caught it fast. Let's grab coffee and talk about the API rollout after."
+              "text": "Lucky is right. What's the fix going forward?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "I've already hashed all passwords before storing them — that was a gap too. And I'm drafting a stricter policy that also covers the deployment window, so this can't slip through again."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2023-05-10 14:30",
+          "date_time": "2025-03-18 14:40",
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Hey, so about that API you shipped on Monday — I'm seeing some concerning latency numbers in the dashboards."
+              "text": "Hey, how's the cleanup going? That policy you mentioned — did it get approved?"
             },
             {
               "speaker": "Priya",
-              "text": "Yeah, I know. I shipped the API without pagination. I thought the dataset was small enough, but turns out the client's pulling 50k records per request."
+              "text": "Approved and live. Now every deploy has a mandatory credential scan, and the window is locked down. No more 'quick fixes' during business hours."
             },
             {
               "speaker": "Marcus",
-              "text": "And what happened when you load-tested it?"
+              "text": "Nice. Speaking of windows — I saw you scheduled the big DB migration for this afternoon. That's peak traffic, isn't it?"
             },
             {
               "speaker": "Priya",
-              "text": "The API timed out under load. Anything above 20 concurrent requests and it just hangs. The database is choking on the full table scan every time."
+              "text": "Yeah, that was a mistake on my part. I ran the migration during peak traffic yesterday, and guess what happened."
             },
             {
               "speaker": "Marcus",
-              "text": "Okay, so we need to add pagination and probably an index on the query column. How fast can you get that out?"
+              "text": "Let me guess — it locked the database?"
             },
             {
               "speaker": "Priya",
-              "text": "I can have the pagination done by end of day. The index is a quick migration. I'll also add a limit parameter so clients can't request everything at once."
+              "text": "Exactly. Locked the whole thing for like four minutes. Orders were timing out. My bad."
             },
             {
               "speaker": "Marcus",
-              "text": "Good. And let's make sure we run a proper load test this time before we call it done."
+              "text": "Ouch. So what did you do?"
             },
             {
               "speaker": "Priya",
-              "text": "Definitely. I'm not repeating that mistake. Also, I already removed the debug credentials from production again — just to be safe, since I was touching the config for the pagination change."
+              "text": "I rescheduled it for tonight's maintenance window. I ran the migration in a maintenance window just now — it finished without locking anything. Clean as a whistle."
             },
             {
               "speaker": "Marcus",
-              "text": "Wait, you removed them again? I thought you did that on Monday."
+              "text": "Good recovery. At least you learned the hard way, right?"
             },
             {
               "speaker": "Priya",
-              "text": "I did, but I found a backup config file that still had them. So I cleaned that out too. Now there's definitely no backdoor account left exposed anywhere."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "Alright, good catch. Let's just make sure the postmortem covers both incidents — the debug creds and the pagination. We'll look like a mess if we don't."
+              "text": "Yeah, and now the policy covers that too — no schema changes outside the maintenance window, period. I'm done making those kinds of calls."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2023-05-12 16:45",
+          "date_time": "2025-03-25 09:05",
           "turns": [
             {
-              "speaker": "Priya",
-              "text": "Hey, quick update — the pagination fix is live and the load test passed. 200 concurrent requests, response time under 300ms."
-            },
-            {
               "speaker": "Marcus",
-              "text": "Nice. That's a huge improvement. And the debug credentials situation is fully closed out?"
+              "text": "Morning. Quick check — the new policy is holding up? Any more surprise credentials?"
             },
             {
               "speaker": "Priya",
-              "text": "Yes. I did a final sweep of all repos, env files, and deployment scripts. No debug credentials anywhere in production. No backdoor account was left exposed — I even checked the audit logs for any new logins since the rotation."
+              "text": "Nope, clean scans all week. And I double-checked the audit trail — no backdoor account was left exposed from the breach, so we're solid there."
             },
             {
               "speaker": "Marcus",
-              "text": "Perfect. So we're clean on both fronts. You want to present the postmortem to the team tomorrow, or should I?"
+              "text": "Good. And the migration? Any lingering issues from that lockup?"
             },
             {
               "speaker": "Priya",
-              "text": "I'll do it. I own both mistakes, so I should own the lessons. But thanks for having my back on this."
+              "text": "None. The maintenance window run was flawless — finished without locking anything, and the data's consistent. I also made sure all the new user records are hashed properly before they hit the DB."
             },
             {
               "speaker": "Marcus",
-              "text": "That's what teammates are for. Just remember — next time, no debug creds in prod, and always paginate. Deal?"
+              "text": "You've been busy. So what's the one thing you'd tell your past self from two weeks ago?"
             },
             {
               "speaker": "Priya",
-              "text": "Deal. And I'll add a checklist to our deploy template so this never happens again."
+              "text": "Don't be an idiot with debug creds, and never touch the DB at 2 PM. But honestly, the stricter policy that also covers the deployment window is the real win — it's forced everyone to slow down and think."
             },
             {
               "speaker": "Marcus",
-              "text": "Sounds good. See you at the meeting."
+              "text": "That's the right takeaway. Glad it worked out, Priya."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Thanks. Now let's hope the next incident is someone else's turn."
             }
           ]
         }
@@ -226,20 +278,21 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did an attacker found the debug account happen?",
-      "answer": "Priya caused it: left debug credentials in production → an attacker found the debug account",
+      "question": "Why did the attacker moved laterally inside the network?",
+      "answer": "left debug credentials in production → an attacker found the debug account → the attacker moved laterally inside the network",
       "evidence_nodes": [
         0,
-        1
+        1,
+        2
       ]
     },
     {
       "category": 12,
-      "question": "If Priya does this again — left debug credentials in production — what will happen?",
-      "answer": "an attacker found the debug account",
+      "question": "If Priya does left debug credentials in production again without any other changes, what will happen?",
+      "answer": "the attacker moved laterally inside the network",
       "evidence_nodes": [
         0,
-        1
+        2
       ]
     },
     {
@@ -248,18 +301,18 @@
       "answer": "removed debug credentials from production (no backdoor account was left exposed)",
       "evidence_nodes": [
         0,
-        1,
         2,
-        3
+        3,
+        4
       ]
     },
     {
       "category": 14,
-      "question": "What stopped an attacker found the debug account from happening again?",
-      "answer": "removed debug credentials from production",
+      "question": "What stopped the attacker moved laterally inside the network from happening again?",
+      "answer": "hashed passwords before storing them",
       "evidence_nodes": [
-        4,
-        1
+        5,
+        2
       ]
     },
     {
@@ -273,18 +326,21 @@
     },
     {
       "category": 16,
-      "question": "Facing a similar situation in a different area, what should Priya avoid doing?",
-      "answer": "shipped the API without pagination",
+      "question": "In data-migration, Priya faces a situation like the one in auth where left debug credentials in production failed. What should Priya do?",
+      "answer": "ran the migration in a maintenance window",
       "evidence_nodes": [
-        5
+        6,
+        7,
+        8,
+        9
       ]
     },
     {
       "category": 17,
-      "question": "After everything, what does Priya now believe is the right way to handle deployments?",
-      "answer": "removed debug credentials from production",
+      "question": "After the latest development, what does Priya now believe is the right way to handle auth?",
+      "answer": "adopted a stricter policy that also covers the deployment window",
       "evidence_nodes": [
-        2
+        10
       ]
     }
   ]

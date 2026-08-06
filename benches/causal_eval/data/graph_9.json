@@ -21,23 +21,23 @@
       {
         "id": 2,
         "person": "Priya",
-        "action": "waited for the cluster health check before switching DNS",
-        "polarity": "neutral",
+        "action": "the outage lasted for hours and hit every region",
+        "polarity": "negative",
         "order": 2,
         "task_tag": "infra"
       },
       {
         "id": 3,
         "person": "Priya",
-        "action": "traffic moved over without a hitch",
-        "polarity": "positive",
+        "action": "waited for the cluster health check before switching DNS",
+        "polarity": "neutral",
         "order": 3,
         "task_tag": "infra"
       },
       {
         "id": 4,
         "person": "Priya",
-        "action": "waited for the cluster health check before switching DNS",
+        "action": "traffic moved over without a hitch",
         "polarity": "positive",
         "order": 4,
         "task_tag": "infra"
@@ -45,18 +45,50 @@
       {
         "id": 5,
         "person": "Priya",
-        "action": "stored passwords without hashing",
-        "polarity": "negative",
+        "action": "enabled autoscaling on the instances",
+        "polarity": "positive",
         "order": 5,
-        "task_tag": "auth"
+        "task_tag": "infra"
       },
       {
         "id": 6,
         "person": "Priya",
-        "action": "user accounts were compromised",
+        "action": "migrated the schema without a backup",
         "polarity": "negative",
         "order": 6,
-        "task_tag": "auth"
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 7,
+        "person": "Priya",
+        "action": "the migration corrupted customer records",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 8,
+        "person": "Priya",
+        "action": "ran the migration in a maintenance window",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 9,
+        "person": "Priya",
+        "action": "the migration finished without locking anything",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 10,
+        "person": "Priya",
+        "action": "adopted a stricter policy that also covers the deployment window",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "infra"
       }
     ],
     "edges": [
@@ -66,19 +98,39 @@
         "relation": "caused"
       },
       {
-        "from": 2,
-        "to": 3,
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
         "relation": "enabled"
       },
       {
-        "from": 4,
-        "to": 1,
+        "from": 5,
+        "to": 2,
         "relation": "prevented"
       },
       {
-        "from": 5,
-        "to": 6,
+        "from": 6,
+        "to": 7,
         "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
       }
     ]
   },
@@ -88,127 +140,127 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2023-05-08 09:15",
+          "date_time": "2025-03-12 09:15",
           "turns": [
             {
               "speaker": "Priya",
-              "text": "Hey Marcus, you around? I need to vent about the cluster migration."
+              "text": "Hey, you got a sec? I need to vent about the DNS switch yesterday."
             },
             {
               "speaker": "Marcus",
-              "text": "Always. What happened? Did the new cluster blow up?"
+              "text": "Oh no, what happened? I saw the incident page go off around 2 AM."
             },
             {
               "speaker": "Priya",
-              "text": "Not exactly. I pointed DNS at the new cluster before it was ready. I thought the health checks would pass, but they didn't."
+              "text": "Yeah, so I pointed DNS at the new cluster before it was actually ready. I thought the health checks would pass, but they didn't."
             },
             {
               "speaker": "Marcus",
-              "text": "Oh no. So you sent live traffic to a cluster that couldn't serve it?"
+              "text": "Wait, you flipped DNS without waiting for the green light? That's a classic."
             },
             {
               "speaker": "Priya",
-              "text": "Exactly. For about ten minutes, users got 503s. I felt like an idiot."
+              "text": "I know, I know. And of course, traffic hit a cluster that could not serve it. Every single region went down for hours."
             },
             {
               "speaker": "Marcus",
-              "text": "We've all done something like that. Did you roll back?"
+              "text": "Hours? That's brutal. Did you at least roll back fast?"
             },
             {
               "speaker": "Priya",
-              "text": "Yeah, I flipped DNS back to the old cluster, but the damage was done. The incident report is going to be fun."
+              "text": "Rollback was messy because the old cluster was already decommissioned. We had to rebuild it on the fly. The outage lasted for hours and hit every region, including APAC."
             },
             {
               "speaker": "Marcus",
-              "text": "At least you caught it. Next time, wait for the cluster health check before switching DNS. That's the rule we set."
+              "text": "Yikes. So what's the lesson here? I'm guessing you're not doing that again."
             },
             {
               "speaker": "Priya",
-              "text": "I know, I know. I got impatient. Lesson learned."
+              "text": "Definitely not. From now on, I'm waiting for the cluster health check before switching DNS. No exceptions."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2023-05-10 14:30",
+          "date_time": "2025-03-18 14:30",
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Hey, how's the migration going? Did you get the new cluster stable?"
+              "text": "Hey, I saw you pushed the new cluster migration over the weekend. How did it go?"
             },
             {
               "speaker": "Priya",
-              "text": "Actually, yes. This time I waited for the cluster health check before switching DNS. All green."
+              "text": "Surprisingly smooth. This time I waited for the health check, and traffic moved over without a hitch. Zero errors."
             },
             {
               "speaker": "Marcus",
-              "text": "Nice. So you flipped the switch?"
+              "text": "Nice! So you finally learned your lesson, huh?"
             },
             {
               "speaker": "Priya",
-              "text": "Yep, traffic moved over without a hitch. Zero errors, zero downtime. It's beautiful."
+              "text": "Ha, yeah. Also, I enabled autoscaling on the instances this time, so we won't get caught with our pants down if there's a spike."
             },
             {
               "speaker": "Marcus",
-              "text": "That's the way to do it. See, patience pays off."
+              "text": "Good call. But I heard you also did the schema migration in the same window? That's risky."
             },
             {
               "speaker": "Priya",
-              "text": "I'm just glad I didn't repeat the same mistake. The old cluster is decommissioned now."
+              "text": "I ran the migration in a maintenance window, so it was planned. But honestly, I didn't take a backup first. That was a mistake."
             },
             {
               "speaker": "Marcus",
-              "text": "Good. So what's next on your plate?"
+              "text": "Wait, you migrated the schema without a backup? What if something went wrong?"
             },
             {
               "speaker": "Priya",
-              "text": "Honestly, I'm a bit worried about the user auth service. I've been meaning to clean it up."
+              "text": "Well, something did go wrong. The migration corrupted customer records. We had to restore from a snapshot that was two days old."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Oh man. So the migration finished without locking anything, but it still broke data. That's the worst kind of failure."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Exactly. No locks, no downtime, but silent corruption. We only caught it because a support ticket came in about missing orders."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2023-05-12 11:00",
+          "date_time": "2025-03-25 11:00",
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Priya, did you see the security alert? We had a breach on the user accounts."
+              "text": "Hey, I saw you updated the runbook. Looks like you added a new policy about deployment windows."
             },
             {
               "speaker": "Priya",
-              "text": "What? No, I just saw the email. How bad is it?"
+              "text": "Yeah, after the last two incidents, I adopted a stricter policy that also covers the deployment window. No more last-minute changes without a full checklist."
             },
             {
               "speaker": "Marcus",
-              "text": "Bad. Someone got into the auth database. They're saying a bunch of accounts are compromised."
+              "text": "What's in the checklist? Just curious."
             },
             {
               "speaker": "Priya",
-              "text": "Oh god. I think I know why. When I set up the auth service, I stored passwords without hashing. I was in a rush."
+              "text": "First, mandatory backup before any schema change. Second, health check must be green for at least 15 minutes before DNS switch. Third, autoscaling must be enabled and tested."
             },
             {
               "speaker": "Marcus",
-              "text": "You what? Priya, that's a huge security flaw. No wonder they got in."
+              "text": "That's solid. So you're basically making sure we never repeat the 'point DNS at a dead cluster' fiasco."
             },
             {
               "speaker": "Priya",
-              "text": "I know, I know. I thought we'd fix it later, but later never came. Now we have to notify all those users."
+              "text": "Exactly. And I'm also adding a step to verify data integrity after any migration, not just rely on the migration finishing without locking anything."
             },
             {
               "speaker": "Marcus",
-              "text": "We need to reset every password, force re-auth, and audit the whole system. This is going to be a nightmare."
+              "text": "Smart. I'll make sure my team follows it too. Thanks for owning this."
             },
             {
               "speaker": "Priya",
-              "text": "I'm so sorry. I should have hashed them from day one. I just didn't think anyone would find out."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "Well, they did. Let's focus on damage control. And after this, we're implementing mandatory security reviews for every service."
-            },
-            {
-              "speaker": "Priya",
-              "text": "Agreed. I'll take full responsibility in the postmortem. I just hope we can contain it."
+              "text": "No problem. I'd rather have a boring, safe process than another 3 AM page."
             }
           ]
         }
@@ -218,20 +270,21 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did traffic hit a cluster that could not serve it happen?",
-      "answer": "Priya caused it: pointed DNS at the new cluster before it was ready → traffic hit a cluster that could not serve it",
+      "question": "Why did the outage lasted for hours and hit every region?",
+      "answer": "pointed DNS at the new cluster before it was ready → traffic hit a cluster that could not serve it → the outage lasted for hours and hit every region",
       "evidence_nodes": [
         0,
-        1
+        1,
+        2
       ]
     },
     {
       "category": 12,
-      "question": "If Priya does this again — pointed DNS at the new cluster before it was ready — what will happen?",
-      "answer": "traffic hit a cluster that could not serve it",
+      "question": "If Priya does pointed DNS at the new cluster before it was ready again without any other changes, what will happen?",
+      "answer": "the outage lasted for hours and hit every region",
       "evidence_nodes": [
         0,
-        1
+        2
       ]
     },
     {
@@ -240,18 +293,18 @@
       "answer": "waited for the cluster health check before switching DNS (traffic moved over without a hitch)",
       "evidence_nodes": [
         0,
-        1,
         2,
-        3
+        3,
+        4
       ]
     },
     {
       "category": 14,
-      "question": "What stopped traffic hit a cluster that could not serve it from happening again?",
-      "answer": "waited for the cluster health check before switching DNS",
+      "question": "What stopped the outage lasted for hours and hit every region from happening again?",
+      "answer": "enabled autoscaling on the instances",
       "evidence_nodes": [
-        4,
-        1
+        5,
+        2
       ]
     },
     {
@@ -265,18 +318,21 @@
     },
     {
       "category": 16,
-      "question": "Facing a similar situation in a different area, what should Priya avoid doing?",
-      "answer": "stored passwords without hashing",
+      "question": "In data-migration, Priya faces a situation like the one in infra where pointed DNS at the new cluster before it was ready failed. What should Priya do?",
+      "answer": "ran the migration in a maintenance window",
       "evidence_nodes": [
-        5
+        6,
+        7,
+        8,
+        9
       ]
     },
     {
       "category": 17,
-      "question": "After everything, what does Priya now believe is the right way to handle deployments?",
-      "answer": "waited for the cluster health check before switching DNS",
+      "question": "After the latest development, what does Priya now believe is the right way to handle infra?",
+      "answer": "adopted a stricter policy that also covers the deployment window",
       "evidence_nodes": [
-        2
+        10
       ]
     }
   ]

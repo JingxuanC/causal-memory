@@ -21,23 +21,23 @@
       {
         "id": 2,
         "person": "Melanie",
-        "action": "added pagination to the API",
-        "polarity": "neutral",
+        "action": "the leaked data was exposed to every engineer with log access",
+        "polarity": "negative",
         "order": 2,
         "task_tag": "api"
       },
       {
         "id": 3,
         "person": "Melanie",
-        "action": "the API held up under heavy load",
-        "polarity": "positive",
+        "action": "added pagination to the API",
+        "polarity": "neutral",
         "order": 3,
         "task_tag": "api"
       },
       {
         "id": 4,
         "person": "Melanie",
-        "action": "added pagination to the API",
+        "action": "the API held up under heavy load",
         "polarity": "positive",
         "order": 4,
         "task_tag": "api"
@@ -45,18 +45,50 @@
       {
         "id": 5,
         "person": "Melanie",
-        "action": "deployed without running the test suite",
-        "polarity": "negative",
+        "action": "removed sensitive fields from the logs",
+        "polarity": "positive",
         "order": 5,
-        "task_tag": "deployment"
+        "task_tag": "api"
       },
       {
         "id": 6,
         "person": "Melanie",
-        "action": "a regression slipped into production",
+        "action": "ran the migration during peak traffic",
         "polarity": "negative",
         "order": 6,
-        "task_tag": "deployment"
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 7,
+        "person": "Melanie",
+        "action": "the migration locked the database",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 8,
+        "person": "Melanie",
+        "action": "ran the migration in a maintenance window",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 9,
+        "person": "Melanie",
+        "action": "the migration finished without locking anything",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 10,
+        "person": "Melanie",
+        "action": "adopted a stricter policy that also covers the deployment window",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "api"
       }
     ],
     "edges": [
@@ -66,19 +98,39 @@
         "relation": "caused"
       },
       {
-        "from": 2,
-        "to": 3,
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
         "relation": "enabled"
       },
       {
-        "from": 4,
-        "to": 1,
+        "from": 5,
+        "to": 2,
         "relation": "prevented"
       },
       {
-        "from": 5,
-        "to": 6,
+        "from": 6,
+        "to": 7,
         "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
       }
     ]
   },
@@ -88,115 +140,115 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2025-03-10 14:20",
+          "date_time": "2025-03-12 10:15",
           "turns": [
             {
               "speaker": "Melanie",
-              "text": "Hey, you got a sec? I need to flag something weird in the query log."
+              "text": "Hey, you got a sec? I need to flag something I did yesterday."
             },
             {
               "speaker": "Colleague",
-              "text": "Sure, what's up? I was just about to grab coffee, but this sounds urgent."
+              "text": "Sure, what's up?"
             },
             {
               "speaker": "Melanie",
-              "text": "So, I was debugging the search endpoint and I accidentally logged the full request body — including the customer's email and phone number. It's sitting in the query log right now."
+              "text": "So, when I was debugging that slow endpoint, I logged some sensitive customer data to the query log. I know, I know — bad move."
             },
             {
               "speaker": "Colleague",
-              "text": "Oh no. That's sensitive data. Did you scrub it or rotate the log?"
+              "text": "Oh no. How sensitive are we talking?"
             },
             {
               "speaker": "Melanie",
-              "text": "I already deleted the entries and added a filter to strip PII before logging. But I wanted you to know in case anyone else saw it."
+              "text": "PII — names, email addresses, a few account numbers. And because the query log is shared, that leaked data was exposed to every engineer with log access. I only realized this morning."
             },
             {
               "speaker": "Colleague",
-              "text": "Good catch. At least it's contained. But let's add a ticket to audit the logging pipeline — we can't have that happen again."
+              "text": "That's a problem. Have you cleaned it up?"
             },
             {
               "speaker": "Melanie",
-              "text": "Agreed. Also, on a lighter note — I finally added pagination to the API. The response size was getting out of hand."
+              "text": "Not yet, but I'm on it. I've already removed the sensitive fields from the logs going forward, and I'm scrubbing the historical entries now. I'll also tighten the access policy after this."
             },
             {
               "speaker": "Colleague",
-              "text": "Nice, that's been on the backlog for weeks. Did you test it with the big dataset?"
+              "text": "Good. Let me know if you need help with the scrub. And hey, at least the API held up under heavy load yesterday — that pagination you added really saved us."
             },
             {
               "speaker": "Melanie",
-              "text": "Yeah, I ran a quick load test locally. It held up fine under heavy load — no timeouts, memory stayed flat."
+              "text": "Ha, silver lining. Yeah, the pagination worked better than expected. But this log thing is a wake-up call."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2025-03-12 09:45",
+          "date_time": "2025-03-14 16:40",
           "turns": [
             {
               "speaker": "Colleague",
-              "text": "Morning. Quick question — did you deploy the pagination change yesterday? I saw a new version in staging."
+              "text": "Hey, how's the log cleanup going?"
             },
             {
               "speaker": "Melanie",
-              "text": "Yeah, I pushed it to prod last night. I know I should have run the test suite first, but I was in a hurry to get it out before the demo."
+              "text": "Done. All historical entries scrubbed, and I've removed sensitive fields from the log schema entirely. Also, I'm adopting a stricter policy that also covers the deployment window — no sensitive data in logs during deploys, period."
             },
             {
               "speaker": "Colleague",
-              "text": "Uh, Melanie... you deployed without running the test suite? That's risky."
+              "text": "Nice. That's a solid fix. So what's next on your plate?"
             },
             {
               "speaker": "Melanie",
-              "text": "I know, I know. I figured it was a small change, what could go wrong?"
+              "text": "I need to run that database migration we postponed. I was thinking of doing it during peak traffic tonight, just to get it over with."
             },
             {
               "speaker": "Colleague",
-              "text": "Well, I just got a ping from support — the export endpoint is returning duplicate rows. Looks like a regression slipped into production."
+              "text": "Uh, are you sure? That migration adds a NOT NULL constraint — if it locks the table, we're dead in the water."
             },
             {
               "speaker": "Melanie",
-              "text": "Damn. That's probably because I changed the pagination offset logic but didn't update the export query. I'll roll back and fix it now."
+              "text": "You're right. I'll schedule it in a maintenance window instead. Better safe than sorry."
             },
             {
               "speaker": "Colleague",
-              "text": "Let's do a proper hotfix this time — and please, run the tests before you redeploy. I'll help you write a regression test for this exact case."
-            },
-            {
-              "speaker": "Melanie",
-              "text": "You're right. I'm sorry. I'll never skip the suite again — this is exactly why we have it."
+              "text": "Smart. Let me know when you've got the window booked, and I'll be on standby."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2025-03-14 16:10",
+          "date_time": "2025-03-16 02:30",
           "turns": [
             {
               "speaker": "Melanie",
-              "text": "Hey, just wanted to update you — the hotfix is live, and I ran the full test suite this time. All green."
+              "text": "Hey, just finished the migration. It went smoothly — finished without locking anything, thanks to the maintenance window."
             },
             {
               "speaker": "Colleague",
-              "text": "Good to hear. And the duplicate rows issue?"
+              "text": "Great to hear. So no drama at 2 AM?"
             },
             {
               "speaker": "Melanie",
-              "text": "Fixed. The regression was in the pagination cursor — I was using the wrong key. Now the export and the list endpoint share the same logic."
+              "text": "None. The window was quiet, and the migration ran clean. I'm glad I didn't do it during peak traffic — that would've been a disaster."
             },
             {
               "speaker": "Colleague",
-              "text": "Nice. Also, I checked the query log from earlier — the PII filter is working. No more sensitive data leaking into the logs."
+              "text": "For real. And now that the logs are clean and the migration's done, we're in a good place."
             },
             {
               "speaker": "Melanie",
-              "text": "Great. That was a close call. I'm just glad we caught it before it hit the customer-facing logs."
+              "text": "Yeah. I'm also going to add a check to the CI pipeline that blocks any log statement containing sensitive field names. That way we never repeat yesterday's mistake."
             },
             {
               "speaker": "Colleague",
-              "text": "Yeah, and the API held up under heavy load during the demo yesterday — so the pagination change is solid now. Let's just keep the test suite mandatory from now on."
+              "text": "Love it. You've turned a bad day into a whole process improvement."
             },
             {
               "speaker": "Melanie",
-              "text": "Absolutely. Lesson learned. Thanks for having my back on this."
+              "text": "That's the goal. Thanks for keeping me honest about the migration timing."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Anytime. Now go get some sleep — you've earned it."
             }
           ]
         }
@@ -206,20 +258,21 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did customer data leaked into the logs happen?",
-      "answer": "Melanie caused it: logged sensitive data to the query log → customer data leaked into the logs",
+      "question": "Why did the leaked data was exposed to every engineer with log access?",
+      "answer": "logged sensitive data to the query log → customer data leaked into the logs → the leaked data was exposed to every engineer with log access",
       "evidence_nodes": [
         0,
-        1
+        1,
+        2
       ]
     },
     {
       "category": 12,
-      "question": "If Melanie does this again — logged sensitive data to the query log — what will happen?",
-      "answer": "customer data leaked into the logs",
+      "question": "If Melanie does logged sensitive data to the query log again without any other changes, what will happen?",
+      "answer": "the leaked data was exposed to every engineer with log access",
       "evidence_nodes": [
         0,
-        1
+        2
       ]
     },
     {
@@ -228,18 +281,18 @@
       "answer": "added pagination to the API (the API held up under heavy load)",
       "evidence_nodes": [
         0,
-        1,
         2,
-        3
+        3,
+        4
       ]
     },
     {
       "category": 14,
-      "question": "What stopped customer data leaked into the logs from happening again?",
-      "answer": "added pagination to the API",
+      "question": "What stopped the leaked data was exposed to every engineer with log access from happening again?",
+      "answer": "removed sensitive fields from the logs",
       "evidence_nodes": [
-        4,
-        1
+        5,
+        2
       ]
     },
     {
@@ -253,18 +306,21 @@
     },
     {
       "category": 16,
-      "question": "Facing a similar situation in a different area, what should Melanie avoid doing?",
-      "answer": "deployed without running the test suite",
+      "question": "In data-migration, Melanie faces a situation like the one in api where logged sensitive data to the query log failed. What should Melanie do?",
+      "answer": "ran the migration in a maintenance window",
       "evidence_nodes": [
-        5
+        6,
+        7,
+        8,
+        9
       ]
     },
     {
       "category": 17,
-      "question": "After everything, what does Melanie now believe is the right way to handle deployments?",
-      "answer": "added pagination to the API",
+      "question": "After the latest development, what does Melanie now believe is the right way to handle api?",
+      "answer": "adopted a stricter policy that also covers the deployment window",
       "evidence_nodes": [
-        2
+        10
       ]
     }
   ]

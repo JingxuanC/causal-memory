@@ -124,3 +124,35 @@ causal-memory-causal-eval run      --data data/ [--search-only] [--topk N] [--co
 - data/ (generated, versioned seed)
 - results/ + per-capability report
 - README table row: CausalEval per-class scores + Δ vs mem0
+
+## 10. Review fixes (grok audit, 2026-08-07) + v2 results
+
+External audit found 3 critical + 4 structural flaws; all fixed:
+
+1. **evidence_hit id-space mismatch** → text-space matching (retrieved edge
+   endpoint text covers the gold node's key tokens). 71% → **97%** evidence hit.
+2. **C7 never tested update** → generator now emits a falsification phase
+   (node 10 `invalidates` node 3) + C7 gold = the correction.
+3. **C6 wasn't transfer** → twin story is now ISOMORPHIC (X'→Y'→Z') with a
+   `similar_to(X, X')` meta edge; C6 gold = Z'.
+4. **No depth ≥ 2 chains** → 0→1→2 caused chain with distinct failure +
+   escalation texts; test asserts longest path ≥ 2.
+5. **C2 ignored the preventer** → question phrased "without any other changes".
+6. **C4/C7 collapsed** → preventer is a distinct good practice (asserted).
+7-12. Question wording, traversal-derived evidence, `--limit`, neutral
+   `no_effect` turn edges, CoT fallback removal, depth test.
+
+v2 per-class (70 questions, evidence 97%):
+
+| Class | Acc | Note |
+|---|---|---|
+| C5 temporal | 100% | strength |
+| C3 counterfactual | 80% | strength |
+| C1 attribution | 70% | — |
+| C2 intervention | 40% | — |
+| C4 inhibition | 20% | model conflates fix vs preventer |
+| C6 transfer | 20% | meta edges not activated in run path |
+| C7 update | 10% | supersede not triggered by generic distill |
+
+With retrieval no longer a confounder, the remaining failures are genuine
+reasoning/update gaps — the benchmark now isolates capabilities as designed.

@@ -21,23 +21,23 @@
       {
         "id": 2,
         "person": "Melanie",
-        "action": "kept the end-to-end tests in the pipeline",
-        "polarity": "neutral",
+        "action": "the regression reached every user and forced a full rollback",
+        "polarity": "negative",
         "order": 2,
         "task_tag": "testing"
       },
       {
         "id": 3,
         "person": "Melanie",
-        "action": "the app stayed healthy after release",
-        "polarity": "positive",
+        "action": "kept the end-to-end tests in the pipeline",
+        "polarity": "neutral",
         "order": 3,
         "task_tag": "testing"
       },
       {
         "id": 4,
         "person": "Melanie",
-        "action": "kept the end-to-end tests in the pipeline",
+        "action": "the app stayed healthy after release",
         "polarity": "positive",
         "order": 4,
         "task_tag": "testing"
@@ -45,18 +45,50 @@
       {
         "id": 5,
         "person": "Melanie",
-        "action": "deployed without running the test suite",
-        "polarity": "negative",
+        "action": "ran the full regression suite before release",
+        "polarity": "positive",
         "order": 5,
-        "task_tag": "deployment"
+        "task_tag": "testing"
       },
       {
         "id": 6,
         "person": "Melanie",
-        "action": "a regression slipped into production",
+        "action": "deployed without running the test suite",
         "polarity": "negative",
         "order": 6,
         "task_tag": "deployment"
+      },
+      {
+        "id": 7,
+        "person": "Melanie",
+        "action": "a regression slipped into production",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 8,
+        "person": "Melanie",
+        "action": "set up a CI gate that blocks merges without tests",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 9,
+        "person": "Melanie",
+        "action": "untested code never reached production",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 10,
+        "person": "Melanie",
+        "action": "adopted a stricter policy that also covers the deployment window",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "testing"
       }
     ],
     "edges": [
@@ -66,19 +98,39 @@
         "relation": "caused"
       },
       {
-        "from": 2,
-        "to": 3,
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
         "relation": "enabled"
       },
       {
-        "from": 4,
-        "to": 1,
+        "from": 5,
+        "to": 2,
         "relation": "prevented"
       },
       {
-        "from": 5,
-        "to": 6,
+        "from": 6,
+        "to": 7,
         "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
       }
     ]
   },
@@ -88,111 +140,107 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2024-03-12 09:15",
+          "date_time": "2024-03-12 10:15",
           "turns": [
             {
               "speaker": "Nate",
-              "text": "Morning, Mel. Saw you pushed the green build yesterday — nice work silencing those flaky tests."
+              "text": "Hey Mel, quick question — I saw you pushed a commit that skipped the flaky tests to get CI green. Is that going to bite us later?"
             },
             {
               "speaker": "Melanie",
-              "text": "Yeah, they were just noise. Skipped them to get CI green, otherwise we'd be stuck all day. The real tests still ran."
+              "text": "I know, I know. But the flaky ones were timing out on the staging box, and we had a release deadline. I kept them in the pipeline, just marked them as non-blocking for now."
             },
             {
               "speaker": "Nate",
-              "text": "Fair. But you kept the end-to-end suite in the pipeline, right? Those are the ones that actually catch the nasty stuff."
+              "text": "Fair enough, but I'm nervous. Last time we had a regression slip into production, it was because someone skipped a test that actually caught something."
             },
             {
               "speaker": "Melanie",
-              "text": "Absolutely. E2E stays in — no way I'm cutting those. They're slow but they're our safety net."
+              "text": "That was different — that was a real test, not a flaky one. And I ran the full regression suite before release, so we're covered. The app stayed healthy after release, so I think we're good."
             },
             {
               "speaker": "Nate",
-              "text": "Good. I just don't want a repeat of last month's regression slipping into production because someone got trigger-happy with skipping."
+              "text": "Alright, I'll trust you on this one. But if anything breaks, you're buying the coffee for a week."
             },
             {
               "speaker": "Melanie",
-              "text": "That was a different situation — that one was a bad merge, not a skip. But point taken. I'm careful."
+              "text": "Deal. And honestly, I'm already thinking about setting up a CI gate that blocks merges without tests — that would've forced me to fix the flaky ones instead of skipping them."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2024-03-19 16:40",
+          "date_time": "2024-03-19 14:40",
           "turns": [
             {
               "speaker": "Nate",
-              "text": "Hey, quick one — did you deploy the hotfix this afternoon? I saw the pipeline go out."
+              "text": "Mel, we've got a problem. The checkout flow is throwing 500s for everyone. Did you see the alerts?"
             },
             {
               "speaker": "Melanie",
-              "text": "Yeah, I deployed without running the full test suite. It was a one-line config change, and the E2E takes 20 minutes. I just wanted it out fast."
+              "text": "Oh no. I just checked — it's the same regression we thought we fixed last week. It slipped into production again."
             },
             {
               "speaker": "Nate",
-              "text": "Uh, Mel... you know that's how regressions happen, right? Even a one-liner can break something."
+              "text": "How? We ran the full suite before release, right?"
             },
             {
               "speaker": "Melanie",
-              "text": "I know, I know. But the app stayed healthy after release — I checked the dashboards, no error spikes, no 500s. It's fine."
+              "text": "We did, but... I deployed without running the test suite this morning. I was in a hurry to push a hotfix for the payment gateway, and I thought the CI would catch it. But the gate wasn't set up yet."
             },
             {
               "speaker": "Nate",
-              "text": "For now. But 'fine' is how we got that regression last time. You remember that one slipped into production and we had to roll back at 2 AM."
+              "text": "So this regression reached every user and forced a full rollback. That's a disaster. We're going to have to explain this to the VP."
             },
             {
               "speaker": "Melanie",
-              "text": "Yeah, I remember. That was ugly. But this was a different risk profile. I'll run the full suite tonight on a branch, just to be safe."
+              "text": "I know. I'm sorry. But I'm not going to let this happen again. I'm setting up that CI gate today — no merges without tests, period. And I'm adding a stricter policy that also covers the deployment window, so even hotfixes have to go through the suite."
             },
             {
               "speaker": "Nate",
-              "text": "Alright. Just don't make a habit of it. The E2E tests are there for a reason — keep them in the pipeline, always."
+              "text": "Good. Because untested code never reached production before this, and I'd like to keep it that way."
             },
             {
               "speaker": "Melanie",
-              "text": "Deal. I'll keep them in. And I'll stop skipping the flaky ones too — I'll just fix them properly."
+              "text": "Agreed. I'll have the gate live by end of day. And I'll run the full regression suite manually on every deploy until then."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2024-03-26 11:20",
+          "date_time": "2024-03-26 09:05",
           "turns": [
             {
               "speaker": "Nate",
-              "text": "Morning. Saw you merged the flaky test fixes — nice. CI's been green for three days straight."
+              "text": "Morning! Just saw the release notes — looks like we shipped the new search feature. How did it go?"
             },
             {
               "speaker": "Melanie",
-              "text": "Thanks. Yeah, I finally quarantined the ones that were actually broken and rewrote the others. No more skipping."
+              "text": "Smooth as butter. The CI gate blocked two merges that would've broken the API, and I ran the full regression suite before release. The app stayed healthy after release — zero alerts."
             },
             {
               "speaker": "Nate",
-              "text": "And the E2E suite is still in the pipeline, right? I noticed the last few builds ran it fully."
+              "text": "That's great to hear. So the stricter policy is working? Even for the deployment window?"
             },
             {
               "speaker": "Melanie",
-              "text": "Yep, kept them in. Even on the hotfix deploy last week, I didn't remove them — I just didn't wait for them. But they're still there for the next run."
+              "text": "Yep. No more skipping flaky tests, no more deploying without the suite. Untested code never reached production this time — I checked the audit log."
             },
             {
               "speaker": "Nate",
-              "text": "Good. Because that regression we had — the one that slipped into production — that was a direct result of someone cutting corners. I don't want to see that again."
+              "text": "Nice. I'm glad we're back to normal. That rollback week was rough."
             },
             {
               "speaker": "Melanie",
-              "text": "Agreed. And honestly, the app stayed healthy after that release, but we got lucky. I'd rather not rely on luck."
+              "text": "Tell me about it. But I think we're in a better place now. The gate is non-negotiable, and I've got a script that runs the full suite in parallel so it doesn't slow us down."
             },
             {
               "speaker": "Nate",
-              "text": "Exactly. So from now on, full suite, no skips, no shortcuts. Deal?"
+              "text": "Perfect. Let's keep it that way — I don't want to see another regression slip into production on my watch."
             },
             {
               "speaker": "Melanie",
-              "text": "Deal. I've learned my lesson. The E2E tests are non-negotiable, and I'll never deploy without running the suite again — even if it takes 20 minutes."
-            },
-            {
-              "speaker": "Nate",
-              "text": "That's the Mel I know. Coffee's on me."
+              "text": "Agreed. And if it ever does, I'll take full responsibility. But for now, we're golden."
             }
           ]
         }
@@ -202,20 +250,21 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did a regression slipped into production happen?",
-      "answer": "Melanie caused it: skipped the flaky tests to make CI green → a regression slipped into production",
+      "question": "Why did the regression reached every user and forced a full rollback?",
+      "answer": "skipped the flaky tests to make CI green → a regression slipped into production → the regression reached every user and forced a full rollback",
       "evidence_nodes": [
         0,
-        1
+        1,
+        2
       ]
     },
     {
       "category": 12,
-      "question": "If Melanie does this again — skipped the flaky tests to make CI green — what will happen?",
-      "answer": "a regression slipped into production",
+      "question": "If Melanie does skipped the flaky tests to make CI green again without any other changes, what will happen?",
+      "answer": "the regression reached every user and forced a full rollback",
       "evidence_nodes": [
         0,
-        1
+        2
       ]
     },
     {
@@ -224,18 +273,18 @@
       "answer": "kept the end-to-end tests in the pipeline (the app stayed healthy after release)",
       "evidence_nodes": [
         0,
-        1,
         2,
-        3
+        3,
+        4
       ]
     },
     {
       "category": 14,
-      "question": "What stopped a regression slipped into production from happening again?",
-      "answer": "kept the end-to-end tests in the pipeline",
+      "question": "What stopped the regression reached every user and forced a full rollback from happening again?",
+      "answer": "ran the full regression suite before release",
       "evidence_nodes": [
-        4,
-        1
+        5,
+        2
       ]
     },
     {
@@ -249,18 +298,21 @@
     },
     {
       "category": 16,
-      "question": "Facing a similar situation in a different area, what should Melanie avoid doing?",
-      "answer": "deployed without running the test suite",
+      "question": "In deployment, Melanie faces a situation like the one in testing where skipped the flaky tests to make CI green failed. What should Melanie do?",
+      "answer": "set up a CI gate that blocks merges without tests",
       "evidence_nodes": [
-        5
+        6,
+        7,
+        8,
+        9
       ]
     },
     {
       "category": 17,
-      "question": "After everything, what does Melanie now believe is the right way to handle deployments?",
-      "answer": "kept the end-to-end tests in the pipeline",
+      "question": "After the latest development, what does Melanie now believe is the right way to handle testing?",
+      "answer": "adopted a stricter policy that also covers the deployment window",
       "evidence_nodes": [
-        2
+        10
       ]
     }
   ]

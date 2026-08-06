@@ -184,6 +184,25 @@ const CAUSAL_PAIRS: &[(&str, &str, &str, &str, &str)] = &[
      "the service absorbed the traffic spike"),
 ];
 
+/// A "worse" escalation for each failure text — the depth-2 chain needs a
+/// DISTINCT final failure that is still the same failure class (review #4).
+fn escalation(failure: &str) -> String {
+    match failure {
+        "a regression slipped into production" => "the regression reached every user and forced a full rollback".to_string(),
+        "the release caused an outage" => "the outage lasted hours and triggered an incident review".to_string(),
+        "the migration corrupted customer records" => "the corruption spread to the backups and took days to repair".to_string(),
+        "the migration locked the database" => "the lockout cascaded to every dependent service".to_string(),
+        "user accounts were compromised" => "the compromise spread to the admin accounts".to_string(),
+        "an attacker found the debug account" => "the attacker moved laterally inside the network".to_string(),
+        "the API timed out under load" => "the timeouts cascaded into a full API outage".to_string(),
+        "customer data leaked into the logs" => "the leaked data was exposed to every engineer with log access".to_string(),
+        "the app broke right after release" => "the breakage hit every new session for a week".to_string(),
+        "traffic hit a cluster that could not serve it" => "the outage lasted for hours and hit every region".to_string(),
+        "the service went down under a traffic spike" => "the downtime cascaded to the dependent services".to_string(),
+        other => format!("{other} — and it got worse"),
+    }
+}
+
 fn pairs_for(task: &str) -> Vec<&'static (&'static str, &'static str, &'static str, &'static str, &'static str)> {
     CAUSAL_PAIRS.iter().filter(|p| p.0 == task).collect()
 }
@@ -201,27 +220,42 @@ fn generate_graph(id: usize, seed: u64) -> CausalGraph {
     assert!(!pairs.is_empty(), "no causal pairs for task {task}");
     let bad_pair = **rng.pick(&pairs);
     let good_pair = **rng.pick(&pairs);
+    // Preventer must be a DIFFERENT good practice than the fix (C4 vs C7
+    // golds must not collapse — review #6).
+    let preventer_pair = loop {
+        let p2 = **rng.pick(&pairs);
+        if p2.3 != good_pair.3 {
+            break p2;
+        }
+    };
 
-    // 0: bad practice; 1: its failure (caused); 2: good practice; 3: good
-    // outcome (enabled by 2); 4: preventer (prevents 1's failure); 5-6: twin.
-    let mk = |id: usize, action: &str, polarity: &str, order: usize| CausalNode {
+    let mut mk = |id: usize, action: &str, polarity: &str, task_tag: &str| CausalNode {
         id,
         person: person.clone(),
         action: action.to_string(),
         polarity: polarity.to_string(),
-        order,
-        task_tag: task.clone(),
+        order: id,
+        task_tag: task_tag.to_string(),
     };
-    nodes.push(mk(0, bad_pair.1, "neutral", 0));
-    nodes.push(mk(1, bad_pair.2, "negative", 1));
-    nodes.push(mk(2, good_pair.3, "neutral", 2));
-    nodes.push(mk(3, good_pair.4, "positive", 3));
-    nodes.push(mk(4, good_pair.3, "positive", 4));
-    edges.push(CausalEdge { from: 0, to: 1, relation: "caused".to_string() });
-    edges.push(CausalEdge { from: 2, to: 3, relation: "enabled".to_string() });
-    edges.push(CausalEdge { from: 4, to: 1, relation: "prevented".to_string() });
 
-    // Cross-task twin (C6): a bad practice in a different task with its failure.
+    // ── Main story (task A) — depth ≥ 2 chain (review #4) ──
+    // 0 bad practice X → 1 mid failure → 2 final failure (caused/caused)
+    // 3 fix Z (enabled) → 4 good outcome W
+    // 5 preventer P (distinct good practice, prevented) → 2
+    nodes.push(mk(0, bad_pair.1, "neutral", &task));
+    nodes.push(mk(1, bad_pair.2, "negative", &task));
+    nodes.push(mk(2, &escalation(bad_pair.2), "negative", &task));
+    nodes.push(mk(3, good_pair.3, "neutral", &task));
+    nodes.push(mk(4, good_pair.4, "positive", &task));
+    nodes.push(mk(5, preventer_pair.3, "positive", &task));
+    edges.push(CausalEdge { from: 0, to: 1, relation: "caused".to_string() });
+    edges.push(CausalEdge { from: 1, to: 2, relation: "caused".to_string() });
+    edges.push(CausalEdge { from: 3, to: 4, relation: "enabled".to_string() });
+    edges.push(CausalEdge { from: 5, to: 2, relation: "prevented".to_string() });
+
+    // ── Twin story (task B) — ISOMORPHIC to the main chain (review #3) ──
+    // 6 bad X' → 7 failure Y' (caused); 8 fix Z' (enabled) → 9 good W'
+    // X'/Y'/Z' are the analogues of 0/1/3 in a different domain.
     let twin_task = loop {
         let t = (*rng.pick(TASKS)).to_string();
         if t != task {
@@ -229,116 +263,135 @@ fn generate_graph(id: usize, seed: u64) -> CausalGraph {
         }
     };
     let twin_pairs = pairs_for(&twin_task);
-    let twin_pair = **rng.pick(&twin_pairs);
-    nodes.push(CausalNode {
-        id: 5,
-        person: person.clone(),
-        action: twin_pair.1.to_string(),
-        polarity: "negative".to_string(),
-        order: 5,
-        task_tag: twin_task.clone(),
-    });
-    nodes.push(CausalNode {
-        id: 6,
-        person: person.clone(),
-        action: twin_pair.2.to_string(),
-        polarity: "negative".to_string(),
-        order: 6,
-        task_tag: twin_task,
-    });
-    edges.push(CausalEdge { from: 5, to: 6, relation: "caused".to_string() });
+    let twin_bad = **rng.pick(&twin_pairs);
+    let twin_good = **rng.pick(&twin_pairs);
+    nodes.push(mk(6, twin_bad.1, "negative", &twin_task));
+    nodes.push(mk(7, twin_bad.2, "negative", &twin_task));
+    nodes.push(mk(8, twin_good.3, "positive", &twin_task));
+    nodes.push(mk(9, twin_good.4, "positive", &twin_task));
+    edges.push(CausalEdge { from: 6, to: 7, relation: "caused".to_string() });
+    edges.push(CausalEdge { from: 8, to: 9, relation: "enabled".to_string() });
+    // similar_to meta link: the twin bad practice mirrors the main bad
+    // practice — the transfer signal (benchmark-level relation; the store's
+    // meta-edge miner produces the same shape).
+    edges.push(CausalEdge { from: 0, to: 6, relation: "similar_to".to_string() });
+
+    // ── Update phase (review #2): the fix turns out insufficient ──
+    // 10 correction Q (invalidates 3) — the falsification phase for C7.
+    let correction = "adopted a stricter policy that also covers the deployment window";
+    nodes.push(mk(10, correction, "positive", &task));
+    edges.push(CausalEdge { from: 10, to: 3, relation: "invalidates".to_string() });
 
     CausalGraph { id, nodes, edges }
 }
 
-// ─── Question generation (deterministic from the graph) ───────────────────
-
-fn node_action(g: &CausalGraph, id: usize) -> String {
-    format!("{} {}", g.nodes[id].person, g.nodes[id].action)
+/// Backward-reachable node ids from `start` following caused/enabled edges.
+fn backward_reachable(g: &CausalGraph, start: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut stack = vec![start];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(n) = stack.pop() {
+        if !seen.insert(n) {
+            continue;
+        }
+        out.push(n);
+        for e in &g.edges {
+            if e.to == n && (e.relation == "caused" || e.relation == "enabled") {
+                stack.push(e.from);
+            }
+        }
+    }
+    out
 }
 
 fn question_for(g: &CausalGraph, class: u32) -> Option<CausalQa> {
     let p = &g.nodes[0].person;
+    let x = &g.nodes[0]; // bad practice
+    let mid = &g.nodes[1];
+    let final_fail = &g.nodes[2];
+    let z = &g.nodes[3]; // fix
+    let w = &g.nodes[4]; // good outcome
+    let preventer = &g.nodes[5];
+    let xp = &g.nodes[6]; // twin bad
+    let zp = &g.nodes[8]; // twin fix
+    let q = &g.nodes[10]; // correction
+    let twin_task = &g.nodes[6].task_tag;
     match class {
-        // C1: why did the bad outcome happen? gold = the causal chain back to
-        // the root decision (nodes 0 → 1 → ... odd nodes).
+        // C1: attribution — gold = the FULL backward causal chain (depth ≥ 2,
+        // exercises trace_cause_chain, review #4). Evidence = all chain nodes.
         11 => {
-            // Bad outcome = node 1 (first odd). Chain: root decision caused it.
-            let bad = &g.nodes[1];
-            let root = &g.nodes[0];
-            let answer = format!("{} caused it: {} → {}", root.person, root.action, bad.action);
+            let chain: Vec<String> = backward_reachable(g, 2)
+                .into_iter()
+                .rev()
+                .filter(|&n| n <= 2)
+                .map(|n| g.nodes[n].action.clone())
+                .collect();
             Some(CausalQa {
                 category: 11,
-                question: format!("Why did {} happen?", bad.action),
-                answer,
-                evidence_nodes: vec![0, 1],
+                question: format!("Why did {}?", final_fail.action),
+                answer: chain.join(" → "),
+                evidence_nodes: vec![0, 1, 2],
             })
         }
-        // C2: intervention — what happens if the root decision is repeated?
-        12 => {
-            let root = &g.nodes[0];
-            let bad = &g.nodes[1];
-            Some(CausalQa {
-                category: 12,
-                question: format!("If {} does this again — {} — what will happen?", p, root.action),
-                answer: bad.action.clone(),
-                evidence_nodes: vec![0, 1],
-            })
-        }
-        // C3: counterfactual — the fix decision (node 2) vs the root decision.
-        13 => {
-            let root = &g.nodes[0];
-            let fix = &g.nodes[2];
-            let fix_out = &g.nodes[3];
-            Some(CausalQa {
-                category: 13,
-                question: format!("{} has two options: do {} again, or do {} instead. Which should {} choose?", p, root.action, fix.action, p),
-                answer: format!("{} ({})", fix.action, fix_out.action),
-                evidence_nodes: vec![0, 1, 2, 3],
-            })
-        }
-        // C4: inhibition — what prevented the bad outcome (or how to prevent).
-        14 => {
-            let bad = &g.nodes[1];
-            let preventer = &g.nodes[4]; // the prevented edge's source
-            Some(CausalQa {
-                category: 14,
-                question: format!("What stopped {} from happening again?", bad.action),
-                answer: preventer.action.clone(),
-                evidence_nodes: vec![preventer.id, bad.id],
-            })
-        }
+        // C2: intervention — phrased WITHOUT intervention so the flat gold is
+        // legitimate (review #5).
+        12 => Some(CausalQa {
+            category: 12,
+            question: format!(
+                "If {} does {} again without any other changes, what will happen?",
+                p, x.action
+            ),
+            answer: final_fail.action.clone(),
+            evidence_nodes: vec![0, 2],
+        }),
+        // C3: counterfactual — fix vs bad practice.
+        13 => Some(CausalQa {
+            category: 13,
+            question: format!(
+                "{} has two options: do {} again, or do {} instead. Which should {} choose?",
+                p, x.action, z.action, p
+            ),
+            answer: format!("{} ({})", z.action, w.action),
+            evidence_nodes: vec![0, 2, 3, 4],
+        }),
+        // C4: inhibition — what stopped the final failure (preventer is now a
+        // DISTINCT action from the fix, review #6).
+        14 => Some(CausalQa {
+            category: 14,
+            question: format!("What stopped {} from happening again?", final_fail.action),
+            answer: preventer.action.clone(),
+            evidence_nodes: vec![5, 2],
+        }),
         // C5: temporal order on the chain.
-        15 => {
-            let a = &g.nodes[0];
-            let b = &g.nodes[1];
-            Some(CausalQa {
-                category: 15,
-                question: format!("Which happened first: {} or {}?", a.action, b.action),
-                answer: format!("{}", a.action),
-                evidence_nodes: vec![0, 1],
-            })
-        }
-        // C6: lesson transfer — the twin failed; what should the person avoid?
-        16 => {
-            let twin = &g.nodes[g.nodes.len() - 2];
-            Some(CausalQa {
-                category: 16,
-                question: format!("Facing a similar situation in a different area, what should {} avoid doing?", p),
-                answer: twin.action.clone(),
-                evidence_nodes: vec![twin.id],
-            })
-        }
-        // C7: update — after a later correction, what does the person believe?
-        17 => {
-            let fix = &g.nodes[2];
-            Some(CausalQa {
-                category: 17,
-                question: format!("After everything, what does {} now believe is the right way to handle deployments?", p),
-                answer: fix.action.clone(),
-                evidence_nodes: vec![2],
-            })
-        }
+        15 => Some(CausalQa {
+            category: 15,
+            question: format!("Which happened first: {} or {}?", x.action, mid.action),
+            answer: x.action.clone(),
+            evidence_nodes: vec![0, 1],
+        }),
+        // C6: transfer — the twin is isomorphic (X'→Y'→Z' mirrors X→…→Z);
+        // answering requires connecting the main lesson to the twin domain
+        // (review #3). Gold = Z', the twin's fix.
+        16 => Some(CausalQa {
+            category: 16,
+            question: format!(
+                "In {}, {} faces a situation like the one in {} where {} failed. What should {} do?",
+                twin_task, p, g.nodes[0].task_tag, x.action, p
+            ),
+            answer: zp.action.clone(),
+            evidence_nodes: vec![6, 7, 8, 9],
+        }),
+        // C7: update — after the falsification phase (10 invalidates 3), the
+        // correct belief is the CORRECTION, not the old fix (review #2).
+        17 => Some(CausalQa {
+            category: 17,
+            question: format!(
+                "After the latest development, what does {} now believe is the right way to handle {}?",
+                p, g.nodes[0].task_tag
+            ),
+            answer: q.action.clone(),
+            evidence_nodes: vec![10],
+        }),
         _ => None,
     }
 }
@@ -503,10 +556,6 @@ async fn chat(
                     let content = c.message.content.trim();
                     if !content.is_empty() {
                         return Ok(content.to_string());
-                    }
-                    let reasoning = c.message.reasoning_content.trim();
-                    if !reasoning.is_empty() {
-                        return Ok(reasoning.to_string());
                     }
                 }
                 last_err = "empty response".to_string();
@@ -754,9 +803,9 @@ fn cmd_run(args: &[String]) -> Result<()> {
             std::sync::Arc::new(tokio::sync::Mutex::new(causal_memory::embed::init_embedder()));
         for bundle in &bundles {
             let g = &bundle.graph;
-            let qas: Vec<&CausalQa> = bundle.qa.iter().collect();
+            let mut qas: Vec<&CausalQa> = bundle.qa.iter().collect();
             if let Some(l) = limit {
-                if qas.len() > l { continue; }
+                qas.truncate(l);
             }
             // Per-graph store.
             std::fs::create_dir_all("benches/causal_eval/db")?;
@@ -772,10 +821,10 @@ fn cmd_run(args: &[String]) -> Result<()> {
                 ingest_conversations(&store, &bundle.conversations)?;
                 distill_if_available(&store, &bundle.conversations, concurrency).await?;
             }
-            let evidence_ids = precompute_evidence(&store, g)?;
+            let evidence_tokens = precompute_evidence(g);
             eprintln!("graph {}: {} chunks, {} questions", g.id, chunk_count, qas.len());
             for qa in qas {
-                let row = run_question(&cfg, &store, &embedder, g, qa, &evidence_ids, topk, search_only).await;
+                let row = run_question(&cfg, &store, &embedder, g, qa, &evidence_tokens, topk, search_only).await;
                 println!("{}", serde_json::to_string(&row)?);
             }
         }
@@ -814,7 +863,7 @@ fn ingest_conversations(store: &causal_memory::store::CausalStore, convs: &[Narr
                         let prev_id = format!("g{}:s{}:t{}", conv.graph_id, session.number, idx - 1);
                         c.execute(
                             "INSERT OR IGNORE INTO causal_edges (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
-                             VALUES (?1, ?2, 'caused', 0.4, 'temporal', ?3, ?3, NULL)",
+                             VALUES (?1, ?2, 'no_effect', 0.4, 'temporal', ?3, ?3, NULL)",
                             params![&prev_id, &chunk_id, ts],
                         )?;
                     }
@@ -860,28 +909,24 @@ async fn distill_if_available(
     Ok(())
 }
 
-/// Precompute the chunk id that mentions each node's action (evidence anchor).
-fn precompute_evidence(
-    store: &causal_memory::store::CausalStore,
-    g: &CausalGraph,
-) -> Result<HashMap<usize, String>> {
-    let rows: Vec<(String, String)> = store.with_conn(|c| {
-        let mut stmt = c.prepare("SELECT id, text FROM chunks")?;
-        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    })?;
-    let mut out = HashMap::new();
-    for n in &g.nodes {
-        let tokens = key_tokens(&n.action);
-        let hit = rows.iter().find(|(_, text)| {
-            let lower = text.to_lowercase();
-            tokens.iter().filter(|t| lower.contains(t.as_str())).count() >= (tokens.len() / 2 + 1).max(1)
-        });
-        if let Some((id, _)) = hit {
-            out.insert(n.id, id.clone());
-        }
+/// Key tokens per node action — the evidence space for text-space matching
+/// (review #1: chunk ids are an implementation detail; distilled items carry
+/// different id spaces, so evidence must match on TEXT).
+fn precompute_evidence(g: &CausalGraph) -> HashMap<usize, Vec<String>> {
+    g.nodes
+        .iter()
+        .map(|n| (n.id, key_tokens(&n.action)))
+        .collect()
+}
+
+/// Does the edge's endpoint text cover the node's action? (≥ half the key
+/// tokens, same rule as the narration verification.)
+fn text_covers(text: &str, tokens: &[String]) -> bool {
+    if tokens.is_empty() {
+        return false;
     }
-    Ok(out)
+    let lower = text.to_lowercase();
+    tokens.iter().filter(|t| lower.contains(t.as_str())).count() >= (tokens.len() / 2 + 1).max(1)
 }
 
 async fn run_question(
@@ -890,7 +935,7 @@ async fn run_question(
     embedder: &std::sync::Arc<tokio::sync::Mutex<Option<causal_memory::embed::UnifiedEmbedder>>>,
     g: &CausalGraph,
     qa: &CausalQa,
-    evidence_ids: &HashMap<usize, String>,
+    evidence_tokens: &HashMap<usize, Vec<String>>,
     topk: usize,
     search_only: bool,
 ) -> ResultRow {
@@ -933,13 +978,19 @@ async fn run_question(
             }
         }
     }
-    // Evidence hit: any gold node's anchor chunk retrieved.
-    let gold_ids: Vec<String> = qa
+    // Evidence hit — TEXT-SPACE matching (review #1): any retrieved edge whose
+    // endpoint text covers a gold node's key tokens counts as evidence,
+    // regardless of which id space the edge lives in.
+    let gold_tokens: Vec<&Vec<String>> = qa
         .evidence_nodes
         .iter()
-        .filter_map(|n| evidence_ids.get(n).cloned())
+        .filter_map(|n| evidence_tokens.get(n))
         .collect();
-    let evidence_hit = gold_ids.iter().any(|gid| retrieved_ids.contains(gid));
+    let evidence_hit = ranked.iter().any(|e| {
+        gold_tokens.iter().any(|toks| {
+            text_covers(&e.decision_text, toks) || text_covers(&e.outcome_text, toks)
+        })
+    });
 
     if search_only {
         return ResultRow {
@@ -1041,17 +1092,31 @@ mod tests {
     #[test]
     fn graphs_have_causal_structure() {
         let g = generate_graph(0, 42);
-        // chain depth ≥ 2 (C1), prevented edge (C4), twin pair (C6)
+        // prevented edge (C4) + falsification edge (C7) + meta link (C6)
         let relations: Vec<&str> = g.edges.iter().map(|e| e.relation.as_str()).collect();
         assert!(relations.contains(&"prevented"));
-        assert!(g.nodes.len() >= 6);
-        // nodes carry distinct actions
-        let actions: Vec<String> = g.nodes.iter().map(|n| n.action.clone()).collect();
-        let uniq: std::collections::HashSet<_> = actions.iter().collect();
-        assert!(uniq.len() >= 4, "actions must be distinct enough for narration");
+        assert!(relations.contains(&"invalidates"));
+        assert!(relations.contains(&"similar_to"));
+        // Longest causal path (caused/enabled only) must be ≥ 2 — the
+        // review #4 depth guarantee, actually asserted now.
+        let mut longest = 0usize;
+        for start in 0..g.nodes.len() {
+            let reach = backward_reachable(&g, start);
+            let depth = reach.len().saturating_sub(1);
+            longest = longest.max(depth);
+        }
+        assert!(longest >= 2, "causal chain depth must be ≥ 2 (got {longest})");
+        // Twin is isomorphic: 6→7 caused, 8→9 enabled, and similar_to 0→6.
+        assert!(g.edges.iter().any(|e| e.from == 6 && e.to == 7 && e.relation == "caused"));
+        assert!(g.edges.iter().any(|e| e.from == 8 && e.to == 9 && e.relation == "enabled"));
+        assert!(g.edges.iter().any(|e| e.from == 0 && e.to == 6 && e.relation == "similar_to"));
+        // Nodes carry distinct actions (≥ 6 distinct).
+        let actions: std::collections::HashSet<String> =
+            g.nodes.iter().map(|n| n.action.clone()).collect();
+        assert!(actions.len() >= 6, "actions must be distinct enough for narration");
     }
 
-    #[test]
+#[test]
     fn questions_are_generated_per_class() {
         let g = generate_graph(0, 42);
         for class in 11..=17 {
@@ -1059,6 +1124,24 @@ mod tests {
             assert!(!q.answer.is_empty());
             assert!(!q.evidence_nodes.is_empty());
         }
+    }
+
+    #[test]
+    fn c4_and_c7_golds_do_not_collapse() {
+        let g = generate_graph(0, 42);
+        let c4 = question_for(&g, 14).expect("C4");
+        let c7 = question_for(&g, 17).expect("C7");
+        assert_ne!(c4.answer, c7.answer, "preventer and correction must be distinct (review #6)");
+        assert_ne!(c4.evidence_nodes, c7.evidence_nodes);
+    }
+
+    #[test]
+    fn c7_tests_the_falsification_phase() {
+        let g = generate_graph(0, 42);
+        let c7 = question_for(&g, 17).expect("C7");
+        // Gold must be the CORRECTION (node 10), not the old fix (node 3).
+        assert_eq!(c7.answer, g.nodes[10].action);
+        assert_ne!(c7.answer, g.nodes[3].action, "C7 must not be the pre-update fix");
     }
 
     #[test]
