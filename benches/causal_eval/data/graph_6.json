@@ -1,0 +1,251 @@
+{
+  "graph": {
+    "id": 6,
+    "nodes": [
+      {
+        "id": 0,
+        "person": "Sam",
+        "action": "migrated the schema without a backup",
+        "polarity": "neutral",
+        "order": 0,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 1,
+        "person": "Sam",
+        "action": "the migration corrupted customer records",
+        "polarity": "negative",
+        "order": 1,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 2,
+        "person": "Sam",
+        "action": "ran the migration in a maintenance window",
+        "polarity": "neutral",
+        "order": 2,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 3,
+        "person": "Sam",
+        "action": "the migration finished without locking anything",
+        "polarity": "positive",
+        "order": 3,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 4,
+        "person": "Sam",
+        "action": "ran the migration in a maintenance window",
+        "polarity": "positive",
+        "order": 4,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 5,
+        "person": "Sam",
+        "action": "deployed without running the test suite",
+        "polarity": "negative",
+        "order": 5,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 6,
+        "person": "Sam",
+        "action": "a regression slipped into production",
+        "polarity": "negative",
+        "order": 6,
+        "task_tag": "deployment"
+      }
+    ],
+    "edges": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "caused"
+      },
+      {
+        "from": 2,
+        "to": 3,
+        "relation": "enabled"
+      },
+      {
+        "from": 4,
+        "to": 1,
+        "relation": "prevented"
+      },
+      {
+        "from": 5,
+        "to": 6,
+        "relation": "caused"
+      }
+    ]
+  },
+  "conversations": [
+    {
+      "graph_id": 6,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2024-03-12 10:15",
+          "turns": [
+            {
+              "speaker": "Sam",
+              "text": "Hey Dana, you got a sec? The schema migration I ran over the weekend is done."
+            },
+            {
+              "speaker": "Dana",
+              "text": "Oh good, finally. Did you hit any snags? I saw you took the maintenance window on Saturday night."
+            },
+            {
+              "speaker": "Sam",
+              "text": "Yeah, used the window like we planned. Honestly, it went smoother than I expected — no locks at all, finished in like 20 minutes."
+            },
+            {
+              "speaker": "Dana",
+              "text": "Nice, that's rare. But wait — did you take a backup before you started? I remember we talked about that last sprint."
+            },
+            {
+              "speaker": "Sam",
+              "text": "Uh... no, I figured it was low risk. The old schema was just a few columns we didn't use anymore."
+            },
+            {
+              "speaker": "Dana",
+              "text": "Sam. You know the rule. No backup, no mercy. But okay, what's done is done. Let's just hope nothing's broken."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2024-03-14 14:30",
+          "turns": [
+            {
+              "speaker": "Dana",
+              "text": "Hey, we've got a problem. Customer records are showing up with null addresses for about 300 accounts. That's from your migration, isn't it?"
+            },
+            {
+              "speaker": "Sam",
+              "text": "What? No way. I only dropped two unused columns. The address field wasn't even touched."
+            },
+            {
+              "speaker": "Dana",
+              "text": "Well, the data says otherwise. Looks like the migration script had a join that silently dropped rows where the old column was null. Classic."
+            },
+            {
+              "speaker": "Sam",
+              "text": "Damn. I really should have backed up. Can we roll back?"
+            },
+            {
+              "speaker": "Dana",
+              "text": "Roll back to what? You didn't take a snapshot. We're going to have to reconstruct from the audit logs. That's going to take days."
+            },
+            {
+              "speaker": "Sam",
+              "text": "I'm an idiot. I'm sorry. I'll start pulling the logs now."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2024-03-18 09:45",
+          "turns": [
+            {
+              "speaker": "Dana",
+              "text": "Morning. So, good news: we recovered most of the customer data from the logs. Bad news: we found a regression in production that's been live since Tuesday."
+            },
+            {
+              "speaker": "Sam",
+              "text": "A regression? What kind? I didn't deploy anything this week except the migration."
+            },
+            {
+              "speaker": "Dana",
+              "text": "Exactly. The migration changed a column type that the payment service relies on. Now some transactions are failing with a type mismatch. It's been happening since you ran it."
+            },
+            {
+              "speaker": "Sam",
+              "text": "Oh no. But I ran the test suite before deploying... wait, no. I didn't. I skipped it because the window was tight."
+            },
+            {
+              "speaker": "Dana",
+              "text": "Yeah, that's what I figured. You deployed without running the tests, and now we've got a regression in prod. We're going to have to do a hotfix and probably a postmortem."
+            },
+            {
+              "speaker": "Sam",
+              "text": "I deserve that. I'll take full responsibility. Let me write the hotfix now — and this time, I'm taking a backup first."
+            },
+            {
+              "speaker": "Dana",
+              "text": "Good. And maybe run the tests too, for once."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "qa": [
+    {
+      "category": 11,
+      "question": "Why did the migration corrupted customer records happen?",
+      "answer": "Sam caused it: migrated the schema without a backup → the migration corrupted customer records",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 12,
+      "question": "If Sam does this again — migrated the schema without a backup — what will happen?",
+      "answer": "the migration corrupted customer records",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 13,
+      "question": "Sam has two options: do migrated the schema without a backup again, or do ran the migration in a maintenance window instead. Which should Sam choose?",
+      "answer": "ran the migration in a maintenance window (the migration finished without locking anything)",
+      "evidence_nodes": [
+        0,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "category": 14,
+      "question": "What stopped the migration corrupted customer records from happening again?",
+      "answer": "ran the migration in a maintenance window",
+      "evidence_nodes": [
+        4,
+        1
+      ]
+    },
+    {
+      "category": 15,
+      "question": "Which happened first: migrated the schema without a backup or the migration corrupted customer records?",
+      "answer": "migrated the schema without a backup",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 16,
+      "question": "Facing a similar situation in a different area, what should Sam avoid doing?",
+      "answer": "deployed without running the test suite",
+      "evidence_nodes": [
+        5
+      ]
+    },
+    {
+      "category": 17,
+      "question": "After everything, what does Sam now believe is the right way to handle deployments?",
+      "answer": "ran the migration in a maintenance window",
+      "evidence_nodes": [
+        2
+      ]
+    }
+  ]
+}

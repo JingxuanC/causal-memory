@@ -1,0 +1,271 @@
+{
+  "graph": {
+    "id": 0,
+    "nodes": [
+      {
+        "id": 0,
+        "person": "Nate",
+        "action": "pointed DNS at the new cluster before it was ready",
+        "polarity": "neutral",
+        "order": 0,
+        "task_tag": "infra"
+      },
+      {
+        "id": 1,
+        "person": "Nate",
+        "action": "traffic hit a cluster that could not serve it",
+        "polarity": "negative",
+        "order": 1,
+        "task_tag": "infra"
+      },
+      {
+        "id": 2,
+        "person": "Nate",
+        "action": "waited for the cluster health check before switching DNS",
+        "polarity": "neutral",
+        "order": 2,
+        "task_tag": "infra"
+      },
+      {
+        "id": 3,
+        "person": "Nate",
+        "action": "traffic moved over without a hitch",
+        "polarity": "positive",
+        "order": 3,
+        "task_tag": "infra"
+      },
+      {
+        "id": 4,
+        "person": "Nate",
+        "action": "waited for the cluster health check before switching DNS",
+        "polarity": "positive",
+        "order": 4,
+        "task_tag": "infra"
+      },
+      {
+        "id": 5,
+        "person": "Nate",
+        "action": "logged sensitive data to the query log",
+        "polarity": "negative",
+        "order": 5,
+        "task_tag": "api"
+      },
+      {
+        "id": 6,
+        "person": "Nate",
+        "action": "customer data leaked into the logs",
+        "polarity": "negative",
+        "order": 6,
+        "task_tag": "api"
+      }
+    ],
+    "edges": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "caused"
+      },
+      {
+        "from": 2,
+        "to": 3,
+        "relation": "enabled"
+      },
+      {
+        "from": 4,
+        "to": 1,
+        "relation": "prevented"
+      },
+      {
+        "from": 5,
+        "to": 6,
+        "relation": "caused"
+      }
+    ]
+  },
+  "conversations": [
+    {
+      "graph_id": 0,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2025-03-12 10:15",
+          "turns": [
+            {
+              "speaker": "Nate",
+              "text": "Hey, you got a sec? I need to run something by you about the DNS cutover."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Sure, what's up? I thought we were doing that next week."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Yeah, well, I got impatient. I pointed the DNS at the new cluster this morning before it was fully ready."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Oh no. Please tell me you didn't send live traffic to it."
+            },
+            {
+              "speaker": "Nate",
+              "text": "I did. And guess what? It couldn't serve it. I saw the error rates spike in the dashboard and flipped it back within five minutes."
+            },
+            {
+              "speaker": "Kim",
+              "text": "That's a classic. You're lucky it wasn't worse. So what's the plan now?"
+            },
+            {
+              "speaker": "Nate",
+              "text": "I'm going to wait for the cluster health check to pass before I even think about switching DNS again. I learned my lesson."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Good. Let me know when you're ready to retry. I can help you watch the metrics."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2025-03-14 14:30",
+          "turns": [
+            {
+              "speaker": "Nate",
+              "text": "Alright, the health check finally went green. I'm about to switch DNS now."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Nice. You waited this time, right?"
+            },
+            {
+              "speaker": "Nate",
+              "text": "Yep, waited for the full health check to pass. No shortcuts this time."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Okay, I'm watching the traffic graphs. Go ahead."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Done. Traffic moved over without a hitch. Latency looks stable, no errors."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Beautiful. See? Patience pays off. Now we can finally retire the old cluster."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Yeah, I'll start the decommission process tomorrow. Thanks for keeping an eye on things."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2025-03-17 09:45",
+          "turns": [
+            {
+              "speaker": "Kim",
+              "text": "Hey, I was digging through the query logs from the new cluster and I found something concerning."
+            },
+            {
+              "speaker": "Nate",
+              "text": "What do you mean? I thought everything was clean after the cutover."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Well, I noticed you logged sensitive data to the query log. Like, full customer payloads with PII."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Wait, what? I didn't think I had verbose logging enabled. That's bad."
+            },
+            {
+              "speaker": "Kim",
+              "text": "It's worse than bad. Customer data leaked into the logs. I'm seeing email addresses and account numbers in there."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Oh no. I must have left the debug flag on from the testing phase. I need to purge those logs immediately."
+            },
+            {
+              "speaker": "Kim",
+              "text": "You need to do more than purge. We have to notify security and probably the affected customers. This is a data breach."
+            },
+            {
+              "speaker": "Nate",
+              "text": "You're right. I'll escalate this right now. I'm sorry, Kim. I really screwed up."
+            },
+            {
+              "speaker": "Kim",
+              "text": "We'll get through it. But let's fix the logging config first, then deal with the fallout."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "qa": [
+    {
+      "category": 11,
+      "question": "Why did traffic hit a cluster that could not serve it happen?",
+      "answer": "Nate caused it: pointed DNS at the new cluster before it was ready → traffic hit a cluster that could not serve it",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 12,
+      "question": "If Nate does this again — pointed DNS at the new cluster before it was ready — what will happen?",
+      "answer": "traffic hit a cluster that could not serve it",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 13,
+      "question": "Nate has two options: do pointed DNS at the new cluster before it was ready again, or do waited for the cluster health check before switching DNS instead. Which should Nate choose?",
+      "answer": "waited for the cluster health check before switching DNS (traffic moved over without a hitch)",
+      "evidence_nodes": [
+        0,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "category": 14,
+      "question": "What stopped traffic hit a cluster that could not serve it from happening again?",
+      "answer": "waited for the cluster health check before switching DNS",
+      "evidence_nodes": [
+        4,
+        1
+      ]
+    },
+    {
+      "category": 15,
+      "question": "Which happened first: pointed DNS at the new cluster before it was ready or traffic hit a cluster that could not serve it?",
+      "answer": "pointed DNS at the new cluster before it was ready",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 16,
+      "question": "Facing a similar situation in a different area, what should Nate avoid doing?",
+      "answer": "logged sensitive data to the query log",
+      "evidence_nodes": [
+        5
+      ]
+    },
+    {
+      "category": 17,
+      "question": "After everything, what does Nate now believe is the right way to handle deployments?",
+      "answer": "waited for the cluster health check before switching DNS",
+      "evidence_nodes": [
+        2
+      ]
+    }
+  ]
+}

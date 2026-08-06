@@ -15,3 +15,5 @@ benches/longmemeval/results/*.jsonl
 benches/memora/results/*.jsonl
 .claude/
 benches/locomo/db/
+benches/causal_eval/db/
+benches/causal_eval/debug_raw.json

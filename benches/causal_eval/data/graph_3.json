@@ -1,0 +1,239 @@
+{
+  "graph": {
+    "id": 3,
+    "nodes": [
+      {
+        "id": 0,
+        "person": "Joanna",
+        "action": "deleted the end-to-end tests to save time",
+        "polarity": "neutral",
+        "order": 0,
+        "task_tag": "testing"
+      },
+      {
+        "id": 1,
+        "person": "Joanna",
+        "action": "the app broke right after release",
+        "polarity": "negative",
+        "order": 1,
+        "task_tag": "testing"
+      },
+      {
+        "id": 2,
+        "person": "Joanna",
+        "action": "kept the end-to-end tests in the pipeline",
+        "polarity": "neutral",
+        "order": 2,
+        "task_tag": "testing"
+      },
+      {
+        "id": 3,
+        "person": "Joanna",
+        "action": "the app stayed healthy after release",
+        "polarity": "positive",
+        "order": 3,
+        "task_tag": "testing"
+      },
+      {
+        "id": 4,
+        "person": "Joanna",
+        "action": "kept the end-to-end tests in the pipeline",
+        "polarity": "positive",
+        "order": 4,
+        "task_tag": "testing"
+      },
+      {
+        "id": 5,
+        "person": "Joanna",
+        "action": "ran the migration during peak traffic",
+        "polarity": "negative",
+        "order": 5,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 6,
+        "person": "Joanna",
+        "action": "the migration locked the database",
+        "polarity": "negative",
+        "order": 6,
+        "task_tag": "data-migration"
+      }
+    ],
+    "edges": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "caused"
+      },
+      {
+        "from": 2,
+        "to": 3,
+        "relation": "enabled"
+      },
+      {
+        "from": 4,
+        "to": 1,
+        "relation": "prevented"
+      },
+      {
+        "from": 5,
+        "to": 6,
+        "relation": "caused"
+      }
+    ]
+  },
+  "conversations": [
+    {
+      "graph_id": 3,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2024-03-12 10:15",
+          "turns": [
+            {
+              "speaker": "Marcus",
+              "text": "Hey Joanna, quick question — I saw you removed the e2e suite from the pipeline yesterday. What's the deal?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Oh, yeah. They were taking like 20 minutes per run and blocking every merge. I figured we could ship faster without them, you know? Just for now."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Hmm, I get the speed thing, but those tests catch real regressions. You sure you want to go without them?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Honestly, we've been fine for weeks. I'll add them back if anything breaks. Promise."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2024-03-15 16:40",
+          "turns": [
+            {
+              "speaker": "Marcus",
+              "text": "So... the app broke right after release. Like, 20 minutes ago. Check the error logs."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "What? No way. What's failing?"
+            },
+            {
+              "speaker": "Marcus",
+              "text": "The checkout flow — looks like a race condition we never caught. And guess what? The e2e tests would've caught it. The ones you deleted."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Ugh. You're right. I'm putting them back in the pipeline right now. And I'll write a new test for this exact scenario."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Good call. Better late than never, I guess."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2024-03-20 11:05",
+          "turns": [
+            {
+              "speaker": "Marcus",
+              "text": "Hey, just saw the release went out clean this morning. App's been healthy all day — nice work on bringing the tests back."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Thanks. Yeah, I kept the e2e tests in the pipeline this time, no shortcuts. Feels way more solid."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Glad to hear it. Also, I noticed you ran the database migration during peak traffic yesterday. That was... bold."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "I thought it'd be fine — the migration was supposed to be non-blocking. But it locked the database for like 15 minutes. Orders were stuck."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Ouch. Did anyone notice?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "A few support tickets, but we rolled back fast. Lesson learned — never again during peak hours. I'll schedule it for 2 AM next time."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Yeah, that's probably wise. At least the app's healthy now, so we're back on track."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "qa": [
+    {
+      "category": 11,
+      "question": "Why did the app broke right after release happen?",
+      "answer": "Joanna caused it: deleted the end-to-end tests to save time → the app broke right after release",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 12,
+      "question": "If Joanna does this again — deleted the end-to-end tests to save time — what will happen?",
+      "answer": "the app broke right after release",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 13,
+      "question": "Joanna has two options: do deleted the end-to-end tests to save time again, or do kept the end-to-end tests in the pipeline instead. Which should Joanna choose?",
+      "answer": "kept the end-to-end tests in the pipeline (the app stayed healthy after release)",
+      "evidence_nodes": [
+        0,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "category": 14,
+      "question": "What stopped the app broke right after release from happening again?",
+      "answer": "kept the end-to-end tests in the pipeline",
+      "evidence_nodes": [
+        4,
+        1
+      ]
+    },
+    {
+      "category": 15,
+      "question": "Which happened first: deleted the end-to-end tests to save time or the app broke right after release?",
+      "answer": "deleted the end-to-end tests to save time",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 16,
+      "question": "Facing a similar situation in a different area, what should Joanna avoid doing?",
+      "answer": "ran the migration during peak traffic",
+      "evidence_nodes": [
+        5
+      ]
+    },
+    {
+      "category": 17,
+      "question": "After everything, what does Joanna now believe is the right way to handle deployments?",
+      "answer": "kept the end-to-end tests in the pipeline",
+      "evidence_nodes": [
+        2
+      ]
+    }
+  ]
+}

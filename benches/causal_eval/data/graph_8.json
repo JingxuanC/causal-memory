@@ -1,0 +1,267 @@
+{
+  "graph": {
+    "id": 8,
+    "nodes": [
+      {
+        "id": 0,
+        "person": "Caroline",
+        "action": "logged sensitive data to the query log",
+        "polarity": "neutral",
+        "order": 0,
+        "task_tag": "api"
+      },
+      {
+        "id": 1,
+        "person": "Caroline",
+        "action": "customer data leaked into the logs",
+        "polarity": "negative",
+        "order": 1,
+        "task_tag": "api"
+      },
+      {
+        "id": 2,
+        "person": "Caroline",
+        "action": "added pagination to the API",
+        "polarity": "neutral",
+        "order": 2,
+        "task_tag": "api"
+      },
+      {
+        "id": 3,
+        "person": "Caroline",
+        "action": "the API held up under heavy load",
+        "polarity": "positive",
+        "order": 3,
+        "task_tag": "api"
+      },
+      {
+        "id": 4,
+        "person": "Caroline",
+        "action": "added pagination to the API",
+        "polarity": "positive",
+        "order": 4,
+        "task_tag": "api"
+      },
+      {
+        "id": 5,
+        "person": "Caroline",
+        "action": "left debug credentials in production",
+        "polarity": "negative",
+        "order": 5,
+        "task_tag": "auth"
+      },
+      {
+        "id": 6,
+        "person": "Caroline",
+        "action": "an attacker found the debug account",
+        "polarity": "negative",
+        "order": 6,
+        "task_tag": "auth"
+      }
+    ],
+    "edges": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "caused"
+      },
+      {
+        "from": 2,
+        "to": 3,
+        "relation": "enabled"
+      },
+      {
+        "from": 4,
+        "to": 1,
+        "relation": "prevented"
+      },
+      {
+        "from": 5,
+        "to": 6,
+        "relation": "caused"
+      }
+    ]
+  },
+  "conversations": [
+    {
+      "graph_id": 8,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2025-03-12 10:15",
+          "turns": [
+            {
+              "speaker": "Caroline",
+              "text": "Hey Marcus, quick heads-up — I added pagination to the /users endpoint this morning. Should be live in staging."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Nice, that was overdue. Did you test it with the big dataset? I remember that query was slow."
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Yeah, I ran a load test with 10k concurrent requests. The API held up under heavy load — p99 stayed under 200ms. I was honestly surprised."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Good to hear. But hey, I noticed something weird in the query log earlier — there were some customer email addresses in there. That shouldn't be logged."
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Oh no, really? I think I accidentally logged sensitive data to the query log when I was debugging the pagination. I must have included the full row instead of just the IDs."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Yeah, that's a problem. Customer data leaked into the logs — we need to scrub those ASAP. Can you check if any of that hit production?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "I'll pull the logs and redact them right now. Also, I'll add a filter to prevent that from happening again. Sorry about that."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "No worries, just be careful. We don't want a repeat of the debug credentials incident."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2025-03-14 14:30",
+          "turns": [
+            {
+              "speaker": "Marcus",
+              "text": "Hey Caroline, did you manage to clean up those logs?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Yes, I scrubbed all the customer emails from the query log and rotated the log files. Also added a whitelist for log fields."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Good. But I have to ask — did you ever remove those debug credentials from production? I saw a suspicious login attempt this morning."
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Wait, what? I thought I removed them. I left debug credentials in production after the last hotfix — I completely forgot to disable that account."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Well, an attacker found the debug account. They tried to log in with the default password. The IDS flagged it, but we need to disable it now."
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Oh god, I'm so sorry. I'll disable it immediately and rotate all related keys. Let me check if they got any data."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "They didn't get in — the account was locked after three failed attempts. But this is a serious wake-up call. We need a better credential management process."
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Agreed. I'll write a post-mortem and propose a checklist for production deployments. And I'll double-check the pagination code too — make sure nothing else is exposed."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2025-03-17 09:45",
+          "turns": [
+            {
+              "speaker": "Caroline",
+              "text": "Morning Marcus. I've finished the post-mortem and the new deployment checklist. Also, I re-verified the pagination — it's solid, no data leaks."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Thanks. And the debug account is fully disabled, right?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Yes, disabled and removed from the user table. I also added a scheduled job that scans for any leftover debug accounts."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Good. Let's make sure the API holds up under heavy load again after those changes — I don't want any regressions."
+            },
+            {
+              "speaker": "Caroline",
+              "text": "I'll run the load test again this afternoon. And I'll keep an eye on the query log to make sure no sensitive data sneaks in."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Sounds good. Let's grab a coffee after — you've earned it after this mess."
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Ha, thanks. I'll take you up on that."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "qa": [
+    {
+      "category": 11,
+      "question": "Why did customer data leaked into the logs happen?",
+      "answer": "Caroline caused it: logged sensitive data to the query log → customer data leaked into the logs",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 12,
+      "question": "If Caroline does this again — logged sensitive data to the query log — what will happen?",
+      "answer": "customer data leaked into the logs",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 13,
+      "question": "Caroline has two options: do logged sensitive data to the query log again, or do added pagination to the API instead. Which should Caroline choose?",
+      "answer": "added pagination to the API (the API held up under heavy load)",
+      "evidence_nodes": [
+        0,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "category": 14,
+      "question": "What stopped customer data leaked into the logs from happening again?",
+      "answer": "added pagination to the API",
+      "evidence_nodes": [
+        4,
+        1
+      ]
+    },
+    {
+      "category": 15,
+      "question": "Which happened first: logged sensitive data to the query log or customer data leaked into the logs?",
+      "answer": "logged sensitive data to the query log",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 16,
+      "question": "Facing a similar situation in a different area, what should Caroline avoid doing?",
+      "answer": "left debug credentials in production",
+      "evidence_nodes": [
+        5
+      ]
+    },
+    {
+      "category": 17,
+      "question": "After everything, what does Caroline now believe is the right way to handle deployments?",
+      "answer": "added pagination to the API",
+      "evidence_nodes": [
+        2
+      ]
+    }
+  ]
+}

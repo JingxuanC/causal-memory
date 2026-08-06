@@ -1,0 +1,271 @@
+{
+  "graph": {
+    "id": 4,
+    "nodes": [
+      {
+        "id": 0,
+        "person": "Priya",
+        "action": "migrated the schema without a backup",
+        "polarity": "neutral",
+        "order": 0,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 1,
+        "person": "Priya",
+        "action": "the migration corrupted customer records",
+        "polarity": "negative",
+        "order": 1,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 2,
+        "person": "Priya",
+        "action": "ran the migration in a maintenance window",
+        "polarity": "neutral",
+        "order": 2,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 3,
+        "person": "Priya",
+        "action": "the migration finished without locking anything",
+        "polarity": "positive",
+        "order": 3,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 4,
+        "person": "Priya",
+        "action": "ran the migration in a maintenance window",
+        "polarity": "positive",
+        "order": 4,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 5,
+        "person": "Priya",
+        "action": "ran the deployment during peak hours",
+        "polarity": "negative",
+        "order": 5,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 6,
+        "person": "Priya",
+        "action": "the release caused an outage",
+        "polarity": "negative",
+        "order": 6,
+        "task_tag": "deployment"
+      }
+    ],
+    "edges": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "caused"
+      },
+      {
+        "from": 2,
+        "to": 3,
+        "relation": "enabled"
+      },
+      {
+        "from": 4,
+        "to": 1,
+        "relation": "prevented"
+      },
+      {
+        "from": 5,
+        "to": 6,
+        "relation": "caused"
+      }
+    ]
+  },
+  "conversations": [
+    {
+      "graph_id": 4,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2025-03-12 09:15",
+          "turns": [
+            {
+              "speaker": "Priya",
+              "text": "Hey Marcus, you got a sec? I need to run something by you."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Sure, what's up? You look like you've been staring at a screen for twelve hours."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Close. I just finished the schema migration for the customer service DB. It's live now."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Wait, you did that already? I thought we were reviewing the rollback plan on Thursday."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Yeah, I know, but the maintenance window opened at 2 AM and I figured I'd just get it done. It went smoothly — no locks, nothing blocked. The whole thing finished without locking a single table."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "That's... good? But did you take a backup first? Because the last time we did a schema change without one, we had to rebuild three days of transactions."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Honestly? I didn't. I thought the snapshot from last week was enough. But I checked the data after, and it looks fine."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Priya, 'looks fine' is not a backup. If something's corrupted, we're dead in the water. Let me pull a quick sanity check on a few customer records."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2025-03-12 14:30",
+          "turns": [
+            {
+              "speaker": "Marcus",
+              "text": "Okay, I ran a sample query on the customer table. We have a problem."
+            },
+            {
+              "speaker": "Priya",
+              "text": "What kind of problem?"
+            },
+            {
+              "speaker": "Marcus",
+              "text": "About 200 records have null addresses and mismatched account IDs. The migration corrupted them. I'm looking at the logs now — it looks like the foreign key constraints got dropped mid-write."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Oh no. That's... that's bad. I really thought the no-lock thing meant it was safe."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "No-lock just means it didn't block other queries. It doesn't mean it was correct. We need to restore from that old snapshot, but you said you didn't take a fresh backup."
+            },
+            {
+              "speaker": "Priya",
+              "text": "I know. I'm an idiot. Can we at least fix the corrupted rows manually? I have the original CSV exports from last month."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "That's a band-aid. But let's do it — and then we need to tell the team. Also, for the love of god, never run a migration without a backup again."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2025-03-14 11:00",
+          "turns": [
+            {
+              "speaker": "Priya",
+              "text": "Hey, so I fixed the corrupted records last night. But I have to confess something else."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "What now?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "When I deployed the fix to production, I did it during peak hours — around 10 AM. I thought it was a small patch, so it wouldn't matter."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "You did what? Peak hours? Priya, that's when we have the most traffic. Did you even check the load balancer?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "I didn't. And... the release caused an outage. For about twenty minutes, the entire customer portal was down. I got three alerts and then my phone wouldn't stop buzzing."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "So let me get this straight: you migrated without a backup, corrupted records, ran it in a maintenance window but didn't lock anything, and then deployed during peak hours and took down the site. Is that about right?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Yes. That's exactly right. I'm sorry. I think I need to step back and write a proper runbook before I touch anything else."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Yeah, you do. And I'm going to be the one reviewing it. Let's start with a checklist: backup, lock, test, deploy off-peak. In that order."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Deal. And thank you for not yelling at me more than I already am yelling at myself."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "qa": [
+    {
+      "category": 11,
+      "question": "Why did the migration corrupted customer records happen?",
+      "answer": "Priya caused it: migrated the schema without a backup → the migration corrupted customer records",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 12,
+      "question": "If Priya does this again — migrated the schema without a backup — what will happen?",
+      "answer": "the migration corrupted customer records",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 13,
+      "question": "Priya has two options: do migrated the schema without a backup again, or do ran the migration in a maintenance window instead. Which should Priya choose?",
+      "answer": "ran the migration in a maintenance window (the migration finished without locking anything)",
+      "evidence_nodes": [
+        0,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "category": 14,
+      "question": "What stopped the migration corrupted customer records from happening again?",
+      "answer": "ran the migration in a maintenance window",
+      "evidence_nodes": [
+        4,
+        1
+      ]
+    },
+    {
+      "category": 15,
+      "question": "Which happened first: migrated the schema without a backup or the migration corrupted customer records?",
+      "answer": "migrated the schema without a backup",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 16,
+      "question": "Facing a similar situation in a different area, what should Priya avoid doing?",
+      "answer": "ran the deployment during peak hours",
+      "evidence_nodes": [
+        5
+      ]
+    },
+    {
+      "category": 17,
+      "question": "After everything, what does Priya now believe is the right way to handle deployments?",
+      "answer": "ran the migration in a maintenance window",
+      "evidence_nodes": [
+        2
+      ]
+    }
+  ]
+}

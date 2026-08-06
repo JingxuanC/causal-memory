@@ -1,0 +1,283 @@
+{
+  "graph": {
+    "id": 9,
+    "nodes": [
+      {
+        "id": 0,
+        "person": "Priya",
+        "action": "pointed DNS at the new cluster before it was ready",
+        "polarity": "neutral",
+        "order": 0,
+        "task_tag": "infra"
+      },
+      {
+        "id": 1,
+        "person": "Priya",
+        "action": "traffic hit a cluster that could not serve it",
+        "polarity": "negative",
+        "order": 1,
+        "task_tag": "infra"
+      },
+      {
+        "id": 2,
+        "person": "Priya",
+        "action": "waited for the cluster health check before switching DNS",
+        "polarity": "neutral",
+        "order": 2,
+        "task_tag": "infra"
+      },
+      {
+        "id": 3,
+        "person": "Priya",
+        "action": "traffic moved over without a hitch",
+        "polarity": "positive",
+        "order": 3,
+        "task_tag": "infra"
+      },
+      {
+        "id": 4,
+        "person": "Priya",
+        "action": "waited for the cluster health check before switching DNS",
+        "polarity": "positive",
+        "order": 4,
+        "task_tag": "infra"
+      },
+      {
+        "id": 5,
+        "person": "Priya",
+        "action": "stored passwords without hashing",
+        "polarity": "negative",
+        "order": 5,
+        "task_tag": "auth"
+      },
+      {
+        "id": 6,
+        "person": "Priya",
+        "action": "user accounts were compromised",
+        "polarity": "negative",
+        "order": 6,
+        "task_tag": "auth"
+      }
+    ],
+    "edges": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "caused"
+      },
+      {
+        "from": 2,
+        "to": 3,
+        "relation": "enabled"
+      },
+      {
+        "from": 4,
+        "to": 1,
+        "relation": "prevented"
+      },
+      {
+        "from": 5,
+        "to": 6,
+        "relation": "caused"
+      }
+    ]
+  },
+  "conversations": [
+    {
+      "graph_id": 9,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2023-05-08 09:15",
+          "turns": [
+            {
+              "speaker": "Priya",
+              "text": "Hey Marcus, you around? I need to vent about the cluster migration."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Always. What happened? Did the new cluster blow up?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Not exactly. I pointed DNS at the new cluster before it was ready. I thought the health checks would pass, but they didn't."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Oh no. So you sent live traffic to a cluster that couldn't serve it?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Exactly. For about ten minutes, users got 503s. I felt like an idiot."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "We've all done something like that. Did you roll back?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Yeah, I flipped DNS back to the old cluster, but the damage was done. The incident report is going to be fun."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "At least you caught it. Next time, wait for the cluster health check before switching DNS. That's the rule we set."
+            },
+            {
+              "speaker": "Priya",
+              "text": "I know, I know. I got impatient. Lesson learned."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2023-05-10 14:30",
+          "turns": [
+            {
+              "speaker": "Marcus",
+              "text": "Hey, how's the migration going? Did you get the new cluster stable?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Actually, yes. This time I waited for the cluster health check before switching DNS. All green."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Nice. So you flipped the switch?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Yep, traffic moved over without a hitch. Zero errors, zero downtime. It's beautiful."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "That's the way to do it. See, patience pays off."
+            },
+            {
+              "speaker": "Priya",
+              "text": "I'm just glad I didn't repeat the same mistake. The old cluster is decommissioned now."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Good. So what's next on your plate?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Honestly, I'm a bit worried about the user auth service. I've been meaning to clean it up."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2023-05-12 11:00",
+          "turns": [
+            {
+              "speaker": "Marcus",
+              "text": "Priya, did you see the security alert? We had a breach on the user accounts."
+            },
+            {
+              "speaker": "Priya",
+              "text": "What? No, I just saw the email. How bad is it?"
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Bad. Someone got into the auth database. They're saying a bunch of accounts are compromised."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Oh god. I think I know why. When I set up the auth service, I stored passwords without hashing. I was in a rush."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "You what? Priya, that's a huge security flaw. No wonder they got in."
+            },
+            {
+              "speaker": "Priya",
+              "text": "I know, I know. I thought we'd fix it later, but later never came. Now we have to notify all those users."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "We need to reset every password, force re-auth, and audit the whole system. This is going to be a nightmare."
+            },
+            {
+              "speaker": "Priya",
+              "text": "I'm so sorry. I should have hashed them from day one. I just didn't think anyone would find out."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Well, they did. Let's focus on damage control. And after this, we're implementing mandatory security reviews for every service."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Agreed. I'll take full responsibility in the postmortem. I just hope we can contain it."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "qa": [
+    {
+      "category": 11,
+      "question": "Why did traffic hit a cluster that could not serve it happen?",
+      "answer": "Priya caused it: pointed DNS at the new cluster before it was ready → traffic hit a cluster that could not serve it",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 12,
+      "question": "If Priya does this again — pointed DNS at the new cluster before it was ready — what will happen?",
+      "answer": "traffic hit a cluster that could not serve it",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 13,
+      "question": "Priya has two options: do pointed DNS at the new cluster before it was ready again, or do waited for the cluster health check before switching DNS instead. Which should Priya choose?",
+      "answer": "waited for the cluster health check before switching DNS (traffic moved over without a hitch)",
+      "evidence_nodes": [
+        0,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "category": 14,
+      "question": "What stopped traffic hit a cluster that could not serve it from happening again?",
+      "answer": "waited for the cluster health check before switching DNS",
+      "evidence_nodes": [
+        4,
+        1
+      ]
+    },
+    {
+      "category": 15,
+      "question": "Which happened first: pointed DNS at the new cluster before it was ready or traffic hit a cluster that could not serve it?",
+      "answer": "pointed DNS at the new cluster before it was ready",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 16,
+      "question": "Facing a similar situation in a different area, what should Priya avoid doing?",
+      "answer": "stored passwords without hashing",
+      "evidence_nodes": [
+        5
+      ]
+    },
+    {
+      "category": 17,
+      "question": "After everything, what does Priya now believe is the right way to handle deployments?",
+      "answer": "waited for the cluster health check before switching DNS",
+      "evidence_nodes": [
+        2
+      ]
+    }
+  ]
+}

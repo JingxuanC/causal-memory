@@ -1,0 +1,291 @@
+{
+  "graph": {
+    "id": 5,
+    "nodes": [
+      {
+        "id": 0,
+        "person": "Priya",
+        "action": "left debug credentials in production",
+        "polarity": "neutral",
+        "order": 0,
+        "task_tag": "auth"
+      },
+      {
+        "id": 1,
+        "person": "Priya",
+        "action": "an attacker found the debug account",
+        "polarity": "negative",
+        "order": 1,
+        "task_tag": "auth"
+      },
+      {
+        "id": 2,
+        "person": "Priya",
+        "action": "removed debug credentials from production",
+        "polarity": "neutral",
+        "order": 2,
+        "task_tag": "auth"
+      },
+      {
+        "id": 3,
+        "person": "Priya",
+        "action": "no backdoor account was left exposed",
+        "polarity": "positive",
+        "order": 3,
+        "task_tag": "auth"
+      },
+      {
+        "id": 4,
+        "person": "Priya",
+        "action": "removed debug credentials from production",
+        "polarity": "positive",
+        "order": 4,
+        "task_tag": "auth"
+      },
+      {
+        "id": 5,
+        "person": "Priya",
+        "action": "shipped the API without pagination",
+        "polarity": "negative",
+        "order": 5,
+        "task_tag": "api"
+      },
+      {
+        "id": 6,
+        "person": "Priya",
+        "action": "the API timed out under load",
+        "polarity": "negative",
+        "order": 6,
+        "task_tag": "api"
+      }
+    ],
+    "edges": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "caused"
+      },
+      {
+        "from": 2,
+        "to": 3,
+        "relation": "enabled"
+      },
+      {
+        "from": 4,
+        "to": 1,
+        "relation": "prevented"
+      },
+      {
+        "from": 5,
+        "to": 6,
+        "relation": "caused"
+      }
+    ]
+  },
+  "conversations": [
+    {
+      "graph_id": 5,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2023-05-08 09:00",
+          "turns": [
+            {
+              "speaker": "Priya",
+              "text": "Morning, Marcus. You got a sec? I need to confess something before it bites us."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Uh oh. That tone never means good news. What's up?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "So... remember when I pushed that hotfix last week? I left the debug credentials in the production config. The ones with the hardcoded admin password."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Wait, the ones we use for local dev? You left those in prod? Please tell me nobody found them."
+            },
+            {
+              "speaker": "Priya",
+              "text": "That's the thing. An attacker found the debug account yesterday. They got in, poked around the user table, but didn't change anything. Logs show they were in for about four minutes."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Jesus, Priya. Okay. What did you do?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "I already removed the debug credentials from production this morning. Rotated the keys, killed the session, and ran a full audit. No backdoor account was left exposed — I triple-checked the config and the database."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Good. That's the right move. But we need to tell the security team and probably write a postmortem. Also, maybe we should add a CI check that blocks those keys from ever hitting prod again."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Agreed. I'll draft the postmortem today. And I'm sorry — that was a rookie mistake."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "We all make them. Just glad you caught it fast. Let's grab coffee and talk about the API rollout after."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2023-05-10 14:30",
+          "turns": [
+            {
+              "speaker": "Marcus",
+              "text": "Hey, so about that API you shipped on Monday — I'm seeing some concerning latency numbers in the dashboards."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Yeah, I know. I shipped the API without pagination. I thought the dataset was small enough, but turns out the client's pulling 50k records per request."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "And what happened when you load-tested it?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "The API timed out under load. Anything above 20 concurrent requests and it just hangs. The database is choking on the full table scan every time."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Okay, so we need to add pagination and probably an index on the query column. How fast can you get that out?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "I can have the pagination done by end of day. The index is a quick migration. I'll also add a limit parameter so clients can't request everything at once."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Good. And let's make sure we run a proper load test this time before we call it done."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Definitely. I'm not repeating that mistake. Also, I already removed the debug credentials from production again — just to be safe, since I was touching the config for the pagination change."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Wait, you removed them again? I thought you did that on Monday."
+            },
+            {
+              "speaker": "Priya",
+              "text": "I did, but I found a backup config file that still had them. So I cleaned that out too. Now there's definitely no backdoor account left exposed anywhere."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Alright, good catch. Let's just make sure the postmortem covers both incidents — the debug creds and the pagination. We'll look like a mess if we don't."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2023-05-12 16:45",
+          "turns": [
+            {
+              "speaker": "Priya",
+              "text": "Hey, quick update — the pagination fix is live and the load test passed. 200 concurrent requests, response time under 300ms."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Nice. That's a huge improvement. And the debug credentials situation is fully closed out?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Yes. I did a final sweep of all repos, env files, and deployment scripts. No debug credentials anywhere in production. No backdoor account was left exposed — I even checked the audit logs for any new logins since the rotation."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Perfect. So we're clean on both fronts. You want to present the postmortem to the team tomorrow, or should I?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "I'll do it. I own both mistakes, so I should own the lessons. But thanks for having my back on this."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "That's what teammates are for. Just remember — next time, no debug creds in prod, and always paginate. Deal?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Deal. And I'll add a checklist to our deploy template so this never happens again."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Sounds good. See you at the meeting."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "qa": [
+    {
+      "category": 11,
+      "question": "Why did an attacker found the debug account happen?",
+      "answer": "Priya caused it: left debug credentials in production → an attacker found the debug account",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 12,
+      "question": "If Priya does this again — left debug credentials in production — what will happen?",
+      "answer": "an attacker found the debug account",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 13,
+      "question": "Priya has two options: do left debug credentials in production again, or do removed debug credentials from production instead. Which should Priya choose?",
+      "answer": "removed debug credentials from production (no backdoor account was left exposed)",
+      "evidence_nodes": [
+        0,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "category": 14,
+      "question": "What stopped an attacker found the debug account from happening again?",
+      "answer": "removed debug credentials from production",
+      "evidence_nodes": [
+        4,
+        1
+      ]
+    },
+    {
+      "category": 15,
+      "question": "Which happened first: left debug credentials in production or an attacker found the debug account?",
+      "answer": "left debug credentials in production",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 16,
+      "question": "Facing a similar situation in a different area, what should Priya avoid doing?",
+      "answer": "shipped the API without pagination",
+      "evidence_nodes": [
+        5
+      ]
+    },
+    {
+      "category": 17,
+      "question": "After everything, what does Priya now believe is the right way to handle deployments?",
+      "answer": "removed debug credentials from production",
+      "evidence_nodes": [
+        2
+      ]
+    }
+  ]
+}

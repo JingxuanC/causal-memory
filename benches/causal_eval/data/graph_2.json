@@ -1,0 +1,271 @@
+{
+  "graph": {
+    "id": 2,
+    "nodes": [
+      {
+        "id": 0,
+        "person": "Melanie",
+        "action": "logged sensitive data to the query log",
+        "polarity": "neutral",
+        "order": 0,
+        "task_tag": "api"
+      },
+      {
+        "id": 1,
+        "person": "Melanie",
+        "action": "customer data leaked into the logs",
+        "polarity": "negative",
+        "order": 1,
+        "task_tag": "api"
+      },
+      {
+        "id": 2,
+        "person": "Melanie",
+        "action": "added pagination to the API",
+        "polarity": "neutral",
+        "order": 2,
+        "task_tag": "api"
+      },
+      {
+        "id": 3,
+        "person": "Melanie",
+        "action": "the API held up under heavy load",
+        "polarity": "positive",
+        "order": 3,
+        "task_tag": "api"
+      },
+      {
+        "id": 4,
+        "person": "Melanie",
+        "action": "added pagination to the API",
+        "polarity": "positive",
+        "order": 4,
+        "task_tag": "api"
+      },
+      {
+        "id": 5,
+        "person": "Melanie",
+        "action": "deployed without running the test suite",
+        "polarity": "negative",
+        "order": 5,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 6,
+        "person": "Melanie",
+        "action": "a regression slipped into production",
+        "polarity": "negative",
+        "order": 6,
+        "task_tag": "deployment"
+      }
+    ],
+    "edges": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "caused"
+      },
+      {
+        "from": 2,
+        "to": 3,
+        "relation": "enabled"
+      },
+      {
+        "from": 4,
+        "to": 1,
+        "relation": "prevented"
+      },
+      {
+        "from": 5,
+        "to": 6,
+        "relation": "caused"
+      }
+    ]
+  },
+  "conversations": [
+    {
+      "graph_id": 2,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2025-03-10 14:20",
+          "turns": [
+            {
+              "speaker": "Melanie",
+              "text": "Hey, you got a sec? I need to flag something weird in the query log."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Sure, what's up? I was just about to grab coffee, but this sounds urgent."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "So, I was debugging the search endpoint and I accidentally logged the full request body — including the customer's email and phone number. It's sitting in the query log right now."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Oh no. That's sensitive data. Did you scrub it or rotate the log?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "I already deleted the entries and added a filter to strip PII before logging. But I wanted you to know in case anyone else saw it."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Good catch. At least it's contained. But let's add a ticket to audit the logging pipeline — we can't have that happen again."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Agreed. Also, on a lighter note — I finally added pagination to the API. The response size was getting out of hand."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Nice, that's been on the backlog for weeks. Did you test it with the big dataset?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Yeah, I ran a quick load test locally. It held up fine under heavy load — no timeouts, memory stayed flat."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2025-03-12 09:45",
+          "turns": [
+            {
+              "speaker": "Colleague",
+              "text": "Morning. Quick question — did you deploy the pagination change yesterday? I saw a new version in staging."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Yeah, I pushed it to prod last night. I know I should have run the test suite first, but I was in a hurry to get it out before the demo."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Uh, Melanie... you deployed without running the test suite? That's risky."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "I know, I know. I figured it was a small change, what could go wrong?"
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Well, I just got a ping from support — the export endpoint is returning duplicate rows. Looks like a regression slipped into production."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Damn. That's probably because I changed the pagination offset logic but didn't update the export query. I'll roll back and fix it now."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Let's do a proper hotfix this time — and please, run the tests before you redeploy. I'll help you write a regression test for this exact case."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "You're right. I'm sorry. I'll never skip the suite again — this is exactly why we have it."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2025-03-14 16:10",
+          "turns": [
+            {
+              "speaker": "Melanie",
+              "text": "Hey, just wanted to update you — the hotfix is live, and I ran the full test suite this time. All green."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Good to hear. And the duplicate rows issue?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Fixed. The regression was in the pagination cursor — I was using the wrong key. Now the export and the list endpoint share the same logic."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Nice. Also, I checked the query log from earlier — the PII filter is working. No more sensitive data leaking into the logs."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Great. That was a close call. I'm just glad we caught it before it hit the customer-facing logs."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Yeah, and the API held up under heavy load during the demo yesterday — so the pagination change is solid now. Let's just keep the test suite mandatory from now on."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Absolutely. Lesson learned. Thanks for having my back on this."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "qa": [
+    {
+      "category": 11,
+      "question": "Why did customer data leaked into the logs happen?",
+      "answer": "Melanie caused it: logged sensitive data to the query log → customer data leaked into the logs",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 12,
+      "question": "If Melanie does this again — logged sensitive data to the query log — what will happen?",
+      "answer": "customer data leaked into the logs",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 13,
+      "question": "Melanie has two options: do logged sensitive data to the query log again, or do added pagination to the API instead. Which should Melanie choose?",
+      "answer": "added pagination to the API (the API held up under heavy load)",
+      "evidence_nodes": [
+        0,
+        1,
+        2,
+        3
+      ]
+    },
+    {
+      "category": 14,
+      "question": "What stopped customer data leaked into the logs from happening again?",
+      "answer": "added pagination to the API",
+      "evidence_nodes": [
+        4,
+        1
+      ]
+    },
+    {
+      "category": 15,
+      "question": "Which happened first: logged sensitive data to the query log or customer data leaked into the logs?",
+      "answer": "logged sensitive data to the query log",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 16,
+      "question": "Facing a similar situation in a different area, what should Melanie avoid doing?",
+      "answer": "deployed without running the test suite",
+      "evidence_nodes": [
+        5
+      ]
+    },
+    {
+      "category": 17,
+      "question": "After everything, what does Melanie now believe is the right way to handle deployments?",
+      "answer": "added pagination to the API",
+      "evidence_nodes": [
+        2
+      ]
+    }
+  ]
+}
