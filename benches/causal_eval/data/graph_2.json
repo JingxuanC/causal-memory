@@ -29,7 +29,7 @@
       {
         "id": 3,
         "person": "Melanie",
-        "action": "added pagination to the API",
+        "action": "removed sensitive fields from the logs",
         "polarity": "neutral",
         "order": 3,
         "task_tag": "api"
@@ -37,7 +37,7 @@
       {
         "id": 4,
         "person": "Melanie",
-        "action": "the API held up under heavy load",
+        "action": "the logs contained no customer data",
         "polarity": "positive",
         "order": 4,
         "task_tag": "api"
@@ -45,7 +45,7 @@
       {
         "id": 5,
         "person": "Melanie",
-        "action": "removed sensitive fields from the logs",
+        "action": "restricted log access to a need-to-know subset of the team",
         "polarity": "positive",
         "order": 5,
         "task_tag": "api"
@@ -53,39 +53,39 @@
       {
         "id": 6,
         "person": "Melanie",
-        "action": "ran the migration during peak traffic",
+        "action": "stored passwords without hashing",
         "polarity": "negative",
         "order": 6,
-        "task_tag": "data-migration"
+        "task_tag": "auth"
       },
       {
         "id": 7,
         "person": "Melanie",
-        "action": "the migration locked the database",
+        "action": "user accounts were compromised",
         "polarity": "negative",
         "order": 7,
-        "task_tag": "data-migration"
+        "task_tag": "auth"
       },
       {
         "id": 8,
         "person": "Melanie",
-        "action": "ran the migration in a maintenance window",
+        "action": "hashed passwords before storing them",
         "polarity": "positive",
         "order": 8,
-        "task_tag": "data-migration"
+        "task_tag": "auth"
       },
       {
         "id": 9,
         "person": "Melanie",
-        "action": "the migration finished without locking anything",
+        "action": "credentials stayed safe even in a breach",
         "polarity": "positive",
         "order": 9,
-        "task_tag": "data-migration"
+        "task_tag": "auth"
       },
       {
         "id": 10,
         "person": "Melanie",
-        "action": "adopted a stricter policy that also covers the deployment window",
+        "action": "added a PII redaction pipeline that scans all log output automatically",
         "polarity": "positive",
         "order": 10,
         "task_tag": "api"
@@ -140,115 +140,147 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2025-03-12 10:15",
+          "date_time": "2023-05-08 09:00",
           "turns": [
             {
               "speaker": "Melanie",
-              "text": "Hey, you got a sec? I need to flag something I did yesterday."
+              "text": "Morning, Nate. You got a sec? I need to flag something about the query log."
             },
             {
-              "speaker": "Colleague",
-              "text": "Sure, what's up?"
+              "speaker": "Nate",
+              "text": "Sure, what's up? I was just about to grab coffee."
             },
             {
               "speaker": "Melanie",
-              "text": "So, when I was debugging that slow endpoint, I logged some sensitive customer data to the query log. I know, I know — bad move."
+              "text": "I accidentally logged some sensitive customer data to the query log yesterday. It was a mistake — I was debugging a slow query and dumped the full row."
             },
             {
-              "speaker": "Colleague",
+              "speaker": "Nate",
               "text": "Oh no. How sensitive are we talking?"
             },
             {
               "speaker": "Melanie",
-              "text": "PII — names, email addresses, a few account numbers. And because the query log is shared, that leaked data was exposed to every engineer with log access. I only realized this morning."
+              "text": "Names, email addresses, even a few phone numbers. And the worst part — that log is accessible to every engineer with log access. So it's been exposed to the whole team."
             },
             {
-              "speaker": "Colleague",
-              "text": "That's a problem. Have you cleaned it up?"
-            },
-            {
-              "speaker": "Melanie",
-              "text": "Not yet, but I'm on it. I've already removed the sensitive fields from the logs going forward, and I'm scrubbing the historical entries now. I'll also tighten the access policy after this."
-            },
-            {
-              "speaker": "Colleague",
-              "text": "Good. Let me know if you need help with the scrub. And hey, at least the API held up under heavy load yesterday — that pagination you added really saved us."
+              "speaker": "Nate",
+              "text": "That's bad. Have you done anything about it yet?"
             },
             {
               "speaker": "Melanie",
-              "text": "Ha, silver lining. Yeah, the pagination worked better than expected. But this log thing is a wake-up call."
+              "text": "I already removed the sensitive fields from the log entries — scrubbed them manually. So the logs now contain no customer data. But I'm still worried about the exposure window."
+            },
+            {
+              "speaker": "Nate",
+              "text": "At least you caught it fast. But maybe we should also restrict who can see the logs going forward?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Yeah, I was thinking the same. I'll set up a need-to-know subset of the team for log access — just the on-call folks and the backend leads."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Good call. Let me know if you need help with the access list."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2025-03-14 16:40",
+          "date_time": "2023-05-15 14:30",
           "turns": [
             {
-              "speaker": "Colleague",
-              "text": "Hey, how's the log cleanup going?"
+              "speaker": "Nate",
+              "text": "Hey Melanie, quick question — did you see the alert about user accounts being compromised last night?"
             },
             {
               "speaker": "Melanie",
-              "text": "Done. All historical entries scrubbed, and I've removed sensitive fields from the log schema entirely. Also, I'm adopting a stricter policy that also covers the deployment window — no sensitive data in logs during deploys, period."
+              "text": "Yeah, I saw it. That's actually what I wanted to talk to you about. I think I know the root cause."
             },
             {
-              "speaker": "Colleague",
-              "text": "Nice. That's a solid fix. So what's next on your plate?"
-            },
-            {
-              "speaker": "Melanie",
-              "text": "I need to run that database migration we postponed. I was thinking of doing it during peak traffic tonight, just to get it over with."
-            },
-            {
-              "speaker": "Colleague",
-              "text": "Uh, are you sure? That migration adds a NOT NULL constraint — if it locks the table, we're dead in the water."
+              "speaker": "Nate",
+              "text": "Go on."
             },
             {
               "speaker": "Melanie",
-              "text": "You're right. I'll schedule it in a maintenance window instead. Better safe than sorry."
+              "text": "We were storing passwords without hashing them. Plain text in the database. I checked the auth service code — it's been like that since the initial deploy."
             },
             {
-              "speaker": "Colleague",
-              "text": "Smart. Let me know when you've got the window booked, and I'll be on standby."
+              "speaker": "Nate",
+              "text": "Jesus. So the breach — they just pulled the whole users table?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Exactly. That's how the accounts got compromised. I've already hashed all the passwords before storing them now — switched to bcrypt with per-user salts."
+            },
+            {
+              "speaker": "Nate",
+              "text": "So if there's another breach, the credentials stay safe even if they get the data?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Right. Even if they dump the whole table, they'd only get hashes. It's a huge relief, honestly."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Good work. Sorry you had to deal with that mess."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Thanks. I just wish I'd caught it earlier."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2025-03-16 02:30",
+          "date_time": "2023-05-22 11:00",
           "turns": [
             {
-              "speaker": "Melanie",
-              "text": "Hey, just finished the migration. It went smoothly — finished without locking anything, thanks to the maintenance window."
-            },
-            {
-              "speaker": "Colleague",
-              "text": "Great to hear. So no drama at 2 AM?"
+              "speaker": "Nate",
+              "text": "Hey, you free? I wanted to follow up on the log situation from a couple weeks ago."
             },
             {
               "speaker": "Melanie",
-              "text": "None. The window was quiet, and the migration ran clean. I'm glad I didn't do it during peak traffic — that would've been a disaster."
+              "text": "Yeah, I've been thinking about that too. Turns out my manual fix wasn't enough."
             },
             {
-              "speaker": "Colleague",
-              "text": "For real. And now that the logs are clean and the migration's done, we're in a good place."
-            },
-            {
-              "speaker": "Melanie",
-              "text": "Yeah. I'm also going to add a check to the CI pipeline that blocks any log statement containing sensitive field names. That way we never repeat yesterday's mistake."
-            },
-            {
-              "speaker": "Colleague",
-              "text": "Love it. You've turned a bad day into a whole process improvement."
+              "speaker": "Nate",
+              "text": "What do you mean? You scrubbed the fields and restricted access."
             },
             {
               "speaker": "Melanie",
-              "text": "That's the goal. Thanks for keeping me honest about the migration timing."
+              "text": "I know, but I was wrong about that being sufficient. Yesterday I found another log entry with a customer ID — not from my mistake, but from a different service that logs request bodies. The old approach of removing sensitive fields after the fact just doesn't scale."
             },
             {
-              "speaker": "Colleague",
-              "text": "Anytime. Now go get some sleep — you've earned it."
+              "speaker": "Nate",
+              "text": "So what are you doing instead?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "We replaced the manual scrubbing with a PII redaction pipeline that scans all log output automatically. It runs before anything hits the log aggregator — regex patterns for emails, phone numbers, credit card numbers, and it masks them in real time."
+            },
+            {
+              "speaker": "Nate",
+              "text": "That's a much better safety net. So even if someone logs something they shouldn't, it gets caught at the source."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Exactly. And I've added a test suite that feeds sample sensitive data through the pipeline to make sure nothing slips through. It's been running for two days now with zero leaks."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Nice. That's a solid upgrade. Sorry the first fix didn't hold up."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "It's fine — better to learn that now than after another breach. At least the password hashing is solid, so we're not starting from zero."
+            },
+            {
+              "speaker": "Nate",
+              "text": "True. Let me know if you want me to review the pipeline code."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Will do. Thanks for checking in."
             }
           ]
         }
@@ -258,7 +290,7 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did the leaked data was exposed to every engineer with log access?",
+      "question": "This happened: \"the leaked data was exposed to every engineer with log access\". What was the root cause?",
       "answer": "logged sensitive data to the query log → customer data leaked into the logs → the leaked data was exposed to every engineer with log access",
       "evidence_nodes": [
         0,
@@ -268,7 +300,7 @@
     },
     {
       "category": 12,
-      "question": "If Melanie does logged sensitive data to the query log again without any other changes, what will happen?",
+      "question": "If Melanie does \"logged sensitive data to the query log\" again without any other changes, what will happen?",
       "answer": "the leaked data was exposed to every engineer with log access",
       "evidence_nodes": [
         0,
@@ -277,8 +309,8 @@
     },
     {
       "category": 13,
-      "question": "Melanie has two options: do logged sensitive data to the query log again, or do added pagination to the API instead. Which should Melanie choose?",
-      "answer": "added pagination to the API (the API held up under heavy load)",
+      "question": "Melanie has two options: do \"logged sensitive data to the query log\" again, or do \"removed sensitive fields from the logs\" instead. Which should Melanie choose?",
+      "answer": "removed sensitive fields from the logs (the logs contained no customer data)",
       "evidence_nodes": [
         0,
         2,
@@ -288,8 +320,8 @@
     },
     {
       "category": 14,
-      "question": "What stopped the leaked data was exposed to every engineer with log access from happening again?",
-      "answer": "removed sensitive fields from the logs",
+      "question": "What prevented this outcome from escalating again: \"the leaked data was exposed to every engineer with log access\"?",
+      "answer": "restricted log access to a need-to-know subset of the team",
       "evidence_nodes": [
         5,
         2
@@ -306,8 +338,8 @@
     },
     {
       "category": 16,
-      "question": "In data-migration, Melanie faces a situation like the one in api where logged sensitive data to the query log failed. What should Melanie do?",
-      "answer": "ran the migration in a maintenance window",
+      "question": "In auth, Melanie faces a situation like the one in api where logged sensitive data to the query log failed. What should Melanie do?",
+      "answer": "hashed passwords before storing them",
       "evidence_nodes": [
         6,
         7,
@@ -318,7 +350,7 @@
     {
       "category": 17,
       "question": "After the latest development, what does Melanie now believe is the right way to handle api?",
-      "answer": "adopted a stricter policy that also covers the deployment window",
+      "answer": "added a PII redaction pipeline that scans all log output automatically",
       "evidence_nodes": [
         10
       ]

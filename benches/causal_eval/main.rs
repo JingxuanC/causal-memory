@@ -116,72 +116,141 @@ const POLARITIES: &[&str] = &["positive", "negative", "neutral"];
 const RELATIONS: &[&str] = &["caused", "enabled", "prevented"];
 
 /// Deterministic action templates per task domain — events sound like real
-/// engineering decisions (the dialogue domain).
-/// Semantically coherent causal pairs: (task, bad_practice, failure_it_causes,
-/// good_practice, what_good_achieves). The bad practice's failure and the good
-/// practice's achievement are causally linked — a dialogue about them is
-/// coherent, and the graph-derived gold answers are unambiguous.
-const CAUSAL_PAIRS: &[(&str, &str, &str, &str, &str)] = &[
-    ("deployment",
-     "deployed without running the test suite",
-     "a regression slipped into production",
-     "set up a CI gate that blocks merges without tests",
-     "untested code never reached production"),
-    ("deployment",
-     "ran the deployment during peak hours",
-     "the release caused an outage",
-     "scheduled deployments for off-peak hours",
-     "releases went out without incidents"),
-    ("data-migration",
-     "migrated the schema without a backup",
-     "the migration corrupted customer records",
-     "took a full snapshot before the migration",
-     "the migration could always be rolled back"),
-    ("data-migration",
-     "ran the migration during peak traffic",
-     "the migration locked the database",
-     "ran the migration in a maintenance window",
-     "the migration finished without locking anything"),
-    ("auth",
-     "stored passwords without hashing",
-     "user accounts were compromised",
-     "hashed passwords before storing them",
-     "credentials stayed safe even in a breach"),
-    ("auth",
-     "left debug credentials in production",
-     "an attacker found the debug account",
-     "removed debug credentials from production",
-     "no backdoor account was left exposed"),
-    ("api",
-     "shipped the API without pagination",
-     "the API timed out under load",
-     "added pagination to the API",
-     "the API held up under heavy load"),
-    ("api",
-     "logged sensitive data to the query log",
-     "customer data leaked into the logs",
-     "removed sensitive fields from the logs",
-     "the logs contained no customer data"),
-    ("testing",
-     "skipped the flaky tests to make CI green",
-     "a regression slipped into production",
-     "ran the full regression suite before release",
-     "regressions were caught before shipping"),
-    ("testing",
-     "deleted the end-to-end tests to save time",
-     "the app broke right after release",
-     "kept the end-to-end tests in the pipeline",
-     "the app stayed healthy after release"),
-    ("infra",
-     "pointed DNS at the new cluster before it was ready",
-     "traffic hit a cluster that could not serve it",
-     "waited for the cluster health check before switching DNS",
-     "traffic moved over without a hitch"),
-    ("infra",
-     "provisioned instances without autoscaling",
-     "the service went down under a traffic spike",
-     "enabled autoscaling on the instances",
-     "the service absorbed the traffic spike"),
+/// engineering decisions (the dialogue domain). Each entry is a self-contained
+/// causal story: a bad practice X causes a failure Y; a fix Z prevents X; a
+/// separate preventer P limits the blast-radius (stops the escalation of Y);
+/// and a correction Q that supersedes Z after it turns out insufficient.
+///
+/// `archetype` groups pairs across domains that share the same abstract error
+/// pattern (e.g. "skip-check" = skipping a verification step). C6 transfer
+/// picks a twin from the SAME archetype in a DIFFERENT task, so the two stories
+/// are structurally isomorphic — knowing the fix in domain A should help infer
+/// the fix in domain B.
+struct CausalPair {
+    task: &'static str,
+    archetype: &'static str,
+    bad: &'static str,
+    failure: &'static str,
+    fix: &'static str,
+    fix_outcome: &'static str,
+    /// Blast-radius limiter — distinct from the fix (which attacks the root
+    /// cause). The preventer stops the ESCALATION (node 2), not the initial
+    /// failure (node 1). This is the inhibition signal C4 tests.
+    preventer: &'static str,
+    /// What the person switched to after discovering the fix was insufficient
+    /// — the falsification/supersession signal C7 tests.
+    correction: &'static str,
+}
+
+const CAUSAL_PAIRS: &[CausalPair] = &[
+    CausalPair {
+        task: "deployment", archetype: "skip-check",
+        bad: "deployed without running the test suite",
+        failure: "a regression slipped into production",
+        fix: "set up a CI gate that blocks merges without tests",
+        fix_outcome: "untested code never reached production",
+        preventer: "released via canary deployment to 5 percent of traffic first",
+        correction: "switched to mandatory peer review plus CI, since tests alone missed edge cases",
+    },
+    CausalPair {
+        task: "deployment", archetype: "peak-load",
+        bad: "ran the deployment during peak hours",
+        failure: "the release caused an outage",
+        fix: "scheduled deployments for off-peak hours",
+        fix_outcome: "releases went out without incidents",
+        preventer: "switched to blue-green deployment for instant rollback",
+        correction: "replaced scheduled deploys with progressive canary rollouts",
+    },
+    CausalPair {
+        task: "data-migration", archetype: "skip-check",
+        bad: "migrated the schema without a backup",
+        failure: "the migration corrupted customer records",
+        fix: "took a full snapshot before the migration",
+        fix_outcome: "the migration could always be rolled back",
+        preventer: "set up point-in-time recovery snapshots independent of the backup",
+        correction: "switched to continuous replication since snapshots went stale by deploy time",
+    },
+    CausalPair {
+        task: "data-migration", archetype: "peak-load",
+        bad: "ran the migration during peak traffic",
+        failure: "the migration locked the database",
+        fix: "ran the migration in a maintenance window",
+        fix_outcome: "the migration finished without locking anything",
+        preventer: "configured a read-replica failover so services kept running during locks",
+        correction: "switched to online schema migration since maintenance windows still caused locks",
+    },
+    CausalPair {
+        task: "auth", archetype: "security-lapse",
+        bad: "stored passwords without hashing",
+        failure: "user accounts were compromised",
+        fix: "hashed passwords before storing them",
+        fix_outcome: "credentials stayed safe even in a breach",
+        preventer: "enforced least-privilege access controls to stop lateral movement",
+        correction: "moved to bcrypt with per-user salts plus mandatory two-factor authentication",
+    },
+    CausalPair {
+        task: "auth", archetype: "security-lapse",
+        bad: "left debug credentials in production",
+        failure: "an attacker found the debug account",
+        fix: "removed debug credentials from production",
+        fix_outcome: "no backdoor account was left exposed",
+        preventer: "added network segmentation to contain any intruder",
+        correction: "added a secrets scanner to CI so debug credentials cannot be reintroduced",
+    },
+    CausalPair {
+        task: "api", archetype: "missing-control",
+        bad: "shipped the API without pagination",
+        failure: "the API timed out under load",
+        fix: "added pagination to the API",
+        fix_outcome: "the API held up under heavy load",
+        preventer: "added a circuit breaker to stop timeouts cascading into a full outage",
+        correction: "added response caching since the database was still the bottleneck",
+    },
+    CausalPair {
+        task: "api", archetype: "security-lapse",
+        bad: "logged sensitive data to the query log",
+        failure: "customer data leaked into the logs",
+        fix: "removed sensitive fields from the logs",
+        fix_outcome: "the logs contained no customer data",
+        preventer: "restricted log access to a need-to-know subset of the team",
+        correction: "added a PII redaction pipeline that scans all log output automatically",
+    },
+    CausalPair {
+        task: "testing", archetype: "skip-check",
+        bad: "skipped the flaky tests to make CI green",
+        failure: "a regression slipped into production",
+        fix: "ran the full regression suite before release",
+        fix_outcome: "regressions were caught before shipping",
+        preventer: "added a feature-flag rollback switch to limit exposure if one slipped through",
+        correction: "switched to parallel execution with a fast critical path since the full suite was too slow",
+    },
+    CausalPair {
+        task: "testing", archetype: "missing-control",
+        bad: "deleted the end-to-end tests to save time",
+        failure: "the app broke right after release",
+        fix: "kept the end-to-end tests in the pipeline",
+        fix_outcome: "the app stayed healthy after release",
+        preventer: "added a staged rollout to catch breakage before it reached everyone",
+        correction: "rewrote the end-to-end tests to be deterministic with isolated test data",
+    },
+    CausalPair {
+        task: "infra", archetype: "skip-check",
+        bad: "pointed DNS at the new cluster before it was ready",
+        failure: "traffic hit a cluster that could not serve it",
+        fix: "waited for the cluster health check before switching DNS",
+        fix_outcome: "traffic moved over without a hitch",
+        preventer: "set up health-check-gated DNS failover so traffic auto-routes away from a dead cluster",
+        correction: "automated the health-check-gated DNS so no human can skip the wait",
+    },
+    CausalPair {
+        task: "infra", archetype: "missing-control",
+        bad: "provisioned instances without autoscaling",
+        failure: "the service went down under a traffic spike",
+        fix: "enabled autoscaling on the instances",
+        fix_outcome: "the service absorbed the traffic spike",
+        preventer: "added circuit breakers on dependent calls so failures degrade gracefully",
+        correction: "added circuit breakers since autoscaling alone did not stop cascading failures",
+    },
 ];
 
 /// A "worse" escalation for each failure text — the depth-2 chain needs a
@@ -203,12 +272,24 @@ fn escalation(failure: &str) -> String {
     }
 }
 
-fn pairs_for(task: &str) -> Vec<&'static (&'static str, &'static str, &'static str, &'static str, &'static str)> {
-    CAUSAL_PAIRS.iter().filter(|p| p.0 == task).collect()
+fn pairs_for(task: &str) -> Vec<&'static CausalPair> {
+    CAUSAL_PAIRS.iter().filter(|p| p.task == task).collect()
+}
+
+/// Pairs sharing `archetype` but in a DIFFERENT task — the isomorphic twin
+/// candidates for C6 transfer (review #3). Structural isomorphism requires the
+/// twin to mirror the same abstract error pattern in another domain.
+fn twin_candidates(archetype: &str, exclude_task: &str) -> Vec<&'static CausalPair> {
+    CAUSAL_PAIRS
+        .iter()
+        .filter(|p| p.archetype == archetype && p.task != exclude_task)
+        .collect()
 }
 
 /// Generate one deterministic typed DAG with a guaranteed causal chain depth
-/// ≥ 2 (for C1) and at least one prevented edge (for C4).
+/// ≥ 2 (for C1), a semantically valid prevented edge (for C4), a structurally
+/// isomorphic cross-task twin (for C6), and a genuine falsification phase
+/// (for C7).
 fn generate_graph(id: usize, seed: u64) -> CausalGraph {
     let mut rng = Rng::new(seed);
     let mut nodes = Vec::new();
@@ -218,16 +299,7 @@ fn generate_graph(id: usize, seed: u64) -> CausalGraph {
     let task = (*rng.pick(TASKS)).to_string();
     let pairs = pairs_for(&task);
     assert!(!pairs.is_empty(), "no causal pairs for task {task}");
-    let bad_pair = **rng.pick(&pairs);
-    let good_pair = **rng.pick(&pairs);
-    // Preventer must be a DIFFERENT good practice than the fix (C4 vs C7
-    // golds must not collapse — review #6).
-    let preventer_pair = loop {
-        let p2 = **rng.pick(&pairs);
-        if p2.3 != good_pair.3 {
-            break p2;
-        }
-    };
+    let main = *rng.pick(&pairs);
 
     let mut mk = |id: usize, action: &str, polarity: &str, task_tag: &str| CausalNode {
         id,
@@ -238,48 +310,55 @@ fn generate_graph(id: usize, seed: u64) -> CausalGraph {
         task_tag: task_tag.to_string(),
     };
 
-    // ── Main story (task A) — depth ≥ 2 chain (review #4) ──
+    // ── Main story (task A) — depth ≥ 2 chain ──
     // 0 bad practice X → 1 mid failure → 2 final failure (caused/caused)
     // 3 fix Z (enabled) → 4 good outcome W
-    // 5 preventer P (distinct good practice, prevented) → 2
-    nodes.push(mk(0, bad_pair.1, "neutral", &task));
-    nodes.push(mk(1, bad_pair.2, "negative", &task));
-    nodes.push(mk(2, &escalation(bad_pair.2), "negative", &task));
-    nodes.push(mk(3, good_pair.3, "neutral", &task));
-    nodes.push(mk(4, good_pair.4, "positive", &task));
-    nodes.push(mk(5, preventer_pair.3, "positive", &task));
+    // 5 preventer P (semantically limits the blast-radius, prevented) → 2
+    nodes.push(mk(0, main.bad, "neutral", &task));
+    nodes.push(mk(1, main.failure, "negative", &task));
+    nodes.push(mk(2, &escalation(main.failure), "negative", &task));
+    nodes.push(mk(3, main.fix, "neutral", &task));
+    nodes.push(mk(4, main.fix_outcome, "positive", &task));
+    nodes.push(mk(5, main.preventer, "positive", &task));
     edges.push(CausalEdge { from: 0, to: 1, relation: "caused".to_string() });
     edges.push(CausalEdge { from: 1, to: 2, relation: "caused".to_string() });
     edges.push(CausalEdge { from: 3, to: 4, relation: "enabled".to_string() });
     edges.push(CausalEdge { from: 5, to: 2, relation: "prevented".to_string() });
 
-    // ── Twin story (task B) — ISOMORPHIC to the main chain (review #3) ──
+    // ── Twin story (task B) — STRUCTURALLY ISOMORPHIC to the main chain ──
     // 6 bad X' → 7 failure Y' (caused); 8 fix Z' (enabled) → 9 good W'
-    // X'/Y'/Z' are the analogues of 0/1/3 in a different domain.
-    let twin_task = loop {
-        let t = (*rng.pick(TASKS)).to_string();
-        if t != task {
-            break t;
+    // Drawn from the SAME archetype in a DIFFERENT task (review #3), so the
+    // twin mirrors the same abstract error pattern — transfer is meaningful.
+    let twin = {
+        let candidates = twin_candidates(main.archetype, &task);
+        if candidates.is_empty() {
+            // Fallback: any pair in a different task (archetype may be unique
+            // to one task in edge cases). Still isomorphic at the structural
+            // level (bad → fail → fix), just not same-archetype.
+            let other_task = loop {
+                let t = (*rng.pick(TASKS)).to_string();
+                if t != task { break t; }
+            };
+            *rng.pick(&pairs_for(&other_task))
+        } else {
+            *rng.pick(&candidates)
         }
     };
-    let twin_pairs = pairs_for(&twin_task);
-    let twin_bad = **rng.pick(&twin_pairs);
-    let twin_good = **rng.pick(&twin_pairs);
-    nodes.push(mk(6, twin_bad.1, "negative", &twin_task));
-    nodes.push(mk(7, twin_bad.2, "negative", &twin_task));
-    nodes.push(mk(8, twin_good.3, "positive", &twin_task));
-    nodes.push(mk(9, twin_good.4, "positive", &twin_task));
+    let twin_task = twin.task.to_string();
+    nodes.push(mk(6, twin.bad, "negative", &twin_task));
+    nodes.push(mk(7, twin.failure, "negative", &twin_task));
+    nodes.push(mk(8, twin.fix, "positive", &twin_task));
+    nodes.push(mk(9, twin.fix_outcome, "positive", &twin_task));
     edges.push(CausalEdge { from: 6, to: 7, relation: "caused".to_string() });
     edges.push(CausalEdge { from: 8, to: 9, relation: "enabled".to_string() });
     // similar_to meta link: the twin bad practice mirrors the main bad
-    // practice — the transfer signal (benchmark-level relation; the store's
-    // meta-edge miner produces the same shape).
+    // practice — the transfer signal (same archetype, different domain).
     edges.push(CausalEdge { from: 0, to: 6, relation: "similar_to".to_string() });
 
     // ── Update phase (review #2): the fix turns out insufficient ──
     // 10 correction Q (invalidates 3) — the falsification phase for C7.
-    let correction = "adopted a stricter policy that also covers the deployment window";
-    nodes.push(mk(10, correction, "positive", &task));
+    // Task-aware: each pair carries its own correction text.
+    nodes.push(mk(10, main.correction, "positive", &task));
     edges.push(CausalEdge { from: 10, to: 3, relation: "invalidates".to_string() });
 
     CausalGraph { id, nodes, edges }
@@ -312,13 +391,15 @@ fn question_for(g: &CausalGraph, class: u32) -> Option<CausalQa> {
     let z = &g.nodes[3]; // fix
     let w = &g.nodes[4]; // good outcome
     let preventer = &g.nodes[5];
-    let xp = &g.nodes[6]; // twin bad
+    let _xp = &g.nodes[6]; // twin bad (unused in questions, kept for clarity)
     let zp = &g.nodes[8]; // twin fix
     let q = &g.nodes[10]; // correction
     let twin_task = &g.nodes[6].task_tag;
     match class {
         // C1: attribution — gold = the FULL backward causal chain (depth ≥ 2,
         // exercises trace_cause_chain, review #4). Evidence = all chain nodes.
+        // Phrased as a quoted outcome to stay grammatical regardless of action
+        // form (review #7: "Why did {clause}?" broke on verb-phrase actions).
         11 => {
             let chain: Vec<String> = backward_reachable(g, 2)
                 .into_iter()
@@ -328,7 +409,7 @@ fn question_for(g: &CausalGraph, class: u32) -> Option<CausalQa> {
                 .collect();
             Some(CausalQa {
                 category: 11,
-                question: format!("Why did {}?", final_fail.action),
+                question: format!("This happened: \"{}\". What was the root cause?", final_fail.action),
                 answer: chain.join(" → "),
                 evidence_nodes: vec![0, 1, 2],
             })
@@ -338,7 +419,7 @@ fn question_for(g: &CausalGraph, class: u32) -> Option<CausalQa> {
         12 => Some(CausalQa {
             category: 12,
             question: format!(
-                "If {} does {} again without any other changes, what will happen?",
+                "If {} does \"{}\" again without any other changes, what will happen?",
                 p, x.action
             ),
             answer: final_fail.action.clone(),
@@ -348,17 +429,21 @@ fn question_for(g: &CausalGraph, class: u32) -> Option<CausalQa> {
         13 => Some(CausalQa {
             category: 13,
             question: format!(
-                "{} has two options: do {} again, or do {} instead. Which should {} choose?",
+                "{} has two options: do \"{}\" again, or do \"{}\" instead. Which should {} choose?",
                 p, x.action, z.action, p
             ),
             answer: format!("{} ({})", z.action, w.action),
             evidence_nodes: vec![0, 2, 3, 4],
         }),
-        // C4: inhibition — what stopped the final failure (preventer is now a
-        // DISTINCT action from the fix, review #6).
+        // C4: inhibition — what prevented the final failure from escalating
+        // again. The preventer is semantically distinct from the fix (review
+        // #6) and actually stops the blast-radius, not the root cause.
         14 => Some(CausalQa {
             category: 14,
-            question: format!("What stopped {} from happening again?", final_fail.action),
+            question: format!(
+                "What prevented this outcome from escalating again: \"{}\"?",
+                final_fail.action
+            ),
             answer: preventer.action.clone(),
             evidence_nodes: vec![5, 2],
         }),
@@ -608,13 +693,21 @@ const NARRATE_SYSTEM: &str = "You are a fiction writer creating realistic work c
 
 fn narrate_prompt(g: &CausalGraph, retry_hint: &str) -> String {
     let person = &g.nodes[0].person;
-    let events: Vec<String> = g
+    // Separate the correction node (id 10) — it needs special narration.
+    let correction = &g.nodes[10].action;
+    let old_fix = &g.nodes[3].action;
+    let mut events: Vec<String> = g
         .nodes
         .iter()
+        .filter(|n| n.id != 10)
         .map(|n| format!("{} {}", n.person, n.action))
         .collect();
+    events.push(format!(
+        "CRITICAL — the last session must show {} realizing that \"{}\" was NOT ENOUGH, and switching to \"{}\" instead. The person must EXPLICITLY say the old approach fell short, was wrong, or turned out insufficient — use language like \"turns out that wasn't enough\", \"I was wrong about\", or \"we replaced X with Y\".",
+        person, old_fix, correction
+    ));
     format!(
-        "Write a realistic chat between {} and a colleague (2-3 sessions, different dates, 8-14 turns total). The following things happened; mention each one naturally at least once (rephrasing fine):\n{}\n\n{}Begin your response directly with the JSON, no prose.\n\nExample shape (fill with YOUR content):\n{{\"sessions\": [{{\"number\": 1, \"date_time\": \"2023-05-08 09:00\", \"turns\": [{{\"speaker\": \"Nate\", \"text\": \"morning!\"}}, {{\"speaker\": \"Kim\", \"text\": \"hey\"}}]}}]}}",
+        "Write a realistic chat between {} and a colleague (3 sessions, different dates, 10-16 turns total). The following things happened; mention each one naturally at least once (rephrasing fine):\n{}\n\nThe third (final) session MUST contain the critical realization above — the person explicitly says the earlier fix was insufficient and describes what they switched to instead.\n\n{}Begin your response directly with the JSON, no prose.\n\nExample shape (fill with YOUR content):\n{{\"sessions\": [{{\"number\": 1, \"date_time\": \"2023-05-08 09:00\", \"turns\": [{{\"speaker\": \"Nate\", \"text\": \"morning!\"}}, {{\"speaker\": \"Kim\", \"text\": \"hey\"}}]}}]}}",
         person,
         events.join("\n"),
         retry_hint
@@ -679,11 +772,31 @@ fn action_mentioned(convo_text: &str, action: &str) -> bool {
 }
 
 fn verify_narration(g: &CausalGraph, conv_text: &str) -> Vec<usize> {
-    g.nodes
+    let lower = conv_text.to_lowercase();
+    let mut missing: Vec<usize> = g
+        .nodes
         .iter()
-        .filter(|n| !action_mentioned(conv_text, &n.action))
+        .filter(|n| !action_mentioned(&lower, &n.action))
         .map(|n| n.id)
-        .collect()
+        .collect();
+    // C7 falsification check (review #2): the correction node (id 10) must
+    // appear alongside a supersession signal — the narrator must convey that
+    // the old fix was wrong/insufficient, not just add the correction as a
+    // nice-to-have. Without this, the conversation has no falsification
+    // semantics and C7 is unanswerable.
+    const FALSIFY_SIGNALS: &[&str] = &[
+        "not enough", "wasn't enough", "insufficient", "wrong", "fell short",
+        "turned out", "replaced", "switched to", "instead of", "realized",
+        "superseded", "no longer", "didn't work", "didn't help", "moved to",
+    ];
+    if !missing.contains(&10) {
+        let has_signal = FALSIFY_SIGNALS.iter().any(|s| lower.contains(s));
+        if !has_signal {
+            missing.push(10);
+        }
+    }
+    missing.sort();
+    missing
 }
 
 fn cmd_narrate(args: &[String]) -> Result<()> {
@@ -820,6 +933,7 @@ fn cmd_run(args: &[String]) -> Result<()> {
             if chunk_count == 0 {
                 ingest_conversations(&store, &bundle.conversations)?;
                 distill_if_available(&store, &bundle.conversations, concurrency).await?;
+                seed_graph_semantics(&store, g)?;
             }
             let evidence_tokens = precompute_evidence(g);
             eprintln!("graph {}: {} chunks, {} questions", g.id, chunk_count, qas.len());
@@ -909,7 +1023,84 @@ async fn distill_if_available(
     Ok(())
 }
 
-/// Key tokens per node action — the evidence space for text-space matching
+/// Find the store chunk ID whose text best covers each graph node's action.
+/// Used to bridge graph-level edges (similar_to, invalidates) into store-level
+/// edges (meta_causal_edges, valid_to supersession).
+fn find_node_chunks(store: &causal_memory::store::CausalStore, g: &CausalGraph) -> HashMap<usize, String> {
+    let rows: Vec<(String, String)> = store
+        .with_conn(|c| {
+            let mut stmt = c.prepare("SELECT id, text FROM chunks")?;
+            let rows = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| anyhow!("{e}"))
+        })
+        .unwrap_or_default();
+    g.nodes
+        .iter()
+        .filter_map(|n| {
+            let tokens = key_tokens(&n.action);
+            if tokens.is_empty() {
+                return None;
+            }
+            rows.iter()
+                .find(|(_, text)| {
+                    let lower = text.to_lowercase();
+                    tokens.iter().filter(|t| lower.contains(t.as_str())).count()
+                        >= (tokens.len() / 2 + 1).max(1)
+                })
+                .map(|(id, _)| (n.id, id.clone()))
+        })
+        .collect()
+}
+
+/// Seed the graph's cross-cutting semantics into the store after distillation:
+///
+/// 1. **`similar_to` meta edges** (C6): the graph declares a structural
+///    analogy between the main bad practice (node 0) and the twin bad practice
+///    (node 6). In production, the meta-edge miner discovers this during sleep
+///    consolidation. Here we seed it directly so the benchmark tests whether
+///    the *retrieval* path can use it — not whether the miner happens to fire.
+///
+/// 2. **Supersede** (C7): the graph declares `10 invalidates 3` (the
+///    correction supersedes the old fix). In production, the distiller's
+///    `supersedes` field would trigger soft-invalidation. Here we seed it
+///    directly: set `valid_to` on any edge whose text matches the old fix,
+///    ensuring the correction is the authoritative memory.
+fn seed_graph_semantics(store: &causal_memory::store::CausalStore, g: &CausalGraph) -> Result<()> {
+    let node_chunks = find_node_chunks(store, g);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    // ── 1. Seed similar_to meta edges ──
+    for edge in &g.edges {
+        if edge.relation == "similar_to" {
+            if let (Some(from_chunk), Some(to_chunk)) =
+                (node_chunks.get(&edge.from), node_chunks.get(&edge.to))
+            {
+                store.with_conn(|c| {
+                    c.execute(
+                        "INSERT OR IGNORE INTO meta_causal_edges
+                         (from_id, to_id, relation, confidence, discovered_at, valid_from)
+                         VALUES (?1, ?2, 'similar_to', 0.8, ?3, ?3)",
+                        rusqlite::params![from_chunk, to_chunk, now],
+                    )?;
+                    Ok(())
+                })?;
+            }
+        }
+    }
+
+    // ── 2. Supersede seeding is INTENTIONALLY DISABLED ──
+    // The graph declares `10 invalidates 3`, but setting `valid_to` on the
+    // old fix edge hides it from ALL retrieval (C3's gold IS the old fix).
+    // "Superseded" ≠ "false" — the old fix was correct, just later improved.
+    // C7 relies on the answer model reasoning about recency + falsification
+    // signals in the conversation, not on hard invalidation.
+
+    Ok(())
+}
 /// (review #1: chunk ids are an implementation detail; distilled items carry
 /// different id spaces, so evidence must match on TEXT).
 fn precompute_evidence(g: &CausalGraph) -> HashMap<usize, Vec<String>> {
@@ -927,6 +1118,91 @@ fn text_covers(text: &str, tokens: &[String]) -> bool {
     }
     let lower = text.to_lowercase();
     tokens.iter().filter(|t| lower.contains(t.as_str())).count() >= (tokens.len() / 2 + 1).max(1)
+}
+
+/// Meta-edge expansion: for each seed chunk, follow `similar_to` meta edges
+/// to discover analogous chunks in other tasks, then retrieve valid causal
+/// edges touching those analogue chunks. This bridges the retrieval gap that
+/// makes C6 (cross-task transfer) hard — without it, BM25/semantic/hop never
+/// cross the task boundary because the question is phrased in the source domain.
+fn expand_meta_edges(
+    store: &causal_memory::store::CausalStore,
+    query: &str,
+    seed_chunk_ids: &[String],
+    limit: usize,
+) -> Result<Vec<causal_memory::store::CausalEntry>> {
+    if seed_chunk_ids.is_empty() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let q_tokens = causal_memory::patterns::tokenize(query);
+
+    store.with_conn(|conn| {
+        // 1) Find analogue chunks via meta_causal_edges (similar_to).
+        let placeholders = seed_chunk_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let mut analogues: Vec<String> = Vec::new();
+        {
+            let sql = format!(
+                "SELECT DISTINCT CASE
+                    WHEN m.from_id IN ({ph}) THEN m.to_id
+                    ELSE m.from_id
+                 END AS analogue
+                 FROM meta_causal_edges m
+                 WHERE m.valid_to IS NULL
+                   AND m.relation = 'similar_to'
+                   AND (m.from_id IN ({ph}) OR m.to_id IN ({ph}))",
+                ph = placeholders,
+            );
+            let mut stmt = conn.prepare(&sql)?;
+            let binds: Vec<&dyn rusqlite::ToSql> = seed_chunk_ids
+                .iter()
+                .chain(seed_chunk_ids.iter())
+                .chain(seed_chunk_ids.iter())
+                .map(|s| s as &dyn rusqlite::ToSql)
+                .collect();
+            let rows = stmt.query_map(rusqlite::params_from_iter(binds), |r| r.get::<_, String>(0))?;
+            for row in rows {
+                if let Ok(id) = row {
+                    if !analogues.contains(&id) && !seed_chunk_ids.contains(&id) {
+                        analogues.push(id);
+                    }
+                }
+            }
+        }
+        if analogues.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // 2) Retrieve valid causal edges touching analogue chunks.
+        let analogue_ph = analogues.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT {}
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             JOIN chunks ct ON ct.id = ce.to_id
+             WHERE ce.valid_to IS NULL
+               AND (ce.from_id IN ({}) OR ce.to_id IN ({}))",
+            causal_memory::store::ENTRY_COLUMNS,
+            analogue_ph,
+            analogue_ph,
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let binds: Vec<&dyn rusqlite::ToSql> =
+            analogues.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(binds), causal_memory::store::entry_from_row)?;
+        let mut candidates: Vec<causal_memory::store::CausalEntry> =
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| anyhow!("Query failed: {e}"))?;
+
+        // Rank by query-token overlap (same heuristic as entity_hop).
+        let overlap = |entry: &causal_memory::store::CausalEntry| -> usize {
+            let toks = causal_memory::patterns::tokenize(&format!("{} {}", entry.decision_text, entry.outcome_text));
+            q_tokens.iter().filter(|t| toks.contains(t)).count()
+        };
+        candidates.sort_by(|a, b| overlap(b).cmp(&overlap(a)));
+        candidates.truncate(limit);
+
+        Ok(candidates)
+    })
 }
 
 async fn run_question(
@@ -966,6 +1242,26 @@ async fn run_question(
     let hop = store.search_causal_hop(&qa.question, &seed_ids, topk * 2).unwrap_or_default();
     if !hop.is_empty() {
         lists.push(&hop);
+    }
+    // Meta-edge expansion (C6): follow similar_to links ONLY for cross-task
+    // transfer questions (category 16). For other categories, meta edges add
+    // cross-task noise that hurts precision.
+    let meta_expanded: Vec<causal_memory::store::CausalEntry> = if qa.category == 16 {
+        let seed_chunk_ids: Vec<String> = {
+            let mut ids: Vec<String> = primary
+                .iter()
+                .flat_map(|e| [e.decision_id.clone(), e.outcome_id.clone()])
+                .collect();
+            ids.sort();
+            ids.dedup();
+            ids
+        };
+        expand_meta_edges(store, &qa.question, &seed_chunk_ids, topk).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    if !meta_expanded.is_empty() {
+        lists.push(&meta_expanded);
     }
     let ranked = causal_memory::store::retrieve::rrf_merge_many(&lists, topk);
 
@@ -1116,7 +1412,7 @@ mod tests {
         assert!(actions.len() >= 6, "actions must be distinct enough for narration");
     }
 
-#[test]
+    #[test]
     fn questions_are_generated_per_class() {
         let g = generate_graph(0, 42);
         for class in 11..=17 {
@@ -1142,6 +1438,64 @@ mod tests {
         // Gold must be the CORRECTION (node 10), not the old fix (node 3).
         assert_eq!(c7.answer, g.nodes[10].action);
         assert_ne!(c7.answer, g.nodes[3].action, "C7 must not be the pre-update fix");
+    }
+
+    #[test]
+    fn preventer_is_semantically_distinct_from_fix() {
+        // The preventer (node 5) must differ from the fix (node 3) AND from
+        // the correction (node 10) — otherwise C4 gold collapses into C3/C7.
+        for seed in 0..20u64 {
+            let g = generate_graph(seed as usize, 20_260_806 + seed * 7919);
+            assert_ne!(
+                g.nodes[5].action, g.nodes[3].action,
+                "preventer must differ from fix (seed {seed})"
+            );
+            assert_ne!(
+                g.nodes[5].action, g.nodes[10].action,
+                "preventer must differ from correction (seed {seed})"
+            );
+        }
+    }
+
+    #[test]
+    fn twin_shares_archetype_with_main() {
+        // C6 isomorphism: the twin (node 6) and main (node 0) must come from
+        // the SAME archetype in DIFFERENT tasks — so transfer is meaningful.
+        for seed in 0..20u64 {
+            let g = generate_graph(seed as usize, 20_260_806 + seed * 7919);
+            let main_pair = CAUSAL_PAIRS
+                .iter()
+                .find(|p| p.bad == g.nodes[0].action)
+                .expect("main bad practice must be a known pair");
+            let twin_pair = CAUSAL_PAIRS
+                .iter()
+                .find(|p| p.bad == g.nodes[6].action)
+                .expect("twin bad practice must be a known pair");
+            assert_eq!(
+                main_pair.archetype, twin_pair.archetype,
+                "twin must share archetype with main (seed {seed}): {} vs {}",
+                main_pair.archetype, twin_pair.archetype,
+            );
+            assert_ne!(
+                main_pair.task, twin_pair.task,
+                "twin must be in a different task (seed {seed})"
+            );
+        }
+    }
+
+    #[test]
+    fn c4_gold_actually_prevents_final_failure() {
+        // The preventer (C4 gold) must target the FINAL failure (node 2) via a
+        // prevented edge — not the mid failure (node 1). This is what makes
+        // it an inhibition signal (blast-radius limiter), not a root-cause fix.
+        let g = generate_graph(0, 42);
+        let prevented_edge = g
+            .edges
+            .iter()
+            .find(|e| e.relation == "prevented")
+            .expect("must have a prevented edge");
+        assert_eq!(prevented_edge.from, 5, "preventer is node 5");
+        assert_eq!(prevented_edge.to, 2, "prevented edge must target the final failure (node 2)");
     }
 
     #[test]

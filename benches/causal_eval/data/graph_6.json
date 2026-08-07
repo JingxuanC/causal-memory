@@ -29,7 +29,7 @@
       {
         "id": 3,
         "person": "Sam",
-        "action": "ran the migration in a maintenance window",
+        "action": "took a full snapshot before the migration",
         "polarity": "neutral",
         "order": 3,
         "task_tag": "data-migration"
@@ -37,7 +37,7 @@
       {
         "id": 4,
         "person": "Sam",
-        "action": "the migration finished without locking anything",
+        "action": "the migration could always be rolled back",
         "polarity": "positive",
         "order": 4,
         "task_tag": "data-migration"
@@ -45,7 +45,7 @@
       {
         "id": 5,
         "person": "Sam",
-        "action": "took a full snapshot before the migration",
+        "action": "set up point-in-time recovery snapshots independent of the backup",
         "polarity": "positive",
         "order": 5,
         "task_tag": "data-migration"
@@ -53,7 +53,7 @@
       {
         "id": 6,
         "person": "Sam",
-        "action": "ran the deployment during peak hours",
+        "action": "deployed without running the test suite",
         "polarity": "negative",
         "order": 6,
         "task_tag": "deployment"
@@ -61,7 +61,7 @@
       {
         "id": 7,
         "person": "Sam",
-        "action": "the release caused an outage",
+        "action": "a regression slipped into production",
         "polarity": "negative",
         "order": 7,
         "task_tag": "deployment"
@@ -69,7 +69,7 @@
       {
         "id": 8,
         "person": "Sam",
-        "action": "scheduled deployments for off-peak hours",
+        "action": "set up a CI gate that blocks merges without tests",
         "polarity": "positive",
         "order": 8,
         "task_tag": "deployment"
@@ -77,7 +77,7 @@
       {
         "id": 9,
         "person": "Sam",
-        "action": "releases went out without incidents",
+        "action": "untested code never reached production",
         "polarity": "positive",
         "order": 9,
         "task_tag": "deployment"
@@ -85,7 +85,7 @@
       {
         "id": 10,
         "person": "Sam",
-        "action": "adopted a stricter policy that also covers the deployment window",
+        "action": "switched to continuous replication since snapshots went stale by deploy time",
         "polarity": "positive",
         "order": 10,
         "task_tag": "data-migration"
@@ -140,111 +140,119 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2024-03-12 14:30",
+          "date_time": "2023-05-08 09:00",
           "turns": [
             {
               "speaker": "Sam",
-              "text": "Hey, you got a sec? I need to vent about the migration last night."
+              "text": "Morning, Dana. Got a minute? I need to walk you through the schema migration I just pushed."
             },
             {
-              "speaker": "Nate",
-              "text": "Oh no, what happened? I saw the alert at 2 AM but figured it was routine."
-            },
-            {
-              "speaker": "Sam",
-              "text": "Routine, my ass. I ran the schema migration in the maintenance window like we planned, but I skipped the backup step. I thought the tool would handle it."
-            },
-            {
-              "speaker": "Nate",
-              "text": "Wait, you didn't take a snapshot? You always take a full snapshot before touching prod."
+              "speaker": "Dana",
+              "text": "Sure, but I thought we were holding off until after the audit. Did you run the test suite first?"
             },
             {
               "speaker": "Sam",
-              "text": "I know, I know. And it bit me hard. The migration corrupted a bunch of customer records — addresses and phone numbers got scrambled."
+              "text": "Honestly? No. I was under pressure to get it done, so I deployed without running the tests. I know that's not ideal."
             },
             {
-              "speaker": "Nate",
-              "text": "That's bad. But you had the old backups, right? You could restore from those."
-            },
-            {
-              "speaker": "Sam",
-              "text": "Here's the kicker — the corruption spread to the backups too. Took me and the DBA team three days to repair everything. We're still verifying data integrity."
-            },
-            {
-              "speaker": "Nate",
-              "text": "Three days? That's brutal. So what's the plan going forward?"
+              "speaker": "Dana",
+              "text": "Not ideal? Sam, that's how regressions slip into production. What about a rollback plan?"
             },
             {
               "speaker": "Sam",
-              "text": "I'm adopting a stricter policy — mandatory snapshot before any migration, and it also covers the deployment window. No exceptions, even for hotfixes."
+              "text": "The migration could always be rolled back — I made sure of that. And I took a full snapshot before the migration, so we're covered."
             },
             {
-              "speaker": "Nate",
-              "text": "Good. Honestly, I'm surprised you didn't lock anything during the migration. That's the only silver lining."
+              "speaker": "Dana",
+              "text": "A snapshot is fine, but did you back up the old schema separately? You know, in case the snapshot gets corrupted?"
             },
             {
               "speaker": "Sam",
-              "text": "Yeah, no locks, but that didn't save me. Anyway, I'm scheduling all future deployments for off-peak hours, and I'll triple-check the backup chain."
+              "text": "I didn't do a separate backup, no. But the snapshot is right there on the same storage cluster. Should be fine."
+            },
+            {
+              "speaker": "Dana",
+              "text": "I really hope you're right. Let's check the customer records after lunch."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2024-03-20 11:00",
+          "date_time": "2023-05-10 14:30",
           "turns": [
             {
-              "speaker": "Nate",
-              "text": "Hey, I saw you pushed the new release this morning. Everything go smooth?"
+              "speaker": "Dana",
+              "text": "Sam, we have a problem. The migration corrupted customer records — I'm seeing null fields and duplicated IDs across the board."
             },
             {
               "speaker": "Sam",
-              "text": "Smooth as silk. I took a full snapshot before, ran it in the maintenance window, and it finished without locking anything. No incidents."
+              "text": "What? That can't be. I took a full snapshot before the migration, so we can restore from that."
             },
             {
-              "speaker": "Nate",
-              "text": "Nice. So you're back on track after the disaster last week?"
-            },
-            {
-              "speaker": "Sam",
-              "text": "Yeah, but I'm not taking chances. I've scheduled all deployments for off-peak hours now — no more peak-hour releases. That's what caused the outage last time, remember?"
-            },
-            {
-              "speaker": "Nate",
-              "text": "Right, the outage. That was a mess. But at least you've got a system now."
+              "speaker": "Dana",
+              "text": "We tried. The corruption spread to the backups — the snapshot itself is now garbage. It's going to take days to repair."
             },
             {
               "speaker": "Sam",
-              "text": "Exactly. And I've got a checklist that includes the backup verification step. I'm not touching prod without it."
+              "text": "Days? That's a nightmare. I thought the snapshot was bulletproof."
+            },
+            {
+              "speaker": "Dana",
+              "text": "It wasn't. And because you didn't run the test suite, we didn't catch the regression until it hit production. This is exactly what I warned you about."
+            },
+            {
+              "speaker": "Sam",
+              "text": "You're right. I'm sorry. I need to fix this properly. I'm going to set up point-in-time recovery snapshots independent of the backup system — so if one fails, the other doesn't."
+            },
+            {
+              "speaker": "Dana",
+              "text": "That's a start. But we also need to make sure untested code never reaches production again. Can you set up a CI gate that blocks merges without tests?"
+            },
+            {
+              "speaker": "Sam",
+              "text": "Yes. I'll do that today. And I'll run the full test suite on the repair branch before we even think about deploying."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2024-04-02 16:45",
+          "date_time": "2023-05-15 11:00",
           "turns": [
             {
-              "speaker": "Nate",
-              "text": "Hey, congrats on the last three releases — all green, no incidents. That's a streak."
+              "speaker": "Dana",
+              "text": "Good news — the repair finished overnight. Customer records are clean again. How's the CI gate working?"
             },
             {
               "speaker": "Sam",
-              "text": "Thanks. It feels good. I've been sticking to the new policy — snapshot before, off-peak window, and I even added a rollback test."
+              "text": "It's live. No merge gets through without tests passing. Untested code never reaches production now — that part is solid."
             },
             {
-              "speaker": "Nate",
-              "text": "So the stricter policy is working? The one that covers the deployment window too?"
-            },
-            {
-              "speaker": "Sam",
-              "text": "Yeah, that's the key. I used to think maintenance windows were enough, but after the corruption fiasco, I realized the whole process needed guardrails."
-            },
-            {
-              "speaker": "Nate",
-              "text": "Well, you've definitely turned it around. No more 3 AM panic calls."
+              "speaker": "Dana",
+              "text": "Great. And the point-in-time recovery snapshots? Are those holding up?"
             },
             {
               "speaker": "Sam",
-              "text": "Fingers crossed. But I'm still paranoid about backups — I check the snapshot integrity before every single migration now."
+              "text": "They're working, but I have to be honest — I was wrong about the full snapshot approach. Turns out that wasn't enough. The snapshot went stale by deploy time, because we had new writes coming in during the migration window."
+            },
+            {
+              "speaker": "Dana",
+              "text": "So what did you replace it with?"
+            },
+            {
+              "speaker": "Sam",
+              "text": "We switched to continuous replication. Now every write is mirrored to a separate cluster in real time, so even if a migration goes sideways, we can roll back to the exact second before the change — not just a snapshot from hours earlier."
+            },
+            {
+              "speaker": "Dana",
+              "text": "That's a much better safety net. And it means the rollback is always possible, even mid-deploy."
+            },
+            {
+              "speaker": "Sam",
+              "text": "Exactly. The old snapshot approach fell short because it was a single point in time. Continuous replication is the real fix."
+            },
+            {
+              "speaker": "Dana",
+              "text": "Good. Let's document this and make sure the next migration follows the same pattern."
             }
           ]
         }
@@ -254,7 +262,7 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did the corruption spread to the backups and took days to repair?",
+      "question": "This happened: \"the corruption spread to the backups and took days to repair\". What was the root cause?",
       "answer": "migrated the schema without a backup → the migration corrupted customer records → the corruption spread to the backups and took days to repair",
       "evidence_nodes": [
         0,
@@ -264,7 +272,7 @@
     },
     {
       "category": 12,
-      "question": "If Sam does migrated the schema without a backup again without any other changes, what will happen?",
+      "question": "If Sam does \"migrated the schema without a backup\" again without any other changes, what will happen?",
       "answer": "the corruption spread to the backups and took days to repair",
       "evidence_nodes": [
         0,
@@ -273,8 +281,8 @@
     },
     {
       "category": 13,
-      "question": "Sam has two options: do migrated the schema without a backup again, or do ran the migration in a maintenance window instead. Which should Sam choose?",
-      "answer": "ran the migration in a maintenance window (the migration finished without locking anything)",
+      "question": "Sam has two options: do \"migrated the schema without a backup\" again, or do \"took a full snapshot before the migration\" instead. Which should Sam choose?",
+      "answer": "took a full snapshot before the migration (the migration could always be rolled back)",
       "evidence_nodes": [
         0,
         2,
@@ -284,8 +292,8 @@
     },
     {
       "category": 14,
-      "question": "What stopped the corruption spread to the backups and took days to repair from happening again?",
-      "answer": "took a full snapshot before the migration",
+      "question": "What prevented this outcome from escalating again: \"the corruption spread to the backups and took days to repair\"?",
+      "answer": "set up point-in-time recovery snapshots independent of the backup",
       "evidence_nodes": [
         5,
         2
@@ -303,7 +311,7 @@
     {
       "category": 16,
       "question": "In deployment, Sam faces a situation like the one in data-migration where migrated the schema without a backup failed. What should Sam do?",
-      "answer": "scheduled deployments for off-peak hours",
+      "answer": "set up a CI gate that blocks merges without tests",
       "evidence_nodes": [
         6,
         7,
@@ -314,7 +322,7 @@
     {
       "category": 17,
       "question": "After the latest development, what does Sam now believe is the right way to handle data-migration?",
-      "answer": "adopted a stricter policy that also covers the deployment window",
+      "answer": "switched to continuous replication since snapshots went stale by deploy time",
       "evidence_nodes": [
         10
       ]

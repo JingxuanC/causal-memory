@@ -41,12 +41,12 @@ pub struct CausalEntry {
 }
 
 /// Columns selected when materializing a `CausalEntry` (order matters, see `entry_from_row`).
-pub(crate) const ENTRY_COLUMNS: &str = "ce.id, cf.id, cf.text, ct.id, ct.text, ce.relation, ce.confidence,
+pub const ENTRY_COLUMNS: &str = "ce.id, cf.id, cf.text, ct.id, ct.text, ce.relation, ce.confidence,
          ce.task_tag, ce.event_time, ce.valid_to, ce.access_count, ce.last_accessed_at,
          ce.discovered_by, ce.discovered_at, ce.outcome_polarity, ce.superseded_by";
 
 /// Map a row selected with `ENTRY_COLUMNS` (plus the standard chunk joins) to a `CausalEntry`.
-pub(crate) fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<CausalEntry> {
+pub fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<CausalEntry> {
     Ok(CausalEntry {
         edge_id: row.get(0)?,
         decision_id: row.get(1)?,

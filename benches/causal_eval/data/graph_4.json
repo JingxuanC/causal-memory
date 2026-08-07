@@ -29,7 +29,7 @@
       {
         "id": 3,
         "person": "Priya",
-        "action": "ran the migration in a maintenance window",
+        "action": "took a full snapshot before the migration",
         "polarity": "neutral",
         "order": 3,
         "task_tag": "data-migration"
@@ -37,7 +37,7 @@
       {
         "id": 4,
         "person": "Priya",
-        "action": "the migration finished without locking anything",
+        "action": "the migration could always be rolled back",
         "polarity": "positive",
         "order": 4,
         "task_tag": "data-migration"
@@ -45,7 +45,7 @@
       {
         "id": 5,
         "person": "Priya",
-        "action": "took a full snapshot before the migration",
+        "action": "set up point-in-time recovery snapshots independent of the backup",
         "polarity": "positive",
         "order": 5,
         "task_tag": "data-migration"
@@ -53,39 +53,39 @@
       {
         "id": 6,
         "person": "Priya",
-        "action": "deleted the end-to-end tests to save time",
+        "action": "deployed without running the test suite",
         "polarity": "negative",
         "order": 6,
-        "task_tag": "testing"
+        "task_tag": "deployment"
       },
       {
         "id": 7,
         "person": "Priya",
-        "action": "the app broke right after release",
+        "action": "a regression slipped into production",
         "polarity": "negative",
         "order": 7,
-        "task_tag": "testing"
+        "task_tag": "deployment"
       },
       {
         "id": 8,
         "person": "Priya",
-        "action": "kept the end-to-end tests in the pipeline",
+        "action": "set up a CI gate that blocks merges without tests",
         "polarity": "positive",
         "order": 8,
-        "task_tag": "testing"
+        "task_tag": "deployment"
       },
       {
         "id": 9,
         "person": "Priya",
-        "action": "the app stayed healthy after release",
+        "action": "untested code never reached production",
         "polarity": "positive",
         "order": 9,
-        "task_tag": "testing"
+        "task_tag": "deployment"
       },
       {
         "id": 10,
         "person": "Priya",
-        "action": "adopted a stricter policy that also covers the deployment window",
+        "action": "switched to continuous replication since snapshots went stale by deploy time",
         "polarity": "positive",
         "order": 10,
         "task_tag": "data-migration"
@@ -140,95 +140,147 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2025-03-12 09:15",
+          "date_time": "2023-05-08 09:00",
           "turns": [
             {
               "speaker": "Priya",
-              "text": "Morning, Sam. You look like you've seen a ghost."
+              "text": "Morning, Marcus. You got a sec? I need to talk through the schema migration I ran last night."
             },
             {
-              "speaker": "Sam",
-              "text": "Just got the alert from the overnight batch. Customer records are a mess — duplicates, missing fields, some accounts pointing to the wrong addresses. Did you touch the schema last night?"
-            },
-            {
-              "speaker": "Priya",
-              "text": "Yeah, I ran the migration in the maintenance window. It finished without locking anything, which I thought was a win. But I didn't take a backup first — I figured the window was short and we'd be fine."
-            },
-            {
-              "speaker": "Sam",
-              "text": "No backup? Priya, that's the first rule. And now the corruption is spreading — I checked the DR site, and the snapshots from last week are showing the same bad data. It's going to take days to repair."
+              "speaker": "Marcus",
+              "text": "Uh oh. That tone usually means something went sideways. What happened?"
             },
             {
               "speaker": "Priya",
-              "text": "Days? That's... worse than I thought. I did take a full snapshot before the migration, but I guess it was already too late — the corruption must have hit the source before the snapshot finished."
+              "text": "So... I migrated the schema without taking a backup first. I know, I know. I was rushing to get the new fields in before the feature freeze."
             },
             {
-              "speaker": "Sam",
-              "text": "So the snapshot is useless. And you deleted the end-to-end tests to save time, right? I saw the commit."
+              "speaker": "Marcus",
+              "text": "Wait, no backup at all? That's... bold. Did anything break?"
             },
             {
               "speaker": "Priya",
-              "text": "I did. I thought they were overkill for a simple column rename. Clearly I was wrong."
+              "text": "Yeah, it corrupted a bunch of customer records. Addresses got shuffled between accounts, some orders got attached to the wrong people. It's a mess."
             },
             {
-              "speaker": "Sam",
-              "text": "We'll talk about the policy after we fix this. For now, let's get the restore team on it."
+              "speaker": "Marcus",
+              "text": "Oh no. How bad is the corruption? Can we restore from the nightly backup?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "That's the worst part — the corruption spread to the backups too. The nightly job ran after the migration, so it captured the bad data. It took me and the DBA team two full days to repair everything manually."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Two days. Okay. So what's the plan going forward? We can't have this happen again."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Agreed. I'm going to take a full snapshot before every migration from now on. That way we always have a clean restore point."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "That's a start. But honestly, I'd also look at point-in-time recovery snapshots — independent of the regular backup cycle. That way you can rewind to any minute, not just the last snapshot."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Good call. I'll set that up this week. And I'll never skip the backup step again, I swear."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2025-03-14 16:40",
+          "date_time": "2023-05-15 14:30",
           "turns": [
             {
-              "speaker": "Sam",
-              "text": "Good news — the repair scripts finally finished. But the app broke right after the release this morning. Did you see the error rates?"
+              "speaker": "Marcus",
+              "text": "Hey Priya, quick question — did you deploy the new checkout flow yesterday? I saw the feature flag flip in the logs."
             },
             {
               "speaker": "Priya",
-              "text": "Yeah, I saw. The new schema doesn't match what the API expects. I should have kept the end-to-end tests in the pipeline — they would have caught that before we shipped."
+              "text": "Yeah, I did. I know we usually run the full test suite first, but the release window was closing and I figured the changes were small enough."
             },
             {
-              "speaker": "Sam",
-              "text": "At least you're owning it. But we need to make sure this never happens again. I'm drafting a stricter policy that also covers the deployment window — no schema changes without a verified backup, and tests stay mandatory."
+              "speaker": "Marcus",
+              "text": "Small enough? You deployed without running the test suite? That's exactly how we got burned last time."
             },
             {
               "speaker": "Priya",
-              "text": "Agreed. And I'll add a pre-flight check that validates the backup actually restores, not just that it exists."
+              "text": "I know, I know. And guess what — a regression slipped into production. The discount code validation is broken. Customers are getting 50% off when they should get 10%."
             },
             {
-              "speaker": "Sam",
-              "text": "That's a good start. Let's get the policy reviewed by the team tomorrow."
+              "speaker": "Marcus",
+              "text": "Oh great. So we're bleeding money right now. How did that even pass code review?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "It didn't. I merged it without review too. I was in a hurry, and I thought I'd catch issues in staging. But staging didn't have the same data shape, so it slipped through."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Okay, this has to stop. We need a hard gate. I'm going to set up a CI gate that blocks merges unless the test suite passes. No exceptions."
+            },
+            {
+              "speaker": "Priya",
+              "text": "That's fair. And honestly, I want that. I can't be trusted to remember to run tests when I'm stressed. Let's make it automatic."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Done. I'll push the config today. From now on, untested code never reaches production — the pipeline just refuses to build."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Thank you. I'm sorry for the mess. I'll be more disciplined."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2025-03-17 11:00",
+          "date_time": "2023-05-22 11:15",
           "turns": [
             {
               "speaker": "Priya",
-              "text": "Hey, just wanted to update you — I re-ran the migration on a staging copy with the new policy in place. Took a snapshot, verified it, and kept the end-to-end tests in the pipeline."
+              "text": "Hey Marcus, got a minute? I need to tell you something about the snapshot strategy."
             },
             {
-              "speaker": "Sam",
-              "text": "And?"
-            },
-            {
-              "speaker": "Priya",
-              "text": "The app stayed healthy after release. No errors, no corruption. The tests caught a minor issue with a date format, but we fixed it before it hit production."
-            },
-            {
-              "speaker": "Sam",
-              "text": "That's the way it should have been from the start. I'm glad you're taking the stricter policy seriously."
+              "speaker": "Marcus",
+              "text": "Sure. Is it about the migration last week? I thought that went smoothly."
             },
             {
               "speaker": "Priya",
-              "text": "I learned my lesson the hard way. Never skipping backups or tests again — even if it means the maintenance window runs a little longer."
+              "text": "It did, but only because we got lucky. I took a full snapshot before the migration, like we agreed. But turns out that wasn't enough."
             },
             {
-              "speaker": "Sam",
-              "text": "Good. Now let's grab coffee and pretend last week didn't happen."
+              "speaker": "Marcus",
+              "text": "What do you mean? The snapshot restored fine, didn't it?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "It did, but only because we didn't need to roll back. The problem is the snapshot goes stale by deploy time. We take it at 9 AM, but the migration runs at 6 PM — and in between, we get new writes. If we had to restore, we'd lose nine hours of customer activity."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Ah, I see. So the snapshot is a point-in-time thing, but it's not continuous."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Exactly. I was wrong about the snapshot being sufficient. So I switched to continuous replication — we now stream every write to a separate replica in real time. That way, we can roll back to any second, not just the snapshot moment."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "That's a much better safety net. So the old approach — snapshot before migration — is gone?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Replaced it. We still take snapshots for archival, but for rollback, it's all continuous replication now. If a migration goes bad, we rewind to the exact moment before it started, no data loss."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Good. That's the right call. And it means we can finally stop holding our breath during every deploy."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Exactly. I should have done this from the start. But at least now we're covered."
             }
           ]
         }
@@ -238,7 +290,7 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did the corruption spread to the backups and took days to repair?",
+      "question": "This happened: \"the corruption spread to the backups and took days to repair\". What was the root cause?",
       "answer": "migrated the schema without a backup → the migration corrupted customer records → the corruption spread to the backups and took days to repair",
       "evidence_nodes": [
         0,
@@ -248,7 +300,7 @@
     },
     {
       "category": 12,
-      "question": "If Priya does migrated the schema without a backup again without any other changes, what will happen?",
+      "question": "If Priya does \"migrated the schema without a backup\" again without any other changes, what will happen?",
       "answer": "the corruption spread to the backups and took days to repair",
       "evidence_nodes": [
         0,
@@ -257,8 +309,8 @@
     },
     {
       "category": 13,
-      "question": "Priya has two options: do migrated the schema without a backup again, or do ran the migration in a maintenance window instead. Which should Priya choose?",
-      "answer": "ran the migration in a maintenance window (the migration finished without locking anything)",
+      "question": "Priya has two options: do \"migrated the schema without a backup\" again, or do \"took a full snapshot before the migration\" instead. Which should Priya choose?",
+      "answer": "took a full snapshot before the migration (the migration could always be rolled back)",
       "evidence_nodes": [
         0,
         2,
@@ -268,8 +320,8 @@
     },
     {
       "category": 14,
-      "question": "What stopped the corruption spread to the backups and took days to repair from happening again?",
-      "answer": "took a full snapshot before the migration",
+      "question": "What prevented this outcome from escalating again: \"the corruption spread to the backups and took days to repair\"?",
+      "answer": "set up point-in-time recovery snapshots independent of the backup",
       "evidence_nodes": [
         5,
         2
@@ -286,8 +338,8 @@
     },
     {
       "category": 16,
-      "question": "In testing, Priya faces a situation like the one in data-migration where migrated the schema without a backup failed. What should Priya do?",
-      "answer": "kept the end-to-end tests in the pipeline",
+      "question": "In deployment, Priya faces a situation like the one in data-migration where migrated the schema without a backup failed. What should Priya do?",
+      "answer": "set up a CI gate that blocks merges without tests",
       "evidence_nodes": [
         6,
         7,
@@ -298,7 +350,7 @@
     {
       "category": 17,
       "question": "After the latest development, what does Priya now believe is the right way to handle data-migration?",
-      "answer": "adopted a stricter policy that also covers the deployment window",
+      "answer": "switched to continuous replication since snapshots went stale by deploy time",
       "evidence_nodes": [
         10
       ]

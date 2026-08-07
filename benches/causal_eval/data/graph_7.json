@@ -29,7 +29,7 @@
       {
         "id": 3,
         "person": "Melanie",
-        "action": "kept the end-to-end tests in the pipeline",
+        "action": "ran the full regression suite before release",
         "polarity": "neutral",
         "order": 3,
         "task_tag": "testing"
@@ -37,7 +37,7 @@
       {
         "id": 4,
         "person": "Melanie",
-        "action": "the app stayed healthy after release",
+        "action": "regressions were caught before shipping",
         "polarity": "positive",
         "order": 4,
         "task_tag": "testing"
@@ -45,7 +45,7 @@
       {
         "id": 5,
         "person": "Melanie",
-        "action": "ran the full regression suite before release",
+        "action": "added a feature-flag rollback switch to limit exposure if one slipped through",
         "polarity": "positive",
         "order": 5,
         "task_tag": "testing"
@@ -53,39 +53,39 @@
       {
         "id": 6,
         "person": "Melanie",
-        "action": "deployed without running the test suite",
+        "action": "pointed DNS at the new cluster before it was ready",
         "polarity": "negative",
         "order": 6,
-        "task_tag": "deployment"
+        "task_tag": "infra"
       },
       {
         "id": 7,
         "person": "Melanie",
-        "action": "a regression slipped into production",
+        "action": "traffic hit a cluster that could not serve it",
         "polarity": "negative",
         "order": 7,
-        "task_tag": "deployment"
+        "task_tag": "infra"
       },
       {
         "id": 8,
         "person": "Melanie",
-        "action": "set up a CI gate that blocks merges without tests",
+        "action": "waited for the cluster health check before switching DNS",
         "polarity": "positive",
         "order": 8,
-        "task_tag": "deployment"
+        "task_tag": "infra"
       },
       {
         "id": 9,
         "person": "Melanie",
-        "action": "untested code never reached production",
+        "action": "traffic moved over without a hitch",
         "polarity": "positive",
         "order": 9,
-        "task_tag": "deployment"
+        "task_tag": "infra"
       },
       {
         "id": 10,
         "person": "Melanie",
-        "action": "adopted a stricter policy that also covers the deployment window",
+        "action": "switched to parallel execution with a fast critical path since the full suite was too slow",
         "polarity": "positive",
         "order": 10,
         "task_tag": "testing"
@@ -140,107 +140,167 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2024-03-12 10:15",
+          "date_time": "2023-05-08 09:00",
           "turns": [
             {
-              "speaker": "Nate",
-              "text": "Hey Mel, quick question — I saw you pushed a commit that skipped the flaky tests to get CI green. Is that going to bite us later?"
-            },
-            {
               "speaker": "Melanie",
-              "text": "I know, I know. But the flaky ones were timing out on the staging box, and we had a release deadline. I kept them in the pipeline, just marked them as non-blocking for now."
+              "text": "Morning, Nate. Quick heads-up — I skipped the flaky tests in the CI pipeline to get it green for the release. They were timing out on the staging box, and I didn't want to block the deploy."
             },
             {
               "speaker": "Nate",
-              "text": "Fair enough, but I'm nervous. Last time we had a regression slip into production, it was because someone skipped a test that actually caught something."
+              "text": "Uh, okay. But those flaky tests were covering the payment retry logic. You sure that's safe?"
             },
             {
               "speaker": "Melanie",
-              "text": "That was different — that was a real test, not a flaky one. And I ran the full regression suite before release, so we're covered. The app stayed healthy after release, so I think we're good."
+              "text": "I know, I know. But we had a hard deadline, and the failures were all network timeouts, not assertion failures. I'll run them manually after the deploy."
             },
             {
               "speaker": "Nate",
-              "text": "Alright, I'll trust you on this one. But if anything breaks, you're buying the coffee for a week."
+              "text": "Alright, but if something slips through, it's on you. Anyway, what's the status on the cluster migration?"
             },
             {
               "speaker": "Melanie",
-              "text": "Deal. And honestly, I'm already thinking about setting up a CI gate that blocks merges without tests — that would've forced me to fix the flaky ones instead of skipping them."
+              "text": "That's actually what I wanted to talk about. I pointed DNS at the new cluster before it was ready — I thought the health checks would pass, but they didn't. So traffic hit a cluster that could not serve it."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Wait, what? Did we have an outage?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Yeah, for about four minutes. I rolled back DNS immediately, but it was messy. I should have waited for the cluster health check before switching DNS. Lesson learned."
+            },
+            {
+              "speaker": "Nate",
+              "text": "At least you caught it fast. But that's exactly the kind of thing the regression suite is supposed to catch. Did you run the full suite before release?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "I did run the full regression suite before release — it passed. But the flaky tests I skipped? One of them would have caught a race condition in the retry logic. That regression slipped into production, and it reached every user. We had to do a full rollback."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Ouch. So the full suite wasn't enough because you skipped part of it."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Exactly. But the good news is, after the rollback, I ran the full suite again — including the flaky ones — and we caught two more regressions before shipping. So at least that part worked."
+            },
+            {
+              "speaker": "Nate",
+              "text": "So what's the plan going forward? We can't keep skipping tests."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "I'm adding a feature-flag rollback switch to the payment service. That way, if something slips through, we can disable the new path instantly without a full rollback. Limits exposure."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Good. Let's hope we don't need it."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2024-03-19 14:40",
+          "date_time": "2023-05-15 14:30",
           "turns": [
             {
               "speaker": "Nate",
-              "text": "Mel, we've got a problem. The checkout flow is throwing 500s for everyone. Did you see the alerts?"
+              "text": "Hey, Melanie. How's the feature-flag switch working out?"
             },
             {
               "speaker": "Melanie",
-              "text": "Oh no. I just checked — it's the same regression we thought we fixed last week. It slipped into production again."
+              "text": "It's in place. We tested it in staging — flipped the flag off, traffic went to the old path, no hiccups. But I'm still nervous about the flaky tests."
             },
             {
               "speaker": "Nate",
-              "text": "How? We ran the full suite before release, right?"
+              "text": "Did you ever figure out why they were flaky?"
             },
             {
               "speaker": "Melanie",
-              "text": "We did, but... I deployed without running the test suite this morning. I was in a hurry to push a hotfix for the payment gateway, and I thought the CI would catch it. But the gate wasn't set up yet."
+              "text": "Partially. It's a shared database in the test environment — parallel runs cause lock contention. I've been running them serially now, but it takes forever."
             },
             {
               "speaker": "Nate",
-              "text": "So this regression reached every user and forced a full rollback. That's a disaster. We're going to have to explain this to the VP."
+              "text": "So what did you do for the last release? Did you run the full suite?"
             },
             {
               "speaker": "Melanie",
-              "text": "I know. I'm sorry. But I'm not going to let this happen again. I'm setting up that CI gate today — no merges without tests, period. And I'm adding a stricter policy that also covers the deployment window, so even hotfixes have to go through the suite."
+              "text": "Yes, I ran the full regression suite before release — all of it, no skips. And we caught two regressions before shipping. That felt good."
             },
             {
               "speaker": "Nate",
-              "text": "Good. Because untested code never reached production before this, and I'd like to keep it that way."
+              "text": "Nice. And the DNS migration? Did you wait for the health check this time?"
             },
             {
               "speaker": "Melanie",
-              "text": "Agreed. I'll have the gate live by end of day. And I'll run the full regression suite manually on every deploy until then."
+              "text": "I did. I waited for the cluster health check before switching DNS, and traffic moved over without a hitch. Zero downtime."
+            },
+            {
+              "speaker": "Nate",
+              "text": "See? Patience pays off. So we're in good shape now?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "I think so. The flag gives us a safety net, and the full suite is green. I'm cautiously optimistic."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Good. Let's keep it that way."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2024-03-26 09:05",
+          "date_time": "2023-05-22 11:00",
           "turns": [
             {
               "speaker": "Nate",
-              "text": "Morning! Just saw the release notes — looks like we shipped the new search feature. How did it go?"
+              "text": "Morning. I heard we had a near-miss in production last night?"
             },
             {
               "speaker": "Melanie",
-              "text": "Smooth as butter. The CI gate blocked two merges that would've broken the API, and I ran the full regression suite before release. The app stayed healthy after release — zero alerts."
+              "text": "Yeah. A regression slipped through — the full regression suite passed, but it was too slow to run on every commit, so we only ran it right before release. Turns out that wasn't enough."
             },
             {
               "speaker": "Nate",
-              "text": "That's great to hear. So the stricter policy is working? Even for the deployment window?"
+              "text": "What happened exactly?"
             },
             {
               "speaker": "Melanie",
-              "text": "Yep. No more skipping flaky tests, no more deploying without the suite. Untested code never reached production this time — I checked the audit log."
+              "text": "A change to the auth service introduced a subtle bug that only showed up under high concurrency. The full suite caught it, but only after we'd already deployed. The feature flag saved us — we flipped it off in two minutes, so no user impact."
             },
             {
               "speaker": "Nate",
-              "text": "Nice. I'm glad we're back to normal. That rollback week was rough."
+              "text": "So the flag worked. But you're saying the full suite approach was wrong?"
             },
             {
               "speaker": "Melanie",
-              "text": "Tell me about it. But I think we're in a better place now. The gate is non-negotiable, and I've got a script that runs the full suite in parallel so it doesn't slow us down."
+              "text": "I was wrong about relying on the full suite as the gate. It's comprehensive, but it takes 45 minutes. So we only run it at release time, and that leaves a gap for anything merged in between."
             },
             {
               "speaker": "Nate",
-              "text": "Perfect. Let's keep it that way — I don't want to see another regression slip into production on my watch."
+              "text": "So what are you doing instead?"
             },
             {
               "speaker": "Melanie",
-              "text": "Agreed. And if it ever does, I'll take full responsibility. But for now, we're golden."
+              "text": "We replaced the full-suite-only approach with parallel execution and a fast critical path. I split the tests into two tiers: a critical path that runs in under 5 minutes on every merge, and the rest of the suite that runs in parallel on a bigger runner."
+            },
+            {
+              "speaker": "Nate",
+              "text": "And the critical path covers the high-risk stuff?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Exactly — auth, payments, checkout, anything that touches user data. The full suite still runs before release, but now we catch regressions at merge time, not release time. That's the real fix."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Makes sense. So the old approach — full suite only — fell short because it was too slow to be practical."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Right. It wasn't enough. The parallel critical path is what we needed all along."
             }
           ]
         }
@@ -250,7 +310,7 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did the regression reached every user and forced a full rollback?",
+      "question": "This happened: \"the regression reached every user and forced a full rollback\". What was the root cause?",
       "answer": "skipped the flaky tests to make CI green → a regression slipped into production → the regression reached every user and forced a full rollback",
       "evidence_nodes": [
         0,
@@ -260,7 +320,7 @@
     },
     {
       "category": 12,
-      "question": "If Melanie does skipped the flaky tests to make CI green again without any other changes, what will happen?",
+      "question": "If Melanie does \"skipped the flaky tests to make CI green\" again without any other changes, what will happen?",
       "answer": "the regression reached every user and forced a full rollback",
       "evidence_nodes": [
         0,
@@ -269,8 +329,8 @@
     },
     {
       "category": 13,
-      "question": "Melanie has two options: do skipped the flaky tests to make CI green again, or do kept the end-to-end tests in the pipeline instead. Which should Melanie choose?",
-      "answer": "kept the end-to-end tests in the pipeline (the app stayed healthy after release)",
+      "question": "Melanie has two options: do \"skipped the flaky tests to make CI green\" again, or do \"ran the full regression suite before release\" instead. Which should Melanie choose?",
+      "answer": "ran the full regression suite before release (regressions were caught before shipping)",
       "evidence_nodes": [
         0,
         2,
@@ -280,8 +340,8 @@
     },
     {
       "category": 14,
-      "question": "What stopped the regression reached every user and forced a full rollback from happening again?",
-      "answer": "ran the full regression suite before release",
+      "question": "What prevented this outcome from escalating again: \"the regression reached every user and forced a full rollback\"?",
+      "answer": "added a feature-flag rollback switch to limit exposure if one slipped through",
       "evidence_nodes": [
         5,
         2
@@ -298,8 +358,8 @@
     },
     {
       "category": 16,
-      "question": "In deployment, Melanie faces a situation like the one in testing where skipped the flaky tests to make CI green failed. What should Melanie do?",
-      "answer": "set up a CI gate that blocks merges without tests",
+      "question": "In infra, Melanie faces a situation like the one in testing where skipped the flaky tests to make CI green failed. What should Melanie do?",
+      "answer": "waited for the cluster health check before switching DNS",
       "evidence_nodes": [
         6,
         7,
@@ -310,7 +370,7 @@
     {
       "category": 17,
       "question": "After the latest development, what does Melanie now believe is the right way to handle testing?",
-      "answer": "adopted a stricter policy that also covers the deployment window",
+      "answer": "switched to parallel execution with a fast critical path since the full suite was too slow",
       "evidence_nodes": [
         10
       ]

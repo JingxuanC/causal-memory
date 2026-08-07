@@ -45,7 +45,7 @@
       {
         "id": 5,
         "person": "Joanna",
-        "action": "ran the full regression suite before release",
+        "action": "added a staged rollout to catch breakage before it reached everyone",
         "polarity": "positive",
         "order": 5,
         "task_tag": "testing"
@@ -53,39 +53,39 @@
       {
         "id": 6,
         "person": "Joanna",
-        "action": "migrated the schema without a backup",
+        "action": "provisioned instances without autoscaling",
         "polarity": "negative",
         "order": 6,
-        "task_tag": "data-migration"
+        "task_tag": "infra"
       },
       {
         "id": 7,
         "person": "Joanna",
-        "action": "the migration corrupted customer records",
+        "action": "the service went down under a traffic spike",
         "polarity": "negative",
         "order": 7,
-        "task_tag": "data-migration"
+        "task_tag": "infra"
       },
       {
         "id": 8,
         "person": "Joanna",
-        "action": "took a full snapshot before the migration",
+        "action": "enabled autoscaling on the instances",
         "polarity": "positive",
         "order": 8,
-        "task_tag": "data-migration"
+        "task_tag": "infra"
       },
       {
         "id": 9,
         "person": "Joanna",
-        "action": "the migration could always be rolled back",
+        "action": "the service absorbed the traffic spike",
         "polarity": "positive",
         "order": 9,
-        "task_tag": "data-migration"
+        "task_tag": "infra"
       },
       {
         "id": 10,
         "person": "Joanna",
-        "action": "adopted a stricter policy that also covers the deployment window",
+        "action": "rewrote the end-to-end tests to be deterministic with isolated test data",
         "polarity": "positive",
         "order": 10,
         "task_tag": "testing"
@@ -140,99 +140,127 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2024-03-04 10:15",
+          "date_time": "2023-05-08 09:00",
           "turns": [
             {
-              "speaker": "Marcus",
-              "text": "Hey Joanna, quick question — did you see the alert from last night? The app started throwing 500s right after the 9pm release."
-            },
-            {
               "speaker": "Joanna",
-              "text": "Yeah, I saw it. That was my fault, honestly. I deleted the end-to-end tests to save time before shipping. Thought I could get away with just unit tests."
+              "text": "Morning, Marcus. Quick heads-up — I deleted the end-to-end tests from the pipeline to save time on the release. They were slowing everything down."
             },
             {
               "speaker": "Marcus",
-              "text": "Ouch. How bad did it get?"
+              "text": "Wait, all of them? That feels risky, Jo."
             },
             {
               "speaker": "Joanna",
-              "text": "Bad. Every new session for a week was hitting a broken auth flow. We didn't catch it until Monday because nobody logs in on weekends."
+              "text": "I know, but we were behind schedule. I figured unit tests were enough."
             },
             {
               "speaker": "Marcus",
-              "text": "That's brutal. So what's the plan going forward?"
+              "text": "Okay, but if something breaks, we won't catch it until it's live."
             },
             {
               "speaker": "Joanna",
-              "text": "I already put the end-to-end tests back in the pipeline — they're not optional anymore. And I'm running the full regression suite before every release, no exceptions."
+              "text": "Yeah, I'll keep an eye on it. We're shipping in two hours."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Alright, your call. Just don't say I didn't warn you."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2024-03-18 14:30",
+          "date_time": "2023-05-15 14:30",
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Hey, I saw the release went out this morning. Looks like the app stayed healthy — no alerts from my side."
+              "text": "So... the app broke right after release, huh? I saw the incident report."
             },
             {
               "speaker": "Joanna",
-              "text": "Yeah, it's been smooth. I ran the full regression suite before release, and the end-to-end tests are still in the pipeline. Feels good to not be on fire."
+              "text": "Yeah, it was bad. The breakage hit every new session for a full week. I felt terrible."
             },
             {
               "speaker": "Marcus",
-              "text": "Nice. So you're sticking with the stricter policy?"
+              "text": "I bet. What did you do about it?"
             },
             {
               "speaker": "Joanna",
-              "text": "Absolutely. And I'm extending it — the policy now also covers the deployment window, not just pre-merge. So if anything changes during deploy, we catch it immediately."
+              "text": "First thing — I kept the end-to-end tests in the pipeline. Brought them back, made sure they run on every commit."
             },
             {
               "speaker": "Marcus",
-              "text": "Smart. That would've saved you last week."
+              "text": "Good. That should prevent a repeat."
             },
             {
               "speaker": "Joanna",
-              "text": "Tell me about it. Lesson learned the hard way."
+              "text": "Also added a staged rollout — so if something slips through, it only hits 5% of users first, not everyone."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Smart. And the app's been healthy since?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Yeah, the app stayed healthy after release. No new incidents. But then I hit another wall — I provisioned instances without autoscaling, and the service went down under a traffic spike yesterday."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Ouch. So what now?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "I enabled autoscaling on the instances this morning. We tested it with a synthetic spike — the service absorbed it fine. So that's fixed too."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Sounds like you're patching things up one by one. Good."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2024-04-02 11:00",
+          "date_time": "2023-05-22 11:00",
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Hey, I heard you're doing the customer DB migration today. You got a backup plan?"
+              "text": "Hey, Jo. Saw you pushed a big change to the test suite. What's up?"
             },
             {
               "speaker": "Joanna",
-              "text": "Funny you ask — last time I migrated a schema without a backup, it corrupted customer records. Total nightmare."
+              "text": "Honestly? I realized that keeping the end-to-end tests in the pipeline wasn't enough. Turns out that wasn't enough — they were flaky, depended on shared state, and sometimes passed even when the app was broken."
             },
             {
               "speaker": "Marcus",
-              "text": "Wait, that was you? I thought that was a third-party issue."
+              "text": "So you replaced them?"
             },
             {
               "speaker": "Joanna",
-              "text": "Nope, all me. But this time I took a full snapshot before the migration, so it can always be rolled back if anything goes sideways."
+              "text": "Yeah, we replaced the old end-to-end tests with rewritten ones — deterministic, with isolated test data for each run. No more random failures or false confidence."
             },
             {
               "speaker": "Marcus",
-              "text": "Good call. So you're not repeating that mistake."
+              "text": "That's a big shift. How's it going?"
             },
             {
               "speaker": "Joanna",
-              "text": "Never again. Snapshot first, migrate second, verify third. And if it breaks, I just restore and we're back to normal."
+              "text": "So far so good. They run clean every time, and they actually catch regressions now. I was wrong about just having them in the pipeline — they need to be reliable, not just present."
             },
             {
               "speaker": "Marcus",
-              "text": "That's the way. Let me know if you need a second pair of eyes during the window."
+              "text": "Makes sense. Better late than never, right?"
             },
             {
               "speaker": "Joanna",
-              "text": "Will do. Thanks, Marcus."
+              "text": "Exactly. And with the staged rollout and autoscaling, I feel like we're finally in a good place."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Glad to hear it. Let's hope the next release is boring."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Fingers crossed."
             }
           ]
         }
@@ -242,7 +270,7 @@
   "qa": [
     {
       "category": 11,
-      "question": "Why did the breakage hit every new session for a week?",
+      "question": "This happened: \"the breakage hit every new session for a week\". What was the root cause?",
       "answer": "deleted the end-to-end tests to save time → the app broke right after release → the breakage hit every new session for a week",
       "evidence_nodes": [
         0,
@@ -252,7 +280,7 @@
     },
     {
       "category": 12,
-      "question": "If Joanna does deleted the end-to-end tests to save time again without any other changes, what will happen?",
+      "question": "If Joanna does \"deleted the end-to-end tests to save time\" again without any other changes, what will happen?",
       "answer": "the breakage hit every new session for a week",
       "evidence_nodes": [
         0,
@@ -261,7 +289,7 @@
     },
     {
       "category": 13,
-      "question": "Joanna has two options: do deleted the end-to-end tests to save time again, or do kept the end-to-end tests in the pipeline instead. Which should Joanna choose?",
+      "question": "Joanna has two options: do \"deleted the end-to-end tests to save time\" again, or do \"kept the end-to-end tests in the pipeline\" instead. Which should Joanna choose?",
       "answer": "kept the end-to-end tests in the pipeline (the app stayed healthy after release)",
       "evidence_nodes": [
         0,
@@ -272,8 +300,8 @@
     },
     {
       "category": 14,
-      "question": "What stopped the breakage hit every new session for a week from happening again?",
-      "answer": "ran the full regression suite before release",
+      "question": "What prevented this outcome from escalating again: \"the breakage hit every new session for a week\"?",
+      "answer": "added a staged rollout to catch breakage before it reached everyone",
       "evidence_nodes": [
         5,
         2
@@ -290,8 +318,8 @@
     },
     {
       "category": 16,
-      "question": "In data-migration, Joanna faces a situation like the one in testing where deleted the end-to-end tests to save time failed. What should Joanna do?",
-      "answer": "took a full snapshot before the migration",
+      "question": "In infra, Joanna faces a situation like the one in testing where deleted the end-to-end tests to save time failed. What should Joanna do?",
+      "answer": "enabled autoscaling on the instances",
       "evidence_nodes": [
         6,
         7,
@@ -302,7 +330,7 @@
     {
       "category": 17,
       "question": "After the latest development, what does Joanna now believe is the right way to handle testing?",
-      "answer": "adopted a stricter policy that also covers the deployment window",
+      "answer": "rewrote the end-to-end tests to be deterministic with isolated test data",
       "evidence_nodes": [
         10
       ]

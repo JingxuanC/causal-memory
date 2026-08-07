@@ -17,3 +17,6 @@ benches/memora/results/*.jsonl
 benches/locomo/db/
 benches/causal_eval/db/
 benches/causal_eval/debug_raw.json
+benches/causal_eval/*.log
+benches/causal_eval/v*_run.log
+.codegraph/
