@@ -55,7 +55,7 @@ fn migration_from_v1_file_db() {
     store
         .with_conn(|conn| {
             let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-            assert_eq!(version, 8, "migrated to schema v8");
+            assert_eq!(version, i64::from(causal_memory::migrate::SCHEMA_VERSION), "migrated to current schema");
             // v8: the reversible-consolidation and recurrence-distill columns exist.
             let v8_columns: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('causal_edges') WHERE name = 'superseded_by'",
