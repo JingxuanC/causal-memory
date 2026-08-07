@@ -4,6 +4,7 @@ pub mod distill;
 pub mod io;
 pub mod maintenance;
 pub mod misc;
+pub mod wiki;
 
 use std::path::PathBuf;
 

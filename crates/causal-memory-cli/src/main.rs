@@ -15,6 +15,7 @@ use commands::distill::{run_distill, run_novelty};
 use commands::io::{run_export, run_import};
 use commands::maintenance::{run_embed, run_judge, run_migrate, run_polarity, run_restore, run_sleep};
 use commands::misc::{run_extract, run_link, run_mcp_server, run_reasoning};
+use commands::wiki::run_wiki;
 
 pub(crate) fn get_db_path() -> PathBuf {
     if let Ok(path) = std::env::var("CAUSAL_MEMORY_DB") {
@@ -126,6 +127,12 @@ fn main() -> anyhow::Result<()> {
     // Subcommand: bench-tokens — token-efficiency benchmark (P6)
     if args.len() >= 2 && args[1] == "bench-tokens" {
         return bench_tokens::run(&args[2..]);
+    }
+
+    // Subcommand: wiki [--out <dir>] [--format obsidian|html] — export causal
+    // memory as an Obsidian markdown vault or standalone interactive HTML graph.
+    if args.len() >= 2 && args[1] == "wiki" {
+        return run_wiki(&args[2..]);
     }
 
     // Default: MCP server mode
