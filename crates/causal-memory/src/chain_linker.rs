@@ -161,28 +161,25 @@ impl ChainLinker {
             0.6
         } else if gap < 600 {
             0.4
+        } else if gap < 3600 {
+            0.3
         } else {
-            0.2
+            0.15
         };
 
-        // Strategy 1: Temporal + failure — failure outcome triggers next decision (strong signal)
+        // Strategy 1: Failure-triggered + text overlap — failure outcome
+        // mentions the same file/component as the next decision.
         let out_is_failure = Self::looks_like_failure(&edge_i.out_text);
-        if out_is_failure && temporal_proximity >= 0.4 {
-            return ("temporal", temporal_proximity * 0.7); // 0.28-0.56
-        }
-
-        // Strategy 2: Text overlap — outcome_i and decision_j share keywords
         let overlap = Self::text_overlap(&edge_i.out_text, &edge_j.dec_text);
-        if overlap >= 2 && temporal_proximity >= 0.4 {
-            let conf = (overlap as f64 * 0.15) * temporal_proximity;
-            return ("text", conf.min(0.7));
+
+        if out_is_failure && overlap >= 2 && temporal_proximity >= 0.4 {
+            return ("text", temporal_proximity * 0.65);
         }
 
-        // Strategy 3: Pure temporal proximity — adjacent actions are likely related
-        // (lower confidence than failure-triggered, but enables multi-hop chains
-        // through sequences of successful operations like build → test → deploy)
-        if temporal_proximity >= 0.6 && gap < 120 {
-            return ("temporal_adjacent", temporal_proximity * 0.3); // 0.18-0.24
+        // Strategy 2: Strong text overlap — outcome and next decision share
+        // ≥3 meaningful tokens (file paths, function names, error messages).
+        if overlap >= 3 && temporal_proximity >= 0.4 {
+            return ("text", temporal_proximity * 0.55);
         }
 
         ("none", 0.0)
