@@ -23,6 +23,7 @@ use crate::get_db_path;
 pub fn run_wiki(args: &[String]) -> anyhow::Result<()> {
     let mut out = PathBuf::from("causal-memory-wiki");
     let mut format = "html".to_string();
+    let mut db_path = get_db_path();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -34,12 +35,15 @@ pub fn run_wiki(args: &[String]) -> anyhow::Result<()> {
                 i += 1;
                 format = args.get(i).cloned().unwrap_or("html".into());
             }
+            "--db" => {
+                i += 1;
+                db_path = PathBuf::from(args.get(i).cloned().unwrap_or_default());
+            }
             other => anyhow::bail!("unknown flag {other:?}"),
         }
         i += 1;
     }
 
-    let db_path = get_db_path();
     let store = CausalStore::open(&db_path)?;
 
     // Load all valid edges

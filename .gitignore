@@ -22,3 +22,5 @@ benches/causal_eval/v*_run.log
 .codegraph/
 causal-memory-graph.html
 causal-memory-vault/
+causal-eval-graph.html
+graph.html
