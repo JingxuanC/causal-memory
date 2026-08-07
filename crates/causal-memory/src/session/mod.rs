@@ -13,9 +13,11 @@ use anyhow::Result;
 
 pub mod claude;
 pub mod grok;
+pub mod kimi;
 
 pub use claude::ClaudeParser;
 pub use grok::GrokParser;
+pub use kimi::KimiParser;
 
 /// Where a session lives and how it should be read.
 #[derive(Debug, Clone)]
@@ -94,6 +96,7 @@ pub trait SessionParser: Send + Sync {
 pub enum AgentKind {
     Grok,
     ClaudeCode,
+    Kimi,
 }
 
 /// Resolve an agent kind from its CLI string.
@@ -101,6 +104,7 @@ pub fn agent_kind_from_str(s: &str) -> Option<AgentKind> {
     match s.to_ascii_lowercase().as_str() {
         "grok" | "grok-build" => Some(AgentKind::Grok),
         "claude" | "claude-code" | "claude_code" => Some(AgentKind::ClaudeCode),
+        "kimi" | "openclaw" | "kimi-claw" => Some(AgentKind::Kimi),
         _ => None,
     }
 }
@@ -110,6 +114,7 @@ pub fn default_source_kind(kind: AgentKind) -> SourceKind {
     match kind {
         AgentKind::Grok => SourceKind::Dir,
         AgentKind::ClaudeCode => SourceKind::File,
+        AgentKind::Kimi => SourceKind::File,
     }
 }
 
@@ -118,5 +123,6 @@ pub fn parser_for(kind: AgentKind) -> Box<dyn SessionParser> {
     match kind {
         AgentKind::Grok => Box::new(GrokParser),
         AgentKind::ClaudeCode => Box::new(ClaudeParser),
+        AgentKind::Kimi => Box::new(KimiParser),
     }
 }

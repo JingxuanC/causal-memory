@@ -20,7 +20,11 @@ use crate::store::CausalStore;
 
 /// Minimum tool name to treat as a "decision worth recording".
 /// Also used by the pattern miner to strip tool-name boilerplate tokens.
+/// Cross-agent: grok uses lowercase verbs, Claude uses PascalCase, Kimi
+/// uses short lowercase. All variants are listed so the filter works
+/// regardless of which agent produced the session.
 pub(crate) const DECISION_WORTHY_TOOLS: &[&str] = &[
+    // grok-build
     "write",
     "search_replace",
     "run_terminal_command",
@@ -31,6 +35,17 @@ pub(crate) const DECISION_WORTHY_TOOLS: &[&str] = &[
     "scheduler_create",
     "scheduler_delete",
     "update_goal",
+    // claude-code
+    "Bash",
+    "Write",
+    "Edit",
+    "WebSearch",
+    "WebFetch",
+    "NotebookEdit",
+    // kimi / openclaw
+    "exec",
+    "read",
+    "write",
 ];
 
 
