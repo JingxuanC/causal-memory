@@ -128,6 +128,11 @@
         "relation": "similar_to"
       },
       {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
         "from": 10,
         "to": 3,
         "relation": "invalidates"
@@ -144,7 +149,7 @@
           "turns": [
             {
               "speaker": "Priya",
-              "text": "Morning, Marcus. You got a sec? I need to talk through the schema migration I ran last night."
+              "text": "Morning, Marcus. You got a sec? I need to talk about the customer DB migration I ran last night."
             },
             {
               "speaker": "Marcus",
@@ -152,39 +157,39 @@
             },
             {
               "speaker": "Priya",
-              "text": "So... I migrated the schema without taking a backup first. I know, I know. I was rushing to get the new fields in before the feature freeze."
+              "text": "So... I migrated the schema without taking a backup first. I know, I know. I was in a hurry and thought the migration script was bulletproof."
             },
             {
               "speaker": "Marcus",
-              "text": "Wait, no backup at all? That's... bold. Did anything break?"
+              "text": "Priya. You know the rule. No backup, no migration. Please tell me nothing broke."
             },
             {
               "speaker": "Priya",
-              "text": "Yeah, it corrupted a bunch of customer records. Addresses got shuffled between accounts, some orders got attached to the wrong people. It's a mess."
+              "text": "It broke. The migration corrupted a bunch of customer records — addresses and order histories got scrambled. And it gets worse."
             },
             {
               "speaker": "Marcus",
-              "text": "Oh no. How bad is the corruption? Can we restore from the nightly backup?"
+              "text": "Worse than corrupted production data? How?"
             },
             {
               "speaker": "Priya",
-              "text": "That's the worst part — the corruption spread to the backups too. The nightly job ran after the migration, so it captured the bad data. It took me and the DBA team two full days to repair everything manually."
+              "text": "The corruption spread to our nightly backups before anyone noticed. It took the team three days to repair everything. I'm honestly still cleaning up the mess."
             },
             {
               "speaker": "Marcus",
-              "text": "Two days. Okay. So what's the plan going forward? We can't have this happen again."
+              "text": "Three days. Okay. We need to talk about what we're going to do differently, because this can't happen again."
             },
             {
               "speaker": "Priya",
-              "text": "Agreed. I'm going to take a full snapshot before every migration from now on. That way we always have a clean restore point."
+              "text": "Agreed. I've already set up point-in-time recovery snapshots that are independent of the regular backup pipeline. So even if the backups get corrupted, we have a separate recovery path."
             },
             {
               "speaker": "Marcus",
-              "text": "That's a start. But honestly, I'd also look at point-in-time recovery snapshots — independent of the regular backup cycle. That way you can rewind to any minute, not just the last snapshot."
+              "text": "That's a start. But I want to see a full snapshot taken before any future migration, no exceptions."
             },
             {
               "speaker": "Priya",
-              "text": "Good call. I'll set that up this week. And I'll never skip the backup step again, I swear."
+              "text": "Absolutely. I'll make that a hard requirement. And I'll document it so nobody else makes the same mistake I did."
             }
           ]
         },
@@ -194,93 +199,93 @@
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Hey Priya, quick question — did you deploy the new checkout flow yesterday? I saw the feature flag flip in the logs."
+              "text": "Hey, Priya. I saw you pushed a big change to the checkout service this morning. Did you run the test suite first?"
             },
             {
               "speaker": "Priya",
-              "text": "Yeah, I did. I know we usually run the full test suite first, but the release window was closing and I figured the changes were small enough."
+              "text": "Honestly? No. I deployed without running the tests. I was confident the change was small and isolated."
             },
             {
               "speaker": "Marcus",
-              "text": "Small enough? You deployed without running the test suite? That's exactly how we got burned last time."
+              "text": "Priya, we literally just had the migration disaster. You can't keep skipping the basics."
             },
             {
               "speaker": "Priya",
-              "text": "I know, I know. And guess what — a regression slipped into production. The discount code validation is broken. Customers are getting 50% off when they should get 10%."
+              "text": "I know. And I already regret it — a regression slipped into production. Some users are seeing a broken discount code field. It's live right now."
             },
             {
               "speaker": "Marcus",
-              "text": "Oh great. So we're bleeding money right now. How did that even pass code review?"
+              "text": "How did that get past code review?"
             },
             {
               "speaker": "Priya",
-              "text": "It didn't. I merged it without review too. I was in a hurry, and I thought I'd catch issues in staging. But staging didn't have the same data shape, so it slipped through."
+              "text": "It didn't get past review — it never went through review. I pushed straight to main and deployed. That's on me."
             },
             {
               "speaker": "Marcus",
-              "text": "Okay, this has to stop. We need a hard gate. I'm going to set up a CI gate that blocks merges unless the test suite passes. No exceptions."
+              "text": "Okay. We're fixing this properly. I'm setting up a CI gate that blocks any merge unless the test suite passes. No exceptions, no manual override."
             },
             {
               "speaker": "Priya",
-              "text": "That's fair. And honestly, I want that. I can't be trusted to remember to run tests when I'm stressed. Let's make it automatic."
+              "text": "Good. I'll help you configure it. And I want to add a rule that untested code never reaches production — not even for a hotfix."
             },
             {
               "speaker": "Marcus",
-              "text": "Done. I'll push the config today. From now on, untested code never reaches production — the pipeline just refuses to build."
-            },
-            {
-              "speaker": "Priya",
-              "text": "Thank you. I'm sorry for the mess. I'll be more disciplined."
+              "text": "Deal. Let's get that gate live today, and then we'll roll back the checkout change and run the tests properly."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2023-05-22 11:15",
+          "date_time": "2023-05-22 11:00",
           "turns": [
             {
               "speaker": "Priya",
-              "text": "Hey Marcus, got a minute? I need to tell you something about the snapshot strategy."
+              "text": "Marcus, I need to tell you something about the snapshot approach I've been using."
             },
             {
               "speaker": "Marcus",
-              "text": "Sure. Is it about the migration last week? I thought that went smoothly."
+              "text": "The full snapshot before migrations? I thought that was working well."
             },
             {
               "speaker": "Priya",
-              "text": "It did, but only because we got lucky. I took a full snapshot before the migration, like we agreed. But turns out that wasn't enough."
+              "text": "It worked for the migration itself, but turns out that wasn't enough. I took a full snapshot before the last deploy, but by the time we actually deployed, the snapshot was already stale — new writes had come in during the deploy window."
             },
             {
               "speaker": "Marcus",
-              "text": "What do you mean? The snapshot restored fine, didn't it?"
+              "text": "So if something had gone wrong, you would have rolled back to a state that was missing recent customer activity?"
             },
             {
               "speaker": "Priya",
-              "text": "It did, but only because we didn't need to roll back. The problem is the snapshot goes stale by deploy time. We take it at 9 AM, but the migration runs at 6 PM — and in between, we get new writes. If we had to restore, we'd lose nine hours of customer activity."
+              "text": "Exactly. I was wrong about the snapshot being sufficient. It gave us a false sense of security."
             },
             {
               "speaker": "Marcus",
-              "text": "Ah, I see. So the snapshot is a point-in-time thing, but it's not continuous."
+              "text": "So what are you doing instead?"
             },
             {
               "speaker": "Priya",
-              "text": "Exactly. I was wrong about the snapshot being sufficient. So I switched to continuous replication — we now stream every write to a separate replica in real time. That way, we can roll back to any second, not just the snapshot moment."
+              "text": "We replaced the full-snapshot approach with continuous replication. I set up a live replica that streams every write to a separate cluster in real time. That way, if we ever need to roll back, we can restore to any point in time — not just the moment the snapshot was taken."
             },
             {
               "speaker": "Marcus",
-              "text": "That's a much better safety net. So the old approach — snapshot before migration — is gone?"
+              "text": "That's a much better safety net. So the snapshot is gone entirely?"
             },
             {
               "speaker": "Priya",
-              "text": "Replaced it. We still take snapshots for archival, but for rollback, it's all continuous replication now. If a migration goes bad, we rewind to the exact moment before it started, no data loss."
+              "text": "We keep a daily snapshot for long-term archival, but for rollback purposes, continuous replication is the primary mechanism now. The snapshots went stale by deploy time, so they're no longer the thing we rely on."
             },
             {
               "speaker": "Marcus",
-              "text": "Good. That's the right call. And it means we can finally stop holding our breath during every deploy."
+              "text": "Good. I'm glad you caught that before we had another incident. And the CI gate is holding up?"
             },
             {
               "speaker": "Priya",
-              "text": "Exactly. I should have done this from the start. But at least now we're covered."
+              "text": "Yeah, no untested code has reached production since we set it up. That part is solid."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Then we're in a much better place than two weeks ago. Let's keep it that way."
             }
           ]
         }

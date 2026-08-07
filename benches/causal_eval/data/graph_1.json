@@ -128,6 +128,11 @@
         "relation": "similar_to"
       },
       {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
         "from": 10,
         "to": 3,
         "relation": "invalidates"
@@ -140,155 +145,123 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2025-03-04 10:15",
+          "date_time": "2025-03-10 09:15",
           "turns": [
             {
               "speaker": "Joanna",
-              "text": "Hey Marcus, you got a sec? I need to confess something."
+              "text": "Morning, Marcus. You look like you've been here since dawn."
             },
             {
               "speaker": "Marcus",
-              "text": "Uh oh. What did you break this time?"
+              "text": "Ha, close. I was reviewing the deploy logs from last night. Did you push that auth refactor without running the test suite?"
             },
             {
               "speaker": "Joanna",
-              "text": "So... I deployed the auth refactor yesterday without running the test suite. I know, I know. I was in a hurry and the tests take forever."
+              "text": "Yeah... I was in a hurry, and the suite takes forever. I figured it was a small change."
             },
             {
               "speaker": "Marcus",
-              "text": "Joanna. Seriously? You know that's how regressions happen."
+              "text": "Small change, big consequences. A regression slipped into production — the session timeout logic is broken. Users are getting logged out mid-checkout."
             },
             {
               "speaker": "Joanna",
-              "text": "Yeah, and it happened. A regression slipped into production — the session timeout logic is completely off. Every user got logged out after two minutes."
+              "text": "Oh no. How far did it spread?"
             },
             {
               "speaker": "Marcus",
-              "text": "Oh no. Did it hit everyone?"
+              "text": "Every user. We had to do a full rollback at 3 AM. That's the second time this month."
             },
             {
               "speaker": "Joanna",
-              "text": "Worse. It reached every single user and forced a full rollback. We had to revert the entire release. The on-call pager went off at 3 AM."
+              "text": "I'm sorry. I'll set up a CI gate that blocks merges without tests. That should stop this from happening again."
             },
             {
               "speaker": "Marcus",
-              "text": "That's brutal. So what's the plan? Because 'just be more careful' isn't a plan."
-            },
-            {
-              "speaker": "Joanna",
-              "text": "I set up a CI gate that blocks merges without tests. No green test run, no merge. Period."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "Good. That should stop the bleeding. But you know tests aren't magic, right?"
-            },
-            {
-              "speaker": "Joanna",
-              "text": "I know, but it's a start. At least untested code never reaches production again."
+              "text": "Good. Let's do that today. I don't want to be paged again."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2025-03-18 14:30",
+          "date_time": "2025-03-24 14:00",
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Hey, I saw you pushed the new payment service. How did the rollout go?"
+              "text": "Hey, I saw the CI gate is live. Nice work."
             },
             {
               "speaker": "Joanna",
-              "text": "Smooth, actually. I released via canary deployment to 5 percent of traffic first. Watched the metrics for an hour before ramping up."
+              "text": "Thanks. It's been smooth — untested code never reached production since we turned it on."
             },
             {
               "speaker": "Marcus",
-              "text": "Nice. That's the right way. Did you run the full suite before that?"
+              "text": "I noticed you also did a canary deployment for the new payment endpoint. Only 5 percent of traffic first?"
             },
             {
               "speaker": "Joanna",
-              "text": "I did run the full regression suite before release. But honestly, I almost skipped the flaky tests to make CI green — you know, the ones that fail randomly on Fridays."
+              "text": "Yeah, that felt safer. But I had to skip the flaky tests to make CI green — the ones that randomly fail on timing. I marked them as skipped."
             },
             {
               "speaker": "Marcus",
-              "text": "Please tell me you didn't."
+              "text": "Hmm, that's a bit risky. But I guess the gate still passed."
             },
             {
               "speaker": "Joanna",
-              "text": "I didn't. I reran them until they passed. But here's the thing — even with the gate, a regression slipped into production again. The currency rounding bug. It only showed up under a specific load pattern."
+              "text": "It did. And the canary caught nothing, so we rolled out fully. But honestly, I'm a little worried."
             },
             {
               "speaker": "Marcus",
-              "text": "Wait, what? But you had the CI gate. How did that get through?"
+              "text": "Worried about what?"
             },
             {
               "speaker": "Joanna",
-              "text": "Because the tests didn't cover that edge case. The gate only checks that tests exist and pass — it doesn't check if they're the right tests."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "So the gate gave you false confidence."
-            },
-            {
-              "speaker": "Joanna",
-              "text": "Exactly. But at least this time, the canary caught it before it hit everyone. Regressions were caught before shipping — well, before full shipping. Still, I'm not happy."
+              "text": "That we're relying too much on the gate. Let's see how the next release goes."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2025-04-02 09:45",
+          "date_time": "2025-04-02 11:30",
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Morning. I heard you've been reworking the whole merge process again."
+              "text": "Joanna, we need to talk. The last release — the one with the skipped flaky tests — a regression slipped into production again."
             },
             {
               "speaker": "Joanna",
-              "text": "Yeah. I have to admit — I was wrong about the CI gate. Turns out that wasn't enough."
+              "text": "What? The CI gate was green. How did that happen?"
             },
             {
               "speaker": "Marcus",
-              "text": "What happened? I thought it was working."
+              "text": "The tests passed, but they didn't cover the edge case with null user IDs. It hit all users before we caught it. We rolled back again."
             },
             {
               "speaker": "Joanna",
-              "text": "It was working for the obvious stuff. But last week, another regression slipped into production — the one with the date formatting in the export feature. Tests passed, CI was green, and it still broke for users in certain timezones."
+              "text": "Damn. So the CI gate... it turns out that wasn't enough. I was wrong about that being the fix."
             },
             {
               "speaker": "Marcus",
-              "text": "So the gate didn't catch it."
+              "text": "Yeah. Tests alone missed it. We need something more."
             },
             {
               "speaker": "Joanna",
-              "text": "Right. The tests alone missed edge cases. So we replaced the CI-only gate with mandatory peer review plus CI. Every merge now requires a human reviewer who actually understands the change, not just a green checkmark."
+              "text": "I've been thinking. We replaced the CI-only approach with mandatory peer review plus CI. Every merge needs a human reviewer who actually understands the change, not just a green checkmark."
             },
             {
               "speaker": "Marcus",
-              "text": "That's a big shift. How's the team taking it?"
+              "text": "That's a solid move. Peer review would have caught the null case — someone would have asked 'what if user is null?'"
             },
             {
               "speaker": "Joanna",
-              "text": "Mixed. Some people love it, some think it's slow. But I'd rather have a slower merge than another rollback. The peer review catches the stuff tests can't — like 'hey, this logic assumes UTC, but we have users in Tokyo.'"
+              "text": "Exactly. And I ran the full regression suite before this release — no skips. Regressions were caught before shipping this time."
             },
             {
               "speaker": "Marcus",
-              "text": "Makes sense. So the CI gate is still there, but it's not the only line of defense."
+              "text": "Good. Let's make sure the new process sticks. I'd rather have a slower pipeline than another 3 AM rollback."
             },
             {
               "speaker": "Joanna",
-              "text": "Exactly. CI is the floor, not the ceiling. And honestly, I should have realized that from the start. The gate was necessary but insufficient — I just didn't want to admit it."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "Well, at least you're fixing it now. Better late than never."
-            },
-            {
-              "speaker": "Joanna",
-              "text": "Yeah. And the good news is, since we added peer review, we've caught three potential regressions before shipping. That's three that would have hit production otherwise."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "That's the proof right there. Good call."
+              "text": "Agreed. I'm done cutting corners."
             }
           ]
         }

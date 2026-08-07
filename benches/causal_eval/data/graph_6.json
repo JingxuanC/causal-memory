@@ -128,6 +128,11 @@
         "relation": "similar_to"
       },
       {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
         "from": 10,
         "to": 3,
         "relation": "invalidates"
@@ -144,115 +149,147 @@
           "turns": [
             {
               "speaker": "Sam",
-              "text": "Morning, Dana. Got a minute? I need to walk you through the schema migration I just pushed."
+              "text": "Morning, Dana. Got a minute? I need to talk through the schema migration I ran last night."
             },
             {
               "speaker": "Dana",
-              "text": "Sure, but I thought we were holding off until after the audit. Did you run the test suite first?"
+              "text": "Sure, coffee's still hot. What happened? I saw the incident ticket this morning."
             },
             {
               "speaker": "Sam",
-              "text": "Honestly? No. I was under pressure to get it done, so I deployed without running the tests. I know that's not ideal."
+              "text": "Yeah, so... I migrated the schema without taking a backup first. I know, I know. I thought it was a simple additive change, but it ended up corrupting a bunch of customer records."
             },
             {
               "speaker": "Dana",
-              "text": "Not ideal? Sam, that's how regressions slip into production. What about a rollback plan?"
+              "text": "Oh no. How bad? And wait, you said no backup? That's a pretty big miss."
             },
             {
               "speaker": "Sam",
-              "text": "The migration could always be rolled back — I made sure of that. And I took a full snapshot before the migration, so we're covered."
+              "text": "It's bad. The corruption spread to our nightly backups too, so we had to spend days repairing from partial logs. That was a nightmare."
             },
             {
               "speaker": "Dana",
-              "text": "A snapshot is fine, but did you back up the old schema separately? You know, in case the snapshot gets corrupted?"
+              "text": "I can imagine. So what's the plan going forward? We can't have that happen again."
             },
             {
               "speaker": "Sam",
-              "text": "I didn't do a separate backup, no. But the snapshot is right there on the same storage cluster. Should be fine."
+              "text": "Agreed. I've already set up point-in-time recovery snapshots that are independent of the main backup system. That way, even if the backups get hit, we have a separate recovery path."
             },
             {
               "speaker": "Dana",
-              "text": "I really hope you're right. Let's check the customer records after lunch."
+              "text": "Good. And please tell me you're not going to deploy without running the test suite again either."
+            },
+            {
+              "speaker": "Sam",
+              "text": "That's the other thing. I deployed without running tests, and a regression slipped into production. I'm owning that."
+            },
+            {
+              "speaker": "Dana",
+              "text": "Okay. So what are you doing about that?"
+            },
+            {
+              "speaker": "Sam",
+              "text": "I've set up a CI gate that blocks any merge unless tests pass. From now on, untested code never reaches production. That's a hard rule."
+            },
+            {
+              "speaker": "Dana",
+              "text": "Alright. Let's review the incident details this afternoon, and I want to see those new snapshots in action."
+            },
+            {
+              "speaker": "Sam",
+              "text": "Will do. Thanks for not yelling at me."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2023-05-10 14:30",
+          "date_time": "2023-05-15 14:30",
           "turns": [
             {
               "speaker": "Dana",
-              "text": "Sam, we have a problem. The migration corrupted customer records — I'm seeing null fields and duplicated IDs across the board."
+              "text": "Hey Sam, quick check-in. How's the recovery going? And did the CI gate hold up?"
             },
             {
               "speaker": "Sam",
-              "text": "What? That can't be. I took a full snapshot before the migration, so we can restore from that."
+              "text": "Recovery is done, finally. And yes, the CI gate is working — we've had three merges blocked this week because someone forgot to run tests. It's annoying but it's working."
             },
             {
               "speaker": "Dana",
-              "text": "We tried. The corruption spread to the backups — the snapshot itself is now garbage. It's going to take days to repair."
+              "text": "Good. And the point-in-time snapshots? Any issues?"
             },
             {
               "speaker": "Sam",
-              "text": "Days? That's a nightmare. I thought the snapshot was bulletproof."
+              "text": "They're solid. I actually took a full snapshot before the migration this time, just to be extra safe. And the migration could always be rolled back if something went wrong."
             },
             {
               "speaker": "Dana",
-              "text": "It wasn't. And because you didn't run the test suite, we didn't catch the regression until it hit production. This is exactly what I warned you about."
+              "text": "That's a big improvement from last week. So you're feeling confident?"
             },
             {
               "speaker": "Sam",
-              "text": "You're right. I'm sorry. I need to fix this properly. I'm going to set up point-in-time recovery snapshots independent of the backup system — so if one fails, the other doesn't."
+              "text": "Mostly. I mean, the snapshot gives us a clean restore point, and the rollback path is tested. I think we're in good shape."
             },
             {
               "speaker": "Dana",
-              "text": "That's a start. But we also need to make sure untested code never reaches production again. Can you set up a CI gate that blocks merges without tests?"
+              "text": "Alright. Just remember, confidence is good, but verify everything before you touch production again."
             },
             {
               "speaker": "Sam",
-              "text": "Yes. I'll do that today. And I'll run the full test suite on the repair branch before we even think about deploying."
+              "text": "Absolutely. I've learned my lesson."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2023-05-15 11:00",
+          "date_time": "2023-05-22 11:00",
           "turns": [
             {
               "speaker": "Dana",
-              "text": "Good news — the repair finished overnight. Customer records are clean again. How's the CI gate working?"
+              "text": "Sam, I saw you pushed a new migration this morning. How did it go?"
             },
             {
               "speaker": "Sam",
-              "text": "It's live. No merge gets through without tests passing. Untested code never reaches production now — that part is solid."
+              "text": "It went... okay, but I have to be honest with you. I was wrong about the snapshot approach."
             },
             {
               "speaker": "Dana",
-              "text": "Great. And the point-in-time recovery snapshots? Are those holding up?"
+              "text": "What do you mean? You took a full snapshot before the migration, and you had rollback. That seemed solid."
             },
             {
               "speaker": "Sam",
-              "text": "They're working, but I have to be honest — I was wrong about the full snapshot approach. Turns out that wasn't enough. The snapshot went stale by deploy time, because we had new writes coming in during the migration window."
+              "text": "Turns out that wasn't enough. The snapshot was taken at 2 AM, but by the time we deployed at 10 AM, there were six hours of new writes. When we had to roll back, we lost all that data."
             },
             {
               "speaker": "Dana",
-              "text": "So what did you replace it with?"
+              "text": "Oh, that's a real problem. So what did you do?"
             },
             {
               "speaker": "Sam",
-              "text": "We switched to continuous replication. Now every write is mirrored to a separate cluster in real time, so even if a migration goes sideways, we can roll back to the exact second before the change — not just a snapshot from hours earlier."
+              "text": "We replaced the snapshot-only approach with continuous replication. Now we're streaming changes to a separate cluster in real time, so the recovery point is seconds old, not hours."
             },
             {
               "speaker": "Dana",
-              "text": "That's a much better safety net. And it means the rollback is always possible, even mid-deploy."
+              "text": "That makes sense. So snapshots are just a fallback now?"
             },
             {
               "speaker": "Sam",
-              "text": "Exactly. The old snapshot approach fell short because it was a single point in time. Continuous replication is the real fix."
+              "text": "Exactly. Snapshots are still there for catastrophic failures, but continuous replication is the primary safety net. The old approach fell short because it didn't account for the gap between snapshot and deploy."
             },
             {
               "speaker": "Dana",
-              "text": "Good. Let's document this and make sure the next migration follows the same pattern."
+              "text": "Good catch. And the CI gate is still holding?"
+            },
+            {
+              "speaker": "Sam",
+              "text": "Yes, untested code still never reaches production. That part is solid."
+            },
+            {
+              "speaker": "Dana",
+              "text": "Alright. Let's document this new replication setup so the whole team knows. And thanks for being upfront about the snapshot limitation."
+            },
+            {
+              "speaker": "Sam",
+              "text": "Thanks, Dana. I'd rather admit it now than hide it until the next incident."
             }
           ]
         }

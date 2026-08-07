@@ -128,6 +128,11 @@
         "relation": "similar_to"
       },
       {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
         "from": 10,
         "to": 3,
         "relation": "invalidates"
@@ -144,119 +149,127 @@
           "turns": [
             {
               "speaker": "Priya",
-              "text": "Hey Marcus, you got a sec? Something weird in the prod query logs."
+              "text": "Morning, Marcus. You got a sec? Something came up overnight."
             },
             {
               "speaker": "Marcus",
-              "text": "Sure, what's up? Don't tell me the dashboard is broken again."
+              "text": "Sure, what's up? You sound tense."
             },
             {
               "speaker": "Priya",
-              "text": "Worse. I think I left a debug account enabled in production. And someone found it."
+              "text": "Remember that debug account we used for the load test last month? I left the credentials in the production config file. I thought I'd cleaned them out, but apparently not."
             },
             {
               "speaker": "Marcus",
-              "text": "Oh no. How do you know?"
+              "text": "Oh no. Please tell me nobody found them."
             },
             {
               "speaker": "Priya",
-              "text": "The logs show a login from an external IP using that debug credential. Then they started hitting internal endpoints — they moved laterally, Marcus. They got into the staging DB."
+              "text": "Worse. Someone did. We saw a login from an external IP at 3 AM, and they used that account to pivot — moved laterally into the staging and analytics subnets."
             },
             {
               "speaker": "Marcus",
-              "text": "That's bad. Did they touch customer data?"
+              "text": "Damn. How far did they get?"
             },
             {
               "speaker": "Priya",
-              "text": "That's the other thing. I had verbose logging on for that query path, and I accidentally logged the full request bodies. Customer PII ended up in the logs."
+              "text": "They touched a few internal services, but I've already removed the debug credentials from production. That account is dead now. And I checked — no backdoor account was left exposed, so they can't get back in that way."
             },
             {
               "speaker": "Marcus",
-              "text": "Yikes. So we have a breach AND a data leak in the logs. What's the plan?"
+              "text": "Good. But what about the lateral movement? Are we sure they're out?"
             },
             {
               "speaker": "Priya",
-              "text": "First, I already removed the debug credentials from production — that account is gone. And I checked, no backdoor account was left exposed. But I need to scrub the logs."
+              "text": "I added network segmentation this morning — isolated the compromised subnets from the rest. So even if they left something behind, they can't reach the core systems."
             },
             {
               "speaker": "Marcus",
-              "text": "Good. Let's do that now. And then we need to talk about segmentation."
+              "text": "That's a solid response. Anything else I should know?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "One more thing — during the investigation, I logged some sensitive data to the query log to trace their actions. Customer data leaked into those logs. I've already removed the sensitive fields from the log format, and I scrubbed the existing logs. They're clean now — no customer data in there."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Okay, that's a relief. Let's do a full review later today, but you handled this well."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2023-05-10 14:30",
+          "date_time": "2023-05-15 14:30",
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Hey, how's the cleanup going?"
+              "text": "Hey Priya, quick check — how's the post-incident cleanup going?"
             },
             {
               "speaker": "Priya",
-              "text": "Done. I removed sensitive fields from the logs — no more customer data in there. I verified the logs contain no customer data now."
+              "text": "Pretty good. The debug credentials are gone from prod, and I've verified no backdoor account is exposed. The segmentation is holding — no new lateral movement detected."
             },
             {
               "speaker": "Marcus",
-              "text": "Nice. And the network?"
+              "text": "And the logs? You mentioned you fixed that."
             },
             {
               "speaker": "Priya",
-              "text": "I added network segmentation — the staging DB is now isolated from the rest of the internal network. So even if someone gets in again, they can't move laterally like before."
+              "text": "Yeah, I removed sensitive fields from the query log entirely. Ran a scan — the logs contain no customer data now. We're clean on that front."
             },
             {
               "speaker": "Marcus",
-              "text": "That's a solid fix. But are you sure the debug account is fully gone? No hidden backdoors?"
+              "text": "Nice. So we're basically done?"
             },
             {
               "speaker": "Priya",
-              "text": "Positive. I checked every auth config, every env var, every service account. No backdoor account was left exposed. We're clean."
+              "text": "I think so. The immediate threat is contained. I'm just documenting everything for the postmortem."
             },
             {
               "speaker": "Marcus",
-              "text": "Alright. Let's just hope the attacker didn't plant anything else. But good work, seriously."
-            },
-            {
-              "speaker": "Priya",
-              "text": "Thanks. I'm just glad we caught it before it got worse."
+              "text": "Good. Let me know if you need help with that."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2023-05-15 11:00",
+          "date_time": "2023-05-22 11:00",
           "turns": [
             {
-              "speaker": "Marcus",
-              "text": "Hey, I was reviewing the incident report. One thing bugs me — we removed the debug credentials, but what's stopping someone from accidentally adding them again next sprint?"
-            },
-            {
               "speaker": "Priya",
-              "text": "You're right. Turns out that wasn't enough. Removing the credentials was just a one-time fix — it didn't address the root cause."
+              "text": "Marcus, I need to tell you something — I was wrong about the debug credentials fix."
             },
             {
               "speaker": "Marcus",
-              "text": "So what are we doing about it?"
+              "text": "What do you mean? You removed them from prod, right?"
             },
             {
               "speaker": "Priya",
-              "text": "I was wrong about thinking cleanup was the end. I've replaced that approach with something better — I added a secrets scanner to our CI pipeline. It scans every commit and blocks any debug credentials or hardcoded secrets from being merged."
+              "text": "I did, but turns out that wasn't enough. I was reviewing the incident timeline, and I realized the real problem isn't that one account — it's that we can reintroduce debug credentials anytime someone runs a quick test and forgets to clean up. Removing them from prod was just a band-aid."
             },
             {
               "speaker": "Marcus",
-              "text": "That's the real fix. So even if someone tries to reintroduce a debug account, the build fails."
+              "text": "So what are you thinking?"
             },
             {
               "speaker": "Priya",
-              "text": "Exactly. And I also added a rule that flags any log statement that includes request bodies — so we won't accidentally leak customer data again either."
+              "text": "We replaced the manual cleanup with a secrets scanner in CI. Now, any commit that contains something that looks like a debug credential — or any hardcoded secret — gets blocked before it ever reaches production. That way, we can't accidentally ship them again."
             },
             {
               "speaker": "Marcus",
-              "text": "Good. That's the kind of prevention we needed. The segmentation and log scrubbing were damage control, but this stops it from happening in the first place."
+              "text": "That's a much better approach. So the old fix — just deleting the credentials — was insufficient?"
             },
             {
               "speaker": "Priya",
-              "text": "Yeah. I should have done this from day one. But at least now we're covered."
+              "text": "Exactly. It handled the immediate exposure, but it didn't address the root cause. The scanner does. I've already wired it into the pipeline, and it's running on every PR."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Good call. I'm glad you caught that before we moved on."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Me too. Better late than never."
             }
           ]
         }

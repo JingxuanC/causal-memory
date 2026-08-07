@@ -128,6 +128,11 @@
         "relation": "similar_to"
       },
       {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
         "from": 10,
         "to": 3,
         "relation": "invalidates"
@@ -140,147 +145,131 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2023-05-08 09:00",
+          "date_time": "2023-06-12 10:15",
           "turns": [
             {
               "speaker": "Melanie",
-              "text": "Morning, Nate. You got a sec? I need to flag something about the query log."
+              "text": "Hey Dev, got a sec? I need to flag something about the query log."
             },
             {
-              "speaker": "Nate",
-              "text": "Sure, what's up? I was just about to grab coffee."
-            },
-            {
-              "speaker": "Melanie",
-              "text": "I accidentally logged some sensitive customer data to the query log yesterday. It was a mistake — I was debugging a slow query and dumped the full row."
-            },
-            {
-              "speaker": "Nate",
-              "text": "Oh no. How sensitive are we talking?"
+              "speaker": "Dev",
+              "text": "Sure, what's up? Did the new search endpoint break something?"
             },
             {
               "speaker": "Melanie",
-              "text": "Names, email addresses, even a few phone numbers. And the worst part — that log is accessible to every engineer with log access. So it's been exposed to the whole team."
+              "text": "Not exactly. I was debugging a slow query and logged the full request payload to the query log — including some customer PII. I know, I shouldn't have."
             },
             {
-              "speaker": "Nate",
-              "text": "That's bad. Have you done anything about it yet?"
-            },
-            {
-              "speaker": "Melanie",
-              "text": "I already removed the sensitive fields from the log entries — scrubbed them manually. So the logs now contain no customer data. But I'm still worried about the exposure window."
-            },
-            {
-              "speaker": "Nate",
-              "text": "At least you caught it fast. But maybe we should also restrict who can see the logs going forward?"
+              "speaker": "Dev",
+              "text": "Oh no. So that means... anyone with log access can see it now?"
             },
             {
               "speaker": "Melanie",
-              "text": "Yeah, I was thinking the same. I'll set up a need-to-know subset of the team for log access — just the on-call folks and the backend leads."
+              "text": "Yeah. Every engineer with log access. I checked the retention — it's been sitting there for two days. That's a real leak."
             },
             {
-              "speaker": "Nate",
-              "text": "Good call. Let me know if you need help with the access list."
+              "speaker": "Dev",
+              "text": "We need to scrub that immediately. Can you pull the log entries and redact the sensitive fields?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Already on it. I'm going to remove the sensitive fields from the logs — customer names, emails, phone numbers. I'll strip them out and re-upload the cleaned version."
+            },
+            {
+              "speaker": "Dev",
+              "text": "Good. And after that, let's make sure the logs contain no customer data going forward. Maybe add a rule to the logger."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Agreed. I'll also restrict log access to a need-to-know subset of the team — just you, me, and maybe Priya for now. That limits exposure if this happens again."
+            },
+            {
+              "speaker": "Dev",
+              "text": "Sounds like a solid plan. Let me know when the scrub is done."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2023-05-15 14:30",
+          "date_time": "2023-06-20 14:30",
           "turns": [
             {
-              "speaker": "Nate",
-              "text": "Hey Melanie, quick question — did you see the alert about user accounts being compromised last night?"
+              "speaker": "Dev",
+              "text": "Hey Melanie, quick question — I saw you pushed a change to the auth service. What's that about?"
             },
             {
               "speaker": "Melanie",
-              "text": "Yeah, I saw it. That's actually what I wanted to talk to you about. I think I know the root cause."
+              "text": "Oh, that. I found a nasty issue. We were storing passwords without hashing — plain text in the database. I'm honestly surprised we didn't get hit sooner."
             },
             {
-              "speaker": "Nate",
-              "text": "Go on."
-            },
-            {
-              "speaker": "Melanie",
-              "text": "We were storing passwords without hashing them. Plain text in the database. I checked the auth service code — it's been like that since the initial deploy."
-            },
-            {
-              "speaker": "Nate",
-              "text": "Jesus. So the breach — they just pulled the whole users table?"
+              "speaker": "Dev",
+              "text": "Wait, what? Plain text? That's a disaster waiting to happen. Did any user accounts get compromised because of it?"
             },
             {
               "speaker": "Melanie",
-              "text": "Exactly. That's how the accounts got compromised. I've already hashed all the passwords before storing them now — switched to bcrypt with per-user salts."
+              "text": "Yeah, a few. We saw some suspicious logins last week — looks like someone got a dump of the user table. Three accounts were accessed from unknown IPs."
             },
             {
-              "speaker": "Nate",
-              "text": "So if there's another breach, the credentials stay safe even if they get the data?"
-            },
-            {
-              "speaker": "Melanie",
-              "text": "Right. Even if they dump the whole table, they'd only get hashes. It's a huge relief, honestly."
-            },
-            {
-              "speaker": "Nate",
-              "text": "Good work. Sorry you had to deal with that mess."
+              "speaker": "Dev",
+              "text": "That's bad. Did you reset those accounts?"
             },
             {
               "speaker": "Melanie",
-              "text": "Thanks. I just wish I'd caught it earlier."
+              "text": "Already done. And I've hashed passwords before storing them now — using bcrypt with a per-user salt. So even if we get breached again, the credentials stay safe."
+            },
+            {
+              "speaker": "Dev",
+              "text": "Good call. That's a much better posture. Let's make sure we audit any other places we store secrets."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Yeah, I'll do a full sweep tomorrow. But at least the password issue is fixed."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2023-05-22 11:00",
+          "date_time": "2023-07-05 09:45",
           "turns": [
             {
-              "speaker": "Nate",
-              "text": "Hey, you free? I wanted to follow up on the log situation from a couple weeks ago."
+              "speaker": "Dev",
+              "text": "Morning. I saw you pushed another logging change. What's the story?"
             },
             {
               "speaker": "Melanie",
-              "text": "Yeah, I've been thinking about that too. Turns out my manual fix wasn't enough."
+              "text": "So, remember when I removed sensitive fields from the logs last month? Turns out that wasn't enough."
             },
             {
-              "speaker": "Nate",
-              "text": "What do you mean? You scrubbed the fields and restricted access."
-            },
-            {
-              "speaker": "Melanie",
-              "text": "I know, but I was wrong about that being sufficient. Yesterday I found another log entry with a customer ID — not from my mistake, but from a different service that logs request bodies. The old approach of removing sensitive fields after the fact just doesn't scale."
-            },
-            {
-              "speaker": "Nate",
-              "text": "So what are you doing instead?"
+              "speaker": "Dev",
+              "text": "What do you mean? I thought we were clean after the scrub."
             },
             {
               "speaker": "Melanie",
-              "text": "We replaced the manual scrubbing with a PII redaction pipeline that scans all log output automatically. It runs before anything hits the log aggregator — regex patterns for emails, phone numbers, credit card numbers, and it masks them in real time."
+              "text": "We were for that incident. But I was wrong about the approach — manually stripping fields is fragile. Yesterday, a new developer added a debug statement that logged the entire user object, including PII, and it slipped past the field removal because the field names were different."
             },
             {
-              "speaker": "Nate",
-              "text": "That's a much better safety net. So even if someone logs something they shouldn't, it gets caught at the source."
-            },
-            {
-              "speaker": "Melanie",
-              "text": "Exactly. And I've added a test suite that feeds sample sensitive data through the pipeline to make sure nothing slips through. It's been running for two days now with zero leaks."
-            },
-            {
-              "speaker": "Nate",
-              "text": "Nice. That's a solid upgrade. Sorry the first fix didn't hold up."
+              "speaker": "Dev",
+              "text": "Ugh. So the old fix fell short. What did you do instead?"
             },
             {
               "speaker": "Melanie",
-              "text": "It's fine — better to learn that now than after another breach. At least the password hashing is solid, so we're not starting from zero."
+              "text": "I replaced the manual field removal with a PII redaction pipeline that scans all log output automatically. It runs on every log line before it hits storage — it detects emails, phone numbers, addresses, and masks them in real time. No matter what field name someone uses, it catches the pattern."
             },
             {
-              "speaker": "Nate",
-              "text": "True. Let me know if you want me to review the pipeline code."
+              "speaker": "Dev",
+              "text": "That's much better. So now even if someone logs a whole object, the sensitive parts get scrubbed before anyone can see them?"
             },
             {
               "speaker": "Melanie",
-              "text": "Will do. Thanks for checking in."
+              "text": "Exactly. And I've also added a test that fails if any log line contains a regex match for common PII. So we're covered on both ends."
+            },
+            {
+              "speaker": "Dev",
+              "text": "Nice. That's a real fix, not just a patch. Good job catching that."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Thanks. I just wish I'd done it right the first time. But at least now we have a safety net."
             }
           ]
         }

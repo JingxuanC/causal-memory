@@ -128,6 +128,11 @@
         "relation": "similar_to"
       },
       {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
         "from": 10,
         "to": 3,
         "relation": "invalidates"
@@ -144,43 +149,35 @@
           "turns": [
             {
               "speaker": "Nate",
-              "text": "Morning. Quick heads-up — I pointed DNS at the new cluster last night before it was fully ready. My bad."
+              "text": "Morning, Kim. Quick heads-up — I pointed DNS at the new cluster before it was fully ready. I thought it would be fine, but I'm seeing some weirdness."
             },
             {
               "speaker": "Kim",
-              "text": "Wait, what? You did what? The new cluster wasn't even passing its readiness probes yet."
+              "text": "Wait, you flipped DNS already? The health checks were still amber on my dashboard. What happened?"
             },
             {
               "speaker": "Nate",
-              "text": "Yeah, I know. I got impatient. Traffic hit it and it couldn't serve anything — total black hole."
+              "text": "Yeah, I got impatient. And of course, traffic hit a cluster that couldn't serve it. Every region is showing elevated error rates right now."
             },
             {
               "speaker": "Kim",
-              "text": "How long did that last?"
+              "text": "Every region? That's bad. How long has this been going on?"
             },
             {
               "speaker": "Nate",
-              "text": "Hours. And it hit every region, not just one. Global outage, basically."
+              "text": "Hours. I've been scrambling to roll back, but the damage is done. This is exactly the kind of outage I hate."
             },
             {
               "speaker": "Kim",
-              "text": "Ouch. That's the kind of thing that gets you a pager at 3am. What's the fix?"
+              "text": "Okay, let's fix it first, then we talk about process. But seriously, we need a better way."
             },
             {
               "speaker": "Nate",
-              "text": "I'm going to wait for the cluster health check before switching DNS next time. Simple, right?"
+              "text": "Agreed. After this, I'm going to set up health-check-gated DNS failover so traffic auto-routes away from a dead cluster. No more manual judgment calls."
             },
             {
               "speaker": "Kim",
-              "text": "Sure, as long as you actually remember to do that. But let's talk about the CI thing too — I saw you skipped the flaky tests to make it green."
-            },
-            {
-              "speaker": "Nate",
-              "text": "Yeah, they were flaky, I didn't want to block the release. But I'm worried a regression might have slipped into production because of that."
-            },
-            {
-              "speaker": "Kim",
-              "text": "We'll find out soon enough. Let's just hope it's not another global incident."
+              "text": "That's a solid plan. Let's get through this fire first."
             }
           ]
         },
@@ -189,36 +186,40 @@
           "date_time": "2023-05-15 14:30",
           "turns": [
             {
-              "speaker": "Kim",
-              "text": "Hey, so the regression you were worried about? It did slip into production. The flaky test skip bit us."
-            },
-            {
               "speaker": "Nate",
-              "text": "Damn. I knew it. Okay, I ran the full regression suite before this release — all of it, no skips."
+              "text": "Hey Kim, good news — I waited for the cluster health check before switching DNS this time. The new cluster passed all checks, and I flipped it."
             },
             {
               "speaker": "Kim",
-              "text": "Good. And did it catch anything?"
+              "text": "Nice. So traffic moved over without a hitch?"
             },
             {
               "speaker": "Nate",
-              "text": "Yeah, two regressions were caught before shipping. We fixed them and re-ran everything. Clean now."
+              "text": "Yep, zero errors. It was smooth. I also set up that health-check-gated DNS failover I mentioned — if the cluster dies, traffic auto-routes away."
             },
             {
               "speaker": "Kim",
-              "text": "That's the right process. Also, how's the DNS thing going? Did you wait for the health check this time?"
+              "text": "That's great. But I noticed you skipped some flaky tests to make CI green yesterday. I saw the commit message."
             },
             {
               "speaker": "Nate",
-              "text": "I did. Traffic moved over without a hitch. No outage, no drama."
+              "text": "Yeah, they were timing out randomly. I figured it was better to get the build passing than to block everyone."
             },
             {
               "speaker": "Kim",
-              "text": "Nice. So we're good now? Just remember to keep doing that."
+              "text": "I get it, but that's risky. Skipping tests can let a regression slip into production. We've seen that before."
             },
             {
               "speaker": "Nate",
-              "text": "Yeah, I'll just make sure I always wait. It's a discipline thing."
+              "text": "I know, I know. But I ran the full regression suite before release — everything passed. So we're good."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Okay, as long as you're running the full suite. Regressions caught before shipping is the goal. Just don't make a habit of skipping."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Fair enough. I'll be more careful."
             }
           ]
         },
@@ -228,51 +229,55 @@
           "turns": [
             {
               "speaker": "Nate",
-              "text": "Hey, I need to tell you something about the DNS failover approach."
+              "text": "Kim, I need to tell you something. Remember how I waited for the cluster health check before switching DNS last week? Turns out that wasn't enough."
             },
             {
               "speaker": "Kim",
-              "text": "What happened? Did we have another outage?"
+              "text": "What do you mean? It worked perfectly — traffic moved over without a hitch."
             },
             {
               "speaker": "Nate",
-              "text": "No, not yet. But I realized that waiting for the cluster health check before switching DNS — that wasn't enough. It turns out that was wrong."
+              "text": "It did, but only because I happened to be paying attention. Yesterday, the health check passed, I switched DNS, and then the cluster degraded five minutes later. We had a mini-outage."
             },
             {
               "speaker": "Kim",
-              "text": "What do you mean? It worked last week."
+              "text": "Oh no. So the wait alone didn't protect you."
             },
             {
               "speaker": "Nate",
-              "text": "It worked because I happened to remember. But it's a manual step. If I'm tired, or distracted, or someone else does the switch, they might skip it. And then we're back to the same global outage."
+              "text": "Exactly. I was wrong about relying on a human to wait. The check is a snapshot, not a guarantee. So I replaced the manual wait with automated health-check-gated DNS — no human can skip the wait, because the system won't switch until the check is green and stays green for a sustained period."
             },
             {
               "speaker": "Kim",
-              "text": "So what did you do?"
+              "text": "That's a big change. So now the DNS failover is fully automated?"
             },
             {
               "speaker": "Nate",
-              "text": "I replaced the manual wait with automated health-check-gated DNS failover. The DNS won't even point to a cluster unless the health check passes — and if the cluster dies, traffic auto-routes away from it."
+              "text": "Yes. If the cluster fails the check, traffic stays on the old one. If it passes, it switches automatically. No more 'I'll just eyeball it' moments."
             },
             {
               "speaker": "Kim",
-              "text": "That's a big upgrade. So no human can skip the wait anymore?"
+              "text": "That's the right call. Better than trusting ourselves under pressure."
             },
             {
               "speaker": "Nate",
-              "text": "Exactly. The system enforces it. I was wrong to think 'just wait' was a fix — it's only a fix if you never forget. Now it's built in."
+              "text": "Yeah. And I also stopped skipping flaky tests — I fixed them instead. Because a regression slipped into production last week from that skipped test, and I don't want that again."
             },
             {
               "speaker": "Kim",
-              "text": "Good. That's the kind of thing that actually prevents the next incident. And the regression suite — you're keeping that strict too?"
+              "text": "Wait, a regression slipped in? I thought you ran the full suite before release."
             },
             {
               "speaker": "Nate",
-              "text": "Yeah, no more skipping flaky tests. Full suite every time. Learned that lesson the hard way."
+              "text": "I did, but the flaky test was the one that would have caught it. So now I run the full regression suite every time, no exceptions. Regressions caught before shipping — that's the only way."
             },
             {
               "speaker": "Kim",
-              "text": "Sounds like we're finally in a good place."
+              "text": "Good. Sounds like you've learned the hard way, but you've got a solid system now."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Yeah. The old approach fell short, but this new one should hold."
             }
           ]
         }

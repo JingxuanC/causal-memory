@@ -128,6 +128,11 @@
         "relation": "similar_to"
       },
       {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
         "from": 10,
         "to": 3,
         "relation": "invalidates"
@@ -144,27 +149,23 @@
           "turns": [
             {
               "speaker": "Joanna",
-              "text": "Morning, Marcus. Quick heads-up — I deleted the end-to-end tests from the pipeline to save time on the release. They were slowing everything down."
+              "text": "Morning, Marcus. Quick heads-up — I deleted the end-to-end tests from the pipeline to save time on the release cycle."
             },
             {
               "speaker": "Marcus",
-              "text": "Wait, all of them? That feels risky, Jo."
+              "text": "Wait, all of them? That's a bold move. What about regression coverage?"
             },
             {
               "speaker": "Joanna",
-              "text": "I know, but we were behind schedule. I figured unit tests were enough."
+              "text": "I know, I know. But they were flaky and slow, and we needed to ship. I figured unit tests would catch the big stuff."
             },
             {
               "speaker": "Marcus",
-              "text": "Okay, but if something breaks, we won't catch it until it's live."
+              "text": "Alright, your call. But if something breaks, you're owning it."
             },
             {
               "speaker": "Joanna",
-              "text": "Yeah, I'll keep an eye on it. We're shipping in two hours."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "Alright, your call. Just don't say I didn't warn you."
+              "text": "Deal. Let's see how the release goes."
             }
           ]
         },
@@ -174,47 +175,43 @@
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "So... the app broke right after release, huh? I saw the incident report."
+              "text": "So... the app broke right after release. Every new session for the past week has been hitting that auth bug."
             },
             {
               "speaker": "Joanna",
-              "text": "Yeah, it was bad. The breakage hit every new session for a full week. I felt terrible."
+              "text": "Yeah, I saw the alerts. That was brutal — I take full blame for deleting those tests."
             },
             {
               "speaker": "Marcus",
-              "text": "I bet. What did you do about it?"
+              "text": "At least you kept the end-to-end tests in the pipeline now, right? I saw you re-added them."
             },
             {
               "speaker": "Joanna",
-              "text": "First thing — I kept the end-to-end tests in the pipeline. Brought them back, made sure they run on every commit."
+              "text": "I did. And I also added a staged rollout — so if something breaks, it only hits 5% of users first, not everyone."
             },
             {
               "speaker": "Marcus",
-              "text": "Good. That should prevent a repeat."
+              "text": "Smart. That would've caught the auth issue before it went wide."
             },
             {
               "speaker": "Joanna",
-              "text": "Also added a staged rollout — so if something slips through, it only hits 5% of users first, not everyone."
+              "text": "Exactly. Also, I provisioned those new instances without autoscaling — that was a mistake. The service went down under a traffic spike yesterday."
             },
             {
               "speaker": "Marcus",
-              "text": "Smart. And the app's been healthy since?"
+              "text": "Ouch. Did you fix that?"
             },
             {
               "speaker": "Joanna",
-              "text": "Yeah, the app stayed healthy after release. No new incidents. But then I hit another wall — I provisioned instances without autoscaling, and the service went down under a traffic spike yesterday."
+              "text": "Yeah, I enabled autoscaling on all the instances this morning. We just absorbed a spike during lunch without a blip."
             },
             {
               "speaker": "Marcus",
-              "text": "Ouch. So what now?"
+              "text": "Good. So we're back to healthy after release?"
             },
             {
               "speaker": "Joanna",
-              "text": "I enabled autoscaling on the instances this morning. We tested it with a synthetic spike — the service absorbed it fine. So that's fixed too."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "Sounds like you're patching things up one by one. Good."
+              "text": "App's been healthy since we re-added the tests and the rollout. Fingers crossed."
             }
           ]
         },
@@ -224,43 +221,35 @@
           "turns": [
             {
               "speaker": "Marcus",
-              "text": "Hey, Jo. Saw you pushed a big change to the test suite. What's up?"
+              "text": "Hey, I saw you pushed a big change to the test suite. What's up?"
             },
             {
               "speaker": "Joanna",
-              "text": "Honestly? I realized that keeping the end-to-end tests in the pipeline wasn't enough. Turns out that wasn't enough — they were flaky, depended on shared state, and sometimes passed even when the app was broken."
+              "text": "Turns out keeping the end-to-end tests in the pipeline wasn't enough. They were still flaky — false failures, random timeouts, and they didn't catch a regression last week because they depended on shared data."
             },
             {
               "speaker": "Marcus",
-              "text": "So you replaced them?"
+              "text": "So what did you do?"
             },
             {
               "speaker": "Joanna",
-              "text": "Yeah, we replaced the old end-to-end tests with rewritten ones — deterministic, with isolated test data for each run. No more random failures or false confidence."
+              "text": "I was wrong about just re-adding them. We replaced the old approach with rewritten end-to-end tests that are deterministic — isolated test data, no shared state, fixed seeds. Every run is reproducible."
             },
             {
               "speaker": "Marcus",
-              "text": "That's a big shift. How's it going?"
+              "text": "That sounds like a real fix. How's it going?"
             },
             {
               "speaker": "Joanna",
-              "text": "So far so good. They run clean every time, and they actually catch regressions now. I was wrong about just having them in the pipeline — they need to be reliable, not just present."
+              "text": "Night and day. The suite runs in half the time, zero flakes, and it caught a real bug in staging yesterday before the rollout even started."
             },
             {
               "speaker": "Marcus",
-              "text": "Makes sense. Better late than never, right?"
+              "text": "Nice. So the staged rollout plus deterministic tests — that's the combo."
             },
             {
               "speaker": "Joanna",
-              "text": "Exactly. And with the staged rollout and autoscaling, I feel like we're finally in a good place."
-            },
-            {
-              "speaker": "Marcus",
-              "text": "Glad to hear it. Let's hope the next release is boring."
-            },
-            {
-              "speaker": "Joanna",
-              "text": "Fingers crossed."
+              "text": "Exactly. The old way — just having tests in the pipeline — felt like security, but it wasn't. Now I actually trust the green check."
             }
           ]
         }

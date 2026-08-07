@@ -128,6 +128,11 @@
         "relation": "similar_to"
       },
       {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
         "from": 10,
         "to": 3,
         "relation": "invalidates"
@@ -144,131 +149,123 @@
           "turns": [
             {
               "speaker": "Priya",
-              "text": "Hey Marcus, you got a sec? I need to vent about the DNS switch last week."
+              "text": "Hey Marcus, you got a sec? I need to vent about the DNS switchover yesterday."
             },
             {
               "speaker": "Marcus",
-              "text": "Oh no, what happened? I saw the incident ticket — looked rough."
+              "text": "Oh no, what happened? I saw the incident page light up around 2 PM."
             },
             {
               "speaker": "Priya",
-              "text": "Rough is an understatement. I pointed DNS at the new cluster before it was actually ready. I thought the provisioning was done, but the health checks weren't even passing."
+              "text": "Yeah, that was me. I pointed DNS at the new cluster before it was actually ready. I thought the warm-up would be faster."
             },
             {
               "speaker": "Marcus",
-              "text": "Yikes. So traffic hit a cluster that couldn't serve it?"
+              "text": "Ouch. So the traffic hit a cluster that couldn't serve it?"
             },
             {
               "speaker": "Priya",
-              "text": "Exactly. Every region went down — the outage lasted for hours. Customers were not happy, and neither was my manager."
+              "text": "Exactly. Every region went down — the outage lasted for hours. Customers in APAC, EU, US — all of them. I felt sick watching the dashboards."
             },
             {
               "speaker": "Marcus",
-              "text": "That's brutal. What's the fix going forward?"
+              "text": "That's brutal. But hey, at least you know what not to do next time, right?"
             },
             {
               "speaker": "Priya",
-              "text": "I'm going to be way more careful. This time, I waited for the cluster health check before switching DNS — I literally sat there refreshing the status page until it was green. Then I flipped the record."
+              "text": "Yeah, I've already written a postmortem. The fix is simple: I'll wait for the cluster health check before switching DNS. No more cowboy moves."
             },
             {
               "speaker": "Marcus",
-              "text": "So you're doing it manually but with a checklist?"
-            },
-            {
-              "speaker": "Priya",
-              "text": "Yeah, for now. It worked — traffic moved over without a hitch. But I know I'm one tired day away from repeating the same mistake."
+              "text": "Sounds reasonable. Health check passes, then flip. I'll hold you to it."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2023-07-03 14:30",
+          "date_time": "2023-06-20 14:30",
           "turns": [
             {
-              "speaker": "Marcus",
-              "text": "Hey, I saw you pushed a new DNS config. Looks like you added some automation?"
-            },
-            {
               "speaker": "Priya",
-              "text": "Yeah, I set up health-check-gated DNS failover. So if the cluster goes unhealthy, traffic auto-routes away from it. No more manual waiting."
+              "text": "Good news — the DNS switchover this morning went perfectly."
             },
             {
               "speaker": "Marcus",
-              "text": "Nice, that's a solid upgrade. But I also heard you had a schema migration issue last week?"
+              "text": "Nice! So you actually waited for the health check this time?"
             },
             {
               "speaker": "Priya",
-              "text": "Ugh, don't remind me. I migrated the schema without a backup — I thought, 'it's just adding a column, what could go wrong?'"
+              "text": "Yep, I set a timer, watched the cluster report green for a full five minutes, then flipped the DNS. Traffic moved over without a hitch. Zero errors."
             },
             {
               "speaker": "Marcus",
-              "text": "And?"
+              "text": "That's the way. So we're all good now?"
             },
             {
               "speaker": "Priya",
-              "text": "The migration corrupted customer records. We had to restore from a nightly snapshot, but we lost a few hours of data. It was a mess."
+              "text": "Mostly. But I also had a scare with the database migration last night."
             },
             {
               "speaker": "Marcus",
-              "text": "Ouch. So what are you doing differently now?"
+              "text": "What happened? You didn't migrate the schema without a backup again, did you?"
             },
             {
               "speaker": "Priya",
-              "text": "I took a full snapshot before the migration this time — and I tested the rollback path. The migration could always be rolled back now, which is a huge relief."
+              "text": "I almost did — but no, I took a full snapshot before the migration. Good thing too, because the migration corrupted customer records. Addresses got scrambled, some orders linked to the wrong accounts."
             },
             {
               "speaker": "Marcus",
-              "text": "Good. Learning from pain, I guess."
+              "text": "Yikes. But you had the snapshot, so you could roll back?"
             },
             {
               "speaker": "Priya",
-              "text": "Yeah, but I still feel like I'm patching things one at a time."
+              "text": "Exactly. The migration could always be rolled back — I restored in under ten minutes. No lasting damage. Lesson learned: never skip the backup."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Two close calls in one week. You're building a good habit of learning the hard way."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2023-07-28 16:45",
+          "date_time": "2023-07-02 09:45",
           "turns": [
             {
-              "speaker": "Marcus",
-              "text": "Hey, you look like you've been staring at the DNS dashboard for hours. Everything okay?"
-            },
-            {
               "speaker": "Priya",
-              "text": "Honestly? No. I had a wake-up call this morning. We had a minor blip on the new cluster — nothing big, but the health check went red for like 30 seconds."
+              "text": "Hey Marcus, I need to tell you something about the DNS fix. Turns out that wasn't enough."
             },
             {
               "speaker": "Marcus",
-              "text": "But you have the failover now, right? It should have auto-routed."
+              "text": "What do you mean? The health check wait worked — we had a clean switchover last time."
             },
             {
               "speaker": "Priya",
-              "text": "It did — but only because I had set it up. The problem is, I realized that my earlier approach — waiting for the cluster health check before switching DNS — turns out that wasn't enough. It was still a manual step, and I was the only one who could do it. If I'm on vacation or asleep, nobody else would know to wait."
+              "text": "It worked because I was disciplined. But last night, I got paged at 3 AM for a different cluster, and I was so sleep-deprived I almost flipped DNS without checking the health status. I caught myself at the last second."
             },
             {
               "speaker": "Marcus",
-              "text": "So you're saying the manual wait was the weak link?"
+              "text": "Whoa. So the manual wait is fragile — it depends on the human remembering."
             },
             {
               "speaker": "Priya",
-              "text": "Exactly. I was wrong about thinking 'I'll just be careful' would solve it. So I replaced the manual wait with fully automated health-check-gated DNS — no human can skip the wait anymore. The system checks, and if it's not healthy, it won't even attempt to switch."
+              "text": "Exactly. I was wrong about relying on my own vigilance. So I replaced the manual wait with automated health-check-gated DNS failover. The system now checks the cluster health continuously, and if the cluster is dead, traffic auto-routes away — no human in the loop."
             },
             {
               "speaker": "Marcus",
-              "text": "That's a big step. So no more 'Priya has to remember to check'?"
+              "text": "That's a big upgrade. So even if you're half-asleep, the DNS won't point at a bad cluster?"
             },
             {
               "speaker": "Priya",
-              "text": "Right. The automation is the gatekeeper now. I can't override it even if I wanted to — which is exactly what I need, because my judgment clearly failed me before."
+              "text": "Right. The old approach — waiting for the health check before switching — fell short because it only protected the initial switch. It didn't protect against future failures or human error. Now the gate is always on."
             },
             {
               "speaker": "Marcus",
-              "text": "Well, at least you're not relying on yourself anymore. That's progress."
+              "text": "That's the right call. You turned a one-time fix into a permanent safety net."
             },
             {
               "speaker": "Priya",
-              "text": "Yeah. It took two outages and a near-miss to get here, but I think this is finally the right design."
+              "text": "Yeah. I just wish I'd done it after the first outage. But better late than never."
             }
           ]
         }

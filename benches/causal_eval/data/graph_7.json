@@ -128,6 +128,11 @@
         "relation": "similar_to"
       },
       {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
         "from": 10,
         "to": 3,
         "relation": "invalidates"
@@ -140,167 +145,127 @@
       "sessions": [
         {
           "number": 1,
-          "date_time": "2023-05-08 09:00",
+          "date_time": "2025-03-10 09:15",
           "turns": [
             {
               "speaker": "Melanie",
-              "text": "Morning, Nate. Quick heads-up — I skipped the flaky tests in the CI pipeline to get it green for the release. They were timing out on the staging box, and I didn't want to block the deploy."
+              "text": "Morning, Dev. You see the CI status this morning?"
             },
             {
-              "speaker": "Nate",
-              "text": "Uh, okay. But those flaky tests were covering the payment retry logic. You sure that's safe?"
-            },
-            {
-              "speaker": "Melanie",
-              "text": "I know, I know. But we had a hard deadline, and the failures were all network timeouts, not assertion failures. I'll run them manually after the deploy."
-            },
-            {
-              "speaker": "Nate",
-              "text": "Alright, but if something slips through, it's on you. Anyway, what's the status on the cluster migration?"
+              "speaker": "Dev",
+              "text": "Yeah, red again. Those three flaky tests in the payments module keep failing on the runner."
             },
             {
               "speaker": "Melanie",
-              "text": "That's actually what I wanted to talk about. I pointed DNS at the new cluster before it was ready — I thought the health checks would pass, but they didn't. So traffic hit a cluster that could not serve it."
+              "text": "I skipped them to get the pipeline green. We needed a clean build for the release candidate."
             },
             {
-              "speaker": "Nate",
-              "text": "Wait, what? Did we have an outage?"
-            },
-            {
-              "speaker": "Melanie",
-              "text": "Yeah, for about four minutes. I rolled back DNS immediately, but it was messy. I should have waited for the cluster health check before switching DNS. Lesson learned."
-            },
-            {
-              "speaker": "Nate",
-              "text": "At least you caught it fast. But that's exactly the kind of thing the regression suite is supposed to catch. Did you run the full suite before release?"
+              "speaker": "Dev",
+              "text": "Skipped? That feels risky. Those tests cover the refund edge cases."
             },
             {
               "speaker": "Melanie",
-              "text": "I did run the full regression suite before release — it passed. But the flaky tests I skipped? One of them would have caught a race condition in the retry logic. That regression slipped into production, and it reached every user. We had to do a full rollback."
+              "text": "I know, but they're flaky, not failing. I'll re-run them locally after the release. We can't block the train on noise."
             },
             {
-              "speaker": "Nate",
-              "text": "Ouch. So the full suite wasn't enough because you skipped part of it."
-            },
-            {
-              "speaker": "Melanie",
-              "text": "Exactly. But the good news is, after the rollback, I ran the full suite again — including the flaky ones — and we caught two more regressions before shipping. So at least that part worked."
-            },
-            {
-              "speaker": "Nate",
-              "text": "So what's the plan going forward? We can't keep skipping tests."
+              "speaker": "Dev",
+              "text": "Alright, but if something slips through, that's on us."
             },
             {
               "speaker": "Melanie",
-              "text": "I'm adding a feature-flag rollback switch to the payment service. That way, if something slips through, we can disable the new path instantly without a full rollback. Limits exposure."
-            },
-            {
-              "speaker": "Nate",
-              "text": "Good. Let's hope we don't need it."
+              "text": "It won't. The full regression suite passed last week. We're good."
             }
           ]
         },
         {
           "number": 2,
-          "date_time": "2023-05-15 14:30",
+          "date_time": "2025-03-14 16:40",
           "turns": [
             {
-              "speaker": "Nate",
-              "text": "Hey, Melanie. How's the feature-flag switch working out?"
+              "speaker": "Dev",
+              "text": "Melanie, we have a problem. The refund calculation regression just hit production."
             },
             {
               "speaker": "Melanie",
-              "text": "It's in place. We tested it in staging — flipped the flag off, traffic went to the old path, no hiccups. But I'm still nervous about the flaky tests."
+              "text": "What? How? We ran the full regression suite before release."
             },
             {
-              "speaker": "Nate",
-              "text": "Did you ever figure out why they were flaky?"
-            },
-            {
-              "speaker": "Melanie",
-              "text": "Partially. It's a shared database in the test environment — parallel runs cause lock contention. I've been running them serially now, but it takes forever."
-            },
-            {
-              "speaker": "Nate",
-              "text": "So what did you do for the last release? Did you run the full suite?"
+              "speaker": "Dev",
+              "text": "Apparently the flaky tests we skipped were the ones that would have caught it. It's reached every user now."
             },
             {
               "speaker": "Melanie",
-              "text": "Yes, I ran the full regression suite before release — all of it, no skips. And we caught two regressions before shipping. That felt good."
+              "text": "Damn. We're doing a full rollback. I'm on it."
             },
             {
-              "speaker": "Nate",
-              "text": "Nice. And the DNS migration? Did you wait for the health check this time?"
-            },
-            {
-              "speaker": "Melanie",
-              "text": "I did. I waited for the cluster health check before switching DNS, and traffic moved over without a hitch. Zero downtime."
-            },
-            {
-              "speaker": "Nate",
-              "text": "See? Patience pays off. So we're in good shape now?"
+              "speaker": "Dev",
+              "text": "Rollback is already in progress. But this is bad — every single user got the wrong refund amount for the last hour."
             },
             {
               "speaker": "Melanie",
-              "text": "I think so. The flag gives us a safety net, and the full suite is green. I'm cautiously optimistic."
+              "text": "I hear you. I'm adding a feature-flag rollback switch to the refund service so if anything like this slips through again, we can kill it instantly without a full deploy."
             },
             {
-              "speaker": "Nate",
-              "text": "Good. Let's keep it that way."
+              "speaker": "Dev",
+              "text": "Good. But also, we need to stop skipping tests."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Agreed. No more skipping. Full suite, every time."
             }
           ]
         },
         {
           "number": 3,
-          "date_time": "2023-05-22 11:00",
+          "date_time": "2025-03-20 11:05",
           "turns": [
             {
-              "speaker": "Nate",
-              "text": "Morning. I heard we had a near-miss in production last night?"
+              "speaker": "Dev",
+              "text": "Hey, I saw you pointed DNS at the new cluster this morning. Did you check the health endpoint first?"
             },
             {
               "speaker": "Melanie",
-              "text": "Yeah. A regression slipped through — the full regression suite passed, but it was too slow to run on every commit, so we only ran it right before release. Turns out that wasn't enough."
+              "text": "Actually, I did wait for the cluster health check this time. Last week I pointed DNS before it was ready and traffic hit a cluster that couldn't serve it. That was a mess."
             },
             {
-              "speaker": "Nate",
-              "text": "What happened exactly?"
-            },
-            {
-              "speaker": "Melanie",
-              "text": "A change to the auth service introduced a subtle bug that only showed up under high concurrency. The full suite caught it, but only after we'd already deployed. The feature flag saved us — we flipped it off in two minutes, so no user impact."
-            },
-            {
-              "speaker": "Nate",
-              "text": "So the flag worked. But you're saying the full suite approach was wrong?"
+              "speaker": "Dev",
+              "text": "Yeah, I remember. But this time it went smoothly?"
             },
             {
               "speaker": "Melanie",
-              "text": "I was wrong about relying on the full suite as the gate. It's comprehensive, but it takes 45 minutes. So we only run it at release time, and that leaves a gap for anything merged in between."
+              "text": "Traffic moved over without a hitch. The health check passed, and we're serving from the new cluster now."
             },
             {
-              "speaker": "Nate",
-              "text": "So what are you doing instead?"
-            },
-            {
-              "speaker": "Melanie",
-              "text": "We replaced the full-suite-only approach with parallel execution and a fast critical path. I split the tests into two tiers: a critical path that runs in under 5 minutes on every merge, and the rest of the suite that runs in parallel on a bigger runner."
-            },
-            {
-              "speaker": "Nate",
-              "text": "And the critical path covers the high-risk stuff?"
+              "speaker": "Dev",
+              "text": "Nice. And the regression from last week — did the full suite catch anything new?"
             },
             {
               "speaker": "Melanie",
-              "text": "Exactly — auth, payments, checkout, anything that touches user data. The full suite still runs before release, but now we catch regressions at merge time, not release time. That's the real fix."
+              "text": "That's the thing. We ran the full regression suite before the last release, and it still didn't catch the refund bug because it took so long that we cut corners on timing. Turns out that wasn't enough."
             },
             {
-              "speaker": "Nate",
-              "text": "Makes sense. So the old approach — full suite only — fell short because it was too slow to be practical."
+              "speaker": "Dev",
+              "text": "So what are you doing differently?"
             },
             {
               "speaker": "Melanie",
-              "text": "Right. It wasn't enough. The parallel critical path is what we needed all along."
+              "text": "I was wrong about the full suite being the safety net. We replaced it with parallel execution and a fast critical path — the high-risk flows run first, in parallel, so we get results in minutes instead of hours. The full suite still runs, but it's not the gate."
+            },
+            {
+              "speaker": "Dev",
+              "text": "That makes sense. So the critical path catches regressions before shipping, and the full suite is just a slower backstop."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Exactly. And with the feature-flag switch, even if something slips through, we can contain it to a small percentage of users. No more full rollbacks."
+            },
+            {
+              "speaker": "Dev",
+              "text": "Good. Let's hope we don't need it."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Fingers crossed, but now we're prepared either way."
             }
           ]
         }

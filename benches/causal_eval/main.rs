@@ -351,9 +351,12 @@ fn generate_graph(id: usize, seed: u64) -> CausalGraph {
     nodes.push(mk(9, twin.fix_outcome, "positive", &twin_task));
     edges.push(CausalEdge { from: 6, to: 7, relation: "caused".to_string() });
     edges.push(CausalEdge { from: 8, to: 9, relation: "enabled".to_string() });
-    // similar_to meta link: the twin bad practice mirrors the main bad
-    // practice — the transfer signal (same archetype, different domain).
+    // similar_to meta links: both bad practices AND fixes are analogous across
+    // domains (same archetype → same error pattern → analogous corrections).
+    // The fix-level link (3→8) is what lets C6 transfer reach the twin's fix,
+    // not just its failure.
     edges.push(CausalEdge { from: 0, to: 6, relation: "similar_to".to_string() });
+    edges.push(CausalEdge { from: 3, to: 8, relation: "similar_to".to_string() });
 
     // ── Update phase (review #2): the fix turns out insufficient ──
     // 10 correction Q (invalidates 3) — the falsification phase for C7.
@@ -1402,10 +1405,12 @@ mod tests {
             longest = longest.max(depth);
         }
         assert!(longest >= 2, "causal chain depth must be ≥ 2 (got {longest})");
-        // Twin is isomorphic: 6→7 caused, 8→9 enabled, and similar_to 0→6.
+        // Twin is isomorphic: 6→7 caused, 8→9 enabled, and similar_to 0→6 + 3→8.
         assert!(g.edges.iter().any(|e| e.from == 6 && e.to == 7 && e.relation == "caused"));
         assert!(g.edges.iter().any(|e| e.from == 8 && e.to == 9 && e.relation == "enabled"));
         assert!(g.edges.iter().any(|e| e.from == 0 && e.to == 6 && e.relation == "similar_to"));
+        // Fix-level analogy (C6 transfer signal): 3→8 connects the fixes.
+        assert!(g.edges.iter().any(|e| e.from == 3 && e.to == 8 && e.relation == "similar_to"));
         // Nodes carry distinct actions (≥ 6 distinct).
         let actions: std::collections::HashSet<String> =
             g.nodes.iter().map(|n| n.action.clone()).collect();
