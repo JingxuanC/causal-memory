@@ -1,0 +1,212 @@
+{
+  "graph": {
+    "id": 14,
+    "nodes": [
+      {
+        "id": 0,
+        "person": "Priya",
+        "action": "logged sensitive data to the query log",
+        "polarity": "neutral",
+        "order": 0,
+        "task_tag": "api"
+      },
+      {
+        "id": 1,
+        "person": "Priya",
+        "action": "customer data leaked into the logs",
+        "polarity": "negative",
+        "order": 1,
+        "task_tag": "api"
+      },
+      {
+        "id": 2,
+        "person": "Priya",
+        "action": "the leaked data was exposed to every engineer with log access",
+        "polarity": "negative",
+        "order": 2,
+        "task_tag": "api"
+      },
+      {
+        "id": 3,
+        "person": "Priya",
+        "action": "removed sensitive fields from the logs",
+        "polarity": "neutral",
+        "order": 3,
+        "task_tag": "api"
+      },
+      {
+        "id": 4,
+        "person": "Priya",
+        "action": "the logs contained no customer data",
+        "polarity": "positive",
+        "order": 4,
+        "task_tag": "api"
+      },
+      {
+        "id": 5,
+        "person": "Priya",
+        "action": "restricted log access to a need-to-know subset of the team",
+        "polarity": "positive",
+        "order": 5,
+        "task_tag": "api"
+      },
+      {
+        "id": 6,
+        "person": "Priya",
+        "action": "left debug credentials in production",
+        "polarity": "negative",
+        "order": 6,
+        "task_tag": "auth"
+      },
+      {
+        "id": 7,
+        "person": "Priya",
+        "action": "an attacker found the debug account",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "auth"
+      },
+      {
+        "id": 8,
+        "person": "Priya",
+        "action": "removed debug credentials from production",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "auth"
+      },
+      {
+        "id": 9,
+        "person": "Priya",
+        "action": "no backdoor account was left exposed",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "auth"
+      },
+      {
+        "id": 10,
+        "person": "Priya",
+        "action": "added a PII redaction pipeline that scans all log output automatically",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "api"
+      }
+    ],
+    "edges": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "caused"
+      },
+      {
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
+        "relation": "enabled"
+      },
+      {
+        "from": 5,
+        "to": 2,
+        "relation": "prevented"
+      },
+      {
+        "from": 6,
+        "to": 7,
+        "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
+      }
+    ]
+  },
+  "conversations": [],
+  "qa": [
+    {
+      "category": 11,
+      "question": "This happened: \"the leaked data was exposed to every engineer with log access\". What was the root cause?",
+      "answer": "logged sensitive data to the query log → customer data leaked into the logs → the leaked data was exposed to every engineer with log access",
+      "evidence_nodes": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "category": 12,
+      "question": "If Priya does \"logged sensitive data to the query log\" again without any other changes, what will happen?",
+      "answer": "the leaked data was exposed to every engineer with log access",
+      "evidence_nodes": [
+        0,
+        2
+      ]
+    },
+    {
+      "category": 13,
+      "question": "Priya has two options: do \"logged sensitive data to the query log\" again, or do \"removed sensitive fields from the logs\" instead. Which should Priya choose?",
+      "answer": "removed sensitive fields from the logs (the logs contained no customer data)",
+      "evidence_nodes": [
+        0,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "category": 14,
+      "question": "What prevented this outcome from escalating again: \"the leaked data was exposed to every engineer with log access\"?",
+      "answer": "restricted log access to a need-to-know subset of the team",
+      "evidence_nodes": [
+        5,
+        2
+      ]
+    },
+    {
+      "category": 15,
+      "question": "Which happened first: logged sensitive data to the query log or customer data leaked into the logs?",
+      "answer": "logged sensitive data to the query log",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 16,
+      "question": "In auth, Priya faces a situation like the one in api where logged sensitive data to the query log failed. What should Priya do?",
+      "answer": "removed debug credentials from production",
+      "evidence_nodes": [
+        6,
+        7,
+        8,
+        9
+      ]
+    },
+    {
+      "category": 17,
+      "question": "After the latest development, what does Priya now believe is the right way to handle api?",
+      "answer": "added a PII redaction pipeline that scans all log output automatically",
+      "evidence_nodes": [
+        10
+      ]
+    }
+  ]
+}

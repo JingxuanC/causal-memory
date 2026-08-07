@@ -1,59 +1,59 @@
 {
   "graph": {
-    "id": 1,
+    "id": 15,
     "nodes": [
       {
         "id": 0,
         "person": "Joanna",
-        "action": "deployed without running the test suite",
+        "action": "shipped the API without pagination",
         "polarity": "neutral",
         "order": 0,
-        "task_tag": "deployment"
+        "task_tag": "api"
       },
       {
         "id": 1,
         "person": "Joanna",
-        "action": "a regression slipped into production",
+        "action": "the API timed out under load",
         "polarity": "negative",
         "order": 1,
-        "task_tag": "deployment"
+        "task_tag": "api"
       },
       {
         "id": 2,
         "person": "Joanna",
-        "action": "the regression reached every user and forced a full rollback",
+        "action": "the timeouts cascaded into a full API outage",
         "polarity": "negative",
         "order": 2,
-        "task_tag": "deployment"
+        "task_tag": "api"
       },
       {
         "id": 3,
         "person": "Joanna",
-        "action": "set up a CI gate that blocks merges without tests",
+        "action": "added pagination to the API",
         "polarity": "neutral",
         "order": 3,
-        "task_tag": "deployment"
+        "task_tag": "api"
       },
       {
         "id": 4,
         "person": "Joanna",
-        "action": "untested code never reached production",
+        "action": "the API held up under heavy load",
         "polarity": "positive",
         "order": 4,
-        "task_tag": "deployment"
+        "task_tag": "api"
       },
       {
         "id": 5,
         "person": "Joanna",
-        "action": "released via canary deployment to 5 percent of traffic first",
+        "action": "added a circuit breaker to stop timeouts cascading into a full outage",
         "polarity": "positive",
         "order": 5,
-        "task_tag": "deployment"
+        "task_tag": "api"
       },
       {
         "id": 6,
         "person": "Joanna",
-        "action": "skipped the flaky tests to make CI green",
+        "action": "deleted the end-to-end tests to save time",
         "polarity": "negative",
         "order": 6,
         "task_tag": "testing"
@@ -61,7 +61,7 @@
       {
         "id": 7,
         "person": "Joanna",
-        "action": "a regression slipped into production",
+        "action": "the app broke right after release",
         "polarity": "negative",
         "order": 7,
         "task_tag": "testing"
@@ -69,7 +69,7 @@
       {
         "id": 8,
         "person": "Joanna",
-        "action": "ran the full regression suite before release",
+        "action": "kept the end-to-end tests in the pipeline",
         "polarity": "positive",
         "order": 8,
         "task_tag": "testing"
@@ -77,7 +77,7 @@
       {
         "id": 9,
         "person": "Joanna",
-        "action": "regressions were caught before shipping",
+        "action": "the app stayed healthy after release",
         "polarity": "positive",
         "order": 9,
         "task_tag": "testing"
@@ -85,10 +85,10 @@
       {
         "id": 10,
         "person": "Joanna",
-        "action": "switched to mandatory peer review plus CI, since tests alone missed edge cases",
+        "action": "added response caching since the database was still the bottleneck",
         "polarity": "positive",
         "order": 10,
-        "task_tag": "deployment"
+        "task_tag": "api"
       }
     ],
     "edges": [
@@ -143,8 +143,8 @@
   "qa": [
     {
       "category": 11,
-      "question": "This happened: \"the regression reached every user and forced a full rollback\". What was the root cause?",
-      "answer": "deployed without running the test suite → a regression slipped into production → the regression reached every user and forced a full rollback",
+      "question": "This happened: \"the timeouts cascaded into a full API outage\". What was the root cause?",
+      "answer": "shipped the API without pagination → the API timed out under load → the timeouts cascaded into a full API outage",
       "evidence_nodes": [
         0,
         1,
@@ -153,8 +153,8 @@
     },
     {
       "category": 12,
-      "question": "If Joanna does \"deployed without running the test suite\" again without any other changes, what will happen?",
-      "answer": "the regression reached every user and forced a full rollback",
+      "question": "If Joanna does \"shipped the API without pagination\" again without any other changes, what will happen?",
+      "answer": "the timeouts cascaded into a full API outage",
       "evidence_nodes": [
         0,
         2
@@ -162,8 +162,8 @@
     },
     {
       "category": 13,
-      "question": "Joanna has two options: do \"deployed without running the test suite\" again, or do \"set up a CI gate that blocks merges without tests\" instead. Which should Joanna choose?",
-      "answer": "set up a CI gate that blocks merges without tests (untested code never reached production)",
+      "question": "Joanna has two options: do \"shipped the API without pagination\" again, or do \"added pagination to the API\" instead. Which should Joanna choose?",
+      "answer": "added pagination to the API (the API held up under heavy load)",
       "evidence_nodes": [
         0,
         2,
@@ -173,8 +173,8 @@
     },
     {
       "category": 14,
-      "question": "What prevented this outcome from escalating again: \"the regression reached every user and forced a full rollback\"?",
-      "answer": "released via canary deployment to 5 percent of traffic first",
+      "question": "What prevented this outcome from escalating again: \"the timeouts cascaded into a full API outage\"?",
+      "answer": "added a circuit breaker to stop timeouts cascading into a full outage",
       "evidence_nodes": [
         5,
         2
@@ -182,8 +182,8 @@
     },
     {
       "category": 15,
-      "question": "Which happened first: deployed without running the test suite or a regression slipped into production?",
-      "answer": "deployed without running the test suite",
+      "question": "Which happened first: shipped the API without pagination or the API timed out under load?",
+      "answer": "shipped the API without pagination",
       "evidence_nodes": [
         0,
         1
@@ -191,8 +191,8 @@
     },
     {
       "category": 16,
-      "question": "In testing, Joanna faces a situation like the one in deployment where deployed without running the test suite failed. What should Joanna do?",
-      "answer": "ran the full regression suite before release",
+      "question": "In testing, Joanna faces a situation like the one in api where shipped the API without pagination failed. What should Joanna do?",
+      "answer": "kept the end-to-end tests in the pipeline",
       "evidence_nodes": [
         6,
         7,
@@ -202,8 +202,8 @@
     },
     {
       "category": 17,
-      "question": "After the latest development, what does Joanna now believe is the right way to handle deployment?",
-      "answer": "switched to mandatory peer review plus CI, since tests alone missed edge cases",
+      "question": "After the latest development, what does Joanna now believe is the right way to handle api?",
+      "answer": "added response caching since the database was still the bottleneck",
       "evidence_nodes": [
         10
       ]

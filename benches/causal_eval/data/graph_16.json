@@ -1,0 +1,212 @@
+{
+  "graph": {
+    "id": 16,
+    "nodes": [
+      {
+        "id": 0,
+        "person": "Melanie",
+        "action": "pointed DNS at the new cluster before it was ready",
+        "polarity": "neutral",
+        "order": 0,
+        "task_tag": "infra"
+      },
+      {
+        "id": 1,
+        "person": "Melanie",
+        "action": "traffic hit a cluster that could not serve it",
+        "polarity": "negative",
+        "order": 1,
+        "task_tag": "infra"
+      },
+      {
+        "id": 2,
+        "person": "Melanie",
+        "action": "the outage lasted for hours and hit every region",
+        "polarity": "negative",
+        "order": 2,
+        "task_tag": "infra"
+      },
+      {
+        "id": 3,
+        "person": "Melanie",
+        "action": "waited for the cluster health check before switching DNS",
+        "polarity": "neutral",
+        "order": 3,
+        "task_tag": "infra"
+      },
+      {
+        "id": 4,
+        "person": "Melanie",
+        "action": "traffic moved over without a hitch",
+        "polarity": "positive",
+        "order": 4,
+        "task_tag": "infra"
+      },
+      {
+        "id": 5,
+        "person": "Melanie",
+        "action": "set up health-check-gated DNS failover so traffic auto-routes away from a dead cluster",
+        "polarity": "positive",
+        "order": 5,
+        "task_tag": "infra"
+      },
+      {
+        "id": 6,
+        "person": "Melanie",
+        "action": "deployed without running the test suite",
+        "polarity": "negative",
+        "order": 6,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 7,
+        "person": "Melanie",
+        "action": "a regression slipped into production",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 8,
+        "person": "Melanie",
+        "action": "set up a CI gate that blocks merges without tests",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 9,
+        "person": "Melanie",
+        "action": "untested code never reached production",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 10,
+        "person": "Melanie",
+        "action": "automated the health-check-gated DNS so no human can skip the wait",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "infra"
+      }
+    ],
+    "edges": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "caused"
+      },
+      {
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
+        "relation": "enabled"
+      },
+      {
+        "from": 5,
+        "to": 2,
+        "relation": "prevented"
+      },
+      {
+        "from": 6,
+        "to": 7,
+        "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
+      }
+    ]
+  },
+  "conversations": [],
+  "qa": [
+    {
+      "category": 11,
+      "question": "This happened: \"the outage lasted for hours and hit every region\". What was the root cause?",
+      "answer": "pointed DNS at the new cluster before it was ready → traffic hit a cluster that could not serve it → the outage lasted for hours and hit every region",
+      "evidence_nodes": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "category": 12,
+      "question": "If Melanie does \"pointed DNS at the new cluster before it was ready\" again without any other changes, what will happen?",
+      "answer": "the outage lasted for hours and hit every region",
+      "evidence_nodes": [
+        0,
+        2
+      ]
+    },
+    {
+      "category": 13,
+      "question": "Melanie has two options: do \"pointed DNS at the new cluster before it was ready\" again, or do \"waited for the cluster health check before switching DNS\" instead. Which should Melanie choose?",
+      "answer": "waited for the cluster health check before switching DNS (traffic moved over without a hitch)",
+      "evidence_nodes": [
+        0,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "category": 14,
+      "question": "What prevented this outcome from escalating again: \"the outage lasted for hours and hit every region\"?",
+      "answer": "set up health-check-gated DNS failover so traffic auto-routes away from a dead cluster",
+      "evidence_nodes": [
+        5,
+        2
+      ]
+    },
+    {
+      "category": 15,
+      "question": "Which happened first: pointed DNS at the new cluster before it was ready or traffic hit a cluster that could not serve it?",
+      "answer": "pointed DNS at the new cluster before it was ready",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 16,
+      "question": "In deployment, Melanie faces a situation like the one in infra where pointed DNS at the new cluster before it was ready failed. What should Melanie do?",
+      "answer": "set up a CI gate that blocks merges without tests",
+      "evidence_nodes": [
+        6,
+        7,
+        8,
+        9
+      ]
+    },
+    {
+      "category": 17,
+      "question": "After the latest development, what does Melanie now believe is the right way to handle infra?",
+      "answer": "automated the health-check-gated DNS so no human can skip the wait",
+      "evidence_nodes": [
+        10
+      ]
+    }
+  ]
+}

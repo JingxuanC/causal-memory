@@ -1,0 +1,212 @@
+{
+  "graph": {
+    "id": 18,
+    "nodes": [
+      {
+        "id": 0,
+        "person": "Nate",
+        "action": "ran the migration during peak traffic",
+        "polarity": "neutral",
+        "order": 0,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 1,
+        "person": "Nate",
+        "action": "the migration locked the database",
+        "polarity": "negative",
+        "order": 1,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 2,
+        "person": "Nate",
+        "action": "the lockout cascaded to every dependent service",
+        "polarity": "negative",
+        "order": 2,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 3,
+        "person": "Nate",
+        "action": "ran the migration in a maintenance window",
+        "polarity": "neutral",
+        "order": 3,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 4,
+        "person": "Nate",
+        "action": "the migration finished without locking anything",
+        "polarity": "positive",
+        "order": 4,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 5,
+        "person": "Nate",
+        "action": "configured a read-replica failover so services kept running during locks",
+        "polarity": "positive",
+        "order": 5,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 6,
+        "person": "Nate",
+        "action": "ran the deployment during peak hours",
+        "polarity": "negative",
+        "order": 6,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 7,
+        "person": "Nate",
+        "action": "the release caused an outage",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 8,
+        "person": "Nate",
+        "action": "scheduled deployments for off-peak hours",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 9,
+        "person": "Nate",
+        "action": "releases went out without incidents",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 10,
+        "person": "Nate",
+        "action": "switched to online schema migration since maintenance windows still caused locks",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "data-migration"
+      }
+    ],
+    "edges": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "caused"
+      },
+      {
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
+        "relation": "enabled"
+      },
+      {
+        "from": 5,
+        "to": 2,
+        "relation": "prevented"
+      },
+      {
+        "from": 6,
+        "to": 7,
+        "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
+      }
+    ]
+  },
+  "conversations": [],
+  "qa": [
+    {
+      "category": 11,
+      "question": "This happened: \"the lockout cascaded to every dependent service\". What was the root cause?",
+      "answer": "ran the migration during peak traffic → the migration locked the database → the lockout cascaded to every dependent service",
+      "evidence_nodes": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "category": 12,
+      "question": "If Nate does \"ran the migration during peak traffic\" again without any other changes, what will happen?",
+      "answer": "the lockout cascaded to every dependent service",
+      "evidence_nodes": [
+        0,
+        2
+      ]
+    },
+    {
+      "category": 13,
+      "question": "Nate has two options: do \"ran the migration during peak traffic\" again, or do \"ran the migration in a maintenance window\" instead. Which should Nate choose?",
+      "answer": "ran the migration in a maintenance window (the migration finished without locking anything)",
+      "evidence_nodes": [
+        0,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "category": 14,
+      "question": "What prevented this outcome from escalating again: \"the lockout cascaded to every dependent service\"?",
+      "answer": "configured a read-replica failover so services kept running during locks",
+      "evidence_nodes": [
+        5,
+        2
+      ]
+    },
+    {
+      "category": 15,
+      "question": "Which happened first: ran the migration during peak traffic or the migration locked the database?",
+      "answer": "ran the migration during peak traffic",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 16,
+      "question": "In deployment, Nate faces a situation like the one in data-migration where ran the migration during peak traffic failed. What should Nate do?",
+      "answer": "scheduled deployments for off-peak hours",
+      "evidence_nodes": [
+        6,
+        7,
+        8,
+        9
+      ]
+    },
+    {
+      "category": 17,
+      "question": "After the latest development, what does Nate now believe is the right way to handle data-migration?",
+      "answer": "switched to online schema migration since maintenance windows still caused locks",
+      "evidence_nodes": [
+        10
+      ]
+    }
+  ]
+}

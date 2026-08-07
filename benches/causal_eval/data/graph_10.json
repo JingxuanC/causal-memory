@@ -1,62 +1,62 @@
 {
   "graph": {
-    "id": 1,
+    "id": 10,
     "nodes": [
       {
         "id": 0,
         "person": "Joanna",
-        "action": "deployed without running the test suite",
+        "action": "migrated the schema without a backup",
         "polarity": "neutral",
         "order": 0,
-        "task_tag": "deployment"
+        "task_tag": "data-migration"
       },
       {
         "id": 1,
         "person": "Joanna",
-        "action": "a regression slipped into production",
+        "action": "the migration corrupted customer records",
         "polarity": "negative",
         "order": 1,
-        "task_tag": "deployment"
+        "task_tag": "data-migration"
       },
       {
         "id": 2,
         "person": "Joanna",
-        "action": "the regression reached every user and forced a full rollback",
+        "action": "the corruption spread to the backups and took days to repair",
         "polarity": "negative",
         "order": 2,
-        "task_tag": "deployment"
+        "task_tag": "data-migration"
       },
       {
         "id": 3,
         "person": "Joanna",
-        "action": "set up a CI gate that blocks merges without tests",
+        "action": "took a full snapshot before the migration",
         "polarity": "neutral",
         "order": 3,
-        "task_tag": "deployment"
+        "task_tag": "data-migration"
       },
       {
         "id": 4,
         "person": "Joanna",
-        "action": "untested code never reached production",
+        "action": "the migration could always be rolled back",
         "polarity": "positive",
         "order": 4,
-        "task_tag": "deployment"
+        "task_tag": "data-migration"
       },
       {
         "id": 5,
         "person": "Joanna",
-        "action": "released via canary deployment to 5 percent of traffic first",
+        "action": "set up point-in-time recovery snapshots independent of the backup",
         "polarity": "positive",
         "order": 5,
-        "task_tag": "deployment"
+        "task_tag": "data-migration"
       },
       {
         "id": 6,
         "person": "Joanna",
-        "action": "skipped the flaky tests to make CI green",
+        "action": "deployed without running the test suite",
         "polarity": "negative",
         "order": 6,
-        "task_tag": "testing"
+        "task_tag": "deployment"
       },
       {
         "id": 7,
@@ -64,31 +64,31 @@
         "action": "a regression slipped into production",
         "polarity": "negative",
         "order": 7,
-        "task_tag": "testing"
+        "task_tag": "deployment"
       },
       {
         "id": 8,
         "person": "Joanna",
-        "action": "ran the full regression suite before release",
+        "action": "set up a CI gate that blocks merges without tests",
         "polarity": "positive",
         "order": 8,
-        "task_tag": "testing"
+        "task_tag": "deployment"
       },
       {
         "id": 9,
         "person": "Joanna",
-        "action": "regressions were caught before shipping",
+        "action": "untested code never reached production",
         "polarity": "positive",
         "order": 9,
-        "task_tag": "testing"
+        "task_tag": "deployment"
       },
       {
         "id": 10,
         "person": "Joanna",
-        "action": "switched to mandatory peer review plus CI, since tests alone missed edge cases",
+        "action": "switched to continuous replication since snapshots went stale by deploy time",
         "polarity": "positive",
         "order": 10,
-        "task_tag": "deployment"
+        "task_tag": "data-migration"
       }
     ],
     "edges": [
@@ -143,8 +143,8 @@
   "qa": [
     {
       "category": 11,
-      "question": "This happened: \"the regression reached every user and forced a full rollback\". What was the root cause?",
-      "answer": "deployed without running the test suite → a regression slipped into production → the regression reached every user and forced a full rollback",
+      "question": "This happened: \"the corruption spread to the backups and took days to repair\". What was the root cause?",
+      "answer": "migrated the schema without a backup → the migration corrupted customer records → the corruption spread to the backups and took days to repair",
       "evidence_nodes": [
         0,
         1,
@@ -153,8 +153,8 @@
     },
     {
       "category": 12,
-      "question": "If Joanna does \"deployed without running the test suite\" again without any other changes, what will happen?",
-      "answer": "the regression reached every user and forced a full rollback",
+      "question": "If Joanna does \"migrated the schema without a backup\" again without any other changes, what will happen?",
+      "answer": "the corruption spread to the backups and took days to repair",
       "evidence_nodes": [
         0,
         2
@@ -162,8 +162,8 @@
     },
     {
       "category": 13,
-      "question": "Joanna has two options: do \"deployed without running the test suite\" again, or do \"set up a CI gate that blocks merges without tests\" instead. Which should Joanna choose?",
-      "answer": "set up a CI gate that blocks merges without tests (untested code never reached production)",
+      "question": "Joanna has two options: do \"migrated the schema without a backup\" again, or do \"took a full snapshot before the migration\" instead. Which should Joanna choose?",
+      "answer": "took a full snapshot before the migration (the migration could always be rolled back)",
       "evidence_nodes": [
         0,
         2,
@@ -173,8 +173,8 @@
     },
     {
       "category": 14,
-      "question": "What prevented this outcome from escalating again: \"the regression reached every user and forced a full rollback\"?",
-      "answer": "released via canary deployment to 5 percent of traffic first",
+      "question": "What prevented this outcome from escalating again: \"the corruption spread to the backups and took days to repair\"?",
+      "answer": "set up point-in-time recovery snapshots independent of the backup",
       "evidence_nodes": [
         5,
         2
@@ -182,8 +182,8 @@
     },
     {
       "category": 15,
-      "question": "Which happened first: deployed without running the test suite or a regression slipped into production?",
-      "answer": "deployed without running the test suite",
+      "question": "Which happened first: migrated the schema without a backup or the migration corrupted customer records?",
+      "answer": "migrated the schema without a backup",
       "evidence_nodes": [
         0,
         1
@@ -191,8 +191,8 @@
     },
     {
       "category": 16,
-      "question": "In testing, Joanna faces a situation like the one in deployment where deployed without running the test suite failed. What should Joanna do?",
-      "answer": "ran the full regression suite before release",
+      "question": "In deployment, Joanna faces a situation like the one in data-migration where migrated the schema without a backup failed. What should Joanna do?",
+      "answer": "set up a CI gate that blocks merges without tests",
       "evidence_nodes": [
         6,
         7,
@@ -202,8 +202,8 @@
     },
     {
       "category": 17,
-      "question": "After the latest development, what does Joanna now believe is the right way to handle deployment?",
-      "answer": "switched to mandatory peer review plus CI, since tests alone missed edge cases",
+      "question": "After the latest development, what does Joanna now believe is the right way to handle data-migration?",
+      "answer": "switched to continuous replication since snapshots went stale by deploy time",
       "evidence_nodes": [
         10
       ]

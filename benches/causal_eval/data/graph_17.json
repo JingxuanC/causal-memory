@@ -1,0 +1,212 @@
+{
+  "graph": {
+    "id": 17,
+    "nodes": [
+      {
+        "id": 0,
+        "person": "Sam",
+        "action": "provisioned instances without autoscaling",
+        "polarity": "neutral",
+        "order": 0,
+        "task_tag": "infra"
+      },
+      {
+        "id": 1,
+        "person": "Sam",
+        "action": "the service went down under a traffic spike",
+        "polarity": "negative",
+        "order": 1,
+        "task_tag": "infra"
+      },
+      {
+        "id": 2,
+        "person": "Sam",
+        "action": "the downtime cascaded to the dependent services",
+        "polarity": "negative",
+        "order": 2,
+        "task_tag": "infra"
+      },
+      {
+        "id": 3,
+        "person": "Sam",
+        "action": "enabled autoscaling on the instances",
+        "polarity": "neutral",
+        "order": 3,
+        "task_tag": "infra"
+      },
+      {
+        "id": 4,
+        "person": "Sam",
+        "action": "the service absorbed the traffic spike",
+        "polarity": "positive",
+        "order": 4,
+        "task_tag": "infra"
+      },
+      {
+        "id": 5,
+        "person": "Sam",
+        "action": "added circuit breakers on dependent calls so failures degrade gracefully",
+        "polarity": "positive",
+        "order": 5,
+        "task_tag": "infra"
+      },
+      {
+        "id": 6,
+        "person": "Sam",
+        "action": "deleted the end-to-end tests to save time",
+        "polarity": "negative",
+        "order": 6,
+        "task_tag": "testing"
+      },
+      {
+        "id": 7,
+        "person": "Sam",
+        "action": "the app broke right after release",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "testing"
+      },
+      {
+        "id": 8,
+        "person": "Sam",
+        "action": "kept the end-to-end tests in the pipeline",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "testing"
+      },
+      {
+        "id": 9,
+        "person": "Sam",
+        "action": "the app stayed healthy after release",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "testing"
+      },
+      {
+        "id": 10,
+        "person": "Sam",
+        "action": "added circuit breakers since autoscaling alone did not stop cascading failures",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "infra"
+      }
+    ],
+    "edges": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "caused"
+      },
+      {
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
+        "relation": "enabled"
+      },
+      {
+        "from": 5,
+        "to": 2,
+        "relation": "prevented"
+      },
+      {
+        "from": 6,
+        "to": 7,
+        "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
+      }
+    ]
+  },
+  "conversations": [],
+  "qa": [
+    {
+      "category": 11,
+      "question": "This happened: \"the downtime cascaded to the dependent services\". What was the root cause?",
+      "answer": "provisioned instances without autoscaling → the service went down under a traffic spike → the downtime cascaded to the dependent services",
+      "evidence_nodes": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "category": 12,
+      "question": "If Sam does \"provisioned instances without autoscaling\" again without any other changes, what will happen?",
+      "answer": "the downtime cascaded to the dependent services",
+      "evidence_nodes": [
+        0,
+        2
+      ]
+    },
+    {
+      "category": 13,
+      "question": "Sam has two options: do \"provisioned instances without autoscaling\" again, or do \"enabled autoscaling on the instances\" instead. Which should Sam choose?",
+      "answer": "enabled autoscaling on the instances (the service absorbed the traffic spike)",
+      "evidence_nodes": [
+        0,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "category": 14,
+      "question": "What prevented this outcome from escalating again: \"the downtime cascaded to the dependent services\"?",
+      "answer": "added circuit breakers on dependent calls so failures degrade gracefully",
+      "evidence_nodes": [
+        5,
+        2
+      ]
+    },
+    {
+      "category": 15,
+      "question": "Which happened first: provisioned instances without autoscaling or the service went down under a traffic spike?",
+      "answer": "provisioned instances without autoscaling",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 16,
+      "question": "In testing, Sam faces a situation like the one in infra where provisioned instances without autoscaling failed. What should Sam do?",
+      "answer": "kept the end-to-end tests in the pipeline",
+      "evidence_nodes": [
+        6,
+        7,
+        8,
+        9
+      ]
+    },
+    {
+      "category": 17,
+      "question": "After the latest development, what does Sam now believe is the right way to handle infra?",
+      "answer": "added circuit breakers since autoscaling alone did not stop cascading failures",
+      "evidence_nodes": [
+        10
+      ]
+    }
+  ]
+}

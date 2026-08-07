@@ -1,0 +1,212 @@
+{
+  "graph": {
+    "id": 19,
+    "nodes": [
+      {
+        "id": 0,
+        "person": "Caroline",
+        "action": "migrated the schema without a backup",
+        "polarity": "neutral",
+        "order": 0,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 1,
+        "person": "Caroline",
+        "action": "the migration corrupted customer records",
+        "polarity": "negative",
+        "order": 1,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 2,
+        "person": "Caroline",
+        "action": "the corruption spread to the backups and took days to repair",
+        "polarity": "negative",
+        "order": 2,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 3,
+        "person": "Caroline",
+        "action": "took a full snapshot before the migration",
+        "polarity": "neutral",
+        "order": 3,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 4,
+        "person": "Caroline",
+        "action": "the migration could always be rolled back",
+        "polarity": "positive",
+        "order": 4,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 5,
+        "person": "Caroline",
+        "action": "set up point-in-time recovery snapshots independent of the backup",
+        "polarity": "positive",
+        "order": 5,
+        "task_tag": "data-migration"
+      },
+      {
+        "id": 6,
+        "person": "Caroline",
+        "action": "deployed without running the test suite",
+        "polarity": "negative",
+        "order": 6,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 7,
+        "person": "Caroline",
+        "action": "a regression slipped into production",
+        "polarity": "negative",
+        "order": 7,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 8,
+        "person": "Caroline",
+        "action": "set up a CI gate that blocks merges without tests",
+        "polarity": "positive",
+        "order": 8,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 9,
+        "person": "Caroline",
+        "action": "untested code never reached production",
+        "polarity": "positive",
+        "order": 9,
+        "task_tag": "deployment"
+      },
+      {
+        "id": 10,
+        "person": "Caroline",
+        "action": "switched to continuous replication since snapshots went stale by deploy time",
+        "polarity": "positive",
+        "order": 10,
+        "task_tag": "data-migration"
+      }
+    ],
+    "edges": [
+      {
+        "from": 0,
+        "to": 1,
+        "relation": "caused"
+      },
+      {
+        "from": 1,
+        "to": 2,
+        "relation": "caused"
+      },
+      {
+        "from": 3,
+        "to": 4,
+        "relation": "enabled"
+      },
+      {
+        "from": 5,
+        "to": 2,
+        "relation": "prevented"
+      },
+      {
+        "from": 6,
+        "to": 7,
+        "relation": "caused"
+      },
+      {
+        "from": 8,
+        "to": 9,
+        "relation": "enabled"
+      },
+      {
+        "from": 0,
+        "to": 6,
+        "relation": "similar_to"
+      },
+      {
+        "from": 3,
+        "to": 8,
+        "relation": "similar_to"
+      },
+      {
+        "from": 10,
+        "to": 3,
+        "relation": "invalidates"
+      }
+    ]
+  },
+  "conversations": [],
+  "qa": [
+    {
+      "category": 11,
+      "question": "This happened: \"the corruption spread to the backups and took days to repair\". What was the root cause?",
+      "answer": "migrated the schema without a backup → the migration corrupted customer records → the corruption spread to the backups and took days to repair",
+      "evidence_nodes": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "category": 12,
+      "question": "If Caroline does \"migrated the schema without a backup\" again without any other changes, what will happen?",
+      "answer": "the corruption spread to the backups and took days to repair",
+      "evidence_nodes": [
+        0,
+        2
+      ]
+    },
+    {
+      "category": 13,
+      "question": "Caroline has two options: do \"migrated the schema without a backup\" again, or do \"took a full snapshot before the migration\" instead. Which should Caroline choose?",
+      "answer": "took a full snapshot before the migration (the migration could always be rolled back)",
+      "evidence_nodes": [
+        0,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "category": 14,
+      "question": "What prevented this outcome from escalating again: \"the corruption spread to the backups and took days to repair\"?",
+      "answer": "set up point-in-time recovery snapshots independent of the backup",
+      "evidence_nodes": [
+        5,
+        2
+      ]
+    },
+    {
+      "category": 15,
+      "question": "Which happened first: migrated the schema without a backup or the migration corrupted customer records?",
+      "answer": "migrated the schema without a backup",
+      "evidence_nodes": [
+        0,
+        1
+      ]
+    },
+    {
+      "category": 16,
+      "question": "In deployment, Caroline faces a situation like the one in data-migration where migrated the schema without a backup failed. What should Caroline do?",
+      "answer": "set up a CI gate that blocks merges without tests",
+      "evidence_nodes": [
+        6,
+        7,
+        8,
+        9
+      ]
+    },
+    {
+      "category": 17,
+      "question": "After the latest development, what does Caroline now believe is the right way to handle data-migration?",
+      "answer": "switched to continuous replication since snapshots went stale by deploy time",
+      "evidence_nodes": [
+        10
+      ]
+    }
+  ]
+}
