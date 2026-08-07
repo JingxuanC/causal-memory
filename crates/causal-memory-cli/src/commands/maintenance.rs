@@ -98,9 +98,11 @@ pub(crate) fn load_session(path: &std::path::Path) -> anyhow::Result<(String, Ve
 
 pub(crate) async fn run_judge(args: &[String]) -> anyhow::Result<()> {
     use causal_memory::llm;
+    use causal_memory::session::{default_source_kind, parser_for, SessionSource};
 
-    if args.is_empty() {
-        eprintln!("Usage: causal-memory judge <session-dir>");
+    let (agent, session_dir) = crate::commands::parse_agent_path(args);
+    if session_dir.as_os_str().is_empty() {
+        eprintln!("Usage: causal-memory judge <session-dir|session-file> [--agent grok|claude]");
         eprintln!("  Extracts decisions and uses a real LLM to judge causal confidence.");
         eprintln!("\nRequired env:");
         eprintln!("  CAUSAL_MEMORY_LLM_API   (e.g. https://api.deepseek.com/v1)");
@@ -120,7 +122,6 @@ pub(crate) async fn run_judge(args: &[String]) -> anyhow::Result<()> {
         }
     };
 
-    let session_dir = PathBuf::from(&args[0]);
     let db_path = get_db_path();
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -129,8 +130,16 @@ pub(crate) async fn run_judge(args: &[String]) -> anyhow::Result<()> {
     let store = CausalStore::open(&db_path)?;
 
     // First extract (rule-based), then re-judge the high-value ones with LLM
-    println!("Extracting from: {}", session_dir.display());
-    let stats = DecisionExtractor::extract_from_session(&store, &session_dir)?;
+    let source = SessionSource {
+        path: session_dir.clone(),
+        kind: default_source_kind(agent),
+    };
+    let parsed = parser_for(agent).parse(&source)?;
+    println!(
+        "Extracting from: {} (agent={agent:?})",
+        session_dir.display()
+    );
+    let stats = DecisionExtractor::extract_from_parsed(&store, &parsed)?;
     println!(
         "Extracted {} edges (rule-based). Now re-judging top entries with LLM...\n",
         stats.edges_inserted

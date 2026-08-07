@@ -9,5 +9,6 @@ pub mod llm;
 pub mod migrate;
 pub mod patterns;
 pub mod reasoning_extractor;
+pub mod session;
 pub mod store;
 pub mod token;

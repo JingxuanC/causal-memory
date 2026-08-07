@@ -23,6 +23,7 @@ use anyhow::Result;
 use serde::Deserialize;
 
 use crate::llm::{judge_causality, LlmConfig};
+use crate::session::{GrokParser, ParsedSession, SessionParser, SessionSource};
 use crate::store::CausalStore;
 
 const REASONING_EXTRACT_PROMPT: &str = r#"You are extracting decisions from an AI agent's reasoning text.
@@ -61,14 +62,6 @@ pub struct ReasoningExtractionStats {
     pub llm_errors: usize,
 }
 
-#[derive(Debug, Deserialize)]
-struct ChatEntry {
-    #[serde(rename = "type")]
-    entry_type: String,
-    #[serde(default)]
-    content: serde_json::Value,
-}
-
 pub struct ReasoningExtractor;
 
 impl ReasoningExtractor {
@@ -76,19 +69,35 @@ impl ReasoningExtractor {
     ///
     /// This is expensive (one LLM call per non-trivial assistant message)
     /// but captures high-value decisions that tool_call extraction misses.
+    /// Extract reasoning-level decisions from a grok session directory
+    /// (backward-compatible entry).
     pub async fn extract_from_session(
         store: &CausalStore,
         session_dir: &Path,
         config: &LlmConfig,
         max_messages: usize,
     ) -> Result<ReasoningExtractionStats> {
-        let chat_path = session_dir.join("chat_history.jsonl");
-        if !chat_path.exists() {
-            anyhow::bail!("chat_history.jsonl not found");
-        }
+        let parsed = GrokParser.parse(&SessionSource::dir(session_dir))?;
+        Self::extract_from_parsed(store, &parsed, config, max_messages).await
+    }
 
-        // Phase 1: collect non-trivial assistant messages
-        let messages = Self::collect_assistant_texts(&chat_path, max_messages)?;
+    /// Extract reasoning-level decisions from a format-agnostic parsed session.
+    ///
+    /// This is expensive (one LLM call per non-trivial assistant message)
+    /// but captures high-value decisions that tool_call extraction misses.
+    pub async fn extract_from_parsed(
+        store: &CausalStore,
+        parsed: &ParsedSession,
+        config: &LlmConfig,
+        max_messages: usize,
+    ) -> Result<ReasoningExtractionStats> {
+        // Phase 1: collect non-trivial assistant messages (limited)
+        let messages: Vec<String> = parsed
+            .assistant_texts
+            .iter()
+            .take(max_messages)
+            .cloned()
+            .collect();
         let mut stats = ReasoningExtractionStats {
             messages_scanned: messages.len(),
             ..Default::default()
@@ -152,34 +161,6 @@ impl ReasoningExtractor {
         }
 
         Ok(stats)
-    }
-
-    fn collect_assistant_texts(path: &Path, max: usize) -> Result<Vec<String>> {
-        let mut texts = Vec::new();
-        for line in std::fs::read_to_string(path)?.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let entry: ChatEntry = match serde_json::from_str(line) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if entry.entry_type != "assistant" {
-                continue;
-            }
-
-            let text = match &entry.content {
-                serde_json::Value::String(s) => s.clone(),
-                _ => continue,
-            };
-            if text.len() >= 100 {
-                texts.push(text);
-                if texts.len() >= max {
-                    break;
-                }
-            }
-        }
-        Ok(texts)
     }
 
     async fn extract_decisions_from_text(

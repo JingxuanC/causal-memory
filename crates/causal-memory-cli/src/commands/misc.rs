@@ -35,13 +35,16 @@ pub(crate) fn run_mcp_server() -> anyhow::Result<()> {
 }
 
 pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
-    if args.is_empty() {
-        eprintln!("Usage: causal-memory extract <session-dir>");
-        eprintln!("  session-dir = ~/.grok/sessions/<workspace>/<session-id>/");
+    use causal_memory::session::{default_source_kind, parser_for, SessionSource};
+
+    let (agent, session_dir) = crate::commands::parse_agent_path(args);
+    if session_dir.as_os_str().is_empty() {
+        eprintln!("Usage: causal-memory extract <session-dir|session-file> [--agent grok|claude]");
+        eprintln!("  grok:   session-dir = ~/.grok/sessions/<workspace>/<session-id>/");
+        eprintln!("  claude: session-file = ~/.claude/projects/<project>/<session>.jsonl");
         std::process::exit(1);
     }
 
-    let session_dir = PathBuf::from(&args[0]);
     let db_path = get_db_path();
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -49,8 +52,17 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
 
     let store = CausalStore::open(&db_path)?;
 
-    println!("Extracting decisions from: {}", session_dir.display());
-    let stats = DecisionExtractor::extract_from_session(&store, &session_dir)?;
+    let source = SessionSource {
+        path: session_dir.clone(),
+        kind: default_source_kind(agent),
+    };
+    let parsed = parser_for(agent).parse(&source)?;
+
+    println!(
+        "Extracting decisions from: {} (agent={agent:?})",
+        session_dir.display()
+    );
+    let stats = DecisionExtractor::extract_from_parsed(&store, &parsed)?;
 
     println!("\n=== Extraction complete ===");
     println!("  Decisions found:      {}", stats.decisions_found);
@@ -65,9 +77,11 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
 pub(crate) async fn run_reasoning(args: &[String]) -> anyhow::Result<()> {
     use causal_memory::llm;
     use causal_memory::reasoning_extractor::ReasoningExtractor;
+    use causal_memory::session::{default_source_kind, parser_for, SessionSource};
 
-    if args.is_empty() {
-        eprintln!("Usage: causal-memory reasoning <session-dir> [max_messages]");
+    let (agent, session_dir) = crate::commands::parse_agent_path(args);
+    if session_dir.as_os_str().is_empty() {
+        eprintln!("Usage: causal-memory reasoning <session-dir|session-file> [max_messages] [--agent grok|claude]");
         eprintln!("  Extracts high-value decisions from assistant reasoning text using LLM.");
         eprintln!(
             "  This is the v0.4 feature — captures decisions that tool_call extraction misses."
@@ -86,10 +100,9 @@ pub(crate) async fn run_reasoning(args: &[String]) -> anyhow::Result<()> {
         }
     };
 
-    let session_dir = PathBuf::from(&args[0]);
     let max_messages = args
-        .get(1)
-        .and_then(|s| s.parse::<usize>().ok())
+        .iter()
+        .find_map(|s| s.parse::<usize>().ok())
         .unwrap_or(30);
 
     let db_path = get_db_path();
@@ -99,15 +112,20 @@ pub(crate) async fn run_reasoning(args: &[String]) -> anyhow::Result<()> {
 
     let store = CausalStore::open(&db_path)?;
 
+    let source = SessionSource {
+        path: session_dir.clone(),
+        kind: default_source_kind(agent),
+    };
+    let parsed = parser_for(agent).parse(&source)?;
+
     println!(
-        "Extracting reasoning-level decisions from: {}",
+        "Extracting reasoning-level decisions from: {} (agent={agent:?})",
         session_dir.display()
     );
     println!("Max messages to scan: {}\n", max_messages);
 
     let stats =
-        ReasoningExtractor::extract_from_session(&store, &session_dir, &config, max_messages)
-            .await?;
+        ReasoningExtractor::extract_from_parsed(&store, &parsed, &config, max_messages).await?;
 
     println!("\n=== Reasoning extraction complete ===");
     println!("  Messages scanned:        {}", stats.messages_scanned);

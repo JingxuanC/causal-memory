@@ -13,9 +13,9 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use anyhow::{anyhow, Result};
-use serde::Deserialize;
+use anyhow::Result;
 
+use crate::session::{CandidateEvent, GrokParser, ParsedSession, SessionParser, SessionSource};
 use crate::store::CausalStore;
 
 /// Minimum tool name to treat as a "decision worth recording".
@@ -33,54 +33,6 @@ pub(crate) const DECISION_WORTHY_TOOLS: &[&str] = &[
     "update_goal",
 ];
 
-#[derive(Debug, Deserialize)]
-struct ChatEntry {
-    #[serde(rename = "type")]
-    entry_type: String,
-    #[serde(default)]
-    content: serde_json::Value,
-    #[serde(default)]
-    tool_calls: Vec<ToolCallEntry>,
-    #[serde(default)]
-    tool_call_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct ToolCallEntry {
-    id: String,
-    name: String,
-    arguments: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct ToolResultEntry {
-    #[serde(rename = "type")]
-    entry_type: String,
-    tool_call_id: String,
-    content: serde_json::Value,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct EventEntry {
-    #[serde(rename = "type")]
-    event_type: String,
-    #[serde(default)]
-    tool_name: Option<String>,
-    #[serde(default)]
-    outcome: Option<String>,
-    #[serde(default)]
-    ts: Option<String>,
-}
-
-/// An outcome event waiting to be consumed by a matching tool_call.
-#[derive(Debug, Clone)]
-struct PendingOutcome {
-    tool_name: String,
-    outcome: String,
-    #[allow(dead_code)]
-    ts: Option<String>,
-}
 
 #[derive(Debug, Default, Clone)]
 pub struct ExtractionStats {
@@ -95,36 +47,34 @@ pub struct ExtractionStats {
 pub struct DecisionExtractor;
 
 impl DecisionExtractor {
+    /// Extract decisions from a grok session directory (backward-compatible entry).
     pub fn extract_from_session(
         store: &CausalStore,
         session_dir: &Path,
     ) -> Result<ExtractionStats> {
-        let chat_path = session_dir.join("chat_history.jsonl");
-        let events_path = session_dir.join("events.jsonl");
+        let parsed = GrokParser.parse(&SessionSource::dir(session_dir))?;
+        Self::extract_from_parsed(store, &parsed)
+    }
 
-        if !chat_path.exists() {
-            return Err(anyhow!(
-                "chat_history.jsonl not found in {}",
-                session_dir.display()
-            ));
-        }
-
-        let (decisions, results) = Self::parse_chat_history(&chat_path)?;
-
+    /// Extract decisions from a format-agnostic parsed session.
+    ///
+    /// Consumes a [`ParsedSession`] produced by any [`SessionParser`] — all
+    /// decision-extraction, causal-inference and persistence logic lives here,
+    /// independent of the agent's session format.
+    pub fn extract_from_parsed(
+        store: &CausalStore,
+        parsed: &ParsedSession,
+    ) -> Result<ExtractionStats> {
         // v0.2.1 fix: collect outcomes as an ordered queue, consumed
         // by matching tool_name — each tool_call gets its own outcome
-        let mut outcome_queue: VecDeque<PendingOutcome> = if events_path.exists() {
-            Self::parse_events_ordered(&events_path)?
-        } else {
-            VecDeque::new()
-        };
+        let mut outcome_queue: VecDeque<CandidateEvent> = parsed.events.clone();
 
         let mut stats = ExtractionStats {
-            decisions_found: decisions.len(),
+            decisions_found: parsed.decisions.len(),
             ..Default::default()
         };
 
-        for decision in &decisions {
+        for decision in &parsed.decisions {
             if !DECISION_WORTHY_TOOLS
                 .iter()
                 .any(|t| decision.name.contains(t))
@@ -133,7 +83,7 @@ impl DecisionExtractor {
                 continue;
             }
 
-            let result = match results.get(&decision.id) {
+            let result = match parsed.results.get(&decision.id) {
                 Some(r) => r,
                 None => continue,
             };
@@ -189,79 +139,12 @@ impl DecisionExtractor {
         Ok(stats)
     }
 
-    fn parse_chat_history(
-        path: &Path,
-    ) -> Result<(
-        Vec<ToolCallEntry>,
-        std::collections::HashMap<String, ToolResultEntry>,
-    )> {
-        let mut decisions = Vec::new();
-        let mut results = std::collections::HashMap::new();
-
-        for line in std::fs::read_to_string(path)?.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let entry: ChatEntry = match serde_json::from_str(line) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-
-            match entry.entry_type.as_str() {
-                "assistant" => {
-                    for tc in entry.tool_calls {
-                        decisions.push(tc);
-                    }
-                }
-                "tool_result" | "tool" => {
-                    if let Some(id) = &entry.tool_call_id {
-                        results.insert(
-                            id.clone(),
-                            ToolResultEntry {
-                                entry_type: entry.entry_type,
-                                tool_call_id: id.clone(),
-                                content: entry.content,
-                            },
-                        );
-                    }
-                }
-                _ => {}
-            }
-        }
-        Ok((decisions, results))
-    }
-
-    /// v0.2.1: parse events preserving order, return as a consumable queue.
-    /// Each tool_completed becomes a PendingOutcome waiting to be matched.
-    fn parse_events_ordered(path: &Path) -> Result<VecDeque<PendingOutcome>> {
-        let mut queue = VecDeque::new();
-        for line in std::fs::read_to_string(path)?.lines() {
-            if line.trim().is_empty() {
-                continue;
-            }
-            let event: EventEntry = match serde_json::from_str(line) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if event.event_type == "tool_completed" {
-                if let (Some(name), Some(outcome)) = (event.tool_name, event.outcome) {
-                    queue.push_back(PendingOutcome {
-                        tool_name: name,
-                        outcome,
-                        ts: event.ts,
-                    });
-                }
-            }
-        }
-        Ok(queue)
-    }
-
     /// v0.2.1: consume the next outcome matching `tool_name` from the queue.
-    /// Returns the full PendingOutcome (including timestamp).
+    /// Returns the full event (including timestamp).
     fn consume_next_outcome(
-        queue: &mut VecDeque<PendingOutcome>,
+        queue: &mut VecDeque<CandidateEvent>,
         tool_name: &str,
-    ) -> Option<PendingOutcome> {
+    ) -> Option<CandidateEvent> {
         let pos = queue.iter().position(|p| p.tool_name == tool_name)?;
         queue.remove(pos)
     }
@@ -473,6 +356,7 @@ impl DecisionExtractor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::CandidateEvent;
 
     #[test]
     fn test_summarize_args() {
@@ -580,12 +464,12 @@ mod tests {
     #[test]
     fn test_consume_next_outcome_no_overwrite() {
         let mut queue = VecDeque::new();
-        queue.push_back(PendingOutcome {
+        queue.push_back(CandidateEvent {
             tool_name: "run_terminal_command".into(),
             outcome: "error".into(),
             ts: None,
         });
-        queue.push_back(PendingOutcome {
+        queue.push_back(CandidateEvent {
             tool_name: "run_terminal_command".into(),
             outcome: "success".into(),
             ts: None,
