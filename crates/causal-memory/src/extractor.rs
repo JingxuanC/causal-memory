@@ -46,6 +46,9 @@ pub(crate) const DECISION_WORTHY_TOOLS: &[&str] = &[
     "exec",
     "read",
     "write",
+    // codex (openai)
+    "exec_command",
+    "update_plan",
 ];
 
 

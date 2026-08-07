@@ -12,10 +12,12 @@ use std::path::PathBuf;
 use anyhow::Result;
 
 pub mod claude;
+pub mod codex;
 pub mod grok;
 pub mod kimi;
 
 pub use claude::ClaudeParser;
+pub use codex::CodexParser;
 pub use grok::GrokParser;
 pub use kimi::KimiParser;
 
@@ -97,6 +99,7 @@ pub enum AgentKind {
     Grok,
     ClaudeCode,
     Kimi,
+    Codex,
 }
 
 /// Resolve an agent kind from its CLI string.
@@ -105,6 +108,7 @@ pub fn agent_kind_from_str(s: &str) -> Option<AgentKind> {
         "grok" | "grok-build" => Some(AgentKind::Grok),
         "claude" | "claude-code" | "claude_code" => Some(AgentKind::ClaudeCode),
         "kimi" | "openclaw" | "kimi-claw" => Some(AgentKind::Kimi),
+        "codex" | "openai-codex" | "codex-cli" => Some(AgentKind::Codex),
         _ => None,
     }
 }
@@ -115,6 +119,7 @@ pub fn default_source_kind(kind: AgentKind) -> SourceKind {
         AgentKind::Grok => SourceKind::Dir,
         AgentKind::ClaudeCode => SourceKind::File,
         AgentKind::Kimi => SourceKind::File,
+        AgentKind::Codex => SourceKind::File,
     }
 }
 
@@ -124,5 +129,6 @@ pub fn parser_for(kind: AgentKind) -> Box<dyn SessionParser> {
         AgentKind::Grok => Box::new(GrokParser),
         AgentKind::ClaudeCode => Box::new(ClaudeParser),
         AgentKind::Kimi => Box::new(KimiParser),
+        AgentKind::Codex => Box::new(CodexParser),
     }
 }
