@@ -326,9 +326,7 @@ pub(crate) fn run_migrate(args: &[String]) -> anyhow::Result<()> {
 
 /// Backfill embeddings for valid edges that don't have one yet.
 pub(crate) async fn run_embed(args: &[String]) -> anyhow::Result<()> {
-    use causal_memory::embed::{EmbedConfig, Embedder};
-
-    let mut db: Option<PathBuf> = None;
+    use causal_memory::embed::{EmbedConfig, Embedder};    let mut db: Option<PathBuf> = None;
     let mut limit: usize = 100;
     let mut i = 0;
     while i < args.len() {
@@ -358,18 +356,37 @@ pub(crate) async fn run_embed(args: &[String]) -> anyhow::Result<()> {
         i += 1;
     }
 
-    let config = match EmbedConfig::from_env() {
-        Some(c) => c,
-        None => {
-            eprintln!("Embedding not configured. Set:");
-            eprintln!("  CAUSAL_MEMORY_EMBED_API   (default: CAUSAL_MEMORY_LLM_API)");
-            eprintln!("  CAUSAL_MEMORY_EMBED_KEY   (default: CAUSAL_MEMORY_LLM_KEY)");
-            eprintln!("  CAUSAL_MEMORY_EMBED_MODEL (default: text-embedding-3-small)");
-            std::process::exit(1);
-        }
-    };
-    println!("Embedder: {} @ {}", config.model, config.api_base);
-    let embedder = Embedder::new(config);
+    // Try HTTP embedding config first, then local ONNX.
+    let mut embedder: causal_memory::embed::UnifiedEmbedder =
+        if let Some(config) = EmbedConfig::from_env() {
+            println!("Embedder: {} @ {}", config.model, config.api_base);
+            causal_memory::embed::UnifiedEmbedder::Http(Embedder::new(config))
+        } else {
+            #[cfg(feature = "local-embed")]
+            {
+                match causal_memory::embed::LocalEmbedder::new() {
+                    Ok(e) => {
+                        println!("Embedder: {} (local ONNX)", e.model());
+                        causal_memory::embed::UnifiedEmbedder::Local(e)
+                    }
+                    Err(e) => {
+                        eprintln!("No HTTP embedding configured and local ONNX failed: {e}");
+                        eprintln!("Set CAUSAL_MEMORY_EMBED_API + CAUSAL_MEMORY_EMBED_KEY, or build with --features local-embed");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            #[cfg(not(feature = "local-embed"))]
+            {
+                let _ = Embedder::new(EmbedConfig::from_env().unwrap());
+                eprintln!("Embedding not configured. Set:");
+                eprintln!("  CAUSAL_MEMORY_EMBED_API   (default: CAUSAL_MEMORY_LLM_API)");
+                eprintln!("  CAUSAL_MEMORY_EMBED_KEY   (default: CAUSAL_MEMORY_LLM_KEY)");
+                eprintln!("  CAUSAL_MEMORY_EMBED_MODEL (default: text-embedding-3-small)");
+                eprintln!("  Or rebuild with --features local-embed for offline ONNX embedding.");
+                std::process::exit(1);
+            }
+        };
 
     let db_path = db.unwrap_or_else(get_db_path);
     if let Some(parent) = db_path.parent() {
@@ -389,7 +406,7 @@ pub(crate) async fn run_embed(args: &[String]) -> anyhow::Result<()> {
     let mut failed = 0usize;
     for (idx, (edge_id, text)) in pending.iter().enumerate() {
         match embedder.embed(text).await {
-            Ok(vec) => match store.put_embedding(*edge_id, embedder.model(), &vec) {
+            Ok(vec) => match store.put_embedding(*edge_id, "local-bge-small", &vec) {
                 Ok(()) => {
                     success += 1;
                     println!("[{}/{}] edge {} ✓", idx + 1, total, edge_id);
