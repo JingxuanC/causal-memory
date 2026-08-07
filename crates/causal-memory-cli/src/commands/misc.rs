@@ -34,6 +34,77 @@ pub(crate) fn run_mcp_server() -> anyhow::Result<()> {
     })
 }
 
+/// Run the MCP server in HTTP (Streamable HTTP) mode instead of stdio.
+/// This enables remote agents and multi-agent shared memory.
+pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
+    let mut port: u16 = 9938;
+    let mut host = "0.0.0.0".to_string();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--port" => {
+                i += 1;
+                port = args.get(i).and_then(|s| s.parse().ok()).unwrap_or(port);
+            }
+            "--host" => {
+                i += 1;
+                host = args.get(i).cloned().unwrap_or(host);
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let db_path = get_db_path();
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    eprintln!("Opening causal memory DB at {}", db_path.display());
+    let store = CausalStore::open(&db_path)?;
+    let edge_count = store.count_edges().unwrap_or(0);
+    eprintln!("Causal memory ready: {} existing edges", edge_count);
+    eprintln!("Starting MCP HTTP server on {host}:{port}/mcp");
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async move {
+        use rmcp::transport::streamable_http_server::{
+            StreamableHttpServerConfig, StreamableHttpService,
+        };
+        use std::sync::Arc;
+
+        // Each connection gets a fresh server instance backed by the same store.
+        let store_db_path = db_path.clone();
+        let config = StreamableHttpServerConfig::default()
+            .with_stateful_mode(false)
+            .with_json_response(true);
+        let service = StreamableHttpService::new(
+            move || {
+                let store = CausalStore::open(&store_db_path)
+                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                Ok(CausalMemoryServer::new(store))
+            },
+            Arc::new(rmcp::transport::streamable_http_server::session::never::NeverSessionManager::default()),
+            config,
+        );
+
+        let app = axum::Router::new()
+            .route_service("/mcp", service)
+            .route("/health", axum::routing::get(|| async { "ok" }));
+
+        let listener = tokio::net::TcpListener::bind(format!("{host}:{port}"))
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to bind {host}:{port}: {e}"))?;
+        eprintln!("Listening on http://{host}:{port}/mcp");
+        eprintln!("Health check: http://{host}:{port}/health");
+
+        axum::serve(listener, app)
+            .await
+            .map_err(|e| anyhow::anyhow!("HTTP server error: {e}"))?;
+        Ok(())
+    })
+}
+
 pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
     use causal_memory::session::{default_source_kind, parser_for, SessionSource};
 

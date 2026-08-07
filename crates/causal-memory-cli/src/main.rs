@@ -14,7 +14,7 @@ mod server;
 use commands::distill::{run_distill, run_novelty};
 use commands::io::{run_export, run_import};
 use commands::maintenance::{run_embed, run_judge, run_migrate, run_polarity, run_restore, run_sleep};
-use commands::misc::{run_extract, run_link, run_mcp_server, run_reasoning};
+use commands::misc::{run_extract, run_http_server, run_link, run_mcp_server, run_reasoning};
 use commands::wiki::run_wiki;
 
 pub(crate) fn get_db_path() -> PathBuf {
@@ -135,7 +135,12 @@ fn main() -> anyhow::Result<()> {
         return run_wiki(&args[2..]);
     }
 
-    // Default: MCP server mode
+    // Default: MCP server mode (stdio)
+    // --http: HTTP transport mode (remote agents, multi-agent shared memory)
+    if args.len() >= 2 && args[1] == "http" {
+        return run_http_server(&args[2..]);
+    }
+
     run_mcp_server()
 }
 
