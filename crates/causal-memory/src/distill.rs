@@ -173,19 +173,32 @@ Each item should be a complete, self-contained sentence (15-80 words):
 
 Each item has:
 - "kind": "fact" | "preference" | "lesson" | "event" | "causal"
-  - fact: stable personal details (job, relationships, possessions)
-  - preference: likes/dislikes/habits (food, tools, entertainment)
+  - fact: stable personal details (job, relationships, possessions, tech stack)
+  - preference: likes/dislikes/habits (tools, workflows, conventions)
   - lesson: decisions made, advice given, feedback received
   - event: dated happenings (plans, purchases, activities, todo changes)
   - causal: a decision→outcome relationship — "doing X caused/enabled/prevented Y"
 - "causal_relation": ONLY for kind="causal". One of "caused" | "enabled" | "prevented".
   - caused: the decision directly led to the outcome (e.g. "deploying without tests caused a production crash")
   - enabled: the decision made the outcome possible (e.g. "adding caching enabled faster response times")
-  - prevented: the decision blocked something from happening (e.g. "adding input validation prevented SQL injection")
+  - prevented: the decision blocked something bad from happening (e.g. "adding input validation prevented SQL injection", "setting up health checks prevented cascading failures")
 - "decision": ONLY for kind="causal". The action/decision text (the "cause"). The "text" field holds the outcome (the "effect").
 - "text": one self-contained, absolutely-dated sentence
 - "date": YYYY-MM-DD (usually the session date)
 - "supersedes": CRITICAL for forgetting accuracy. Fill this whenever the user CHANGES, CANCELS, or COMPLETES something previously stated. Put 2-5 keywords of the OLD content. Examples: user says "I now prefer tea" (previously liked coffee) → supersedes: "likes coffee". User says "I cancelled my gym membership" → supersedes: "gym membership". User says "the budget is now $1M" (was $1.2M) → supersedes: "budget 1200000". A missed supersedes means the old fact stays live and pollutes future answers.
+
+# CRITICAL: Causal Item Extraction
+
+Pay special attention to causal relationships. When someone describes:
+- A decision AND its consequence → extract as "causal"
+- A fix that stops something bad → extract as "prevented" (NOT "caused")
+- An enabler that makes something possible → extract as "enabled" (NOT "caused")
+
+**Prevented vs Caused — do not confuse them!**
+- "Added retry logic, and the timeouts stopped" → PREVENTED (retry logic prevented timeouts)
+- "Skipped tests, and a bug reached production" → CAUSED (skipping tests caused the bug)
+- "Added CI gate, and untested code can no longer merge" → PREVENTED (CI gate prevented untested merges)
+- "Switched to async, and throughput doubled" → ENABLED (async enabled higher throughput)
 
 # Examples
 
@@ -210,10 +223,19 @@ Output: [
 Input: "Hey, how's it going? Nice weather today."
 Output: []
 
-Input: "I tried deploying without running tests and it caused a production crash. The rollback took 2 hours. Lesson learned — always run tests before deploying."
+Input: "I tried deploying without running tests and it caused a production crash. The rollback took 2 hours. Then I added a CI gate so untested code can't merge anymore. After that, I set up canary deployments to catch regressions early — since then, no bad release has reached all users."
 Output: [
   {"kind": "causal", "causal_relation": "caused", "decision": "deployed without running tests", "text": "Production crash on DATE, requiring a 2-hour rollback", "date": "DATE", "supersedes": null},
+  {"kind": "causal", "causal_relation": "prevented", "decision": "added a CI gate that blocks merges without tests", "text": "Untested code can no longer reach production after DATE", "date": "DATE", "supersedes": null},
+  {"kind": "causal", "causal_relation": "prevented", "decision": "set up canary deployments to catch regressions early", "text": "No bad release reached all users after DATE", "date": "DATE", "supersedes": null},
   {"kind": "lesson", "text": "Always run tests before deploying (learned from crash on DATE)", "date": "DATE", "supersedes": null}
+]
+
+Input: "I switched from polling to webhooks for the notification system. After that, the API response time dropped from 2s to 200ms because we weren't constantly checking for updates anymore. But I also had to add rate limiting — without it, a burst of webhook calls would have overwhelmed the server."
+Output: [
+  {"kind": "causal", "causal_relation": "enabled", "decision": "switched from polling to webhooks for notifications", "text": "API response time dropped from 2s to 200ms after DATE", "date": "DATE", "supersedes": null},
+  {"kind": "causal", "causal_relation": "prevented", "decision": "added rate limiting for webhook calls", "text": "Burst of webhook calls did not overwhelm the server after DATE", "date": "DATE", "supersedes": null},
+  {"kind": "lesson", "text": "Webhooks are faster than polling for notification systems (implemented on DATE)", "date": "DATE", "supersedes": null}
 ]
 
 Input: "I walked 8,231 steps today, had a salad for lunch ($12.50), and finished reading 'Project Hail Mary'. Oh, I also decided to switch from Yoga to Pilates starting next week."
@@ -251,8 +273,9 @@ pub struct Distiller {
 /// `MemoryItem` by `parse_items`.
 #[derive(Debug, Deserialize)]
 struct RawItem {
-    #[serde(default)]
+    #[serde(default, alias = "type")]
     kind: String,
+    #[serde(default, alias = "description", alias = "content")]
     text: String,
     #[serde(default)]
     date: Option<serde_json::Value>,
@@ -479,12 +502,20 @@ fn normalize_item(item: RawItem, fallback_date: &str) -> Option<MemoryItem> {
         .and_then(|v| v.as_str().map(str::to_string))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && s != "null");
+    let causal_relation = item.causal_relation.as_deref().and_then(CausalRelation::parse);
+    // If the LLM provided a causal_relation, force kind=Causal even if it
+    // used a different field name (type/description) or didn't set kind.
+    let kind = if causal_relation.is_some() {
+        ItemKind::Causal
+    } else {
+        ItemKind::parse(&item.kind)
+    };
     Some(MemoryItem {
-        kind: ItemKind::parse(&item.kind),
+        kind,
         text,
         date,
         supersedes,
-        causal_relation: item.causal_relation.as_deref().and_then(CausalRelation::parse),
+        causal_relation,
         decision: item.decision.filter(|s| !s.is_empty()),
     })
 }
