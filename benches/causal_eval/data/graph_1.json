@@ -139,7 +139,135 @@
       }
     ]
   },
-  "conversations": [],
+  "conversations": [
+    {
+      "graph_id": 1,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2025-03-10 09:15",
+          "turns": [
+            {
+              "speaker": "Joanna",
+              "text": "Morning, Marcus. You look like you've been here since dawn."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Ha, close. I was reviewing the deploy logs from last night. Did you push that auth refactor without running the test suite?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Yeah... I was in a hurry, and the suite takes forever. I figured it was a small change."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Small change, big consequences. A regression slipped into production — the session timeout logic is broken. Users are getting logged out mid-checkout."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Oh no. How far did it spread?"
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Every user. We had to do a full rollback at 3 AM. That's the second time this month."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "I'm sorry. I'll set up a CI gate that blocks merges without tests. That should stop this from happening again."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Good. Let's do that today. I don't want to be paged again."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2025-03-24 14:00",
+          "turns": [
+            {
+              "speaker": "Marcus",
+              "text": "Hey, I saw the CI gate is live. Nice work."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Thanks. It's been smooth — untested code never reached production since we turned it on."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "I noticed you also did a canary deployment for the new payment endpoint. Only 5 percent of traffic first?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Yeah, that felt safer. But I had to skip the flaky tests to make CI green — the ones that randomly fail on timing. I marked them as skipped."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Hmm, that's a bit risky. But I guess the gate still passed."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "It did. And the canary caught nothing, so we rolled out fully. But honestly, I'm a little worried."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Worried about what?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "That we're relying too much on the gate. Let's see how the next release goes."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2025-04-02 11:30",
+          "turns": [
+            {
+              "speaker": "Marcus",
+              "text": "Joanna, we need to talk. The last release — the one with the skipped flaky tests — a regression slipped into production again."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "What? The CI gate was green. How did that happen?"
+            },
+            {
+              "speaker": "Marcus",
+              "text": "The tests passed, but they didn't cover the edge case with null user IDs. It hit all users before we caught it. We rolled back again."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Damn. So the CI gate... it turns out that wasn't enough. I was wrong about that being the fix."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Yeah. Tests alone missed it. We need something more."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "I've been thinking. We replaced the CI-only approach with mandatory peer review plus CI. Every merge needs a human reviewer who actually understands the change, not just a green checkmark."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "That's a solid move. Peer review would have caught the null case — someone would have asked 'what if user is null?'"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Exactly. And I ran the full regression suite before this release — no skips. Regressions were caught before shipping this time."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Good. Let's make sure the new process sticks. I'd rather have a slower pipeline than another 3 AM rollback."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Agreed. I'm done cutting corners."
+            }
+          ]
+        }
+      ]
+    }
+  ],
   "qa": [
     {
       "category": 11,

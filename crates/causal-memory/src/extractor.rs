@@ -1,14 +1,20 @@
-//! Decision extractor — watches grok-build's session logs and auto-extracts
-//! decision→outcome pairs into the causal store.
+//! Decision extractor — extracts high-value decision→outcome pairs from
+//! agent session logs into the causal store.
 //!
-//! v0.2.1 changes:
-//! - Fixed outcome-overwrite bug: each tool_call now consumes its own
-//!   tool_completed event by ordered name matching, instead of looking
-//!   up by tool_name in a HashMap (which got overwritten by same-name
-//!   later calls — 7 real errors in the test session were lost).
-//! - Added causal inference: confidence is now graded 0.3-0.8 based on
-//!   content-relation analysis between decision and outcome, instead of
-//!   the old binary temporal(0.4)/rule(0.7) split.
+//! v0.3 design change: only extract decisions that are WORTH remembering.
+//! The old approach recorded every tool call → result, producing thousands
+//! of low-value edges ("ran cargo build" → "exit: 0") that pollute retrieval.
+//! The new approach uses a two-tier filter:
+//!
+//! Tier 1 (always record): failures — error, timeout, crash. These are the
+//!   highest-value lessons for an agent.
+//! Tier 2 (record if state-changing): write/edit operations that modify the
+//!   codebase. These represent real decisions, not routine lookups.
+//! Tier 3 (skip): read-only operations (grep, cat, ls, search, read, web fetch).
+//!   These are information gathering, not decisions.
+//!
+//! The `DECISION_WORTHY_TOOLS` list is now a STATE-CHANGING tools list.
+//! Read-only tools are explicitly excluded even if they appear in the session.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -18,38 +24,70 @@ use anyhow::Result;
 use crate::session::{CandidateEvent, GrokParser, ParsedSession, SessionParser, SessionSource};
 use crate::store::CausalStore;
 
-/// Minimum tool name to treat as a "decision worth recording".
-/// Also used by the pattern miner to strip tool-name boilerplate tokens.
-/// Cross-agent: grok uses lowercase verbs, Claude uses PascalCase, Kimi
-/// uses short lowercase. All variants are listed so the filter works
-/// regardless of which agent produced the session.
-pub(crate) const DECISION_WORTHY_TOOLS: &[&str] = &[
-    // grok-build
+/// Tools that CHANGE the system state — only these produce decision-worthy
+/// edges. Read-only tools (read/grep/ls/cat/search/webfetch) are explicitly
+/// excluded because they represent information gathering, not decisions.
+pub(crate) const STATE_CHANGING_TOOLS: &[&str] = &[
+    // grok-build: write/edit
     "write",
     "search_replace",
-    "run_terminal_command",
     "image_gen",
     "image_edit",
     "spawn_subagent",
-    "kill_command_or_subagent",
     "scheduler_create",
     "scheduler_delete",
-    "update_goal",
-    // claude-code
-    "Bash",
+    // claude-code: write/edit
     "Write",
     "Edit",
-    "WebSearch",
-    "WebFetch",
     "NotebookEdit",
-    // kimi / openclaw
-    "exec",
-    "read",
+    // kimi: write
     "write",
-    // codex (openai)
-    "exec_command",
-    "update_plan",
 ];
+
+/// Read-only tools that should NEVER produce edges (information gathering).
+const READ_ONLY_TOOLS: &[&str] = &[
+    "run_terminal_command", // mostly read-only (grep, cat, ls) — handled separately
+    "Bash",                 // claude code equivalent
+    "exec",                 // kimi
+    "exec_command",         // codex
+    "read", "Read",         // file reads
+    "WebSearch", "WebFetch",
+    "update_goal", "update_plan",
+    "kill_command_or_subagent",
+    "list_dir", "List",
+    "search_tool", "use_tool",
+];
+
+/// Result patterns that indicate a FAILURE (high-value edge).
+const FAILURE_MARKERS: &[&str] = &[
+    "error", "Error", "ERROR",
+    "failed", "Failed", "FAILED",
+    "panic", "Panic",
+    "traceback", "Traceback",
+    "exception", "Exception",
+    "denied", "Permission denied",
+    "not found", "No such file",
+    "fatal", "FATAL",
+    "exit: 1", "exit code: 1", "exit code 1",
+    "cannot find", "cannot resolve",
+    "unresolved", "compilation failed",
+    "test failed", "tests failed", "FAILED (",
+    "command not found",
+    "timeout", "timed out",
+    "conflict", "CONFLICT",
+];
+
+/// Result patterns that indicate a truly SUCCESSFUL state change.
+const SUCCESS_MARKERS: &[&str] = &[
+    "successfully", "Success",
+    "created", "written", "updated", "replaced",
+    "inserted", "deleted",
+    "1 file changed", "files changed",
+    "pass", "PASS", "passed",
+];
+
+/// Alias for backward compatibility (pattern miner imports this name).
+pub(crate) const DECISION_WORTHY_TOOLS: &[&str] = STATE_CHANGING_TOOLS;
 
 
 #[derive(Debug, Default, Clone)]
@@ -76,15 +114,12 @@ impl DecisionExtractor {
 
     /// Extract decisions from a format-agnostic parsed session.
     ///
-    /// Consumes a [`ParsedSession`] produced by any [`SessionParser`] — all
-    /// decision-extraction, causal-inference and persistence logic lives here,
-    /// independent of the agent's session format.
+    /// v0.3: Two-tier filter — only record failures (always) and state-changing
+    /// operations (when they produce meaningful results). Skip read-only ops.
     pub fn extract_from_parsed(
         store: &CausalStore,
         parsed: &ParsedSession,
     ) -> Result<ExtractionStats> {
-        // v0.2.1 fix: collect outcomes as an ordered queue, consumed
-        // by matching tool_name — each tool_call gets its own outcome
         let mut outcome_queue: VecDeque<CandidateEvent> = parsed.events.clone();
 
         let mut stats = ExtractionStats {
@@ -93,10 +128,34 @@ impl DecisionExtractor {
         };
 
         for decision in &parsed.decisions {
-            if !DECISION_WORTHY_TOOLS
-                .iter()
-                .any(|t| decision.name.contains(t))
-            {
+            // Tier 3: Skip read-only tools entirely (only record if CLEAR failure)
+            let is_read_only = READ_ONLY_TOOLS.iter().any(|t| decision.name.contains(t));
+            let is_state_changing = STATE_CHANGING_TOOLS.iter().any(|t| decision.name.contains(t));
+
+            if stats.decisions_found <= 5 {
+                eprintln!("[extract] {} | ro={} sc={} | args: {}",
+                    decision.name, is_read_only, is_state_changing,
+                    &decision.arguments[..decision.arguments.len().min(40)]);
+            }
+
+            if is_read_only {
+                // For read-only tools, ONLY record if it's a clear failure
+                let result = match parsed.results.get(&decision.id) {
+                    Some(r) => r,
+                    None => {
+                        stats.skipped_low_value += 1;
+                        continue;
+                    }
+                };
+                let result_text = Self::extract_text(&result.content);
+                // Strict failure check: must have a strong failure signal
+                // (not just "error" substring which can appear in file paths)
+                if !Self::is_clear_failure(&result_text) {
+                    stats.skipped_low_value += 1;
+                    continue;
+                }
+                // Fall through to record the failure
+            } else if !is_state_changing {
                 stats.skipped_low_value += 1;
                 continue;
             }
@@ -105,33 +164,44 @@ impl DecisionExtractor {
                 Some(r) => r,
                 None => continue,
             };
-            stats.results_matched += 1;
 
             let result_content = Self::extract_text(&result.content);
+
+            // Tier 2: For state-changing tools, skip ONLY if result is a
+            // trivial bash success (e.g. "exit: 0" from cargo build).
+            // Edit/Write operations are always worth recording even if
+            // their result is short ("successfully updated").
+            if is_read_only && Self::is_trivial_success(&result_content) {
+                // read-only tool with trivial success → skip (already handled above
+                // for non-failures, but this is the fallback for edge cases)
+            } else if !is_read_only && is_state_changing {
+                // State-changing tools: always record (the decision to edit
+                // a file IS the valuable memory, regardless of result length)
+            }
+
+            stats.results_matched += 1;
+
             let decision_text = format!(
                 "{}({})",
                 decision.name,
                 Self::summarize_args(&decision.arguments)
             );
 
-            // v0.2.1 fix: consume the next matching outcome from the queue
             let event_outcome = Self::consume_next_outcome(&mut outcome_queue, &decision.name);
 
-            // v0.4.1: parse real timestamp from event (enables multi-hop chains)
             let event_ts = event_outcome
                 .as_ref()
                 .and_then(|o| o.ts.as_ref())
                 .and_then(|ts| Self::parse_event_ts(ts))
                 .unwrap_or_else(|| chrono::Utc::now().timestamp());
 
-            // v0.2.1: graded causal inference
             let (relation, confidence, source) = Self::infer_causal_confidence(
                 &decision_text,
                 &result_content,
                 event_outcome.as_ref().map(|o| o.outcome.as_str()),
             );
 
-            if source == "rule" && confidence >= 0.7 {
+            if relation == "caused" && confidence >= 0.7 {
                 stats.errors_captured += 1;
             }
             if source == "llm_inferred" {
@@ -142,7 +212,7 @@ impl DecisionExtractor {
 
             match store.record_decision_at(
                 &decision_text,
-                &result_content.chars().take(300).collect::<String>(),
+                &result_content.chars().take(200).collect::<String>(),
                 relation,
                 Some(&task_tag),
                 confidence,
@@ -330,16 +400,52 @@ impl DecisionExtractor {
     }
 
     fn looks_like_failure(text: &str) -> bool {
-        let lower = text.to_lowercase();
-        lower.contains("error")
-            || lower.contains("failed")
-            || lower.contains("panic")
-            || lower.contains("exception")
-            || lower.contains("traceback")
-            || lower.contains("denied")
-            || lower.contains("not found")
-            || lower.contains("fatal")
-            || lower.contains("reject")
+        Self::is_failure(text)
+    }
+
+    /// Check if the result indicates a failure (error, crash, test failure).
+    fn is_failure(text: &str) -> bool {
+        FAILURE_MARKERS.iter().any(|m| text.contains(m))
+    }
+
+    /// Strict failure check for read-only tools: the failure signal must be
+    /// prominent (start of line / first 200 chars), not buried in a file path.
+    /// This prevents false positives like `ls error_handler.rs` → contains "error".
+    fn is_clear_failure(text: &str) -> bool {
+        let first_200: String = text.chars().take(200).collect();
+        let lines: Vec<&str> = first_200.lines().take(5).collect();
+        let strong_markers = [
+            "error[", "error:", "Error:", "ERROR:",
+            "panic:", "thread 'main' panicked",
+            "Traceback (most recent call last)",
+            "exit: 1", "exit code: 1", "Process exited with non-zero",
+            "test failed", "tests failed", "FAILED ",
+            "command not found",
+            "Permission denied",
+            "fatal:",
+            "compilation failed", "could not compile",
+        ];
+        // Check first 5 lines for strong markers
+        for line in &lines {
+            for marker in &strong_markers {
+                if line.contains(marker) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if the result is a trivially successful operation that carries
+    /// no decision value. E.g. "exit: 0" from a routine build.
+    fn is_trivial_success(text: &str) -> bool {
+        let trimmed = text.trim();
+        if trimmed.len() < 30 { return true; }
+        let trivial_starts = ["exit: 0\n", "exit: 0\r", "exit: 0 "];
+        for t in &trivial_starts {
+            if trimmed.starts_with(t) && trimmed.len() < 80 { return true; }
+        }
+        matches!(trimmed, "success" | "ok" | "done")
     }
 
     fn infer_task_tag(tool_name: &str, args: &str) -> String {
