@@ -34,6 +34,123 @@ pub(crate) fn run_mcp_server() -> anyhow::Result<()> {
     })
 }
 
+/// Run graph-structural refutation on all edges in the causal store.
+/// Each edge gets a grade A/B/C/D/F based on three tests:
+/// confounder (neighbor Jaccard), corroboration (path redundancy),
+/// placebo (activation specificity).
+pub(crate) fn run_refute(args: &[String]) -> anyhow::Result<()> {
+    use causal_memory::hippocampus::CausalGraph;
+    use causal_memory::refute::EdgeRefuter;
+    use causal_memory::store::CausalStore;
+    use crate::get_db_path;
+
+    let db_path = get_db_path();
+    let store = CausalStore::open(&db_path)?;
+    let edge_count = store.count_edges().unwrap_or(0);
+    eprintln!("Loading graph from {} ({edge_count} edges)...", db_path.display());
+
+    let graph = CausalGraph::from_store(&store)?;
+    eprintln!("Graph: {} nodes, {} edges ({} valid)",
+        graph.num_nodes(), graph.num_edges(), graph.num_valid_edges());
+
+    let refuter = EdgeRefuter::new(&graph);
+    let report = refuter.refute_all();
+
+    println!("\n=== Refutation Report ===");
+    println!("  Total edges graded: {}", report.graded);
+
+    // Distribution
+    println!("\n  Grade distribution:");
+    for grade in ['A', 'B', 'C', 'D', 'F'] {
+        let count = report.distribution.get(&grade).copied().unwrap_or(0);
+        let pct = if report.graded > 0 { 100.0 * count as f64 / report.graded as f64 } else { 0.0 };
+        let bar = "█".repeat(count * 40 / report.graded.max(1));
+        println!("    {}: {:>4} ({:>5.1}%) {}", grade, count, pct, bar);
+    }
+
+    // Sample edges by grade
+    println!("\n  Sample edges by grade:");
+    for grade in ['A', 'B', 'D', 'F'] {
+        let sample: Vec<_> = report.results.iter()
+            .filter(|(_, r)| r.grade == grade)
+            .take(3)
+            .collect();
+        if sample.is_empty() { continue; }
+        println!("\n    Grade {}:", grade);
+        for (edge_idx, result) in sample {
+            let from = graph.edge_source_node(*edge_idx);
+            let to = graph.edge_target(*edge_idx);
+            let from_text = graph.node_text(from as usize);
+            let to_text = graph.node_text(to as usize);
+            println!("      [{}] {} → {}",
+                result.tests.iter()
+                    .map(|t| match t.result {
+                        causal_memory::refute::TestResult::Robust => "✓",
+                        causal_memory::refute::TestResult::Inconclusive => "?",
+                        causal_memory::refute::TestResult::Refuted => "✗",
+                    })
+                    .collect::<Vec<_>>()
+                    .join(""),
+                &from_text[..from_text.len().min(40)],
+                &to_text[..to_text.len().min(40)]);
+        }
+    }
+
+    // Option: store grades in DB
+    if args.iter().any(|a| a == "--store") {
+        eprintln!("\n  Storing grades in DB...");
+        // Add refutation_grade column if not exists
+        store.with_conn(|c| {
+            c.execute_batch(
+                "ALTER TABLE causal_edges ADD COLUMN refutation_grade TEXT;
+                 ALTER TABLE causal_edges ADD COLUMN refutation_detail TEXT;"
+            ).ok();
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        // Map edge_idx to causal_edges.id — we need the edge IDs from the store.
+        // The CausalGraph's CSR edge order matches the from_store loading order,
+        // which sorts by event_time. We need to re-query to get the DB row IDs.
+        let edge_ids: Vec<i64> = store.with_conn(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id FROM causal_edges WHERE valid_to IS NULL ORDER BY event_time ASC"
+            )?;
+            let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+
+        for (edge_idx, result) in &report.results {
+            if let Some(&edge_id) = edge_ids.get(*edge_idx) {
+                let detail_json = serde_json::to_string(
+                    &result.tests.iter().map(|t| {
+                        serde_json::json!({
+                            "name": t.name,
+                            "result": match t.result {
+                                causal_memory::refute::TestResult::Robust => "robust",
+                                causal_memory::refute::TestResult::Inconclusive => "inconclusive",
+                                causal_memory::refute::TestResult::Refuted => "refuted",
+                            },
+                            "score": t.score,
+                            "detail": t.detail,
+                        })
+                    }).collect::<Vec<_>>()
+                ).unwrap_or_default();
+
+                store.with_conn(|c| {
+                    c.execute(
+                        "UPDATE causal_edges SET refutation_grade = ?1, refutation_detail = ?2 WHERE id = ?3",
+                        rusqlite::params![result.grade.to_string(), detail_json, edge_id],
+                    )?;
+                    Ok::<_, anyhow::Error>(())
+                })?;
+            }
+        }
+        eprintln!("  Stored grades for {} edges", report.graded);
+    }
+
+    Ok(())
+}
+
 /// Run the MCP server in HTTP (Streamable HTTP) mode instead of stdio.
 /// This enables remote agents and multi-agent shared memory.
 pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {

@@ -16,6 +16,7 @@ use commands::io::{run_export, run_import};
 use commands::maintenance::{run_embed, run_judge, run_migrate, run_polarity, run_restore, run_sleep};
 use commands::misc::{run_extract, run_http_server, run_link, run_mcp_server, run_reasoning};
 use commands::wiki::run_wiki;
+use commands::misc::run_refute;
 
 pub(crate) fn get_db_path() -> PathBuf {
     if let Ok(path) = std::env::var("CAUSAL_MEMORY_DB") {
@@ -133,6 +134,11 @@ fn main() -> anyhow::Result<()> {
     // memory as an Obsidian markdown vault or standalone interactive HTML graph.
     if args.len() >= 2 && args[1] == "wiki" {
         return run_wiki(&args[2..]);
+    }
+
+    // Subcommand: refute — run graph-structural refutation on all edges
+    if args.len() >= 2 && args[1] == "refute" {
+        return run_refute(&args[2..]);
     }
 
     // Default: MCP server mode (stdio)

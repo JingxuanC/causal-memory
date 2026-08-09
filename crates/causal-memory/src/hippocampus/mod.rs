@@ -21,7 +21,7 @@
 //! - rand_seed uses a fixed-seed xorshift for deterministic testing. Set
 //!   CAUSAL_GRAPH_RANDOM_SEED to enable true randomness in production.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 mod types;
 pub(crate) mod utils;
@@ -983,6 +983,67 @@ impl CausalGraph {
     /// Check if a forward edge is valid.
     pub fn edge_is_valid(&self, edge_idx: usize) -> bool {
         self.edge_valid[edge_idx]
+    }
+
+    // ─── Refutation support: graph query helpers ────────────────────
+
+    /// Find the source node of a given edge (binary search on row_ptr).
+    pub fn edge_source_node(&self, edge_idx: usize) -> u32 {
+        self.row_ptr
+            .partition_point(|&rp| (rp as usize) <= edge_idx)
+            .saturating_sub(1) as u32
+    }
+
+    /// All neighbors (both in and out) of a node.
+    pub fn all_neighbors(&self, node: u32) -> Vec<u32> {
+        let mut neighbors = HashSet::new();
+        // Forward neighbors
+        let start = self.row_ptr[node as usize] as usize;
+        let end = self.row_ptr[(node + 1) as usize] as usize;
+        for i in start..end {
+            neighbors.insert(self.col_idx[i]);
+        }
+        // Reverse neighbors
+        let start_r = self.row_ptr_rev[node as usize] as usize;
+        let end_r = self.row_ptr_rev[(node + 1) as usize] as usize;
+        for i in start_r..end_r {
+            neighbors.insert(self.col_idx_rev[i]);
+        }
+        neighbors.into_iter().collect()
+    }
+
+    /// Out-degree of a node (valid edges only).
+    pub fn out_degree(&self, node: u32) -> usize {
+        let start = self.row_ptr[node as usize] as usize;
+        let end = self.row_ptr[(node + 1) as usize] as usize;
+        (start..end).filter(|&i| self.edge_valid[i]).count()
+    }
+
+    /// In-degree of a node (valid edges only).
+    pub fn in_degree(&self, node: u32) -> usize {
+        let start = self.row_ptr_rev[node as usize] as usize;
+        let end = self.row_ptr_rev[(node + 1) as usize] as usize;
+        (start..end)
+            .filter(|&i| {
+                let fwd = self.rev_to_fwd_idx[i] as usize;
+                self.edge_valid[fwd]
+            })
+            .count()
+    }
+
+    /// Out-neighbors of a node, with edge indices.
+    /// Returns Vec<(target_node, edge_idx)>.
+    pub fn out_neighbors_of(&self, node: u32) -> Vec<(u32, usize)> {
+        let start = self.row_ptr[node as usize] as usize;
+        let end = self.row_ptr[(node + 1) as usize] as usize;
+        (start..end)
+            .map(|i| (self.col_idx[i], i))
+            .collect()
+    }
+
+    /// Target node of a given edge index.
+    pub fn edge_target(&self, edge_idx: usize) -> u32 {
+        self.col_idx[edge_idx]
     }
 }
 
