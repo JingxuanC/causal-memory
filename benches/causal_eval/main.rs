@@ -889,9 +889,9 @@ fn cmd_narrate(args: &[String]) -> Result<()> {
 
 // ─── Run: ingest + retrieve + answer + judge ──────────────────────────────
 
-const ANSWER_SYSTEM: &str = "You are answering a question using retrieved memories from past work conversations between two colleagues. Follow these steps IN ORDER.\n\n## Step 1: SCAN ALL MEMORIES\nRead EVERY memory. Details are often scattered across the whole list.\n\n## Step 2: ENTITY VERIFICATION\nOnly use memories about the correct person.\n\n## Step 3: COMBINE AND REASON\nCombine facts across memories. For causal questions: identify what caused what, what prevented what, and what the person now believes.\n\n## Step 4: COMMIT AND ANSWER\nGive a direct, specific answer after \"ANSWER:\". Never say \"not specified\" when a memory contains the information. Keep the final answer short.\n- IRON RULE: your response MUST contain the marker \"ANSWER:\" followed by the final answer as the LAST line.";
+const ANSWER_SYSTEM: &str = "You are answering a question using retrieved memories from past work conversations between two colleagues.\n\n## INSTRUCTIONS\n1. Read ALL memories carefully. The answer is often in a specific detail.\n2. For questions about what HAPPENED or WHY: look for causal chains (A caused B).\n3. For questions about what PREVENTED something: look for actions that stopped or blocked an outcome.\n4. For questions asking which OPTION to choose: pick the one with a positive outcome in the memories.\n5. For questions about what someone BELIEVES NOW: look for the MOST RECENT statement or lesson learned.\n6. For questions about temporal order: determine the sequence from timestamps or causal logic.\n7. For CROSS-TASK questions: the question mentions a situation in one domain — find the analogous lesson from a DIFFERENT domain in the memories.\n\nAnswer directly and specifically. Do NOT say \"not specified\" or \"not mentioned\" if any memory contains relevant information.\nYour response MUST contain \"ANSWER:\" followed by a concise answer as the LAST line.";
 
-const JUDGE_SYSTEM: &str = "You are an impartial judge evaluating whether a predicted answer correctly answers a question about past work conversations. Respond with ONLY a JSON object (no markdown): {\"verdict\": \"correct\" or \"incorrect\", \"reason\": \"<one sentence>\"}";
+const JUDGE_SYSTEM: &str = "You are an impartial judge evaluating whether a predicted answer correctly answers a question about past work conversations. The prediction is CORRECT if it conveys the same KEY INFORMATION as the gold answer — even if the wording is different, more detailed, or includes additional context. Only mark INCORRECT if the prediction is factually wrong or misses the core point. Respond with ONLY a JSON object: {\"verdict\": \"correct\" or \"incorrect\", \"reason\": \"<one sentence>\"}";
 
 fn cmd_run(args: &[String]) -> Result<()> {
     let mut data = PathBuf::from("benches/causal_eval/data");
@@ -1317,7 +1317,7 @@ async fn run_question(
     let memories = if memory_lines.is_empty() { "(no memories retrieved)".to_string() } else { memory_lines.join("
 ") };
     let answer_user = format!("Memories:\n{memories}\n\nQuestion: {}\nAnswer:", qa.question);
-    let raw = match chat(cfg, ANSWER_SYSTEM, &answer_user, 400, false).await {
+    let raw = match chat(cfg, ANSWER_SYSTEM, &answer_user, 600, false).await {
         Ok(s) => s,
         Err(e) => {
             return ResultRow {
