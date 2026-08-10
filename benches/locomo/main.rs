@@ -16,7 +16,8 @@
 //! Env:
 //!   DEEPSEEK_API_KEY        (required; or CAUSAL_MEMORY_LLM_KEY)
 //!   LOCOMO_LLM_API          (default: https://api.deepseek.com/v1)
-//!   LOCOMO_LLM_MODEL        (default: deepseek-chat, used for answer + judge)
+//!   LOCOMO_LLM_MODEL        (default: deepseek-chat, used for answer)
+//!   LOCOMO_JUDGE_MODEL      (default: same as LOCOMO_LLM_MODEL, used for judge)
 
 mod compact;
 
@@ -552,6 +553,13 @@ impl LlmConfig {
             model: std::env::var("LOCOMO_LLM_MODEL").unwrap_or_else(|_| "deepseek-chat".into()),
         })
     }
+
+    /// Judge model: defaults to the answer model, but can be overridden via
+    /// LOCOMO_JUDGE_MODEL (e.g. use deepseek-chat for judging while
+    /// deepseek-v4-flash for answering).
+    fn judge_model(&self) -> String {
+        std::env::var("LOCOMO_JUDGE_MODEL").unwrap_or_else(|_| self.model.clone())
+    }
 }
 
 #[derive(Serialize)]
@@ -759,7 +767,14 @@ async fn judge_with_retry(
         } else {
             format!("{judge_user}\n\nRespond with ONLY the JSON object. No other text.")
         };
-        match chat_json(cfg, judge_style.system_prompt(), &user, JUDGE_MAX_TOKENS).await {
+        // Use judge model if configured separately from answer model
+        let judge_model = cfg.judge_model();
+        let judge_cfg = if cfg.model != judge_model {
+            LlmConfig { model: judge_model, ..cfg.clone() }
+        } else {
+            cfg.clone()
+        };
+        match chat_json(&judge_cfg, judge_style.system_prompt(), &user, JUDGE_MAX_TOKENS).await {
             Ok(raw) => match parse_judge_output(&raw) {
                 Some(parsed) => return parsed,
                 None => {
@@ -1606,7 +1621,7 @@ async fn run(args: Args) -> Result<()> {
         date: Utc::now().to_rfc3339(),
         git_commit: git_commit(),
         model: cfg.model.clone(),
-        judge_model: cfg.model.clone(),
+        judge_model: cfg.judge_model(),
         temperature: LLM_TEMPERATURE,
         topk: args.topk,
         ingest: args.ingest.as_str().to_string(),

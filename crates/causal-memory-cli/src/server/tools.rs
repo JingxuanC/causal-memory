@@ -34,6 +34,21 @@ pub struct RecordDecisionParams {
     pub confidence_source: Option<String>,
 }
 
+/// Parameters for the `remember` tool — mem0-style auto-extraction.
+/// Agent feeds raw conversation text; the system's LLM automatically extracts
+/// facts, lessons, and causal edges (caused/enabled/prevented).
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+#[schemars(description = "Parameters for remember — auto-extract memories from conversation text")]
+pub struct RememberParams {
+    /// The conversation text to extract memories from. Can be multiple messages
+    /// joined by newlines, or a single user/assistant exchange.
+    #[schemars(description = "Conversation text to extract memories from")]
+    pub messages: String,
+    /// The date of the conversation (YYYY-MM-DD). Defaults to today.
+    #[schemars(description = "Session date (YYYY-MM-DD), defaults to today")]
+    pub date: Option<String>,
+}
+
 #[derive(Deserialize, schemars::JsonSchema, Default)]
 pub struct SearchCausalParams {
     /// The type of task you're working on (e.g., "concurrency")
@@ -298,6 +313,159 @@ impl CausalMemoryServer {
         // immediately available for spreading activation queries.
         self.reload_graph();
         result
+    }
+
+    /// `remember` — mem0-style auto-extraction. Agent feeds raw conversation
+    /// text; the system's LLM automatically extracts facts, lessons, and
+    /// causal edges (caused/enabled/prevented). This is the zero-friction
+    /// alternative to `record_decision` — agent just dumps conversation text,
+    /// system does the rest.
+    #[tool(
+        name = "remember",
+        description = "Extract and store memories from conversation text. The system automatically identifies facts, lessons, and causal relationships (caused/enabled/prevented) using LLM analysis. Call this after any meaningful conversation exchange — just paste the conversation text, no need to manually identify decisions or outcomes."
+    )]
+    fn remember(
+        &self,
+        Parameters(params): Parameters<RememberParams>,
+    ) -> String {
+        use causal_memory::distill::{Distiller, ItemKind, CausalRelation};
+        use causal_memory::embed::EmbedConfig;
+
+        // Parse the messages into turns
+        let date = params.date.as_deref().unwrap_or("");
+        let date = if date.len() >= 10 { &date[..10] } else { "" };
+
+        // Split messages into turns — accept raw text with speaker: prefix,
+        // or just treat as a single assistant message
+        let turns: Vec<(String, String)> = params
+            .messages
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|line| {
+                if let Some((speaker, rest)) = line.split_once(':') {
+                    (speaker.trim().to_string(), rest.trim().to_string())
+                } else {
+                    ("user".to_string(), line.trim().to_string())
+                }
+            })
+            .collect();
+
+        if turns.is_empty() {
+            return "❌ No messages to remember. Paste conversation text.".to_string();
+        }
+
+        // Try to run the distiller
+        let distiller = match Distiller::from_env() {
+            Some(d) => d,
+            None => {
+                // No LLM configured — fall back to raw recording
+                let now = chrono::Utc::now().timestamp();
+                let text = params.messages.chars().take(500).collect::<String>();
+                let result = self.store.record_decision_at(
+                    &text,
+                    "remember (no LLM available, stored raw)",
+                    "caused",
+                    Some("remember"),
+                    0.3,
+                    "temporal",
+                    now,
+                );
+                return match result {
+                    Ok(_) => "✅ Stored raw (no LLM for extraction). Set CAUSAL_MEMORY_LLM_API for auto-extraction.".to_string(),
+                    Err(e) => format!("❌ Failed: {e}"),
+                };
+            }
+        };
+
+        // Run distill synchronously (blocking the tool call)
+        let items = match block_on(distiller.distill_session(date, &turns)) {
+            Ok(items) if !items.is_empty() => items,
+            Ok(_) => return "ℹ️ Nothing worth remembering in this conversation.".to_string(),
+            Err(e) => return format!("❌ Extraction failed: {e}"),
+        };
+
+        // Write extracted items to the store
+        let embedder = causal_memory::embed::EmbedConfig::from_env()
+            .map(causal_memory::embed::Embedder::new);
+        let mut facts = 0usize;
+        let mut episodes = 0usize;
+        let mut causal = 0usize;
+        let mut summary = Vec::new();
+
+        for item in &items {
+            let kind_str = match item.kind {
+                ItemKind::Fact => "fact",
+                ItemKind::Preference => "preference",
+                ItemKind::Lesson => "lesson",
+                ItemKind::Event => "event",
+                ItemKind::Causal => "causal",
+            };
+            summary.push(format!("  [{kind_str}] {}", &item.text[..item.text.len().min(80)]));
+
+            // Write to store based on kind
+            if item.kind == ItemKind::Causal {
+                let relation = item.causal_relation
+                    .map(|r| r.as_str())
+                    .unwrap_or("caused");
+                let decision = item.decision.as_deref().unwrap_or("decision");
+                let now = chrono::Utc::now().timestamp();
+                let conf = match relation {
+                    "caused" => 0.7,
+                    "prevented" => 0.8,
+                    "enabled" => 0.6,
+                    _ => 0.5,
+                };
+                match self.store.record_decision_at(
+                    decision,
+                    &item.text,
+                    relation,
+                    Some("remember"),
+                    conf,
+                    "llm_inferred",
+                    now,
+                ) {
+                    Ok(_) => causal += 1,
+                    Err(_) => {}
+                }
+            } else {
+                // Fact/preference/lesson/event → agent_facts or causal_edges
+                let key = match item.kind {
+                    ItemKind::Fact => "fact",
+                    ItemKind::Preference => "preference",
+                    ItemKind::Lesson => "lesson",
+                    _ => "event",
+                };
+                match self.store.record_fact(key, &item.text, "user", "remember", 0.8) {
+                    Ok(_) => facts += 1,
+                    Err(_) => {
+                        // Fall back to causal edge with no_effect
+                        let now = chrono::Utc::now().timestamp();
+                        let _ = self.store.record_decision_at(
+                            &item.text,
+                            "(observed)",
+                            "no_effect",
+                            Some("remember"),
+                            0.3,
+                            "llm_inferred",
+                            now,
+                        );
+                        episodes += 1;
+                    }
+                }
+            }
+        }
+
+        // Reload graph
+        self.reload_graph();
+
+        format!(
+            "✅ Extracted {} memories: {} facts, {} causal edges, {} episodes\n{}",
+            items.len(),
+            facts,
+            causal,
+            episodes,
+            summary.join("\n")
+        )
     }
 
     #[tool(
