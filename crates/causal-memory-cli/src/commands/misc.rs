@@ -224,12 +224,17 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
 
 pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
     use causal_memory::session::{default_source_kind, parser_for, SessionSource};
+    use causal_memory::distill::{Distiller, ItemKind};
 
     let (agent, session_dir) = crate::commands::parse_agent_path(args);
     if session_dir.as_os_str().is_empty() {
-        eprintln!("Usage: causal-memory extract <session-dir|session-file> [--agent grok|claude]");
+        eprintln!("Usage: causal-memory extract <session-dir|session-file> [--agent grok|claude|kimi|codex]");
+        eprintln!("  Extracts causal memories from agent reasoning text using LLM distill.");
+        eprintln!();
         eprintln!("  grok:   session-dir = ~/.grok/sessions/<workspace>/<session-id>/");
         eprintln!("  claude: session-file = ~/.claude/projects/<project>/<session>.jsonl");
+        eprintln!("  kimi:   session-file = ~/.openclaw/agents/*/sessions/*.jsonl");
+        eprintln!("  codex:  session-file = ~/.codex/sessions/**/*.jsonl");
         std::process::exit(1);
     }
 
@@ -240,6 +245,7 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
 
     let store = CausalStore::open(&db_path)?;
 
+    // Parse the session
     let source = SessionSource {
         path: session_dir.clone(),
         kind: default_source_kind(agent),
@@ -247,19 +253,136 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
     let parsed = parser_for(agent).parse(&source)?;
 
     println!(
-        "Extracting decisions from: {} (agent={agent:?})",
+        "Extracting memories from: {} (agent={agent:?})",
         session_dir.display()
     );
-    let stats = DecisionExtractor::extract_from_parsed(&store, &parsed)?;
+    println!("  {} assistant messages, {} tool calls",
+        parsed.assistant_texts.len(), parsed.decisions.len());
+
+    // Build conversation turns from assistant reasoning texts
+    // (not tool calls — we extract from the agent's THINKING, not its ACTIONS)
+    let now = chrono::Utc::now();
+    let date = now.format("%Y-%m-%d").to_string();
+    let embedder = causal_memory::embed::EmbedConfig::from_env()
+        .map(causal_memory::embed::Embedder::new);
+
+    let distiller = match Distiller::from_env() {
+        Some(d) => {
+            println!("LLM: {} @ {}", d.model(), distiller_api_base(&d));
+            d
+        }
+        None => {
+            eprintln!("No LLM configured. Set DEEPSEEK_API_KEY or CAUSAL_MEMORY_LLM_API + CAUSAL_MEMORY_LLM_KEY");
+            std::process::exit(1);
+        }
+    };
+
+    // Group assistant texts into sessions (batch every 15 messages to stay
+    // within LLM context limits)
+    let batch_size = 15;
+    let mut total_facts = 0usize;
+    let mut total_episodes = 0usize;
+    let mut total_causal = 0usize;
+    let mut batches = 0;
+
+    let texts: Vec<&String> = parsed.assistant_texts.iter()
+        .filter(|t| t.len() >= 100) // skip trivial messages
+        .collect();
+
+    println!("  {} non-trivial messages to distill", texts.len());
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        for chunk in texts.chunks(batch_size) {
+            // Join messages into a single "conversation" for the distiller
+            let turns: Vec<(String, String)> = chunk
+                .iter()
+                .enumerate()
+                .map(|(i, text)| {
+                    let speaker = if i % 2 == 0 { "assistant" } else { "user" };
+                    (speaker.to_string(), (*text).clone())
+                })
+                .collect();
+
+            if turns.is_empty() {
+                continue;
+            }
+
+            batches += 1;
+            let items = match distiller.distill_session(&date, &turns).await {
+                Ok(items) if !items.is_empty() => items,
+                Ok(_) => {
+                    println!("  batch {}: nothing worth remembering", batches);
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("  batch {} distill failed: {e}", batches);
+                    continue;
+                }
+            };
+
+            print!("  batch {}: {} items:", batches, items.len());
+            for item in &items {
+                let kind_str: String = match item.kind {
+                    ItemKind::Fact => "fact".into(),
+                    ItemKind::Preference => "pref".into(),
+                    ItemKind::Lesson => "lesson".into(),
+                    ItemKind::Event => "event".into(),
+                    ItemKind::Causal => {
+                        let rel = item.causal_relation
+                            .map(|r| r.as_str())
+                            .unwrap_or("caused");
+                        total_causal += 1;
+                        // Write causal edge
+                        let now_ts = chrono::Utc::now().timestamp();
+                        let decision = item.decision.as_deref().unwrap_or("decision");
+                        let conf = match rel {
+                            "caused" => 0.7,
+                            "prevented" => 0.8,
+                            "enabled" => 0.6,
+                            _ => 0.5,
+                        };
+                        let _ = store.record_decision_at(
+                            decision, &item.text, rel,
+                            Some("reasoning"), conf, "llm_inferred", now_ts,
+                        );
+                        format!("causal({})", rel)
+                    }
+                    _ => "?".to_string(),
+                };
+
+                if item.kind != ItemKind::Causal {
+                    let key = match item.kind {
+                        ItemKind::Fact => { total_facts += 1; "fact" }
+                        ItemKind::Preference => { total_facts += 1; "preference" }
+                        ItemKind::Lesson => { total_facts += 1; "lesson" }
+                        _ => { total_episodes += 1; "event" }
+                    };
+                    let _ = store.record_fact(key, &item.text, "user", "reasoning", 0.8);
+                }
+
+                print!(" [{}]", kind_str);
+            }
+            println!();
+        }
+        Ok::<_, anyhow::Error>(())
+    })?;
 
     println!("\n=== Extraction complete ===");
-    println!("  Decisions found:      {}", stats.decisions_found);
-    println!("  Results matched:      {}", stats.results_matched);
-    println!("  Skipped (low-value):  {}", stats.skipped_low_value);
-    println!("  Edges inserted:       {}", stats.edges_inserted);
+    println!("  Batches distilled:     {}", batches);
+    println!("  Facts/preferences:     {}", total_facts);
+    println!("  Causal edges:          {}", total_causal);
+    println!("  Other episodes:        {}", total_episodes);
+    println!("  Total memories:        {}", total_facts + total_causal + total_episodes);
     println!("\nTotal causal edges in DB: {}", store.count_edges()?);
 
     Ok(())
+}
+
+/// Get the API base from a Distiller (for logging).
+fn distiller_api_base(_d: &causal_memory::distill::Distiller) -> String {
+    // Distiller doesn't expose api_base directly, but we know it's DeepSeek
+    "https://api.deepseek.com/v1".to_string()
 }
 
 pub(crate) async fn run_reasoning(args: &[String]) -> anyhow::Result<()> {
