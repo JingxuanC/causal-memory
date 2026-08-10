@@ -339,10 +339,10 @@ var edges_data = new vis.DataSet([{edges_data}]);
 var container = document.getElementById('network');
 var data = {{ nodes: nodes, edges: edges_data }};
 var options = {{
-  nodes: {{ shape: 'dot', size: 16, font: {{ size: 12 }} }},
-  edges: {{ font: {{ size: 10, strokeWidth: 0, background: 'rgba(255,255,255,.7)' }}, arrows: {{ to: {{ enabled: true, scaleFactor: 0.5 }} }}, smooth: {{ type: 'continuous' }} }},
-  physics: {{ stabilization: {{ iterations: 200 }}, barnesHut: {{ gravitationalConstant: -3000 }} }},
-  interaction: {{ hover: true, tooltipDelay: 200 }}
+  nodes: {{ shape: 'dot', size: 6, font: {{ size: 0 }} }},
+  edges: {{ font: {{ size: 0 }}, arrows: {{ to: {{ enabled: true, scaleFactor: 0.3 }} }}, smooth: false, width: 0.5 }},
+  physics: {{ stabilization: {{ iterations: 150, updateInterval: 50, fit: true }}, barnesHut: {{ gravitationalConstant: -8000, springLength: 80, springConstant: 0.01, avoidOverlap: 0.5 }} }},
+  interaction: {{ hover: true, tooltipDelay: 200, zoomView: true, dragView: true }}
 }};
 var network = new vis.Network(container, data, options);
 network.on('click', function(params) {{
