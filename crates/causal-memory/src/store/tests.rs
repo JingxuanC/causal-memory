@@ -2481,6 +2481,42 @@ fn test_trace_cause_cross_session_same_session_bridge_skipped() {
     // ─── v8: reversible consolidation (P3) ────────────────────────────────
 
     #[test]
+    fn test_annotate_superseded_is_soft() {
+        // Soft supersession: the old edge keeps valid_to NULL (fully
+        // retrievable — C3 counterfactual gold) while carrying superseded_by
+        // provenance (the C7 falsification signal).
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .record_decision_at("tried FixOne for the outage", "outage persisted", "caused", Some("t"), 0.8, "rule", 0)
+            .unwrap();
+        store
+            .record_decision_at("switched to FixTwo", "outage resolved", "caused", Some("t"), 0.9, "rule", 100)
+            .unwrap();
+        let all = store.all_valid_edges().unwrap();
+        let old_id = all.iter().find(|e| e.decision_text.contains("FixOne")).unwrap().edge_id;
+        let new_id = all.iter().find(|e| e.decision_text.contains("FixTwo")).unwrap().edge_id;
+
+        assert!(store.annotate_superseded(old_id, new_id).unwrap());
+        let e = store.get_edge(old_id).unwrap().unwrap();
+        assert!(e.valid_to.is_none(), "soft: stays retrievable");
+        assert_eq!(e.superseded_by, Some(new_id));
+
+        // Still visible to every search path.
+        let hits = store.search_causal_bm25(None, "fixone outage", 10).unwrap();
+        assert!(hits.iter().any(|h| h.edge_id == old_id));
+        let ents = store.search_causal_entity("did FixOne help", 10).unwrap();
+        assert!(ents.iter().any(|h| h.edge_id == old_id));
+
+        // Not a hard mark: superseded_edges (audit view) only lists hard ones.
+        assert!(store.superseded_edges(10).unwrap().is_empty());
+
+        // Idempotent: second annotation is a no-op (already marked).
+        assert!(!store.annotate_superseded(old_id, new_id).unwrap());
+        // Self-annotation rejected.
+        assert!(!store.annotate_superseded(new_id, new_id).unwrap());
+    }
+
+    #[test]
     fn test_supersede_marks_and_restore_revives() {
         use crate::distill::{ItemKind, MemoryItem};
         let store = CausalStore::open_in_memory().unwrap();

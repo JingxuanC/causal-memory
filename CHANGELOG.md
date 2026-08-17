@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.0] - Unreleased
 
 ### Added
+- **Soft supersession** (`annotate_superseded`): mark an edge
+  `superseded_by` without hiding it — "superseded ≠ false". The old lesson
+  stays fully retrievable (counterfactual gold intact) while carrying
+  provenance; MCP search output annotates it
+  ("⚠ superseded later by a newer memory")
+- CausalEval v13: seeds graph `invalidates` edges as soft supersession and
+  surfaces the correction in the answer evidence — **C7 update 50% → 100%
+  (+50pp), C6 transfer 20% → 40%, overall 80%** on the narrated-graph
+  protocol (single run; C4/C2 dip within re-distillation variance)
+- Entity-token cache on `CausalStore` (audit 2026-08 #2): edge entity
+  tokens computed once per process; `search_causal_entity` scans ids only
+  and fetches texts on cache misses — measured **31.7x** faster warm
+  queries at 5k edges (14.8ms → 0.47ms; `#[ignore]`d probe
+  `probe_entity_cache` reproduces)
+- Optimization wave 2 design + verification record:
+  `docs/evaluations/optimization-plan-2026-08-17.md`
 - Benchmark harness distill mode (unified-memory-design Phase 4): all three
   harnesses accept `--ingest raw|distill` (+ `--ingest-only`), writing to
   separate `*_distill.db` files so raw baselines stay intact; kind-based

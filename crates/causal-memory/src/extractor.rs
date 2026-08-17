@@ -123,12 +123,6 @@ impl DecisionExtractor {
             let is_read_only = READ_ONLY_TOOLS.iter().any(|t| decision.name.contains(t));
             let is_state_changing = STATE_CHANGING_TOOLS.iter().any(|t| decision.name.contains(t));
 
-            if stats.decisions_found <= 5 {
-                eprintln!("[extract] {} | ro={} sc={} | args: {}",
-                    decision.name, is_read_only, is_state_changing,
-                    &decision.arguments[..decision.arguments.len().min(40)]);
-            }
-
             if is_read_only {
                 // For read-only tools, ONLY record if it's a clear failure
                 let result = match parsed.results.get(&decision.id) {

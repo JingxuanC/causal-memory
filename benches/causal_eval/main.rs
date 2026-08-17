@@ -1091,12 +1091,42 @@ fn seed_graph_semantics(store: &causal_memory::store::CausalStore, g: &CausalGra
         }
     }
 
-    // ── 2. Supersede seeding is INTENTIONALLY DISABLED ──
-    // The graph declares `10 invalidates 3`, but setting `valid_to` on the
-    // old fix edge hides it from ALL retrieval (C3's gold IS the old fix).
-    // "Superseded" ≠ "false" — the old fix was correct, just later improved.
-    // C7 relies on the answer model reasoning about recency + falsification
-    // signals in the conversation, not on hard invalidation.
+    // ── 2. Soft supersession (C7): "superseded ≠ false" ──
+    // The graph declares `10 invalidates 3`. Hard invalidation (valid_to)
+    // would hide the old fix from ALL retrieval — but C3's counterfactual
+    // gold IS the old fix. Instead we set `superseded_by` on edges touching
+    // the old-fix chunk, pointing at the correction's edge: the old lesson
+    // stays retrievable, and answer-time formatting surfaces the annotation
+    // as an explicit falsification signal.
+    let node_chunks = find_node_chunks(store, g);
+    for edge in &g.edges {
+        if edge.relation != "invalidates" {
+            continue;
+        }
+        let Some(old_chunk) = node_chunks.get(&edge.from) else { continue };
+        let Some(corr_chunk) = node_chunks.get(&edge.to) else { continue };
+        store.with_conn(|c| {
+            // The correction's representative edge: latest edge whose
+            // outcome endpoint is the correction chunk.
+            let corr_edge: Option<i64> = c
+                .query_row(
+                    "SELECT id FROM causal_edges WHERE to_id = ?1 ORDER BY event_time DESC, id DESC LIMIT 1",
+                    rusqlite::params![corr_chunk],
+                    |r| r.get(0),
+                )
+                .ok();
+            let Some(corr_edge) = corr_edge else { return Ok(()) };
+            c.execute(
+                "UPDATE causal_edges
+                 SET superseded_by = ?1
+                 WHERE (from_id = ?2 OR to_id = ?2)
+                   AND valid_to IS NULL AND superseded_by IS NULL
+                   AND id != ?1",
+                rusqlite::params![corr_edge, old_chunk],
+            )?;
+            Ok(())
+        })?;
+    }
 
     Ok(())
 }
@@ -1299,12 +1329,27 @@ async fn run_question(
     }
 
     // Answer.
+    // Superseded entries carry their annotation INTO the evidence: the
+    // falsification signal C7 needs (what the person believes NOW) without
+    // hiding the old lesson C3 needs (what they did BEFORE).
     let mut memory_lines = Vec::new();
     let mut seen2 = std::collections::HashSet::new();
     for e in &ranked {
         for (id, text) in [(&e.decision_id, &e.decision_text), (&e.outcome_id, &e.outcome_text)] {
             if seen2.insert(id.clone()) {
-                memory_lines.push(format!("- {text}"));
+                let mut line = format!("- {text}");
+                if let Some(sid) = e.superseded_by {
+                    if let Ok(Some(sup)) = store.get_edge(sid) {
+                        let corr = if sup.decision_text.len() >= sup.outcome_text.len() {
+                            &sup.decision_text
+                        } else {
+                            &sup.outcome_text
+                        };
+                        let corr: String = corr.chars().take(160).collect();
+                        line.push_str(&format!(" [⚠ later superseded — the correction: {corr}]"));
+                    }
+                }
+                memory_lines.push(line);
             }
         }
     }

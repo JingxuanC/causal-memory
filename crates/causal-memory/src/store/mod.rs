@@ -196,6 +196,11 @@ pub struct CausalStore {
     /// A4: pending access_count bumps from read paths, flushed on the next
     /// connection checkout (see acquire). Keeps reads read-only.
     pub(crate) access_buffer: Arc<Mutex<HashSet<i64>>>,
+    /// Perf cache (audit 2026-08 #2): edge_id → precomputed entity tokens.
+    /// Chunk texts are immutable and edges are append/invalidate-only, so a
+    /// cached entry can never go stale within a process — an invalidated
+    /// edge simply drops out of the candidate set before the cache is read.
+    pub(crate) entity_cache: Arc<Mutex<std::collections::HashMap<i64, std::sync::Arc<Vec<String>>>>>,
 }
 
 impl CausalStore {
@@ -208,6 +213,7 @@ impl CausalStore {
         Ok(Self {
             conn: Arc::new(pool),
             access_buffer: Arc::new(Mutex::new(HashSet::new())),
+            entity_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -221,6 +227,7 @@ impl CausalStore {
         Ok(Self {
             conn: Arc::new(pool),
             access_buffer: Arc::new(Mutex::new(HashSet::new())),
+            entity_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -475,3 +482,5 @@ pub use utils::{
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod probe_perf;

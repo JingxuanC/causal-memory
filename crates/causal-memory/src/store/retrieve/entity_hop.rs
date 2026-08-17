@@ -6,7 +6,35 @@ use rusqlite::params;
 use crate::store::{CausalStore, ENTRY_COLUMNS, entry_from_row};
 use super::by_conf;
 
+/// Lock the entity cache ignoring poisoning (cache writes can't panic, so a
+/// poisoned guard only means some other thread panicked elsewhere).
+fn poison_safe_lock<T>(
+    m: &std::sync::Mutex<T>,
+) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 impl CausalStore {
+    /// Entity tokens for one edge, cache-or-compute (audit 2026-08 #2).
+    /// Chunk texts are immutable, so the cache never goes stale; entries
+    /// already loaded (e.g. by the semantic path) are tokenized exactly once
+    /// and reused by every later query in the process.
+    pub(crate) fn entity_tokens_for(
+        &self,
+        edge_id: i64,
+        decision_text: &str,
+        outcome_text: &str,
+    ) -> std::sync::Arc<Vec<String>> {
+        if let Some(hit) = poison_safe_lock(&self.entity_cache).get(&edge_id) {
+            return hit.clone();
+        }
+        let mut ents = crate::patterns::entity_tokens(decision_text);
+        ents.extend(crate::patterns::entity_tokens(outcome_text));
+        let arc = std::sync::Arc::new(ents);
+        poison_safe_lock(&self.entity_cache).insert(edge_id, arc.clone());
+        arc
+    }
+
     pub fn search_causal_entity(
         &self,
         query: &str,
@@ -17,30 +45,99 @@ impl CausalStore {
             return Ok(Vec::new());
         }
         let conn = self.acquire()?;
-        let mut stmt = conn.prepare(&format!(
+        // Score via the token cache: the candidate scan fetches only edge
+        // ids (cheap index scan); texts are fetched just for edges not yet
+        // cached — a warm query touches no chunk text at all. Ordering
+        // contract preserved from the pre-cache implementation: overlap
+        // desc, then edge id asc.
+        let mut stmt = conn.prepare(
+            "SELECT ce.id
+             FROM causal_edges ce
+             WHERE ce.valid_to IS NULL
+             ORDER BY ce.id",
+        )?;
+        let all_ids: Vec<i64> = stmt
+            .query_map([], |r| r.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))?;
+        // Which ids need their texts (cache misses only)?
+        let uncached: Vec<i64> = {
+            let cache = poison_safe_lock(&self.entity_cache);
+            all_ids.iter().copied().filter(|id| !cache.contains_key(id)).collect()
+        };
+        let mut texts: std::collections::HashMap<i64, (String, String)> =
+            std::collections::HashMap::new();
+        if !uncached.is_empty() {
+            for chunk_ids in uncached.chunks(500) {
+                let placeholders =
+                    chunk_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let sql = format!(
+                    "SELECT ce.id, cf.text, ct.text
+                     FROM causal_edges ce
+                     JOIN chunks cf ON cf.id = ce.from_id
+                     JOIN chunks ct ON ct.id = ce.to_id
+                     WHERE ce.id IN ({placeholders})"
+                );
+                let mut stmt = conn.prepare(&sql)?;
+                let binds: Vec<&dyn rusqlite::ToSql> = chunk_ids
+                    .iter()
+                    .map(|id| id as &dyn rusqlite::ToSql)
+                    .collect();
+                let rows = stmt.query_map(binds.as_slice(), |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })?;
+                for row in rows {
+                    let (id, dec, out) = row.map_err(|e| anyhow!("Query failed: {e}"))?;
+                    texts.insert(id, (dec, out));
+                }
+            }
+        }
+        let mut scored: Vec<(usize, i64)> = Vec::new();
+        for id in all_ids {
+            let (dec_text, out_text) = match texts.get(&id) {
+                Some(t) => (t.0.as_str(), t.1.as_str()),
+                // Cache hit: tokens already computed, texts not needed.
+                None => ("", ""),
+            };
+            let ents = self.entity_tokens_for(id, dec_text, out_text);
+            let overlap = q_entities.iter().filter(|q| ents.contains(q)).count();
+            if overlap > 0 {
+                scored.push((overlap, id));
+            }
+        }
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+        let top: Vec<i64> = scored.into_iter().take(limit).map(|(_, id)| id).collect();
+        if top.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Hydrate only the output slice (limit is small; the full-table
+        // entry fetch of the old implementation is the other half of the
+        // per-query cost this cache removes).
+        let placeholders = top.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
             "SELECT {ENTRY_COLUMNS}
              FROM causal_edges ce
              JOIN chunks cf ON cf.id = ce.from_id
              JOIN chunks ct ON ct.id = ce.to_id
-             WHERE ce.valid_to IS NULL
+             WHERE ce.id IN ({placeholders})
              ORDER BY ce.id"
-        ))?;
-        let rows = stmt.query_map([], entry_from_row)?;
-        let candidates: Vec<crate::store::CausalEntry> = rows
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let ids: Vec<&dyn rusqlite::ToSql> =
+            top.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(ids.as_slice(), entry_from_row)?;
+        let mut by_id: std::collections::HashMap<i64, crate::store::CausalEntry> = rows
             .collect::<rusqlite::Result<Vec<_>>>()
-            .map_err(|e| anyhow!("Query failed: {e}"))?;
-        let mut scored: Vec<(usize, crate::store::CausalEntry)> = Vec::new();
-        for entry in candidates {
-            let mut ents = crate::patterns::entity_tokens(&entry.decision_text);
-            ents.extend(crate::patterns::entity_tokens(&entry.outcome_text));
-            let overlap = q_entities.iter().filter(|q| ents.contains(q)).count();
-            if overlap > 0 {
-                scored.push((overlap, entry));
-            }
-        }
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.edge_id.cmp(&b.1.edge_id)));
+            .map_err(|e| anyhow!("Query failed: {e}"))?
+            .into_iter()
+            .map(|e| (e.edge_id, e))
+            .collect();
         let entries: Vec<crate::store::CausalEntry> =
-            scored.into_iter().take(limit).map(|(_, e)| e).collect();
+            top.into_iter().filter_map(|id| by_id.remove(&id)).collect();
         self.record_access(entries.iter().map(|e| e.edge_id))?;
         Ok(entries)
     }

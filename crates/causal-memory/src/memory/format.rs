@@ -10,6 +10,11 @@ pub fn format_entry_layered(entry: &CausalEntry, rank: usize, level: &str) -> (S
     let ot = entry.outcome_text.as_str();
     let tag = entry.task_tag.as_deref().unwrap_or("untagged");
     let conf = (entry.confidence * 100.0).round() as u32;
+    let superseded_note = if entry.superseded_by.is_some() {
+        "   ⚠ superseded later by a newer memory — check it before relying on this\n"
+    } else {
+        ""
+    };
     match level {
         "l0" => {
             let line = format!(
@@ -23,14 +28,14 @@ pub fn format_entry_layered(entry: &CausalEntry, rank: usize, level: &str) -> (S
         }
         "l1" => {
             let line = format!(
-                "{rank}. [{}] \"{}\"\n   →({})→ \"{}\" (confidence: {conf}%)\n",
+                "{rank}. [{}] \"{}\"\n   →({})→ \"{}\" (confidence: {conf}%)\n{superseded_note}",
                 tag, dt, entry.relation, ot,
             );
             (line, 60)
         }
         _ => {
             let line = format!(
-                "{rank}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {conf}%\n\n",
+                "{rank}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {conf}%\n{superseded_note}\n",
                 tag, dt, entry.relation, ot,
             );
             (line, 100)

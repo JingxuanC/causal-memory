@@ -78,7 +78,8 @@ Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
 `search_facts` / `search_memory` / `trace_cause` / `trace_cause_chain` /
 `invalidate_decision` / `search_patterns` / `causal_directory` /
 `intervention_query` / `counterfactual_query` / `reconstruct_lesson` /
-`remember`
+`remember` — over stdio **and** HTTP transport (`causal-memory-http
+--port 9938`).
 
 Core capabilities (all shipped, all tested):
 
@@ -105,7 +106,9 @@ Core capabilities (all shipped, all tested):
   + contrastive empirical `counterfactual_query` (honestly labeled: not SCM)
 - Reconstructive retrieval: `reconstruct_lesson` (Markov-blanket subgraph
   → LLM narrative, `--calibrate=N` multi-reconstruction agreement)
-- Retrieval: BM25 default + optional embeddings with cosine ranking
+- Retrieval: BM25 default + optional embeddings with cosine ranking;
+  entity-token cache kills the per-query re-tokenization cost (audit 2026-08
+  #2)
 - Cross-agent sharing: `causal-memory export` / `import` (JSONL, idempotent,
   best-effort redaction)
 - 330 tests (unit + e2e: migration / pipeline / MCP stdio)
@@ -156,6 +159,10 @@ Benchmark-driven:
 
 Memory-quality:
 
+- [x] **Soft supersession** — ✅ shipped 2026-08-17 (`annotate_superseded`):
+  superseded edges stay retrievable with `superseded_by` provenance;
+  CausalEval C7 50% → 100% with C3 unharmed. The LLM-judge upgrade below
+  now builds on this instead of hard invalidation
 - [ ] **Half-life decay tiers** (Vela-inspired): `halflife_hours` column,
   effective_confidence = confidence · 0.5^(age/halflife); 24h/168h/720h/2160h
   tiers replace the flat 0.99/day
@@ -191,6 +198,8 @@ Ecosystem:
   pytest smoke suite). Remaining for the ecosystem entry: PyPI publishing +
   CI wheels, then the Hermes provider slot
 - [ ] TS bindings (after Python)
+- [x] MCP HTTP transport — ✅ shipped (`causal-memory http`, Streamable
+  HTTP, stateless mode); auth/multi-tenant hardening still open
 - [ ] Multi-tenant support
 - [ ] Backup / restore tooling (migrations already done)
 - [ ] Observability (Prometheus, OpenTelemetry)

@@ -718,6 +718,31 @@ impl CausalStore {
             .map_err(|e| anyhow!("Query failed: {e}"))
     }
 
+    /// Soft supersession: set `superseded_by` WITHOUT touching `valid_to`.
+    ///
+    /// "Superseded ≠ false" — the old lesson stays fully retrievable (a
+    /// counterfactual question about what was done *before* still finds it),
+    /// but carries provenance pointing at the edge that corrected it.
+    /// Retrieval layers surface the annotation so consumers can tell current
+    /// belief from history. Strictly weaker than hard supersede; to clear a
+    /// soft mark, set `superseded_by = NULL` directly (`restore_edge` only
+    /// matches hard marks).
+    ///
+    /// Returns true when a row was actually marked.
+    pub fn annotate_superseded(&self, old_edge_id: i64, new_edge_id: i64) -> Result<bool> {
+        if old_edge_id == new_edge_id {
+            return Ok(false);
+        }
+        let conn = self.acquire()?;
+        let n = conn.execute(
+            "UPDATE causal_edges
+             SET superseded_by = ?2
+             WHERE id = ?1 AND valid_to IS NULL AND superseded_by IS NULL",
+            params![old_edge_id, new_edge_id],
+        )?;
+        Ok(n > 0)
+    }
+
     /// v9: exact-text chunk reuse + DG SimHash maintenance.
     ///
     /// Identical text maps to the SAME chunk id (one fact, one node). New
