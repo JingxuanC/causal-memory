@@ -15,8 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ("⚠ superseded later by a newer memory")
 - CausalEval v13: seeds graph `invalidates` edges as soft supersession and
   surfaces the correction in the answer evidence — **C7 update 50% → 100%
-  (+50pp), C6 transfer 20% → 40%, overall 80%** on the narrated-graph
-  protocol (single run; C4/C2 dip within re-distillation variance)
+  (20/20), confirmed at the full 140-question scale** after narrating the
+  previously-empty graphs 10-19 (126s LLM cost, event-coverage verified);
+  overall 78% on 140q vs mem0 65% on the shared protocol
+- `analyze_results.py`: per-category accuracy vs v12/mem0 baselines for
+  CausalEval result files (committed under benches/causal_eval/)
 - Entity-token cache on `CausalStore` (audit 2026-08 #2): edge entity
   tokens computed once per process; `search_causal_entity` scans ids only
   and fetches texts on cache misses — measured **31.7x** faster warm

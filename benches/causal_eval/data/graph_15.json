@@ -139,7 +139,139 @@
       }
     ]
   },
-  "conversations": [],
+  "conversations": [
+    {
+      "graph_id": 15,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2023-05-08 09:00",
+          "turns": [
+            {
+              "speaker": "Joanna",
+              "text": "Morning! Quick heads-up — I shipped the API yesterday. No pagination, just a straight list endpoint. Should be fine for now."
+            },
+            {
+              "speaker": "Nate",
+              "text": "No pagination? That's a bold move. What if someone requests a huge dataset?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "I figured we'd cross that bridge later. The client only needs the first 100 rows anyway."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Okay, but I'm seeing some timeout alerts from the load test we ran this morning. The API timed out under load — like, 5 seconds per request."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Ugh, really? That's bad. But it's just a load test, not production."
+            },
+            {
+              "speaker": "Nate",
+              "text": "It cascaded into a full API outage during the test. Every request queued up, then everything died. We had to restart the service."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Okay, okay. I'll add pagination today. That should fix the timeout issue."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2023-05-15 14:30",
+          "turns": [
+            {
+              "speaker": "Nate",
+              "text": "Hey, I saw you added pagination to the API. Nice."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Yeah, took me a day but it's live. Also added a circuit breaker so timeouts don't cascade into a full outage anymore."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Good call. We ran a heavy load test — 10k concurrent users — and the API held up under heavy load. No timeouts, no crashes."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "See? Pagination was the fix. I also deleted the end-to-end tests to save time — they were slowing down the pipeline."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Wait, you deleted the e2e tests? That's risky. We're releasing tomorrow."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "It's fine, unit tests cover the logic. We'll be okay."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Well, the app broke right after release — the frontend is sending a query param that the API doesn't handle. We're getting 500s everywhere."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Damn. Okay, I'll re-add the e2e tests to the pipeline. And fix the param issue."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2023-05-22 11:00",
+          "turns": [
+            {
+              "speaker": "Nate",
+              "text": "Good news — the app stayed healthy after release. The e2e tests caught a regression before we shipped."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Yeah, keeping those tests in the pipeline was the right move. But I have to admit something."
+            },
+            {
+              "speaker": "Nate",
+              "text": "What's up?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "The pagination fix — turns out that wasn't enough. We're still seeing slow responses under real traffic, even with pagination and the circuit breaker."
+            },
+            {
+              "speaker": "Nate",
+              "text": "So what's the bottleneck?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "The database. Every page request hits the DB with a fresh query. I was wrong about pagination being the silver bullet."
+            },
+            {
+              "speaker": "Nate",
+              "text": "So what did you do?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "We replaced the pagination-only approach with response caching — added a Redis layer in front of the API. Now repeated queries hit the cache, not the DB."
+            },
+            {
+              "speaker": "Nate",
+              "text": "That makes sense. Did it help?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Huge difference. Latency dropped from 800ms to 40ms. The DB is no longer the bottleneck."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Nice. So the real lesson is — pagination alone doesn't fix a slow database."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Exactly. I should've thought about caching from the start. But at least we got there."
+            }
+          ]
+        }
+      ]
+    }
+  ],
   "qa": [
     {
       "category": 11,

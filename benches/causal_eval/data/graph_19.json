@@ -139,7 +139,155 @@
       }
     ]
   },
-  "conversations": [],
+  "conversations": [
+    {
+      "graph_id": 19,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2023-05-08 09:00",
+          "turns": [
+            {
+              "speaker": "Caroline",
+              "text": "Morning, Nate. Got a minute? I need to walk you through something I did over the weekend."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Sure, what's up? You look like you've been staring at a terminal for 48 hours."
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Basically that. I migrated the customer schema to the new normalized structure. No backup, I know, I know — I was rushing because the deadline was Monday."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Wait, no backup? That's... bold. Did it go okay?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Define 'okay.' The migration corrupted a bunch of customer records — addresses got shuffled between accounts, some phone numbers ended up in the email field. It's a mess."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Oh no. Can you restore from the nightly backup?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "That's the worst part. The corruption spread to the backups — the script that runs the backup was pulling from the same live tables during the migration window. It took me two days to repair the backup chain. We're only now back to a clean state."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Two days? That's brutal. So what's the plan going forward?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "I've already set up point-in-time recovery snapshots independent of the main backup system. So even if the main backup gets corrupted again, we can roll back to any minute. That's my safety net now."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Good. And please tell me you're not going to deploy anything else without running the test suite first."
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Yeah... about that. I deployed the new schema change without running the test suite. That's how the regression slipped into production — the one that broke the customer search. I'm not proud of it."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Caroline. We have a test suite for a reason. But okay, what's done is done. How do we prevent this from happening again?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "I've already set up a CI gate that blocks merges without tests. From now on, untested code never reaches production. That's non-negotiable."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Alright. Let's hope that's enough. But seriously, next time — backup first, tests second."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2023-05-15 14:30",
+          "turns": [
+            {
+              "speaker": "Nate",
+              "text": "Hey, Caroline. How's the customer data looking after last week's fiasco?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Actually, much better. I took a full snapshot before the migration this time — that was the lesson I learned. So even if something goes wrong, the migration can always be rolled back to that snapshot."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Nice. So you're covered on the rollback front."
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Exactly. And the CI gate is working — I've already seen two PRs get blocked because they didn't include tests. The team is grumbling, but it's working."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Good. Grumbling is better than a production outage. So you're feeling confident about the next migration?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "I am. Snapshot before, tests enforced, point-in-time recovery in place. I think we're solid."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Famous last words. But I'll take it."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2023-05-22 11:00",
+          "turns": [
+            {
+              "speaker": "Nate",
+              "text": "Morning. You look like you've been up all night again. What happened?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "The snapshot approach — it turns out that wasn't enough. We had a minor schema tweak yesterday, and the snapshot I took before the migration was already stale by deploy time. The data had changed in the two hours between snapshot and rollout, so rolling back would have lost those updates."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Oh, that's a classic. So what did you do?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "I was wrong about the snapshot being sufficient. We replaced it with continuous replication — we're now streaming every change to a separate replica in real time. So if we need to roll back, we can go to any point, not just the snapshot moment."
+            },
+            {
+              "speaker": "Nate",
+              "text": "That's a much better safety net. So the snapshot is gone?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "We keep it as a baseline, but the continuous replication is the real protection now. Snapshots go stale by deploy time — that's the lesson. Continuous replication doesn't."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Good call. And the CI gate is still holding?"
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Yep, untested code never reaches production. That part's solid. It's just the data safety that needed the upgrade."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Well, I'm glad you figured it out before the next big migration. Let's grab coffee — you look like you need it."
+            },
+            {
+              "speaker": "Caroline",
+              "text": "Deal."
+            }
+          ]
+        }
+      ]
+    }
+  ],
   "qa": [
     {
       "category": 11,

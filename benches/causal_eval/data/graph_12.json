@@ -139,7 +139,147 @@
       }
     ]
   },
-  "conversations": [],
+  "conversations": [
+    {
+      "graph_id": 12,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2023-05-08 09:00",
+          "turns": [
+            {
+              "speaker": "Melanie",
+              "text": "Morning, Nate. Quick heads-up — I migrated the customer schema last night."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Oh, you did? I thought we were waiting until Friday. Did you take a backup first?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "I took a full snapshot before the migration, so we're covered. I didn't bother with a separate backup — the snapshot should be enough."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Hmm, snapshots are fine, but they're not the same as a proper backup. Anyway, how did it go?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Mostly fine, but I noticed a few customer records look off — some addresses got scrambled. I think the migration script had a bug."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Scrambled? That's bad. Can we roll back?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "The migration could always be rolled back — I made sure of that. But the corruption seems to have spread to the backups too. It's going to take days to repair."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Days? That's a nightmare. I told you we should have had a proper backup strategy."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "I know. I'm setting up point-in-time recovery snapshots now, independent of the regular backup. That way we can restore to any moment."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Good. Let's hope that's enough."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2023-05-15 14:30",
+          "turns": [
+            {
+              "speaker": "Nate",
+              "text": "Hey, Melanie. I heard the corruption repair is done. How's the data looking?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Clean now. But I have to admit, I deployed a new feature yesterday without running the test suite — I was in a rush."
+            },
+            {
+              "speaker": "Nate",
+              "text": "You what? After last week's mess, you're deploying untested code?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "I know, I know. And of course, a regression slipped into production — the login flow is broken for some users."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Unbelievable. We need to fix this immediately, and we need a process to prevent it."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Agreed. I've set up a CI gate that blocks merges without tests. From now on, untested code never reaches production."
+            },
+            {
+              "speaker": "Nate",
+              "text": "That's a start. But what about the current regression? Can you roll back?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Yes, the migration rollback still works, and I have the point-in-time snapshots. I'll revert the deploy and then push the fix with tests."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Alright. Let's hope the CI gate holds."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2023-05-22 11:00",
+          "turns": [
+            {
+              "speaker": "Nate",
+              "text": "Morning, Melanie. How's the new CI gate working out?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "It's working — no untested code has reached production since. But I've been thinking about the snapshot issue."
+            },
+            {
+              "speaker": "Nate",
+              "text": "The snapshot you took before the migration? I thought that was fine."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Turns out that wasn't enough. The snapshot was taken hours before the deploy, and by the time we actually ran the migration, the data had changed. The snapshot was already stale."
+            },
+            {
+              "speaker": "Nate",
+              "text": "So what did you do?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "I was wrong about relying on a single snapshot. We replaced it with continuous replication — we now stream every change to a separate system in real time. Snapshots went stale by deploy time, but continuous replication gives us a live copy."
+            },
+            {
+              "speaker": "Nate",
+              "text": "That makes sense. So if something goes wrong now, you can restore to the exact moment before the bad change?"
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Exactly. And with the CI gate, we shouldn't have bad changes in the first place. But if we do, we can roll back to any second."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Good. That's a solid setup. Let's hope we don't need it."
+            },
+            {
+              "speaker": "Melanie",
+              "text": "Fingers crossed. But at least now we're prepared."
+            }
+          ]
+        }
+      ]
+    }
+  ],
   "qa": [
     {
       "category": 11,

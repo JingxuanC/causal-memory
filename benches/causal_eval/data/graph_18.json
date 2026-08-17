@@ -139,7 +139,139 @@
       }
     ]
   },
-  "conversations": [],
+  "conversations": [
+    {
+      "graph_id": 18,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2023-05-08 09:00",
+          "turns": [
+            {
+              "speaker": "Nate",
+              "text": "Morning, Kim. You look like you've been up since 3 AM."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Because I have. That migration you ran yesterday? During peak traffic? The database locked up hard."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Yeah, I know. I thought it would be fine — we'd done dry runs. But the lock cascaded to every dependent service. Checkout, inventory, even the search autocomplete went down."
+            },
+            {
+              "speaker": "Kim",
+              "text": "We had customers tweeting about it. I had to manually restart three queues. What were you thinking?"
+            },
+            {
+              "speaker": "Nate",
+              "text": "I was thinking we needed to get it done before the quarter close. But you're right — that was a mistake. I'll schedule it in a maintenance window next time."
+            },
+            {
+              "speaker": "Kim",
+              "text": "A maintenance window is better, but we still need to be careful. The lock itself is the problem, not just when we run it."
+            },
+            {
+              "speaker": "Nate",
+              "text": "I hear you. I'll set up a proper window for the next one, and I'll also look into a read-replica failover so services can keep running even if a lock happens."
+            },
+            {
+              "speaker": "Kim",
+              "text": "That would be a huge improvement. Let's talk after you've got a plan."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2023-05-15 14:30",
+          "turns": [
+            {
+              "speaker": "Kim",
+              "text": "Hey, I saw you ran the migration again last night. How did it go?"
+            },
+            {
+              "speaker": "Nate",
+              "text": "Smooth. I ran it in a maintenance window at 2 AM, and I configured a read-replica failover beforehand. Even if it had locked, the app would have kept serving reads from the replica."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Nice. So no lock at all?"
+            },
+            {
+              "speaker": "Nate",
+              "text": "No lock. The migration finished without locking anything. It was almost boring."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Boring is good. But I noticed you also deployed the new payment service during peak hours yesterday — and that caused an outage."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Ugh, yeah. That was a separate mistake. I thought the deployment was low-risk, but it took down the API gateway for 20 minutes."
+            },
+            {
+              "speaker": "Kim",
+              "text": "We need to stop doing this to ourselves. Can you schedule deployments for off-peak hours from now on?"
+            },
+            {
+              "speaker": "Nate",
+              "text": "Absolutely. I've already set up a deployment calendar — everything goes out between 1 AM and 4 AM. No more peak-hour releases."
+            },
+            {
+              "speaker": "Kim",
+              "text": "Good. Let's see if we can get a few clean releases in a row."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2023-05-22 11:00",
+          "turns": [
+            {
+              "speaker": "Kim",
+              "text": "Hey, I saw the last two releases went out without incidents. Nice work."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Thanks. Off-peak scheduling plus the read-replica failover has been solid. But I need to tell you something about the maintenance window approach."
+            },
+            {
+              "speaker": "Kim",
+              "text": "What do you mean?"
+            },
+            {
+              "speaker": "Nate",
+              "text": "Turns out that wasn't enough. Even in a maintenance window, the migration still locks the database — it just locks it when fewer people are around. But we still get lock waits, and if anything goes wrong, we're stuck."
+            },
+            {
+              "speaker": "Kim",
+              "text": "So you're saying the maintenance window was a band-aid?"
+            },
+            {
+              "speaker": "Nate",
+              "text": "Exactly. I was wrong about it being a real fix. So I switched to online schema migration — we're using gh-ost now. It runs in chunks, doesn't take a full lock, and the app stays fully available."
+            },
+            {
+              "speaker": "Kim",
+              "text": "That's a big change. How did the last migration go with that?"
+            },
+            {
+              "speaker": "Nate",
+              "text": "Flawless. No lock, no downtime, and we didn't even need the maintenance window. We just ran it during normal hours."
+            },
+            {
+              "speaker": "Kim",
+              "text": "That's the right call. I'm glad you didn't just settle for the window."
+            },
+            {
+              "speaker": "Nate",
+              "text": "Me too. Lesson learned — the real fix is to not lock at all, not just to lock at a quieter time."
+            }
+          ]
+        }
+      ]
+    }
+  ],
   "qa": [
     {
       "category": 11,

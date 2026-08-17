@@ -139,7 +139,127 @@
       }
     ]
   },
-  "conversations": [],
+  "conversations": [
+    {
+      "graph_id": 10,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2023-05-08 09:00",
+          "turns": [
+            {
+              "speaker": "Joanna",
+              "text": "Morning, Marcus. Got a minute? I need to talk through the schema migration I'm doing today."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Sure, what's up? You look a bit wired."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "I'm about to push the new customer table structure. I know I should have done a backup first, but honestly, I just went ahead and migrated the schema without one. It's fine, I took a full snapshot before the migration, so we can always roll back."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Wait, you migrated without a backup? That's risky. But you said you have a snapshot, right? That should cover us."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Exactly. The snapshot is the safety net. I'll deploy the code changes after lunch, and if anything breaks, we just restore from that snapshot."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Okay, but just be careful. I've seen migrations go sideways even with snapshots."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "I'll be fine. I'll ping you if anything weird happens."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2023-05-09 14:30",
+          "turns": [
+            {
+              "speaker": "Marcus",
+              "text": "Joanna, what the hell happened? Customer records are showing garbage — nulls, wrong names, duplicate IDs."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "I know, I know. The migration corrupted the customer records. I thought the snapshot would save us, but the corruption spread to the backups too — it took me two days to repair everything."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Two days? And you said you had a snapshot. How did the backups get corrupted?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "The snapshot was taken before the migration, but the corruption happened during the migration and then propagated to the backup system because they were linked. I've set up point-in-time recovery snapshots independent of the backup now, so this shouldn't happen again."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "That's good, but also — I heard you deployed without running the test suite. That's how the regression slipped into production, isn't it?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Yeah, that's on me. I was in a rush. But I've set up a CI gate that blocks merges without tests now. Untested code never reaches production again."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Alright. Let's hope that holds. But I'm still nervous about the data integrity."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2023-05-15 11:00",
+          "turns": [
+            {
+              "speaker": "Marcus",
+              "text": "Hey, how's the data looking after the repair? Any more issues?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Data's stable now, but I've been thinking a lot about what happened. Turns out that wasn't enough — taking a full snapshot before the migration, I mean. It gave me a false sense of security."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "What do you mean? You had a rollback point."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Sure, but the snapshot went stale by deploy time. By the time we noticed the corruption, the snapshot was hours old, and we lost all the changes that came in between. I was wrong about it being a safety net."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "So what are you doing instead?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "We replaced the snapshot approach with continuous replication. Now every transaction is mirrored in real time to a separate cluster. If anything goes wrong, we can rewind to any second, not just a point-in-time snapshot."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "That sounds much more robust. And the CI gate is still holding?"
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Yeah, untested code never reaches production now. But the replication is the real fix — snapshots were just a band-aid."
+            },
+            {
+              "speaker": "Marcus",
+              "text": "Good. I'm glad you learned from this. Let's grab a coffee and you can walk me through the replication setup."
+            },
+            {
+              "speaker": "Joanna",
+              "text": "Deal. And sorry again for the mess."
+            }
+          ]
+        }
+      ]
+    }
+  ],
   "qa": [
     {
       "category": 11,

@@ -139,7 +139,127 @@
       }
     ]
   },
-  "conversations": [],
+  "conversations": [
+    {
+      "graph_id": 14,
+      "sessions": [
+        {
+          "number": 1,
+          "date_time": "2023-05-08 09:00",
+          "turns": [
+            {
+              "speaker": "Priya",
+              "text": "Morning! Quick heads-up — I had to log some sensitive data to the query log yesterday for debugging. It's a bit messy, but I'll clean it up."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Oh? What kind of sensitive data? Customer info?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Yeah, unfortunately. A few customer records leaked into the logs when I was tracing a payment issue. I know it's not ideal."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "That's a problem — every engineer with log access can see that now. We need to fix this fast."
+            },
+            {
+              "speaker": "Priya",
+              "text": "I know. I'm on it. I'll remove the sensitive fields from the logs right away, so at least the raw data won't be there anymore."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Good. Let me know when it's done. And maybe we should restrict who can even view the logs going forward."
+            },
+            {
+              "speaker": "Priya",
+              "text": "Agreed. I'll do both — strip the fields and then lock down access to a need-to-know subset of the team."
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "date_time": "2023-05-15 14:30",
+          "turns": [
+            {
+              "speaker": "Colleague",
+              "text": "Hey, did you finish cleaning up the logs from last week?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Yes — I removed all sensitive fields from the logs. They contain no customer data now. I also restricted log access to just you, me, and two others on the team."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Nice. That should prevent any further exposure. But I also heard something about debug credentials left in production?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Ugh, yeah. That was a mistake. I left a debug account active in prod for a quick test, and an attacker actually found it. They got in for a short window before I caught it."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "That's serious. Did you remove it?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Yes, I removed the debug credentials from production immediately. There's no backdoor account left exposed now. I double-checked."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Good. But we should probably review our whole logging and access approach — this is the second incident in a week."
+            },
+            {
+              "speaker": "Priya",
+              "text": "You're right. I'll think about a more systematic fix."
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "date_time": "2023-05-22 11:00",
+          "turns": [
+            {
+              "speaker": "Colleague",
+              "text": "Hey, I wanted to follow up on the log situation. I saw you pushed a new change to the logging service?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Yeah — and I have to admit, my earlier fix wasn't enough. Removing sensitive fields from the logs manually turned out to be insufficient. I was wrong about that being a real solution."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "What do you mean? I thought you stripped everything."
+            },
+            {
+              "speaker": "Priya",
+              "text": "I did, but it's too easy to miss something or for new fields to appear later. So we replaced that approach with a PII redaction pipeline that scans all log output automatically. It catches anything that looks like customer data — names, emails, IDs — and masks it before it ever hits the log store."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "That's a much better long-term fix. So now even if someone logs something sensitive by accident, it won't be exposed?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Exactly. The pipeline runs on every log entry, and it's already live. Plus we kept the restricted access, so it's defense in depth."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Great. And the debug credentials — still gone, right?"
+            },
+            {
+              "speaker": "Priya",
+              "text": "Yes, no backdoor account left exposed. That's fully resolved. But the redaction pipeline is the real lesson — manual fixes just don't scale."
+            },
+            {
+              "speaker": "Colleague",
+              "text": "Agreed. Thanks for owning this and making it right."
+            }
+          ]
+        }
+      ]
+    }
+  ],
   "qa": [
     {
       "category": 11,

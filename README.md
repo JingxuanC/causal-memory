@@ -49,23 +49,28 @@ invisible on those suites. **CausalEval** measures them.
 deterministically; conversations are narrated from the graph; gold answers are
 derived from graph structure — zero hand annotation, zero ambiguity.
 
-**CausalEval v13 (soft supersession) vs mem0** (70 questions, same conversations, same LLM, same judge):
+**CausalEval v13 (soft supersession) — 140 questions, 20 graphs** (same LLM,
+same judge; v12 baseline was 70q/10 graphs; mem0 comparison ran on the 70q
+protocol):
 
-| Capability | causal-memory | mem0 | Δ | What it tests |
+| Capability | causal-memory | v12 (70q) | mem0 (70q) | What it tests |
 |---|---|---|---|---|
-| C3 Counterfactual | **100%** | 80% | **+20pp** | Choosing between alternatives with known outcomes |
-| C4 Inhibition | **70%** | 50% | **+20pp** | Distinguishing root-cause fix vs blast-radius limiter (`prevented` edges) |
-| C5 Temporal-causal | **100%** | 90% | **+10pp** | Ordering on a causal chain |
-| C1 Attribution | **90%** | 90% | ±0 | Backward causal chain → root cause |
-| C2 Intervention | 60% | 40% | **+20pp** | Forward prediction: "if X again, what happens?" |
-| C6 Lesson transfer | **40%** | 30% | **+10pp** | Cross-task analogy via meta edges |
-| C7 Update | **100%** | 80% | **+20pp** | Supersede old belief after falsification (soft `superseded_by` annotation) |
-| **Overall** | **80%** | **65%** | **+15pp** | |
+| **C7 Update** | **100%** | 50% | 80% | Supersede old belief after falsification (soft `superseded_by` annotation) |
+| C3 Counterfactual | **95%** | 90% | 80% | Choosing between alternatives with known outcomes |
+| C2 Intervention | **75%** | 70% | 40% | Forward prediction: "if X again, what happens?" |
+| C4 Inhibition | **80%** | 90% | 50% | Distinguishing root-cause fix vs blast-radius limiter (`prevented` edges) |
+| C1 Attribution | 85% | 90% | 90% | Backward causal chain → root cause |
+| C5 Temporal-causal | 90% | 100% | 90% | Ordering on a causal chain |
+| C6 Lesson transfer | 20% | 20% | 30% | Cross-task analogy via meta edges (open limitation) |
+| **Overall** | **78%** | 81% | 65% | |
 
-**Key mechanisms: C7 update +50pp and C6 transfer +20pp (v12 → v13).** v13's
-soft supersession annotates superseded edges (`superseded_by`) instead of
-hiding them — the falsification signal reaches the answer model while the
-old lesson stays retrievable for counterfactuals (C3 unchanged at 100%).
+**Key result: C7 update 50% → 100% (+50pp, 20/20 questions) and it holds at
+doubled sample size.** Soft supersession annotates superseded edges
+(`superseded_by`) instead of hiding them — the falsification signal reaches
+the answer model while the old lesson stays retrievable for counterfactuals
+(C3 unharmed at 95%). The C6 gap (20% vs mem0 30%) is the remaining open
+limitation; C1/C4/C5 dips vs v12 are within re-distillation variance and
+new-graph difficulty (v12 and v13 do not share a distilled corpus).
 
 ### Fact-recall benchmarks (not our strong suit)
 

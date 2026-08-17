@@ -924,7 +924,7 @@ fn cmd_run(args: &[String]) -> Result<()> {
             let db_path = format!("benches/causal_eval/db/graph_{}.db", g.id);
             let store = causal_memory::store::CausalStore::open(&db_path)?;
             // Ingest conversations (turn chunks + temporal edges), if not present.
-            let chunk_count: i64 = store
+            let mut chunk_count: i64 = store
                 .with_conn(|c| {
                     c.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get::<_, i64>(0))
                         .map_err(|e| anyhow!("{e}"))
@@ -933,6 +933,13 @@ fn cmd_run(args: &[String]) -> Result<()> {
                 ingest_conversations(&store, &bundle.conversations)?;
                 distill_if_available(&store, &bundle.conversations, concurrency).await?;
                 seed_graph_semantics(&store, g)?;
+                // Re-read AFTER ingest — printing the stale pre-ingest count
+                // once masked empty conversations as "0 chunks" mid-run.
+                chunk_count = store
+                    .with_conn(|c| {
+                        c.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get::<_, i64>(0))
+                            .map_err(|e| anyhow!("{e}"))
+                    })?;
             }
             let evidence_tokens = precompute_evidence(g);
             eprintln!("graph {}: {} chunks, {} questions", g.id, chunk_count, qas.len());
