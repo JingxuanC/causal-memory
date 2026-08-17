@@ -16,6 +16,7 @@ use rmcp::ServiceExt;
 
 const EXPECTED_TOOLS: &[&str] = &[
     "record_decision",
+    "remember",
     "search_causal",
     "record_fact",
     "search_facts",

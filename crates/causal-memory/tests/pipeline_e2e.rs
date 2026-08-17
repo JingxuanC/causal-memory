@@ -7,17 +7,25 @@
 //!   2. write src/foo.rs                  → file written                   [success]
 //!   3. `cargo build app verbose plain`   → error E0425 (typo `intit`)     [failure]
 //!   4. search_replace src/foo.rs         → updated                        [success]
-//!   5. `cargo build app verbose release` → build succeeded                [success]
+//!   5. `cargo build app verbose release` → build succeeded                [success, but
+//!      routine — v0.3 extractor skips successful read-only verification runs]
 //!   6. view_file                         → (not decision-worthy, skipped)
 //!
-//! The three build commands share 4/6 content tokens (Jaccard ≈ 0.667), so the
-//! pruned pattern miner still links them; the write/search_replace pair is
-//! tool-name boilerplate over identical 3-token paths and is correctly skipped.
+//! v0.3 extraction keeps 4 of the 6 calls: the two failures (always
+//! decision-worthy) and the two state-changing edits. The successful
+//! verification build and the view_file lookup are filtered as routine.
 //!
-//! The two failures each sit 100s before a follow-up decision, so the
-//! ChainLinker's temporal strategy bridges them (failure outcome → next
-//! decision), producing multi-hop chains:
-//!   build#2-error ← build#2-decision ←(bridge)← build#1-error ← build#1-decision
+//! The two failed builds share content tokens, so the pruned pattern miner
+//! still links them (`similar_to`). The failure→success `refines` pattern
+//! the fixture used to yield is gone under v0.3 — its success endpoint was
+//! the routine verification build, which is no longer extracted; refines
+//! logic keeps its own unit coverage in patterns/tests.rs.
+//!
+//! Build#1's failure output mentions `cargo build` (CI-wrapper style), so
+//! the ChainLinker's text strategy bridges it to the build#2 decision
+//! (failure outcome → next decision with shared tokens), producing the
+//! multi-hop chain:
+//!   build#2-error ← build#2-decision ←(bridge)← build#1-error
 
 use std::path::PathBuf;
 
@@ -40,16 +48,16 @@ fn pipeline_end_to_end() {
 
     assert_eq!(stats.decisions_found, 6, "all tool calls are parsed");
     assert_eq!(
-        stats.skipped_low_value, 1,
-        "view_file is not decision-worthy"
+        stats.skipped_low_value, 2,
+        "view_file AND the routine successful build are not decision-worthy (v0.3)"
     );
-    assert_eq!(stats.results_matched, 5);
-    assert_eq!(stats.edges_inserted, 5, "5 decision-worthy edges");
+    assert_eq!(stats.results_matched, 4);
+    assert_eq!(stats.edges_inserted, 4, "4 decision-worthy edges");
     assert!(
         stats.errors_captured >= 1,
         "the two failed builds are captured as high-value errors"
     );
-    assert_eq!(store.count_edges().unwrap(), 5);
+    assert_eq!(store.count_edges().unwrap(), 4);
 
     // The failure outcome is correctly linked back to its build decision.
     let causes = store.trace_cause("could not compile").unwrap();
@@ -80,14 +88,14 @@ fn pipeline_end_to_end() {
 
     // ── 2. Chain linking ─────────────────────────────────────────────────
     let link = ChainLinker::link_chains(&store).unwrap();
-    assert_eq!(link.edges_scanned, 5);
-    assert!(
-        link.bridge_edges_created >= 2,
-        "failure outcomes bridge to their follow-up decisions: {link:?}"
+    assert_eq!(link.edges_scanned, 4);
+    assert_eq!(
+        link.bridge_edges_created, 1,
+        "build#1 failure bridges to the build#2 decision (shared `cargo build` tokens): {link:?}"
     );
     assert_eq!(
         store.count_edges().unwrap(),
-        5 + link.bridge_edges_created as i64
+        4 + link.bridge_edges_created as i64
     );
 
     // ── 3. Multi-hop trace ───────────────────────────────────────────────
@@ -129,18 +137,20 @@ fn pipeline_end_to_end() {
     );
 
     // ── 5. Pattern mining ────────────────────────────────────────────────
-    // The fixture is designed to mine at least:
-    //   similar_to(build#1, build#2)  — 4/6 content-token overlap, both failed
-    //   refines(build#N → build#3)    — same task, failure → later success
+    // The fixture yields: similar_to(build#1, build#2) — shared content
+    // tokens, both failed. The old failure→success `refines` pattern is gone
+    // under v0.3: its success endpoint was the routine verification build,
+    // which is no longer extracted (see module docs).
     let mine = PatternMiner::new(&store, MinerConfig::default())
         .mine()
         .unwrap();
     let total = mine.similar_to + mine.repeated + mine.contradicts + mine.refines;
-    assert!(total >= 2, "fixture should yield meta edges: {mine:?}");
+    assert!(total >= 1, "fixture should yield meta edges: {mine:?}");
     assert!(
-        mine.refines >= 1,
-        "failure → later success refines: {mine:?}"
+        mine.similar_to >= 1,
+        "the failed builds are similar decisions: {mine:?}"
     );
+    assert_eq!(mine.refines, 0, "no failure→success pair survives v0.3");
     let patterns = store.search_patterns(None, None, 100).unwrap();
     assert!(patterns.len() >= total);
     assert!(patterns.iter().all(|p| matches!(
@@ -156,7 +166,7 @@ fn pipeline_end_to_end() {
         .all_valid_edges()
         .unwrap()
         .into_iter()
-        .find(|e| e.outcome_id == second_build_decision && e.discovered_by == "temporal")
+        .find(|e| e.outcome_id == second_build_decision && e.edge_id != second_build.edge_id)
         .expect("bridge edge from step 2 must exist");
     assert!(store.invalidate_edge(bridge.edge_id).unwrap());
     assert!(

@@ -112,8 +112,6 @@ impl Rng {
 
 const PERSONS: &[&str] = &["Melanie", "Caroline", "Nate", "Joanna", "Priya", "Sam"];
 const TASKS: &[&str] = &["deployment", "data-migration", "auth", "api", "testing", "infra"];
-const POLARITIES: &[&str] = &["positive", "negative", "neutral"];
-const RELATIONS: &[&str] = &["caused", "enabled", "prevented"];
 
 /// Deterministic action templates per task domain — events sound like real
 /// engineering decisions (the dialogue domain). Each entry is a self-contained
@@ -301,7 +299,7 @@ fn generate_graph(id: usize, seed: u64) -> CausalGraph {
     assert!(!pairs.is_empty(), "no causal pairs for task {task}");
     let main = *rng.pick(&pairs);
 
-    let mut mk = |id: usize, action: &str, polarity: &str, task_tag: &str| CausalNode {
+    let mk = |id: usize, action: &str, polarity: &str, task_tag: &str| CausalNode {
         id,
         person: person.clone(),
         action: action.to_string(),
@@ -597,8 +595,6 @@ struct ChatChoice {
 #[derive(Deserialize)]
 struct ChatMsgOwned {
     content: String,
-    #[serde(default)]
-    reasoning_content: String,
 }
 
 /// One chat call with retries (JSON-mode for structured outputs).
@@ -976,7 +972,7 @@ fn ingest_conversations(store: &causal_memory::store::CausalStore, convs: &[Narr
                         "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
                         params![&chunk_id, &text, ts],
                     )?;
-                    if let Some(prev) = prev_other {
+                    if prev_other.is_some() {
                         let prev_id = format!("g{}:s{}:t{}", conv.graph_id, session.number, idx - 1);
                         c.execute(
                             "INSERT OR IGNORE INTO causal_edges (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
@@ -999,7 +995,7 @@ fn ingest_conversations(store: &causal_memory::store::CausalStore, convs: &[Narr
 async fn distill_if_available(
     store: &causal_memory::store::CausalStore,
     convs: &[NarratedGraph],
-    concurrency: usize,
+    _concurrency: usize,
 ) -> Result<()> {
     let Some(distiller) = causal_memory::distill::Distiller::from_env() else {
         eprintln!("causal-eval: no Distiller (DEEPSEEK_API_KEY unset); raw chunks only");
@@ -1016,7 +1012,7 @@ async fn distill_if_available(
             match distiller.distill_session(&date, &turns).await {
                 Ok(items) => {
                     for item in &items {
-                        let _ = causal_memory::distill::record_items(store, &[item.clone()], None)?;
+                        let _ = causal_memory::distill::record_items(store, std::slice::from_ref(item), None)?;
                     }
                 }
                 Err(e) => eprintln!("distill session {} failed: {e}", session.number),
@@ -1073,7 +1069,7 @@ fn seed_graph_semantics(store: &causal_memory::store::CausalStore, g: &CausalGra
     let node_chunks = find_node_chunks(store, g);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .map_err(|e| anyhow::anyhow!(e))?
         .as_secs() as i64;
 
     // ── 1. Seed similar_to meta edges ──
@@ -1163,11 +1159,9 @@ fn expand_meta_edges(
                 .map(|s| s as &dyn rusqlite::ToSql)
                 .collect();
             let rows = stmt.query_map(rusqlite::params_from_iter(binds), |r| r.get::<_, String>(0))?;
-            for row in rows {
-                if let Ok(id) = row {
-                    if !analogues.contains(&id) && !seed_chunk_ids.contains(&id) {
-                        analogues.push(id);
-                    }
+            for id in rows.flatten() {
+                if !analogues.contains(&id) && !seed_chunk_ids.contains(&id) {
+                    analogues.push(id);
                 }
             }
         }
@@ -1201,7 +1195,7 @@ fn expand_meta_edges(
             let toks = causal_memory::patterns::tokenize(&format!("{} {}", entry.decision_text, entry.outcome_text));
             q_tokens.iter().filter(|t| toks.contains(t)).count()
         };
-        candidates.sort_by(|a, b| overlap(b).cmp(&overlap(a)));
+        candidates.sort_by_key(|e| std::cmp::Reverse(overlap(e)));
         candidates.truncate(limit);
 
         Ok(candidates)
@@ -1319,7 +1313,7 @@ async fn run_question(
     let answer_user = format!("Memories:\n{memories}\n\nQuestion: {}\nAnswer:", qa.question);
     let raw = match chat(cfg, ANSWER_SYSTEM, &answer_user, 600, false).await {
         Ok(s) => s,
-        Err(e) => {
+        Err(_) => {
             return ResultRow {
                 graph: g.id,
                 category: qa.category,
@@ -1347,20 +1341,17 @@ async fn run_question(
         } else {
             format!("{judge_user}\n\nRespond with ONLY the JSON object. No other text.")
         };
-        match chat(cfg, JUDGE_SYSTEM, &u, 512, true).await {
-            Ok(rawj) => {
-                if let Some(v) = extract_json(&rawj).filter(|v| v.get("verdict").is_some()) {
-                    if let Some(vd) = v.get("verdict").and_then(|x| x.as_str()) {
-                        let vd = vd.to_lowercase();
-                        if vd == "correct" || vd == "incorrect" {
-                            verdict = vd;
-                            reason = v.get("reason").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                            break;
-                        }
+        if let Ok(rawj) = chat(cfg, JUDGE_SYSTEM, &u, 512, true).await {
+            if let Some(v) = extract_json(&rawj).filter(|v| v.get("verdict").is_some()) {
+                if let Some(vd) = v.get("verdict").and_then(|x| x.as_str()) {
+                    let vd = vd.to_lowercase();
+                    if vd == "correct" || vd == "incorrect" {
+                        verdict = vd;
+                        reason = v.get("reason").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        break;
                     }
                 }
             }
-            Err(_) => {}
         }
         tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
     }

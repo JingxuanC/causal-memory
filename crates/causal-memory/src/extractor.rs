@@ -77,15 +77,6 @@ const FAILURE_MARKERS: &[&str] = &[
     "conflict", "CONFLICT",
 ];
 
-/// Result patterns that indicate a truly SUCCESSFUL state change.
-const SUCCESS_MARKERS: &[&str] = &[
-    "successfully", "Success",
-    "created", "written", "updated", "replaced",
-    "inserted", "deleted",
-    "1 file changed", "files changed",
-    "pass", "PASS", "passed",
-];
-
 /// Alias for backward compatibility (pattern miner imports this name).
 pub(crate) const DECISION_WORTHY_TOOLS: &[&str] = STATE_CHANGING_TOOLS;
 

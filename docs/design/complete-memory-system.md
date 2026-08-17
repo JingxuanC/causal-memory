@@ -250,4 +250,4 @@ Phase 6 可以并行提前（不依赖事实层，且是安全底线）。
 - agent-teardown `papers/daily/2026-07-30-dreams-api-analysis.md` — 不可变巩固 + instructions + 伪代码
 - agent-teardown `papers/daily/2026-07-30-openviking-analysis.md` — 分层加载 + 可观察检索
 - agent-teardown `papers/daily/2026-07-29-memrl-analysis.md` — Q-value 记忆动力学
-- [roadmap.md](roadmap.md) — 与本架构对齐的执行清单
+- [roadmap.md](../roadmap.md) — 与本架构对齐的执行清单

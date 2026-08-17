@@ -56,7 +56,6 @@ impl CausalStore {
     /// ordering displaces lexical hits — measured regression on LoCoMo cat1
     /// when fused as a peer RRF list. A query with no entities gets boost
     /// 1.0, i.e. this degrades to plain semantic search.
-
     pub fn search_causal_hop(
         &self,
         query: &str,

@@ -272,7 +272,7 @@ agent-teardown 当日三篇深度分析提出了一个真实张力：OpenViking�
 
 **差异化不受影响**：`prevented` 负扩散（GABA 抑制性类比，无任何系统实现）、compaction survival（+20.8pp）、SWR 回放式巩固（非文本蒸馏）、类型化因果语义（caused/enabled/prevented ≠ 共现频率）。
 
-**新增行动项**（合并三篇分析后去重，已同步进 [roadmap](roadmap.md)）：GC 三重复合判据（结构弱 AND 时间休眠 AND 零访问）、翻转路径标记（区分 seed 直接命中 vs spreading 浮出）、正式消融实验（SWR / spreading / prevented 各砍一次）、token 效率测量。
+**新增行动项**（合并三篇分析后去重，已同步进 [roadmap](../roadmap.md)）：GC 三重复合判据（结构弱 AND 时间休眠 AND 零访问）、翻转路径标记（区分 seed 直接命中 vs spreading 浮出）、正式消融实验（SWR / spreading / prevented 各砍一次）、token 效率测量。
 
 ---
 

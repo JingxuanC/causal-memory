@@ -21,10 +21,10 @@
 
 ## Direction: complete memory system (planned phases)
 
-Full design: [docs/complete-memory-system.md](docs/complete-memory-system.md)
+Full design: [docs/design/complete-memory-system.md](design/complete-memory-system.md)
 (**one graph, one engine, one loop** — all memory types as typed edges on a
 single graph; typed spreading activation; immutable consolidation loop) and
-[docs/unified-memory-design.md](docs/unified-memory-design.md)
+[docs/design/unified-memory-design.md](design/unified-memory-design.md)
 (fact layer schema + 3 new MCP tools + LLM distill ingest + 4.5-day plan;
 §5.1 reconciles this direction with the OpenViking "stay a causal layer"
 argument — lightweight self-built fact layer, pluggable storage substrate).
@@ -161,7 +161,7 @@ Ecosystem:
 - [ ] **Hermes Agent memory provider** — the first agent runtime with a
   first-class memory plugin slot; no current provider stores causal edges.
   Entry ticket: our benchmark suite (see
-  [docs/research/computational-ai/hermes-provider-ecosystem.md](docs/research/computational-ai/hermes-provider-ecosystem.md)).
+  [docs/research/computational-ai/hermes-provider-ecosystem.md](research/computational-ai/hermes-provider-ecosystem.md)).
   Requires PyO3 bindings — reprioritized above HTTP transport
 - [ ] **L0 file injection**: generate `CAUSAL_MEMORY.md` (< 200 lines,
   pointer-style) for constant system-prompt pinning — proactive, vs the

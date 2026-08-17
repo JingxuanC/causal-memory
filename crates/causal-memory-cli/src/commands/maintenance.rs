@@ -378,7 +378,6 @@ pub(crate) async fn run_embed(args: &[String]) -> anyhow::Result<()> {
             }
             #[cfg(not(feature = "local-embed"))]
             {
-                let _ = Embedder::new(EmbedConfig::from_env().unwrap());
                 eprintln!("Embedding not configured. Set:");
                 eprintln!("  CAUSAL_MEMORY_EMBED_API   (default: CAUSAL_MEMORY_LLM_API)");
                 eprintln!("  CAUSAL_MEMORY_EMBED_KEY   (default: CAUSAL_MEMORY_LLM_KEY)");

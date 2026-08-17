@@ -45,7 +45,6 @@ impl CausalStore {
     }
 
     /// BM25 keyword retrieval over valid edges (`valid_to IS NULL`).
-
     pub fn search_causal_bm25(
         &self,
         task_tag: Option<&str>,

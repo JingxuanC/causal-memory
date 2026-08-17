@@ -3,12 +3,12 @@
 > 塑造 `causal-memory` 的论文与理论基础。
 > 这不是参考文献列表——而是一张地图，标注了哪些想法最终变成了哪些设计决策。
 
-完整系统化的研究文档（BibTeX、详细摘要、方法论评析、每篇论文的设计追溯）请见 [`docs/research/`](../research/) —— 按主题组织：
+完整系统化的研究文档（BibTeX、详细摘要、方法论评析、每篇论文的设计追溯）请见 [`docs/research/`](research/) —— 按主题组织：
 
-- [`neuroscience/`](../research/neuroscience/) — 大脑如何处理记忆与因果
-- [`cognitive-psychology/`](../research/cognitive-psychology/) — 人类如何表征和推理因果知识
-- [`computational-ai/`](../research/computational-ai/) — AI 领域做了什么（以及没做什么）
-- [`causal-inference/`](../research/causal-inference/) — 形式化基础（Pearl, Spirtes）
+- [`neuroscience/`](research/neuroscience/) — 大脑如何处理记忆与因果
+- [`cognitive-psychology/`](research/cognitive-psychology/) — 人类如何表征和推理因果知识
+- [`computational-ai/`](research/computational-ai/) — AI 领域做了什么（以及没做什么）
+- [`causal-inference/`](research/causal-inference/) — 形式化基础（Pearl, Spirtes）
 
 **中文版论文解析**见 [`zh/`](./) 目录，内容一一对应。
 
@@ -47,7 +47,7 @@
 
 **设计关联**：我们的双表架构（`causal_edges` + `meta_causal_edges`）直接复制了这个结构。我们拒绝压缩 `causal_edges`，因为海马体在初始编码阶段不会压缩情景痕迹。
 
-**深度阅读**：[zh/neuroscience/cls-theory.md](zh/neuroscience/cls-theory.md)
+**深度阅读**：[zh/neuroscience/cls-theory.md](research/zh/neuroscience/cls-theory.md)
 
 ### Schapiro et al. (2017) — 海马体重放
 
@@ -55,7 +55,7 @@
 
 **设计关联**：离线巩固周期（"睡眠"）直接受此启发。v0.9 起重放真正落地为「重估」：重放优先级高的边在衰减阶段获得保护（半速衰减、宽松 GC 阈值），且重放写回 `last_accessed_at`，形成「重放→巩固→更易存活」的跨周期反馈回路。
 
-**深度阅读**：[zh/neuroscience/hippocampus-temporal.md](zh/neuroscience/hippocampus-temporal.md)
+**深度阅读**：[zh/neuroscience/hippocampus-temporal.md](research/zh/neuroscience/hippocampus-temporal.md)
 
 ### Davachi (2006) — 时间邻近性
 
@@ -63,7 +63,7 @@
 
 **设计关联**：我们的置信度层级明确编码了这一点：`temporal` = 0.4（弱），`rule` = 0.7（强），`user_feedback` = 0.95（金标准）。这防止了系统对虚假时间相关性的过度加权。
 
-**深度阅读**：[zh/neuroscience/temporal-contiguity.md](zh/neuroscience/temporal-contiguity.md)
+**深度阅读**：[zh/neuroscience/temporal-contiguity.md](research/zh/neuroscience/temporal-contiguity.md)
 
 ### Diekelmann & Born (2010) — 睡眠巩固
 
@@ -71,7 +71,7 @@
 
 **设计关联**：v0.4 巩固周期包括：重激活（优先级队列）、泛化（meta_causal_edges）、下调（置信度衰减 + 垃圾回收）。
 
-**深度阅读**：[zh/neuroscience/sleep-consolidation.md](zh/neuroscience/sleep-consolidation.md)
+**深度阅读**：[zh/neuroscience/sleep-consolidation.md](research/zh/neuroscience/sleep-consolidation.md)
 
 ---
 
@@ -83,7 +83,7 @@
 
 **设计关联**：`causal_edges` 是一个扁平化的 DAG 边列表。`relation` 类型（`caused`、`enabled`、`prevented`、`no_effect`）编码了因果模型必须满足的结构约束。
 
-**深度阅读**：[zh/cognitive-psychology/causal-graph-theory.md](zh/cognitive-psychology/causal-graph-theory.md)
+**深度阅读**：[zh/cognitive-psychology/causal-graph-theory.md](research/zh/cognitive-psychology/causal-graph-theory.md)
 
 ### Gerstenberg et al. (2021) — 反事实模拟
 
@@ -91,7 +91,7 @@
 
 **设计关联**：`trace_cause_chain` 是回溯式部分实现。v0.9 新增 `counterfactual_query`——对比式经验反事实（对比已记录的替代决策在相似情境下的结果），输出中明确标注它不是 Pearl Rung-3 的 SCM 反事实。
 
-**深度阅读**：[zh/cognitive-psychology/counterfactual-simulation.md](zh/cognitive-psychology/counterfactual-simulation.md)
+**深度阅读**：[zh/cognitive-psychology/counterfactual-simulation.md](research/zh/cognitive-psychology/counterfactual-simulation.md)
 
 ### Schacter & Addis (2007) — 重构式记忆
 
@@ -99,7 +99,7 @@
 
 **设计关联**：这是**重构式检索**的理论基础，v0.9 已实现为 `reconstruct_lesson`：系统检索因果子图（Markov blanket：父+子+共父），由 LLM 生成连贯的「经验教训」叙事；`calibrate≥2` 时生成多段独立叙事并测量一致性，低一致性标记底层记忆可能不可靠。
 
-**深度阅读**：[zh/cognitive-psychology/reconstructive-memory.md](zh/cognitive-psychology/reconstructive-memory.md)
+**深度阅读**：[zh/cognitive-psychology/reconstructive-memory.md](research/zh/cognitive-psychology/reconstructive-memory.md)
 
 ---
 
@@ -111,7 +111,7 @@
 
 **设计关联**：这是我们因果记忆作为**真实市场空白**的核心证据。
 
-**深度阅读**：[zh/computational-ai/agent-memory-survey.md](zh/computational-ai/agent-memory-survey.md)
+**深度阅读**：[zh/computational-ai/agent-memory-survey.md](research/zh/computational-ai/agent-memory-survey.md)
 
 ### Park et al. (2023) — 生成式智能体
 
@@ -119,7 +119,7 @@
 
 **设计关联**：生成式智能体是最接近的先例。我们将其扩展为结构化（`meta_causal_edges`）和因果化（`causal_edges`）的反思。
 
-**深度阅读**：[zh/computational-ai/generative-agents.md](zh/computational-ai/generative-agents.md)
+**深度阅读**：[zh/computational-ai/generative-agents.md](research/zh/computational-ai/generative-agents.md)
 
 ### Goyal & Bengio (2022) — System 2 归纳偏置
 
@@ -127,7 +127,7 @@
 
 **设计关联**：`causal-memory` 是这一原则的实现。我们不指望 LLM「学会」因果性，而是将因果结构外化为显式图。
 
-**深度阅读**：[zh/computational-ai/system2-explicit-representation.md](zh/computational-ai/system2-explicit-representation.md)
+**深度阅读**：[zh/computational-ai/system2-explicit-representation.md](research/zh/computational-ai/system2-explicit-representation.md)
 
 ---
 
@@ -139,7 +139,7 @@
 
 **设计关联**：第一级 `search_causal`、第二级 `intervention_query`（含 task_tag 分层调整与 Simpson 悖论警告）均已实现；第三级以对比式工程版（`counterfactual_query`）落地，SCM 意义上的反事实明确不做。
 
-**深度阅读**：[zh/causal-inference/pearl-causality.md](zh/causal-inference/pearl-causality.md)
+**深度阅读**：[zh/causal-inference/pearl-causality.md](research/zh/causal-inference/pearl-causality.md)
 
 ### Spirtes, Glymour & Scheines (2000) — PC 算法
 
@@ -147,13 +147,13 @@
 
 **设计关联**：`meta_causal_edges` 的模式挖掘受此启发。v0.9（schema v5）起升级为真实的分层复现检验：模式须至少在 2 个 task_tag 分层中独立成立才能晋升，单分层模式标记 `confounded`，分层间极性相反触发 Simpson 悖论警告——仍是 PC 的工程替代而非完整 PC，但有了真正的条件化检验。
 
-**深度阅读**：[zh/causal-inference/pc-algorithm.md](zh/causal-inference/pc-algorithm.md)
+**深度阅读**：[zh/causal-inference/pc-algorithm.md](research/zh/causal-inference/pc-algorithm.md)
 
 ---
 
 ## BibTeX
 
-所有论文：[`docs/research/references.bib`](../research/references.bib)
+所有论文：[`docs/research/references.bib`](research/references.bib)
 
 ```bash
 # 导入 Zotero

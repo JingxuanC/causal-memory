@@ -328,8 +328,7 @@ impl CausalMemoryServer {
         &self,
         Parameters(params): Parameters<RememberParams>,
     ) -> String {
-        use causal_memory::distill::{Distiller, ItemKind, CausalRelation};
-        use causal_memory::embed::EmbedConfig;
+        use causal_memory::distill::{Distiller, ItemKind};
 
         // Parse the messages into turns
         let date = params.date.as_deref().unwrap_or("");
@@ -385,8 +384,6 @@ impl CausalMemoryServer {
         };
 
         // Write extracted items to the store
-        let embedder = causal_memory::embed::EmbedConfig::from_env()
-            .map(causal_memory::embed::Embedder::new);
         let mut facts = 0usize;
         let mut episodes = 0usize;
         let mut causal = 0usize;
@@ -415,17 +412,20 @@ impl CausalMemoryServer {
                     "enabled" => 0.6,
                     _ => 0.5,
                 };
-                match self.store.record_decision_at(
-                    decision,
-                    &item.text,
-                    relation,
-                    Some("remember"),
-                    conf,
-                    "llm_inferred",
-                    now,
-                ) {
-                    Ok(_) => causal += 1,
-                    Err(_) => {}
+                if self
+                    .store
+                    .record_decision_at(
+                        decision,
+                        &item.text,
+                        relation,
+                        Some("remember"),
+                        conf,
+                        "llm_inferred",
+                        now,
+                    )
+                    .is_ok()
+                {
+                    causal += 1;
                 }
             } else {
                 // Fact/preference/lesson/event → agent_facts or causal_edges
@@ -839,8 +839,10 @@ impl CausalMemoryServer {
             .unwrap_or_default();
         let mut hop_keys: Vec<String> = Vec::new();
         for e in &hop {
-            if !causal_by_id.contains_key(&e.edge_id) {
-                causal_by_id.insert(e.edge_id, e.clone());
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                causal_by_id.entry(e.edge_id)
+            {
+                entry.insert(e.clone());
                 hop_keys.push(format!("causal:{}", e.edge_id));
             }
         }

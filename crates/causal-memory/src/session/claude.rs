@@ -34,8 +34,6 @@ struct ClaudeEntry {
 #[derive(Debug, Deserialize)]
 struct ClaudeMessage {
     #[serde(default)]
-    role: Option<String>,
-    #[serde(default)]
     content: serde_json::Value,
 }
 

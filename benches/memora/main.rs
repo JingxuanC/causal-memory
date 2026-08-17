@@ -55,11 +55,6 @@ use causal_memory::store::{CausalEntry, CausalStore};
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 
-/// Edge metadata written between consecutive turns of opposite speakers.
-const TURN_EDGE_RELATION: &str = "caused";
-const TURN_EDGE_CONFIDENCE: f64 = 0.4;
-const TURN_EDGE_DISCOVERED_BY: &str = "temporal";
-
 /// LLM settings (temperature 0, same as the other benches).
 const ANSWER_MAX_TOKENS: u32 = 500;
 const JUDGE_MAX_TOKENS: u32 = 300;
@@ -510,7 +505,7 @@ async fn ingest_persona_distill(
     distiller: Option<&Distiller>,
     persona: &str,
     sessions: &[MemoraSession],
-    concurrency: usize,
+    _concurrency: usize,
 ) -> Result<DistillIngestStats> {
     let mut stats = DistillIngestStats {
         sessions: sessions.len(),
@@ -581,7 +576,7 @@ async fn ingest_persona_distill(
         results.push((result, 1usize));
         // After distill, add this session's items to the context for the next.
         // We peek at the result here; actual recording happens in the loop below.
-        if let Ok(items) = &results.last().unwrap().0 {
+        if let Some((Ok(items), _)) = results.last() {
             for it in items {
                 stored_texts.push(it.text.clone());
             }
@@ -749,6 +744,7 @@ fn semantic_search(
                 row.get::<_, Option<String>>(6)?,
             ))
         })?;
+        #[allow(clippy::type_complexity)]
         let row_data: Vec<(i64, Vec<u8>, String, String, String, f64, Option<String>)> =
             rows.collect::<rusqlite::Result<Vec<_>>>()?;
         drop(stmt);
@@ -2035,30 +2031,43 @@ mod tests {
         assert_eq!(stats.sessions_fallback_raw, 1);
         assert_eq!(stats.raw_chunks_written, 4);
         assert_eq!(stats.llm_calls, 0);
-        // Raw fallback produces the same turn edges as raw ingest.
-        assert_eq!(store.all_valid_edges().unwrap().len(), 3);
+        // Raw fallback goes to session_logs (write-time gatekeeping): no
+        // chunks enter the retrieval pool and no edges are created.
+        assert_eq!(store.all_valid_edges().unwrap().len(), 0);
+        let logs: i64 = store
+            .with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM session_logs", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(logs, 4, "all 4 turns audited in session_logs");
     }
 
     #[test]
-    fn ingest_writes_chunks_edges_and_is_idempotent() {
+    fn ingest_writes_session_logs_and_is_idempotent() {
         let session: MemoraSession = serde_json::from_str(tiny_session_json()).unwrap();
         let store = CausalStore::open_in_memory().unwrap();
 
         let n = ingest_persona(&store, "p1", std::slice::from_ref(&session)).unwrap();
         assert_eq!(n, 4);
 
-        // Edges: turns 2->1, 3->2, 4->3 (alternating speakers), tagged p1.
-        let edges = store.all_valid_edges().unwrap();
-        assert_eq!(edges.len(), 3);
-        assert!(edges
-            .iter()
-            .all(|e| e.decision_id.starts_with("p1::") && e.outcome_id.starts_with("p1::")));
+        // Write-time gatekeeping: raw turns land in session_logs (audit only).
+        // The retrieval pool (chunks) and the causal layer stay empty — raw
+        // conversation never pollutes BM25.
+        assert_eq!(store.all_valid_edges().unwrap().len(), 0);
+        let (chunks, logs): (i64, i64) = store
+            .with_conn(|c| {
+                let chunks: i64 = c.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
+                let logs: i64 =
+                    c.query_row("SELECT COUNT(*) FROM session_logs", [], |r| r.get(0))?;
+                Ok((chunks, logs))
+            })
+            .unwrap();
+        assert_eq!(chunks, 0, "raw turns never enter the retrieval pool");
+        assert_eq!(logs, 4);
 
-        // Chunk text + event time.
+        // Turn text + event time in the audit log.
         let (text, ts): (String, i64) = store
             .with_conn(|c| {
                 Ok(c.query_row(
-                    "SELECT text, created_at FROM chunks WHERE id = 'p1::0003::3'",
+                    "SELECT text, event_time FROM session_logs WHERE id = 'p1::0003::3'",
                     [],
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )?)
@@ -2071,24 +2080,42 @@ mod tests {
         // session date midnight UTC + 2s (0-based turn index 2).
         assert_eq!(ts, 1_748_908_800 + 2);
 
-        // Idempotent: second run skips, edges not duplicated.
+        // Idempotent: second run skips, rows not duplicated.
         let n2 = ingest_persona(&store, "p1", &[session]).unwrap();
         assert_eq!(n2, 4);
-        assert_eq!(store.all_valid_edges().unwrap().len(), 3);
+        let logs2: i64 = store
+            .with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM session_logs", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(logs2, 4);
     }
 
     #[test]
     fn retrieval_is_scoped_to_persona() {
-        let session: MemoraSession = serde_json::from_str(tiny_session_json()).unwrap();
+        // retrieve() scoping: with gatekeeping, raw ingest feeds nothing to
+        // retrieval, so the pool is populated with distilled-style edges
+        // (task_tag = persona) — exactly what the distill pipeline writes.
         let store = CausalStore::open_in_memory().unwrap();
-        ingest_persona(&store, "p1", std::slice::from_ref(&session)).unwrap();
-        ingest_persona(&store, "p2", std::slice::from_ref(&session)).unwrap();
+        for (persona, text) in [
+            ("p1", "user asked to remove Buy groceries from todo list"),
+            ("p1", "user added Pick up dry cleaning to todo list"),
+            ("p2", "user asked about dentist appointment scheduling"),
+        ] {
+            let outcome = if persona == "p1" { "todo list updated" } else { "appointment noted" };
+            store
+                .record_decision_at(text, outcome, "caused", Some(persona), 0.8, "rule", 0)
+                .unwrap();
+        }
 
         let res = retrieve(&store, "p1", "todo list groceries", 10, None).unwrap();
         assert!(!res.is_empty());
-        assert!(res
-            .iter()
-            .all(|e| e.decision_id.starts_with("p1::") && e.outcome_id.starts_with("p1::")));
+        // Scoping is by task_tag = persona (store-generated chunk ids have
+        // no persona prefix).
+        assert!(res.iter().all(|e| e.task_tag.as_deref() == Some("p1")));
+        let res2 = retrieve(&store, "p2", "todo list groceries", 10, None).unwrap();
+        assert!(
+            res2.is_empty(),
+            "p2 has no grocery edges: {res2:?}"
+        );
     }
 
     #[test]
@@ -2122,15 +2149,15 @@ mod tests {
     }
 
     #[test]
-    fn raw_ingest_redo_does_not_duplicate_turn_edges() {
+    fn raw_ingest_redo_does_not_duplicate_turn_logs() {
         // distill_done-marker redo path: an interrupted persona is re-ingested
-        // on the next run. Chunks dedupe via INSERT OR IGNORE; turn edges
-        // must not be inserted again for pre-existing chunks.
+        // on the next run. session_logs rows dedupe via the id PK + INSERT OR
+        // IGNORE, and the retrieval pool stays empty on every pass.
         let session: MemoraSession = serde_json::from_str(tiny_session_json()).unwrap();
         let store = CausalStore::open_in_memory().unwrap();
         ingest_session_raw(&store, "p1", &session).unwrap();
         ingest_session_raw(&store, "p1", &session).unwrap();
-        let (chunks, edges) = store
+        let (chunks, edges, logs) = store
             .with_conn(|c| {
                 let chunks: i64 = c.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get(0))?;
                 let edges: i64 = c.query_row(
@@ -2138,12 +2165,14 @@ mod tests {
                     [],
                     |r| r.get(0),
                 )?;
-                Ok((chunks, edges))
+                let logs: i64 =
+                    c.query_row("SELECT COUNT(*) FROM session_logs", [], |r| r.get(0))?;
+                Ok((chunks, edges, logs))
             })
             .unwrap();
-        assert_eq!(chunks, 4);
-        // 4 alternating-speaker turns: turns 2/3/4 link back → exactly 3.
-        assert_eq!(edges, 3);
+        assert_eq!(chunks, 0);
+        assert_eq!(edges, 0);
+        assert_eq!(logs, 4, "4 turns, not duplicated on redo");
     }
 
     // -- judge output parsing (official _evaluate_with_single_judge logic) --

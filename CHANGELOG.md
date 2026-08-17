@@ -100,12 +100,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first balanced JSON object (LLMs emit record+finish in one reply)
 
 ### Fixed
+- Test suite resynced with the v0.3 extractor and write-time gatekeeping
+  (6 stale failures → 322/322 green): `pipeline_e2e` updated for the two-tier
+  filter (routine successful builds are no longer extracted; fixture now
+  yields one text-strategy bridge and the failure→success `refines` pattern
+  is asserted gone with rationale), memora harness tests assert the
+  session_logs-only raw path (no chunks/edges; persona scoping via task_tag),
+  and `mcp_stdio_end_to_end` expects the 14-tool set (`remember` added)
+- `cargo clippy --workspace -- -D warnings` clean again: 38+ lints fixed
+  (blank lines after doc comments in store/retrieve, dead v0.3 leftovers
+  `SUCCESS_MARKERS`/turn-edge constants, unused imports/variables, guarded
+  unwraps rewritten, `HashMap` entry API, `&Path` over `&PathBuf`)
+- `backfill` (no local-embed) no longer panics before printing its
+  configuration help when embedding env vars are unset
 - `embed.rs` / `llm.rs` HTTP clients now have an explicit 8s timeout —
   previously an unreachable endpoint hung the synchronous `record_decision`
   tool path until the 60s MCP tool timeout, even though the edge was already
   written (failure still falls back silently, per the zero-intrusion contract).
   The timeout is overridable via `CAUSAL_MEMORY_HTTP_TIMEOUT_SECS` for
   long-context callers (benches)
+
+### Documentation
+- `docs/` reorganized into `design/`, `benchmarks/`, `evaluations/`, `paper/`
+  (plus existing `research/`) with a new `docs/README.md` documentation map;
+  all cross-references updated
+- README: stale facts corrected — 14 MCP tools (adds `remember` and
+  `reconstruct_lesson`, removes the long-gone `trace_cause_cross_session`),
+  322 workspace tests, HTTP transport documented as shipped (was listed as
+  missing)
+- PROFILE.md: license corrected to Apache-2.0 (said MIT); benchmark and
+  test/tool counts synced with README and `docs/benchmarks/`
+- `.gitignore`: regenerable `graph-*.html` visualization dumps and local
+  `*.cordis.yml` agent configs (may contain credentials) plus bench `*.log`
+  artifacts are now excluded from accidental commits
 
 ## [0.8.0] - 2026-07-27
 

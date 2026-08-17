@@ -10,7 +10,7 @@ LLM agents are [stateless functions](https://github.com/JingxuanC/agent-teardown
 - They relearn the same lessons
 - They repeat the same mistakes
 
-Mem0, Zep, and Letta all address aspects of this problem — but the founding diagnosis was narrower and sharper: the link between "I decided X" and "X caused Y" is the most fragile type of information under text compaction. That diagnosis remains true, and it turned out to be the right **beachhead rather than the whole system**: the causal layer is now the core of a complete memory system (see [README — From slice to system](../README.md#how-its-different)).
+Mem0, Zep, and Letta all address aspects of this problem — but the founding diagnosis was narrower and sharper: the link between "I decided X" and "X caused Y" is the most fragile type of information under text compaction. That diagnosis remains true, and it turned out to be the right **beachhead rather than the whole system**: the causal layer is now the core of a complete memory system (see [README — From slice to system](../../README.md#what-makes-it-different)).
 
 ## The empirical evidence
 

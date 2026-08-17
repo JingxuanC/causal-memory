@@ -13,6 +13,11 @@ benches/longmemeval/results/*.jsonl
 /bench-results-*.md
 /bench-agent-*.md
 benches/memora/results/*.jsonl
+# Bench run logs / summaries are local artifacts (jsonl + log + summary json)
+benches/*/results/*.log
+benches/*/results/**/*.log
+benches/*/results/*_summary.json
+benches/*/results/**/*_summary.json
 .claude/
 benches/locomo/db/
 benches/causal_eval/db/
@@ -20,8 +25,12 @@ benches/causal_eval/debug_raw.json
 benches/causal_eval/*.log
 benches/causal_eval/v*_run.log
 .codegraph/
-causal-memory-graph.html
 causal-memory-vault/
+# Graph visualization HTML dumps (regenerable via wiki/graph render tooling)
+causal-memory-graph.html
 causal-eval-graph.html
 graph.html
+graph-*.html
+# Local agent config, may contain credentials
+*.cordis.yml
 .DS_Store

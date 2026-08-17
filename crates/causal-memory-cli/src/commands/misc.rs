@@ -1,10 +1,8 @@
 //! Misc subcommands (mcp / extract / reasoning / link).
 
-use causal_memory::extractor::DecisionExtractor;
 use crate::server::CausalMemoryServer;
 use causal_memory::store::CausalStore;
 use crate::get_db_path;
-use std::path::PathBuf;
 
 pub(crate) fn run_mcp_server() -> anyhow::Result<()> {
     let db_path = get_db_path();
@@ -197,8 +195,7 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
             .with_json_response(true);
         let service = StreamableHttpService::new(
             move || {
-                let store = CausalStore::open(&store_db_path)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+                let store = CausalStore::open(&store_db_path).map_err(std::io::Error::other)?;
                 Ok(CausalMemoryServer::new(store))
             },
             Arc::new(rmcp::transport::streamable_http_server::session::never::NeverSessionManager::default()),
@@ -263,8 +260,6 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
     // (not tool calls — we extract from the agent's THINKING, not its ACTIONS)
     let now = chrono::Utc::now();
     let date = now.format("%Y-%m-%d").to_string();
-    let embedder = causal_memory::embed::EmbedConfig::from_env()
-        .map(causal_memory::embed::Embedder::new);
 
     let distiller = match Distiller::from_env() {
         Some(d) => {
@@ -348,7 +343,6 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
                         );
                         format!("causal({})", rel)
                     }
-                    _ => "?".to_string(),
                 };
 
                 if item.kind != ItemKind::Causal {

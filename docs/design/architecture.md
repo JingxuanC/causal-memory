@@ -79,7 +79,7 @@ puts both layers in **one SQLite file on one skeleton**:
 Gains concentrate where atomic facts should help (temporal +11.6pp,
 knowledge-update +9.0pp, preference +13.4pp); abstention and saturated
 categories are untouched. Honest bottlenecks and per-category tables:
-[`docs/benchmarks/`](benchmarks/).
+[`docs/benchmarks/`](../benchmarks/).
 
 ## Known frontier (not yet built)
 

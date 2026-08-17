@@ -28,7 +28,6 @@ impl CausalStore {
     }
 
     /// Multi-hop causal trace: follow causal chains backward from an outcome.
-
     pub fn trace_cause_chain(
         &self,
         outcome_description: &str,
@@ -140,7 +139,6 @@ impl CausalStore {
     }
 
     /// Forward multi-hop: start from a decision text match and walk downstream.
-
     pub fn trace_effect_chain(
         &self,
         decision_description: &str,
@@ -157,7 +155,6 @@ impl CausalStore {
     }
 
     /// Forward multi-hop variant anchored on explicit decision chunk ids.
-
     pub fn trace_effect_chain_from_ids(
         &self,
         decision_ids: &[String],
@@ -180,7 +177,6 @@ impl CausalStore {
     }
 
     /// Shared forward-walk implementation.
-
     fn trace_effect_chain_impl(
         &self,
         anchor: &str,
@@ -300,7 +296,6 @@ impl CausalStore {
     }
 
     /// Get recent decisions for L0 directory (system prompt injection).
-
     pub fn trace_cause_cross_session(
         &self,
         outcome_description: &str,
@@ -432,7 +427,6 @@ impl CausalStore {
     }
 
     /// Session-scoped backward causal chain from a specific outcome chunk id.
-
     fn trace_cause_chain_session(
         &self,
         outcome_chunk_id: &str,
@@ -575,7 +569,6 @@ impl CausalStore {
     }
 
     /// Find valid meta-causal edges connected to a decision chunk id.
-
     fn meta_bridges_from_decision(
         &self,
         decision_id: &str,

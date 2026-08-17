@@ -994,6 +994,7 @@ struct Args {
     /// E2: top-k cutoffs for retrieval budget experiment (e.g. [10, 20, 50]).
     /// When non-empty, one retrieval at max(cutoffs) is sliced to each cutoff
     /// and answered+judged independently. Mutually exclusive with plain --topk.
+    #[allow(dead_code)]
     topk_cutoffs: Vec<usize>,
 }
 
@@ -1233,6 +1234,7 @@ fn git_commit() -> String {
 pub(crate) type SharedEmbedder =
     Arc<tokio::sync::Mutex<Option<causal_memory::embed::UnifiedEmbedder>>>;
 
+#[allow(clippy::too_many_arguments)]
 async fn answer_question(
     cfg: &LlmConfig,
     store: &CausalStore,
@@ -1749,7 +1751,7 @@ async fn rejudge(argv: &[String]) -> Result<()> {
             .map(|l| serde_json::from_str(l).with_context(|| "parsing row"))
             .collect::<Result<Vec<_>>>()?;
 
-        eprintln!("  {} ({} rows)", file_path.file_name().unwrap().to_string_lossy(), rows.len());
+        eprintln!("  {} ({} rows)", file_path.file_name().unwrap_or_default().to_string_lossy(), rows.len());
 
         let done = Arc::new(AtomicUsize::new(0));
         let total = rows.len();
@@ -1789,7 +1791,7 @@ async fn rejudge(argv: &[String]) -> Result<()> {
             .await;
 
         // Write re-judged JSONL to the output subdirectory (same filename).
-        let out_path = out_dir.join(file_path.file_name().unwrap());
+        let out_path = out_dir.join(file_path.file_name().unwrap_or_default());
         use std::io::Write;
         let mut file = std::io::BufWriter::new(std::fs::File::create(&out_path)?);
         for row in &rejudged {

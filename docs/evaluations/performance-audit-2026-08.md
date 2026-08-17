@@ -55,4 +55,4 @@ weighting. Suggest running the next full ablation at `--topk 20`.
 
 A3 (answer side): cat1 composition prompt + cat3 inference prompt + judge gold
 truncation. Ceiling analysis: cat1 73% / cat3 65.6% even with perfect answering
-on evidence-present questions (docs/multi-hop-expansion.md §0.5).
+on evidence-present questions (docs/design/multi-hop-expansion.md §0.5).

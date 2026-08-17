@@ -10,7 +10,7 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Status: v0.9.0](https://img.shields.io/badge/status-v0.9.0--alpha-orange.svg)](#status)
-[![Tests: 231](https://img.shields.io/badge/tests-231-brightgreen.svg)](#build--test)
+[![Tests: 322](https://img.shields.io/badge/tests-322-brightgreen.svg)](#build--test)
 
 ---
 
@@ -80,7 +80,7 @@ specialty and not where causal-memory adds value.
 | Compaction survival | 100% | 45% | External table = immune to compaction |
 | Agent repeat-mistake | 33% | 67% | −34pp on trap-world |
 
-### Capability tests (231 tests, all passing)
+### Capability tests (322 across the workspace)
 
 These test capabilities that **no fact store (mem0, Zep, Letta) can offer**.
 
@@ -131,7 +131,7 @@ this from happening again."
   ┌───────────────────────────────────────────────┐
   │           causal-memory (Rust, MCP)            │
   │                                                │
-  │  13 tools ← Agent (stdio)                      │
+  │  14 tools ← Agent (stdio / HTTP)                 │
   │    ↓                                           │
   │  Write-time gatekeeping                        │
   │    raw turns → session_logs (audit only)       │
@@ -201,6 +201,12 @@ cargo build --release
 }
 ```
 
+### HTTP transport (remote agents, multi-agent shared memory)
+
+```bash
+./target/release/causal-memory http --port 9938   # MCP Streamable HTTP
+```
+
 ### With local embeddings (no API key needed)
 
 ```bash
@@ -218,23 +224,24 @@ export CAUSAL_MEMORY_EMBED_MODEL=embedding-3
 
 ---
 
-## Thirteen MCP tools
+## Fourteen MCP tools
 
 | Tool | When to call | What it does |
 |---|---|---|
 | `record_decision` | After acting on a decision | Logs `decision → outcome` as a causal edge with relation type |
+| `remember` | After any meaningful exchange | Zero-friction alternative: paste conversation text, LLM auto-extracts facts/lessons/causal edges |
 | `search_causal` | Before a non-trivial decision | BM25 + semantic retrieval of past causal episodes |
 | `record_fact` | When learning a stable fact | Records flat facts with scope + confidence; idempotent |
 | `search_facts` | When you need "what is" info | BM25 + semantic retrieval over the fact layer |
 | `search_memory` | When unsure which type | Unified: facts + causal lessons fused by RRF |
 | `trace_cause` | When something fails | Single-hop reverse: which decision caused this outcome |
 | `trace_cause_chain` | Deep failure analysis | Multi-hop backward traversal through the causal graph |
-| `trace_cause_cross_session` | Cross-session analysis | Meta-causal bridges connect chains across task boundaries |
 | `invalidate_decision` | When a lesson is wrong | Soft-invalidate (hidden from search, kept for audit) |
 | `search_patterns` | To recall cross-task lessons | Mined meta edges: similar_to / repeated / contradicts / refines |
 | `causal_directory` | Pinned in system prompt | L0 compact pointer list of what the agent knows |
 | `intervention_query` | **Before taking an action** | Forward simulation: predicts outcomes (safe/warning/danger) |
 | `counterfactual_query` | When choosing between options | Contrastive: compares recorded outcomes of two alternatives |
+| `reconstruct_lesson` | When you want the distilled lesson | Reconstructive retrieval: Markov-blanket subgraph → coherent narrative, with optional N-way calibration |
 
 ---
 
@@ -271,7 +278,7 @@ retrieval pool. This write-time gatekeeping keeps BM25 precision high.
 
 ## System layer coverage
 
-All 16 designed layers have end-to-end validation (231 tests):
+All 16 designed layers have end-to-end validation (322 workspace tests):
 
 | Layer | Benchmark | Tests |
 |---|---|---|
@@ -298,8 +305,8 @@ All 16 designed layers have end-to-end validation (231 tests):
 
 ```bash
 cargo build --release                    # Build binary
-cargo test -p causal-memory             # Run 231 tests
-cargo test --features local-embed       # Run with ONNX embedding tests
+cargo test --workspace --no-fail-fast  # Run 322 tests
+cargo test --features local-embed     # Run with ONNX embedding tests
 cargo clippy --workspace -- -D warnings # Lint
 ```
 
@@ -316,19 +323,20 @@ cargo build --release --bin causal-memory-amc
 
 Docker route: `docker build -t causal-memory-amc . && docker run -p 8787:8787 -v amc-data:/data causal-memory-amc`.
 Submission details, method description, and the participation checklist live in
-[`docs/amc-2026.md`](docs/amc-2026.md).
+[`docs/benchmarks/amc-2026.md`](docs/benchmarks/amc-2026.md).
 
 Test suite breakdown:
-- **166** library unit tests (types, store, distill, patterns, hippocampus)
-- **12** causal capability tests (prevented warning, trace-cause, multi-hop, mixed-signal)
-- **13** longitudinal dynamics tests (SWR, Q-value, novelty entropy, sleep-wake cycle)
-- **11** advanced dynamics tests (meta-edges, Hebbian, intervention query)
-- **2** inhibitory ablation tests
-- **2** end-to-end pipeline tests
+- **186** library unit tests (types, store, distill, patterns, hippocampus)
+- **45** library integration tests (capability, longitudinal, advanced, pipeline)
+- **91** CLI, benchmark-harness & MCP e2e tests
 
 ---
 
 ## Research background
+
+Full documentation map: [`docs/README.md`](docs/README.md) — design docs,
+benchmark protocols, evaluation reports, paper drafts, and the literature
+survey.
 
 This project is the engineering output of 17 research notes on agent memory
 architecture ([insights/01-17](https://github.com/JingxuanC/agent-teardown/tree/main/insights)),
@@ -349,7 +357,7 @@ research papers. Key references:
 
 What works (16/16 layers with end-to-end validation):
 
-- ✅ 13 MCP tools + cross-session tracing
+- ✅ 14 MCP tools (stdio + HTTP transport)
 - ✅ Write-time gatekeeping (session_logs separation, V3 distill prompt)
 - ✅ BM25 + semantic RRF unified retrieval
 - ✅ Hippocampus engine: CSR spreading activation, DG SimHash, CA1 novelty, SWR 2.0
@@ -361,12 +369,11 @@ What works (16/16 layers with end-to-end validation):
 - ✅ Meta-edge cross-session pattern mining
 - ✅ Forward simulation (intervention_query) with prevented-edge warnings
 - ✅ Benchmark harnesses: LoCoMo, LongMemEval, Memora, compaction, agent ablation, capability, longitudinal, advanced
-- ✅ 231 tests + clippy clean
+- ✅ 322/322 tests passing + clippy clean
 
 What's not done yet:
 
 - ❌ Python/TS bindings (PyO3 planned)
-- ❌ HTTP transport (MCP stdio only)
 - ❌ Forward-simulation prediction-accuracy benchmark (designed, not yet run)
 - ❌ 7×24 production deployment validation
 

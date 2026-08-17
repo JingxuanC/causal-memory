@@ -76,7 +76,6 @@ fn slugify(text: &str) -> String {
         .take(60)
         .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { ' ' })
         .collect::<String>()
-        .trim()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join("-")
@@ -234,7 +233,7 @@ fn export_html(
     _store: &CausalStore,
     edges: &[causal_memory::store::CausalEntry],
     facts: &[causal_memory::store::AgentFact],
-    out: &PathBuf,
+    out: &std::path::Path,
 ) -> anyhow::Result<()> {
     std::fs::create_dir_all(out.parent().unwrap_or(out))?;
 
@@ -369,7 +368,7 @@ network.on('click', function(params) {{
     let html_path = if out.is_dir() || out.extension().is_none() {
         out.join("graph.html")
     } else {
-        out.clone()
+        out.to_path_buf()
     };
     std::fs::write(&html_path, html)?;
     println!("  HTML graph: {}", html_path.display());

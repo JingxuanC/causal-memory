@@ -325,7 +325,7 @@ async fn handle_search(
                 // Fuse lexical + semantic: the lexical score is 0..=n
                 // (n query tokens), cosine is -1..=1 — normalize both to
                 // comparable weight before summing.
-                *score = *score + sim.max(0.0) * query_tokens.len() as f64;
+                *score += sim.max(0.0) * query_tokens.len() as f64;
             }
         }
     }

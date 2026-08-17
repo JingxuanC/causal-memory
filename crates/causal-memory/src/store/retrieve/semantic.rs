@@ -59,7 +59,6 @@ impl CausalStore {
     /// Returns edges with full chunk ids (entity hits count toward
     /// evidence-level metrics, unlike semantic hits which callers must map
     /// back). No-op (empty result) when the query carries no entities.
-
     pub fn search_causal_semantic_entity_boosted(
         &self,
         query_vec: &[f32],
@@ -122,7 +121,6 @@ impl CausalStore {
     /// set is precision-gated: a distilled jump must share ≥1 query token,
     /// because causal leaps are topically loose; 1-hop adjacency is anchored
     /// to the seeds and is not gated.
-
     pub fn similar_decision_edges(
         &self,
         query_embedding: &[f32],

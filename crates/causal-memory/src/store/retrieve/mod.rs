@@ -37,7 +37,6 @@ impl CausalStore {
 
     /// Fetch a single edge by id, including its invalidation status and audit
     /// fields. Unlike the read paths, this does NOT filter on valid_to.
-
     pub fn get_edge(&self, edge_id: i64) -> Result<Option<super::CausalEntry>> {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
         let sql = format!(
@@ -59,7 +58,6 @@ impl CausalStore {
     /// order), neighbors follow by confidence descending; the total is
     /// capped at `max_edges`. Used by reconstruct_lesson to bound the
     /// subgraph handed to the LLM.
-
     pub fn markov_blanket(
         &self,
         seed_edge_ids: &[i64],
@@ -129,7 +127,6 @@ impl CausalStore {
 
     /// Search past causal episodes by task tag and/or text similarity.
     /// Returns entries ordered by confidence descending.
-
     pub fn recent_decisions(&self, limit: usize) -> Result<Vec<super::DecisionDirectoryEntry>> {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
         let mut stmt = conn.prepare(
@@ -164,7 +161,6 @@ impl CausalStore {
     }
 
     /// Get top decisions by confidence (high-value lessons first).
-
     pub fn top_decisions_by_confidence(
         &self,
         limit: usize,
@@ -203,7 +199,6 @@ impl CausalStore {
 
     /// Get all valid causal edges (for the pattern miner). Ordered by edge id
     /// so pair iteration is deterministic across runs.
-
     pub fn all_valid_edges(&self) -> Result<Vec<super::CausalEntry>> {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
         let sql = format!(
@@ -221,7 +216,6 @@ impl CausalStore {
     }
 
     /// Idempotent write of a meta-causal edge.
-
     pub fn upsert_meta_edge(
         &self,
         from_id: &str,
@@ -237,7 +231,6 @@ impl CausalStore {
 
     /// `upsert_meta_edge` plus the v5 stratified-replication results.
     #[allow(clippy::too_many_arguments)]
-
     pub fn upsert_meta_edge_stratified(
         &self,
         from_id: &str,
@@ -310,7 +303,6 @@ impl CausalStore {
     }
 
     /// Search mined cross-task patterns (meta-causal edges).
-
     pub fn search_patterns(
         &self,
         query: Option<&str>,
@@ -372,7 +364,6 @@ impl CausalStore {
     }
 
     /// Count causal edges (for diagnostics).
-
     pub fn count_edges(&self) -> Result<i64> {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM causal_edges", [], |row| row.get(0))?;
@@ -382,7 +373,6 @@ impl CausalStore {
     // ─── Internal helpers ──────────────────────────────────────────────────
 
     /// Bump access counters for edges returned by a read-path query.
-
     fn record_access(conn: &rusqlite::Connection, edge_ids: impl Iterator<Item = i64>) -> Result<()> {
         let mut ids: Vec<i64> = edge_ids.collect();
         ids.sort_unstable();
@@ -436,7 +426,6 @@ impl CausalStore {
     /// 4. For each meta-edge bridge, run another backward chain from the bridged
     ///    decision in its session.
     /// 5. Combine segments into `CrossSessionChain` results.
-
     fn task_tag_for_chunk(&self, chunk_id: &str) -> Result<Option<String>> {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
         let tag: Option<String> = conn
@@ -456,7 +445,6 @@ impl CausalStore {
     /// session prefix like `{question_id}::{session_id}::`, pull every turn
     /// in that session so the answerer gets full context, not just the 2
     /// turns BM25 happened to hit.
-
     pub fn chunks_by_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
         let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
         let mut stmt =

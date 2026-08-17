@@ -1,6 +1,6 @@
 {"type":"user","content":"The build is broken, please fix it."}
 {"type":"assistant","content":"Let me reproduce the build failure first.","tool_calls":[{"id":"tc1","name":"run_terminal_command","arguments":"{\"command\":\"cargo build app verbose color\"}"}]}
-{"type":"tool_result","tool_call_id":"tc1","content":"exit: 1\nerror[E0433]: failed to resolve: could not find `foo` in the crate root\n --> src/main.rs:3:5\nerror: could not compile `app` (bin \"app\")"}
+{"type":"tool_result","tool_call_id":"tc1","content":"exit: 1\nerror: cargo build exited with code 101\nerror[E0433]: failed to resolve: could not find `foo` in the crate root\n --> src/main.rs:3:5\nerror: could not compile `app` (bin \"app\")"}
 {"type":"assistant","content":"The foo module is missing. I'll create it.","tool_calls":[{"id":"tc2","name":"write","arguments":"{\"file_path\":\"src/foo.rs\"}"}]}
 {"type":"tool_result","tool_call_id":"tc2","content":"File src/foo.rs has been written (42 lines)"}
 {"type":"assistant","content":"Module created, rebuilding.","tool_calls":[{"id":"tc3","name":"run_terminal_command","arguments":"{\"command\":\"cargo build app verbose plain\"}"}]}

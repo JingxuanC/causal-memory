@@ -27,7 +27,7 @@ causal-memory 是一个用 Rust 实现的因果记忆引擎（MCP Server），�
 - **7 种 typed edge**（caused / fact / meta / enabled / co-occurrence / prevented / no_effect）统一在一张图上
 - **海马体 CSR 稀疏矩阵**做 spreading activation（含 GABA 抑制性负扩散）
 - **SWR 睡眠巩固**四阶段（LTP / LTD / GC / Q-value）
-- **13 个 MCP 工具**——任何 Agent 框架可即插即用
+- **14 个 MCP 工具**——任何 Agent 框架可即插即用（`remember` 零门槛自动提取）
 
 ## 独有能力（无竞品）
 
@@ -38,23 +38,26 @@ causal-memory 是一个用 Rust 实现的因果记忆引擎（MCP Server），�
 
 ## 数据
 
+> benchmark 详情与口径见 `docs/benchmarks/`。
+
 | Benchmark | 成绩 | 竞品 |
 |-----------|------|------|
-| LongMemEval (500题) | **71.2%** | Mem0 ~64% |
-| LoCoMo (记忆基准) | **84.1%** | 行业最强 91.6% |
-| Agent 重复犯错率 | **0%** | 无记忆 20% |
+| LongMemEval (500题) | **75.2%** | Mem0 ~74.4% |
+| LoCoMo (记忆基准, strict judge) | **79.1%** | 行业最强 91.6% |
+| CausalEval 因果能力 | **81%** (v12) | mem0 65% |
+| Agent 重复犯错率 | **33%** | 无记忆 67% |
 | 压缩生存率提升 | **+20.8pp** | 独家指标 |
-| 证据命中率 | **88.6%** | — |
+| 证据命中率 | **87.6%** | — |
 
 ## 数字
 
-- **206** 个测试
+- **322** 个测试全过
 - **7** 种边类型
-- **13** 个 MCP 工具
+- **14** 个 MCP 工具
 - **17** 篇研究笔记
 - **42** 篇源码拆解
 - **20+** 篇论文追踪
-- **Rust** 实现，MIT 开源
+- **Rust** 实现，Apache-2.0 开源
 
 ## GitHub
 

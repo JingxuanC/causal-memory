@@ -154,9 +154,8 @@ impl SessionParser for KimiParser {
                             ts,
                         });
                         pending_tool_calls.remove(0);
-                    } else if !decisions.is_empty() {
+                    } else if let Some(tc) = decisions.last() {
                         // Fallback: match to last unmatched decision
-                        let tc = decisions.last().unwrap();
                         if !results.contains_key(&tc.id) {
                             results.insert(
                                 tc.id.clone(),
