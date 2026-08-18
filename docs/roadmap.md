@@ -35,19 +35,28 @@ argument — lightweight self-built fact layer, pluggable storage substrate).
   retrieval, `record_fact` / `search_facts` MCP tools. Phase 2
   (`search_memory` RRF fusion) and Phase 3 (`causal-memory distill` LLM
   ingest) shipped the same day. Remaining: LoCoMo rerun targeting 75–80%
-- [ ] **Hebbian co-occurrence edges** — weak associative edges between
-  decisions co-active in the same session, weight ∝ co-occurrence (the
-  excitatory complement to `prevented` negative spread; absorbs HeLa-Mem's
-  core mechanism as a subset)
-- [ ] **SWR 2.0 / Dreams alignment** — consolidation produces a *new* store
-  (original untouched, auditable, rollback-able) + an `instructions`-style
-  focus parameter ("focus on causal lessons; ignore routine operations")
+- [x] **Hebbian co-occurrence edges** — ✅ shipped 2026-08-18 (schema v11):
+  retrieval co-activated chunks build weak associative edges in
+  `cooccurrence_edges`, reinforced per co-activation, loaded into the graph
+  as CoOccurrence edges on rebuild (the excitatory complement to
+  `prevented` negative spread; absorbs HeLa-Mem's core mechanism as a
+  subset)
+- [x] **SWR 2.0 / Dreams alignment** — ✅ shipped 2026-08-18:
+  `sleep --immutable` consolidates into a *new* store (VACUUM INTO a
+  timestamped copy, original untouched), `sleep --restore` swaps it back in
+  with a backup; `instructions`-style focus parameter still a candidate
+  for the narrative layer
 - [~] **Query routing + fusion retrieval** — ✅ RRF fusion shipped
   (`search_memory`, 2026-07-31); remaining: query-type classifier for
   single-layer routing and iterative retrieval with entity/time anchors for
   multi-session questions (targets LongMemEval multi-session 32.3%)
-- [ ] **Q-value dynamics** — MemRL/MemQ-style dynamic utility replaces static
-  confidence as the primary edge weight
+- [x] **Q-value dynamics** — ✅ shipped (consolidate Stage 1.5 Bellman
+  reinforcement → `chunks.q_value` persistence → hippocampus seeding
+  `0.5 + 0.5·Q`). Implementation note: the learned utility weights *node
+  activation seeding*, not the stored edge confidence — roadmap's original
+  "replaces static confidence as the primary edge weight" was revised to
+  node-utility seeding (edge-weight variant deferred until a CausalEval
+  A/B can verify no retrieval regression)
 
 Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
 

@@ -234,3 +234,25 @@ Phase 4 单独排期（涉及 schema v11 与 sleep 语义变更，需先过 Caus
 | D3 | hippocampus/mod.rs:795-845,166,367-368；consolidate/mod.rs:88-113；store/mod.rs:30 |
 | D4 | 全库 grep 无 classifier/router/query_type |
 | A8 | docs/design/architecture.md:1；tools.rs:1；migrate.rs:34（SCHEMA_VERSION=9） |
+
+---
+
+## 附：实施状态（2026-08-18 更新）
+
+Phase 0-4 已按本设计落地并全部通过 `cargo test`（328 个，含新增），提交见 git log：
+
+| 阶段 | 状态 | 关键实现 |
+|---|---|---|
+| Phase 0 文档同步 | ✅ d9c2aff | 14 tools / schema v9 表述修正 |
+| Phase 1 存储基建 | ✅ 46bfd00 | WAL/busy_timeout/NORMAL；手写连接池（crates.io 不可达，r2d2 无法引入）；HTTP 共享 store；读路径写节流 |
+| Phase 2 检索基建 | ✅ 538f872 + 487541d | **B2 调整为自建持久化倒排索引**（FTS5 的 unicode61 对中文是整段 token，破坏 bigram 语义）；B1 评估：无 sqlite-vec 依赖，保持 O(N)+B4 缓存缓解；B3 回填 CLI 增强；B4 LRU 缓存 |
+| Phase 3 服务器层 | ✅ 104870f + ca39da2 + 67d981d + 54a4371 | C1 共享 embedder 单例；C3/C4/C5 去冗余 SQL+N+1；C7 图惰性重建；C2 部分（counterfactual 并行 + polarity 开关）；**C6/2c 评估后跳过**（A2 连接池已消除锁瓶颈；stdio 模式后台任务不可靠） |
+| Phase 4 图引擎 | ✅ 692b2d2 + d0ef129 + 文档 | D1 Hebbian 共现边（schema v11：cooccurrence_edges 表 + 检索共现缓冲 + 图加载）；D2 SWR 2.0（sleep --immutable 经 VACUUM INTO 产出新 store + --restore 带备份）；D3 Q-value 采用方案 B（保持节点 seeding，roadmap 表述修正；边权重变体留待 CausalEval A/B） |
+| Phase 5 查询路由 | ⬜ 未开始 | D4 规则分类器（可选） |
+
+**实施中与设计的偏差**（均为环境约束或工程判断）：
+1. B2：FTS5 → 自建 bm25_index 倒排表（中文分词语义不变，零新依赖）。
+2. A2：r2d2 → 手写连接池（crates.io 403 不可达）。
+3. D1：权重公式从 HeLa-Mem 稳态式改为加法强化（稳态 η/λ≈0.02 低于初始 0.2，原式会使共现强化反而衰减）。
+4. C6（remember 事务）与 C2 的 remember 后台 distill：跳过（收益已被 A2 覆盖 / stdio 生命周期限制），在 commit 信息与本文档记录。
+5. D3：方案 B（文档修正），不做边权重变体（无 CausalEval 环境做 A/B 回归）。
