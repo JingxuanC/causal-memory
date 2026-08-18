@@ -8,6 +8,7 @@ pub mod hippocampus;
 pub mod llm;
 pub mod migrate;
 pub mod patterns;
+pub mod query_router;
 pub mod reasoning_extractor;
 pub mod refute;
 pub mod session;

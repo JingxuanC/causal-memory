@@ -745,6 +745,16 @@ impl CausalMemoryServer {
         let query_vec = block_on(causal_memory::embed::embed_shared(&params.query))
             .and_then(|r| r.ok());
 
+        // D4: query routing — when the intent is clear, prefer the dominant
+        // layer in the DISPLAY (retrieval still fuses, so a wrong guess never
+        // hides the other layer's hits; an empty dominant layer falls back to
+        // showing everything).
+        let intent = causal_memory::query_router::classify_query(&params.query);
+        let dominant_is_causal = matches!(intent, causal_memory::query_router::QueryIntent::Causal)
+            || matches!(intent, causal_memory::query_router::QueryIntent::Chain);
+        let dominant_is_fact =
+            matches!(intent, causal_memory::query_router::QueryIntent::Fact);
+
         let mut used_semantic = false;
         let facts: Vec<AgentFact> = match &query_vec {
             Some(v) => {
@@ -853,6 +863,22 @@ impl CausalMemoryServer {
             .map(|(_, e)| e)
             .collect();
         causal_kept.sort_by_key(|e| rank_of[format!("causal:{}", e.edge_id).as_str()]);
+
+        // D4: route the display to the dominant layer when the classifier is
+        // confident AND that layer actually has hits (otherwise fall back to
+        // the full fusion view — never hide evidence).
+        let route_causal = dominant_is_causal && !causal_kept.is_empty();
+        let route_fact = dominant_is_fact && !facts_kept.is_empty();
+        let facts_kept: Vec<&AgentFact> = if route_causal {
+            Vec::new()
+        } else {
+            facts_kept
+        };
+        let causal_kept: Vec<&CausalEntry> = if route_fact {
+            Vec::new()
+        } else {
+            causal_kept
+        };
 
         let layers = usize::from(!facts_kept.is_empty()) + usize::from(!causal_kept.is_empty());
         let total = facts_kept.len() + causal_kept.len();
