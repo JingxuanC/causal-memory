@@ -1,6 +1,6 @@
 //! Agent-fact layer (v6, unified-memory-design Phase 1).
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use rusqlite::params;
 
 use super::{CausalStore, SUPERSEDES_MIN_SHARED_TOKENS, SUPERSEDES_SIM_THRESHOLD};
@@ -36,6 +36,7 @@ impl CausalStore {
             params![key, value, scope],
             |r| r.get(0),
         )?;
+        Self::index_chunk(&conn, &format!("fact:{id}"), &format!("{key} {value}"))?;
         Ok(id)
     }
 
@@ -142,6 +143,7 @@ impl CausalStore {
             params![key, value, scope],
             |r| r.get(0),
         )?;
+        Self::index_chunk(&conn, &format!("fact:{id}"), &format!("{key} {value}"))?;
         let retired = conn.execute(
             "UPDATE agent_facts SET valid_to = ?1
              WHERE key = ?2 AND scope = ?3 AND value != ?4 AND valid_to IS NULL",
@@ -206,11 +208,39 @@ impl CausalStore {
             return self.list_facts(scope, limit);
         }
         let conn = self.acquire()?;
+
+        // B2: narrow candidates via the persistent inverted index (facts
+        // live under the `fact:{id}` namespace). Empty result falls back to
+        // the full scan so retrieval never silently loses results.
+        let chunk_ph = vec!["?"; query_tokens.len()].join(",");
+        let mut chunk_stmt = conn.prepare(&format!(
+            "SELECT DISTINCT chunk_id FROM bm25_index
+             WHERE chunk_id LIKE 'fact:%' AND token IN ({chunk_ph})"
+        ))?;
+        let chunk_rows = chunk_stmt.query_map(
+            rusqlite::params_from_iter(query_tokens.iter()),
+            |r| r.get::<_, String>(0),
+        )?;
+        let fact_ids: Vec<i64> = chunk_rows
+            .collect::<rusqlite::Result<Vec<String>>>()
+            .map_err(|e| anyhow!("index query failed: {e}"))?
+            .iter()
+            .filter_map(|cid| cid.strip_prefix("fact:"))
+            .filter_map(|s| s.parse::<i64>().ok())
+            .collect();
+
         let mut sql = String::from(
             "SELECT id, key, value, scope, source, confidence, created_at, updated_at
              FROM agent_facts WHERE valid_to IS NULL",
         );
         let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if !fact_ids.is_empty() {
+            let ph = vec!["?"; fact_ids.len()].join(",");
+            sql.push_str(&format!(" AND id IN ({ph})"));
+            for fid in &fact_ids {
+                bind.push(Box::new(*fid));
+            }
+        }
         if let Some(s) = scope {
             sql.push_str(" AND scope = ?");
             bind.push(Box::new(s.to_string()));

@@ -1622,9 +1622,16 @@ use rusqlite::params;
             let store = CausalStore::open(&db).unwrap();
             store.record_distilled(&item(1), None).unwrap();
             store.record_distilled(&item(2), None).unwrap();
-        } // process "restarts" (store dropped; ID_COUNTER is process-global
-          // and in a real restart returns to 0 — simulate by resetting).
-        ID_COUNTER.store(0, Ordering::Relaxed);
+        }
+        // Process "restart" simulation. A real restart zeroes the
+        // process-global ID_COUNTER, but this global is shared by every
+        // parallel test — directly resetting it here corrupts their id
+        // generation (they would mint chunks colliding with ours). Instead
+        // verify the recovery property the seed exists for: reopening the
+        // store must raise the counter back above COUNT(*) + 1, and the
+        // reopen must never collide regardless of the current global value
+        // (fetch_max only grows it; the write path also retries on
+        // UNIQUE violations, see insert_chunk_with_retry).
         {
             let store = CausalStore::open(&db).unwrap();
             store

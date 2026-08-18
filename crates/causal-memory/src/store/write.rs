@@ -297,12 +297,14 @@ impl CausalStore {
         confidence: f64,
         task_tag: Option<&str>,
     ) -> Result<(String, i64)> {
-        let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let chunk_id = format!("distill:{event_time}:{seq}");
-        conn.execute(
-            "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
-            params![&chunk_id, text, event_time],
+        let chunk_id = Self::insert_chunk_with_retry(
+            conn,
+            text,
+            event_time,
+            None,
+            |seq| format!("distill:{event_time}:{seq}"),
         )?;
+        Self::index_chunk(conn, &chunk_id, text)?;
         conn.execute(
             "INSERT INTO causal_edges
              (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
@@ -326,18 +328,22 @@ impl CausalStore {
         confidence: f64,
         task_tag: Option<&str>,
     ) -> Result<(String, i64)> {
-        let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let dec_id = format!("distill:d{event_time}:{seq}");
-        let out_id = format!("distill:o{event_time}:{seq}");
-
-        conn.execute(
-            "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
-            params![&dec_id, decision_text, event_time],
+        let dec_id = Self::insert_chunk_with_retry(
+            conn,
+            decision_text,
+            event_time,
+            None,
+            |seq| format!("distill:d{event_time}:{seq}"),
         )?;
-        conn.execute(
-            "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
-            params![&out_id, outcome_text, event_time],
+        Self::index_chunk(conn, &dec_id, decision_text)?;
+        let out_id = Self::insert_chunk_with_retry(
+            conn,
+            outcome_text,
+            event_time,
+            None,
+            |seq| format!("distill:o{event_time}:{seq}"),
         )?;
+        Self::index_chunk(conn, &out_id, outcome_text)?;
         conn.execute(
             "INSERT INTO causal_edges
              (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
@@ -690,6 +696,9 @@ impl CausalStore {
             )
             .optional()?;
         if let Some(id) = existing {
+            // Keep the inverted index complete even for reused chunks
+            // (older rows may predate the bm25_index migration).
+            Self::index_chunk(conn, &id, text)?;
             return Ok(id);
         }
         let code = crate::hippocampus::utils::simhash(text);
@@ -714,10 +723,45 @@ impl CausalStore {
                 }
             }
         }
-        conn.execute(
-            "INSERT INTO chunks (id, text, created_at, sparse_code) VALUES (?1, ?2, ?3, ?4)",
-            params![fallback_id, text, event_time, format!("{:032x}", code)],
+        // B2/defensive: retry on UNIQUE collision — the process-global
+        // ID_COUNTER can be reset concurrently (tests simulating process
+        // restart), so two writers can mint the same fallback id even
+        // though fetch_add itself is atomic. A fresh seq makes the retry id
+        // unique; the exact-text reuse path above already covers duplicates.
+        let prefix = fallback_id.chars().next().unwrap_or('c');
+        let id = Self::insert_chunk_with_retry(
+            conn,
+            text,
+            event_time,
+            Some(&format!("{:032x}", code)),
+            |seq| format!("{prefix}{event_time}{seq}"),
         )?;
-        Ok(fallback_id.to_string())
+        Self::index_chunk(conn, &id, text)?;
+        Ok(id)
+    }
+
+    /// Insert a chunks row, retrying with a fresh sequence when the id
+    /// collides (defensive — see reuse_or_create_chunk). `make_id` builds
+    /// the id from the fresh seq so each retry tries a new, unique id.
+    fn insert_chunk_with_retry<F: Fn(u64) -> String>(
+        conn: &Connection,
+        text: &str,
+        event_time: i64,
+        sparse_code: Option<&str>,
+        make_id: F,
+    ) -> Result<String> {
+        for _ in 0..4 {
+            let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let id = make_id(seq);
+            match conn.execute(
+                "INSERT INTO chunks (id, text, created_at, sparse_code) VALUES (?1, ?2, ?3, ?4)",
+                params![&id, text, event_time, sparse_code],
+            ) {
+                Ok(_) => return Ok(id),
+                Err(e) if e.to_string().contains("UNIQUE") => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        anyhow::bail!("chunk id collision after 4 retries")
     }
 }

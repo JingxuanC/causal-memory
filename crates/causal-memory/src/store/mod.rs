@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
 pub(crate) static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -152,6 +152,18 @@ CREATE TABLE IF NOT EXISTS agent_facts_embeddings (
     vector BLOB NOT NULL,
     created_at INTEGER NOT NULL
 );
+
+-- Persistent BM25 inverted index (schema v10, architecture hardening B2):
+-- token -> chunk_id postings so keyword search narrows candidates instead
+-- of scanning every edge. chunk_id namespace: fact:{id} = agent_facts row,
+-- otherwise a chunks row. Maintained by CausalStore::index_chunk on every
+-- chunk/fact write; queried by search_causal_bm25 / search_facts_bm25.
+CREATE TABLE IF NOT EXISTS bm25_index (
+    token TEXT NOT NULL,
+    chunk_id TEXT NOT NULL,
+    PRIMARY KEY (token, chunk_id)
+);
+CREATE INDEX IF NOT EXISTS idx_bm25_chunk ON bm25_index(chunk_id);
 "#;
 
 /// Thread-safe causal store backed by SQLite.
@@ -243,6 +255,25 @@ impl CausalStore {
             )
             .unwrap_or(0);
         ID_COUNTER.fetch_max(generated as u64 + 1, Ordering::Relaxed);
+    }
+
+    /// Maintain the persistent BM25 inverted index (B2): tokenize `text`
+    /// and record (token, chunk_id) postings. INSERT OR IGNORE makes this
+    /// idempotent for reused chunks. Called from every chunk creation site
+    /// (distill writes and record_decision); facts use the `fact:{id}`
+    /// namespace via the same helper.
+    pub(crate) fn index_chunk(conn: &Connection, chunk_id: &str, text: &str) -> Result<()> {
+        let tokens = crate::patterns::tokenize(text);
+        if tokens.is_empty() {
+            return Ok(());
+        }
+        let mut stmt = conn.prepare(
+            "INSERT OR IGNORE INTO bm25_index (token, chunk_id) VALUES (?1, ?2)",
+        )?;
+        for tok in tokens {
+            stmt.execute(params![tok, chunk_id])?;
+        }
+        Ok(())
     }
 
     /// Execute a closure with a reference to the connection (for advanced queries).

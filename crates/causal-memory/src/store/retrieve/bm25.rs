@@ -59,6 +59,25 @@ impl CausalStore {
         }
 
         let conn = self.acquire()?;
+
+        // B2: resolve candidate chunk ids from the persistent inverted index.
+        // Scored ranks stay identical to the old full-table path — the index
+        // only narrows the candidate set. Empty result (or a missing index,
+        // e.g. a pre-v10 DB that somehow skipped migration) falls back to
+        // the full scan so retrieval never silently loses results.
+        let chunk_ph = vec!["?"; query_tokens.len()].join(",");
+        let mut chunk_stmt = conn.prepare(&format!(
+            "SELECT DISTINCT chunk_id FROM bm25_index
+             WHERE chunk_id NOT LIKE 'fact:%' AND token IN ({chunk_ph})"
+        ))?;
+        let chunk_rows = chunk_stmt.query_map(
+            rusqlite::params_from_iter(query_tokens.iter()),
+            |r| r.get::<_, String>(0),
+        )?;
+        let chunk_ids: Vec<String> = chunk_rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("index query failed: {e}"))?;
+
         let mut sql = format!(
             "SELECT {ENTRY_COLUMNS}
              FROM causal_edges ce
@@ -67,6 +86,15 @@ impl CausalStore {
              WHERE ce.valid_to IS NULL"
         );
         let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if !chunk_ids.is_empty() {
+            let ph = vec!["?"; chunk_ids.len()].join(",");
+            sql.push_str(&format!(
+                " AND (ce.from_id IN ({ph}) OR ce.to_id IN ({ph}))"
+            ));
+            for cid in chunk_ids.iter().chain(chunk_ids.iter()) {
+                bind.push(Box::new(cid.clone()));
+            }
+        }
         if let Some(tag) = task_tag {
             sql.push_str(" AND ce.task_tag = ?");
             bind.push(Box::new(tag.to_string()));

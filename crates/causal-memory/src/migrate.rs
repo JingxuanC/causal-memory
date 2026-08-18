@@ -31,7 +31,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 9;
+pub const SCHEMA_VERSION: u32 = 10;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -70,6 +70,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 9 {
         migrate_to_v9(&tx)?;
+    }
+    if version < 10 {
+        migrate_to_v10(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -847,5 +850,71 @@ fn migrate_to_v9(conn: &Connection) -> Result<()> {
     if !cols.contains("sparse_code") {
         conn.execute_batch("ALTER TABLE chunks ADD COLUMN sparse_code TEXT")?;
     }
+    Ok(())
+}
+
+/// v9 → v10: persistent BM25 inverted index (architecture hardening B2).
+///
+/// The old BM25 path pulled every valid edge into Rust and rebuilt a
+/// temporary index on every query (O(N) per search). This table stores the
+/// token → chunk posting lists once; queries resolve candidate chunk ids
+/// with one small lookup and only score those. `chunk_id` is namespaced:
+/// `fact:{id}` entries index agent_facts, everything else indexes chunks.
+/// Tokens come from `patterns::tokenize` (English words + Chinese bigrams),
+/// so retrieval semantics are identical to the old in-memory scoring —
+/// the table only narrows the candidate set.
+fn migrate_to_v10(conn: &Connection) -> Result<()> {
+    eprintln!("[DEBUG] migrate_to_v10 called");
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS bm25_index (
+            token TEXT NOT NULL,
+            chunk_id TEXT NOT NULL,
+            PRIMARY KEY (token, chunk_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_bm25_chunk ON bm25_index(chunk_id);"
+    )?;
+
+    // Backfill: index every existing chunk and fact so fresh stores and
+    // upgraded stores behave identically. One-time cost; INSERT OR IGNORE
+    // keeps it idempotent for partially-migrated DBs. Very old DBs (v1-v2)
+    // may not have the chunks/agent_facts tables yet — the base schema runs
+    // after all migrations — so guard each backfill source.
+    let mut idx = conn.prepare(
+        "INSERT OR IGNORE INTO bm25_index (token, chunk_id) VALUES (?1, ?2)",
+    )?;
+    let mut count = 0usize;
+
+    if !table_exists(conn, "chunks")? {
+        tracing::debug!("v10: no chunks table yet, skipping chunk backfill");
+    } else {
+        let mut cstmt = conn.prepare("SELECT id, text FROM chunks")?;
+    let crows = cstmt.query_map([], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+        for row in crows {
+            let (id, text) = row?;
+            for tok in crate::patterns::tokenize(&text) {
+                idx.execute(rusqlite::params![tok, &id])?;
+                count += 1;
+            }
+        }
+    }
+
+    if table_exists(conn, "agent_facts")? {
+        let mut fstmt = conn.prepare("SELECT id, key, value FROM agent_facts")?;
+        let frows = fstmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        for row in frows {
+            let (fid, key, value) = row?;
+            let cid = format!("fact:{fid}");
+            let text = format!("{key} {value}");
+            for tok in crate::patterns::tokenize(&text) {
+                idx.execute(rusqlite::params![tok, &cid])?;
+                count += 1;
+            }
+        }
+    }
+    tracing::debug!(count, "v10 migration: bm25 index backfilled");
     Ok(())
 }
