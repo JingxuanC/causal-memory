@@ -16,6 +16,7 @@
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// HTTP timeout for the embedding endpoint. The record path calls this
 /// synchronously inside an MCP tool handler (60s tool timeout): 8s is long
@@ -265,6 +266,104 @@ pub fn init_embedder() -> Option<UnifiedEmbedder> {
     None
 }
 
+// ─── Embedding result cache (B4) ───────────────────────────────────────
+
+/// Simple process-global LRU of query -> embedding. The same query text
+/// (e.g. a repeated search in one session) must not pay an HTTP embedding
+/// call every time. Zero dependencies: HashMap + monotonic tick, evict the
+/// least-recently-used entry past the cap. Cache hits are cloned (vectors
+/// are small, 384-1536 f32).
+struct EmbedLru {
+    map: HashMap<String, (Vec<f32>, u64)>,
+    cap: usize,
+    tick: u64,
+}
+
+impl EmbedLru {
+    fn get(&mut self, text: &str) -> Option<Vec<f32>> {
+        // A hit is a use: advance the clock so a touched entry becomes the
+        // most-recently-used and survives the next eviction.
+        self.tick += 1;
+        let tick = self.tick;
+        self.map
+            .get_mut(text)
+            .map(|(v, last)| {
+                *last = tick;
+                v.clone()
+            })
+    }
+
+    fn insert(&mut self, text: String, vec: Vec<f32>) {
+        self.tick += 1;
+        if self.map.len() >= self.cap && !self.map.contains_key(&text) {
+            if let Some(lru) = self
+                .map
+                .iter()
+                .min_by_key(|(_, (_, t))| *t)
+                .map(|(k, _)| k.clone())
+            {
+                self.map.remove(&lru);
+            }
+        }
+        self.map.insert(text, (vec, self.tick));
+    }
+}
+
+const EMBED_CACHE_CAP: usize = 256;
+
+fn embed_cache() -> &'static std::sync::Mutex<EmbedLru> {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<std::sync::Mutex<EmbedLru>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        std::sync::Mutex::new(EmbedLru {
+            map: HashMap::new(),
+            cap: EMBED_CACHE_CAP,
+            tick: 0,
+        })
+    })
+}
+
+/// Minimal interface so the cache works over every embedder variant
+/// (HTTP Embedder, UnifiedEmbedder, local ONNX).
+pub trait CachedEmbed {
+    fn embed_async(&mut self, text: &str) -> impl std::future::Future<Output = Result<Vec<f32>>> + Send;
+}
+
+impl CachedEmbed for UnifiedEmbedder {
+    async fn embed_async(&mut self, text: &str) -> Result<Vec<f32>> {
+        UnifiedEmbedder::embed(self, text).await
+    }
+}
+
+impl CachedEmbed for Embedder {
+    async fn embed_async(&mut self, text: &str) -> Result<Vec<f32>> {
+        Embedder::embed(self, text).await
+    }
+}
+
+#[cfg(feature = "local-embed")]
+impl CachedEmbed for LocalEmbedder {
+    async fn embed_async(&mut self, text: &str) -> Result<Vec<f32>> {
+        LocalEmbedder::embed(self, text)
+    }
+}
+
+/// Embed with a process-global LRU cache: identical query texts reuse the
+/// stored vector instead of hitting the endpoint again. Cache failures are
+/// silently ignored (embedding must never block on cache contention).
+pub async fn embed_cached<E: CachedEmbed>(embedder: &mut E, text: &str) -> Result<Vec<f32>> {
+    if let Ok(mut cache) = embed_cache().lock() {
+        if let Some(v) = cache.get(text) {
+            return Ok(v);
+        }
+    }
+    let vec = embedder.embed_async(text).await?;
+    if let Ok(mut cache) = embed_cache().lock() {
+        cache.insert(text.to_string(), vec.clone());
+    }
+    Ok(vec)
+}
+
 /// Cosine similarity between two vectors.
 /// Returns 0.0 for mismatched lengths, empty input, or a zero vector
 /// (all cases where similarity is undefined or meaningless for ranking).
@@ -379,5 +478,48 @@ mod tests {
         assert_eq!(c.api_base, "http://e/v1");
         assert_eq!(c.api_key, "ek");
         assert_eq!(c.model, "bge-m3");
+    }
+
+    // ─── B4: embedding LRU cache ────────────────────────────────────────
+
+    #[test]
+    fn test_lru_get_miss_then_hit() {
+        let mut lru = EmbedLru {
+            map: HashMap::new(),
+            cap: 4,
+            tick: 0,
+        };
+        assert!(lru.get("q").is_none(), "miss on empty");
+        lru.insert("q".to_string(), vec![1.0, 2.0]);
+        assert_eq!(lru.get("q"), Some(vec![1.0, 2.0]), "hit after insert");
+    }
+
+    #[test]
+    fn test_lru_evicts_least_recently_used() {
+        let mut lru = EmbedLru {
+            map: HashMap::new(),
+            cap: 2,
+            tick: 0,
+        };
+        lru.insert("a".to_string(), vec![1.0]);
+        lru.insert("b".to_string(), vec![2.0]);
+        // Touch "a" so "b" becomes the LRU.
+        let _ = lru.get("a");
+        lru.insert("c".to_string(), vec![3.0]);
+        assert!(lru.get("b").is_none(), "b evicted");
+        assert_eq!(lru.get("a"), Some(vec![1.0]));
+        assert_eq!(lru.get("c"), Some(vec![3.0]));
+    }
+
+    #[test]
+    fn test_lru_insert_existing_does_not_evict() {
+        let mut lru = EmbedLru {
+            map: HashMap::new(),
+            cap: 1,
+            tick: 0,
+        };
+        lru.insert("a".to_string(), vec![1.0]);
+        lru.insert("a".to_string(), vec![9.0]); // update, no eviction
+        assert_eq!(lru.get("a"), Some(vec![9.0]));
     }
 }

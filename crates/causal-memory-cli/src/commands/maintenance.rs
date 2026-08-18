@@ -327,29 +327,31 @@ pub(crate) fn run_migrate(args: &[String]) -> anyhow::Result<()> {
 /// Backfill embeddings for valid edges that don't have one yet.
 pub(crate) async fn run_embed(args: &[String]) -> anyhow::Result<()> {
     use causal_memory::embed::{EmbedConfig, Embedder};    let mut db: Option<PathBuf> = None;
-    let mut limit: usize = 100;
+    let mut limit: usize = 0; // 0 = all pending
+    let mut also_facts = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--db" => {
                 i += 1;
                 let Some(path) = args.get(i) else {
-                    anyhow::bail!("--db requires a path\nUsage: causal-memory embed [--db <PATH>] [--limit N]");
+                    anyhow::bail!("--db requires a path\nUsage: causal-memory embed [--db <PATH>] [--limit N] [--facts]");
                 };
                 db = Some(PathBuf::from(path));
             }
             "--limit" => {
                 i += 1;
                 let Some(n) = args.get(i) else {
-                    anyhow::bail!("--limit requires a number\nUsage: causal-memory embed [--db <PATH>] [--limit N]");
+                    anyhow::bail!("--limit requires a number\nUsage: causal-memory embed [--db <PATH>] [--limit N] [--facts]");
                 };
                 limit = n
                     .parse()
                     .map_err(|_| anyhow::anyhow!("--limit must be a positive integer, got: {n}"))?;
             }
+            "--facts" => also_facts = true,
             other => {
                 anyhow::bail!(
-                    "unknown flag: {other}\nUsage: causal-memory embed [--db <PATH>] [--limit N]"
+                    "unknown flag: {other}\nUsage: causal-memory embed [--db <PATH>] [--limit N] [--facts]"
                 )
             }
         }
@@ -393,43 +395,65 @@ pub(crate) async fn run_embed(args: &[String]) -> anyhow::Result<()> {
     }
     let store = CausalStore::open(&db_path)?;
 
+    let model = embedder.model().to_string();
+    let mut total_success = 0usize;
+    let mut total_failed = 0usize;
+
     let pending = store.edges_without_embedding(limit)?;
     if pending.is_empty() {
-        println!("No valid edges missing embeddings. Nothing to do.");
-        return Ok(());
-    }
-    println!("Embedding {} edge(s)...\n", pending.len());
-
-    let total = pending.len();
-    let mut success = 0usize;
-    let mut failed = 0usize;
-    for (idx, (edge_id, text)) in pending.iter().enumerate() {
-        match embedder.embed(text).await {
-            Ok(vec) => match store.put_embedding(*edge_id, "local-bge-small", &vec) {
-                Ok(()) => {
-                    success += 1;
-                    println!("[{}/{}] edge {} ✓", idx + 1, total, edge_id);
-                }
+        println!("No valid edges missing embeddings.");
+    } else {
+        println!("Embedding {} edge(s)...", pending.len());
+        for (idx, (edge_id, text)) in pending.iter().enumerate() {
+            match embedder.embed(text).await {
+                Ok(vec) => match store.put_embedding(*edge_id, &model, &vec) {
+                    Ok(()) => {
+                        total_success += 1;
+                        println!("  [{}/{}] edge {} ✓", idx + 1, pending.len(), edge_id);
+                    }
+                    Err(e) => {
+                        total_failed += 1;
+                        println!("  [{}/{}] edge {} DB write failed: {e}", idx + 1, pending.len(), edge_id);
+                    }
+                },
                 Err(e) => {
-                    failed += 1;
-                    println!(
-                        "[{}/{}] edge {} DB write failed: {e}",
-                        idx + 1,
-                        total,
-                        edge_id
-                    );
+                    total_failed += 1;
+                    println!("  [{}/{}] edge {} embed failed: {e}", idx + 1, pending.len(), edge_id);
                 }
-            },
-            Err(e) => {
-                failed += 1;
-                println!("[{}/{}] edge {} embed failed: {e}", idx + 1, total, edge_id);
+            }
+        }
+    }
+
+    if also_facts {
+        let facts = store.facts_without_embedding(limit)?;
+        if facts.is_empty() {
+            println!("No valid facts missing embeddings.");
+        } else {
+            println!("\nEmbedding {} fact(s)...", facts.len());
+            for (idx, (fid, text)) in facts.iter().enumerate() {
+                match embedder.embed(text).await {
+                    Ok(vec) => match store.put_fact_embedding(*fid, &model, &vec) {
+                        Ok(()) => {
+                            total_success += 1;
+                            println!("  [{}/{}] fact {} ✓", idx + 1, facts.len(), fid);
+                        }
+                        Err(e) => {
+                            total_failed += 1;
+                            println!("  [{}/{}] fact {} DB write failed: {e}", idx + 1, facts.len(), fid);
+                        }
+                    },
+                    Err(e) => {
+                        total_failed += 1;
+                        println!("  [{}/{}] fact {} embed failed: {e}", idx + 1, facts.len(), fid);
+                    }
+                }
             }
         }
     }
 
     println!("\n=== Embed backfill complete ===");
-    println!("  success: {success}");
-    println!("  failed:  {failed}");
+    println!("  success: {total_success}");
+    println!("  failed:  {total_failed}");
     Ok(())
 }
 

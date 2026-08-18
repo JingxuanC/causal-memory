@@ -27,24 +27,74 @@ impl CausalStore {
     }
 
     /// Valid edges that have no embedding yet (for CLI backfill).
-    /// Returns (edge_id, "decision outcome") pairs.
+    /// Returns (edge_id, "decision outcome") pairs. `limit = 0` means all.
     pub fn edges_without_embedding(&self, limit: usize) -> Result<Vec<(i64, String)>> {
         let conn = self.acquire()?;
-        let mut stmt = conn.prepare(
-            "SELECT ce.id, cf.text, ct.text
-             FROM causal_edges ce
-             JOIN chunks cf ON cf.id = ce.from_id
-             JOIN chunks ct ON ct.id = ce.to_id
-             LEFT JOIN edge_embeddings ee ON ee.edge_id = ce.id
-             WHERE ee.edge_id IS NULL AND ce.valid_to IS NULL
-             ORDER BY ce.id
-             LIMIT ?1",
-        )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
+        let (sql, binds): (&str, Vec<Box<dyn rusqlite::ToSql>>) = if limit == 0 {
+            (
+                "SELECT ce.id, cf.text, ct.text
+                 FROM causal_edges ce
+                 JOIN chunks cf ON cf.id = ce.from_id
+                 JOIN chunks ct ON ct.id = ce.to_id
+                 LEFT JOIN edge_embeddings ee ON ee.edge_id = ce.id
+                 WHERE ee.edge_id IS NULL AND ce.valid_to IS NULL
+                 ORDER BY ce.id",
+                Vec::new(),
+            )
+        } else {
+            (
+                "SELECT ce.id, cf.text, ct.text
+                 FROM causal_edges ce
+                 JOIN chunks cf ON cf.id = ce.from_id
+                 JOIN chunks ct ON ct.id = ce.to_id
+                 LEFT JOIN edge_embeddings ee ON ee.edge_id = ce.id
+                 WHERE ee.edge_id IS NULL AND ce.valid_to IS NULL
+                 ORDER BY ce.id LIMIT ?1",
+                vec![Box::new(limit as i64)],
+            )
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), |row| {
             let edge_id: i64 = row.get(0)?;
             let decision: String = row.get(1)?;
             let outcome: String = row.get(2)?;
             Ok((edge_id, format!("{decision} {outcome}")))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))
+    }
+
+    /// Valid facts that have no embedding yet (for CLI backfill).
+    /// Returns (fact_id, "key value") pairs. `limit = 0` means all.
+    pub fn facts_without_embedding(&self, limit: usize) -> Result<Vec<(i64, String)>> {
+        let conn = self.acquire()?;
+        let (sql, binds): (&str, Vec<Box<dyn rusqlite::ToSql>>) = if limit == 0 {
+            (
+                "SELECT f.id, f.key, f.value
+                 FROM agent_facts f
+                 LEFT JOIN agent_facts_embeddings e ON e.fact_id = f.id
+                 WHERE e.fact_id IS NULL AND f.valid_to IS NULL
+                 ORDER BY f.id",
+                Vec::new(),
+            )
+        } else {
+            (
+                "SELECT f.id, f.key, f.value
+                 FROM agent_facts f
+                 LEFT JOIN agent_facts_embeddings e ON e.fact_id = f.id
+                 WHERE e.fact_id IS NULL AND f.valid_to IS NULL
+                 ORDER BY f.id LIMIT ?1",
+                vec![Box::new(limit as i64)],
+            )
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), |row| {
+            let fid: i64 = row.get(0)?;
+            let key: String = row.get(1)?;
+            let value: String = row.get(2)?;
+            Ok((fid, format!("{key} {value}")))
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| anyhow!("Query failed: {e}"))
