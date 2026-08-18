@@ -8,7 +8,7 @@ use super::CausalStore;
 impl CausalStore {
     /// Store/replace the embedding of an edge.
     pub fn put_embedding(&self, edge_id: i64, model: &str, vector: &[f32]) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         conn.execute(
             "INSERT INTO edge_embeddings (edge_id, model, vector, created_at)
              VALUES (?1, ?2, ?3, ?4)
@@ -29,7 +29,7 @@ impl CausalStore {
     /// Valid edges that have no embedding yet (for CLI backfill).
     /// Returns (edge_id, "decision outcome") pairs.
     pub fn edges_without_embedding(&self, limit: usize) -> Result<Vec<(i64, String)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut stmt = conn.prepare(
             "SELECT ce.id, cf.text, ct.text
              FROM causal_edges ce
@@ -53,7 +53,7 @@ impl CausalStore {
     /// Valid edges that have no stored outcome polarity yet (for the CLI
     /// `polarity` backfill). Returns (edge_id, decision, outcome) triples.
     pub fn edges_without_polarity(&self, limit: usize) -> Result<Vec<(i64, String, String)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut stmt = conn.prepare(
             "SELECT ce.id, cf.text, ct.text
              FROM causal_edges ce
@@ -73,7 +73,7 @@ impl CausalStore {
     /// Store the outcome polarity of an edge (v4). The CHECK constraint
     /// rejects values outside positive/negative/mixed/neutral.
     pub fn set_outcome_polarity(&self, edge_id: i64, polarity: &str) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         conn.execute(
             "UPDATE causal_edges SET outcome_polarity = ?1 WHERE id = ?2",
             params![polarity, edge_id],

@@ -176,7 +176,10 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
     }
 
     eprintln!("Opening causal memory DB at {}", db_path.display());
-    let store = CausalStore::open(&db_path)?;
+    // A3: one shared store for the whole process — every connection works
+    // against the same CausalStore (WAL makes concurrent connections safe).
+    // The old code reopened + re-migrated the DB per connection.
+    let store = std::sync::Arc::new(CausalStore::open(&db_path)?);
     let edge_count = store.count_edges().unwrap_or(0);
     eprintln!("Causal memory ready: {} existing edges", edge_count);
     eprintln!("Starting MCP HTTP server on {host}:{port}/mcp");
@@ -189,15 +192,12 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
         use std::sync::Arc;
 
         // Each connection gets a fresh server instance backed by the same store.
-        let store_db_path = db_path.clone();
+        let shared_store = store.clone();
         let config = StreamableHttpServerConfig::default()
             .with_stateful_mode(false)
             .with_json_response(true);
         let service = StreamableHttpService::new(
-            move || {
-                let store = CausalStore::open(&store_db_path).map_err(std::io::Error::other)?;
-                Ok(CausalMemoryServer::new(store))
-            },
+            move || Ok(CausalMemoryServer::new((*shared_store).clone())),
             Arc::new(rmcp::transport::streamable_http_server::session::never::NeverSessionManager::default()),
             config,
         );

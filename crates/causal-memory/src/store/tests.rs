@@ -2012,6 +2012,93 @@ use rusqlite::params;
         assert_eq!(model, "test-model");
     }
 
+    // ── Architecture hardening A1: file-backed store pragmas ─────────────
+    // open() must enable WAL (concurrent readers + writer), a busy timeout
+    // (contended writes wait instead of SQLITE_BUSY), and NORMAL synchronous
+    // (WAL-safe, no per-write fsync). In-memory stores keep defaults.
+
+    #[test]
+    fn test_open_enables_wal_and_busy_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("pragma.db");
+        let store = CausalStore::open(&db_path).unwrap();
+
+        store.with_conn(|conn| {
+            let mode: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
+            assert_eq!(mode, "wal", "file-backed store must run in WAL mode");
+            // synchronous is returned as an integer: 0=OFF 1=NORMAL 2=FULL 3=EXTRA
+            let sync: i64 = conn.query_row("PRAGMA synchronous", [], |r| r.get(0))?;
+            assert_eq!(sync, 1, "WAL-safe NORMAL synchronous expected");
+            let busy: i64 = conn.query_row("PRAGMA busy_timeout", [], |r| r.get(0))?;
+            assert!(busy >= 5000, "busy_timeout must be >= 5s, got {busy}");
+            Ok::<_, anyhow::Error>(())
+        })
+        .unwrap();
+
+        // In-memory stores must still work (defaults, no WAL requirement).
+        let mem = CausalStore::open_in_memory().unwrap();
+        mem.record_decision("d", "o", "caused", Some("t"), 0.5, "rule").unwrap();
+    }
+
+    // ── Architecture hardening A2: pooled connections under concurrency ───
+    // With WAL + busy_timeout, parallel readers and writers on one store must
+    // not deadlock or throw SQLITE_BUSY. The old single Mutex<Connection>
+    // serialized everything; the pool checks connections out per method.
+
+    #[test]
+    fn test_concurrent_reads_and_writes_pool() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("conc.db");
+        let store = CausalStore::open(&db_path).unwrap();
+        let store = std::sync::Arc::new(store);
+
+        // Seed a few edges so readers have something to scan.
+        for i in 0..5 {
+            store
+                .record_decision(
+                    &format!("seed decision {i}"),
+                    &format!("seed outcome {i}"),
+                    "caused",
+                    Some("concurrency"),
+                    0.5,
+                    "rule",
+                )
+                .unwrap();
+        }
+
+        let mut handles = Vec::new();
+        for t in 0..8 {
+            let store = std::sync::Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                for i in 0..25 {
+                    if t % 2 == 0 {
+                        // Writer
+                        store
+                            .record_decision(
+                                &format!("t{t} decision {i}"),
+                                &format!("t{t} outcome {i}"),
+                                "caused",
+                                Some("concurrency"),
+                                0.5,
+                                "rule",
+                            )
+                            .unwrap();
+                    } else {
+                        // Reader
+                        let r = store.search_causal(Some("concurrency"), None).unwrap();
+                        assert!(!r.is_empty(), "reader must always see seeds");
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // All 8*25/2 writers landed.
+        let n = store.count_edges().unwrap();
+        assert_eq!(n, 5 + 4 * 25, "writers must all commit, got {n}");
+    }
 
 // ── trace_cause_cross_session ──────────────────────────────────────────
 

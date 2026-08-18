@@ -26,7 +26,7 @@ impl CausalStore {
         confidence: f64,
         discovered_by: &str,
     ) -> Result<usize> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let n = conn.execute(
             "UPDATE causal_edges SET confidence = ?1, discovered_by = ?2
              WHERE from_id = ?3 AND valid_to IS NULL",
@@ -38,7 +38,7 @@ impl CausalStore {
     /// Fetch a single edge by id, including its invalidation status and audit
     /// fields. Unlike the read paths, this does NOT filter on valid_to.
     pub fn get_edge(&self, edge_id: i64) -> Result<Option<super::CausalEntry>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let sql = format!(
             "SELECT {ENTRY_COLUMNS}
              FROM causal_edges ce
@@ -63,7 +63,7 @@ impl CausalStore {
         seed_edge_ids: &[i64],
         max_edges: usize,
     ) -> Result<Vec<super::CausalEntry>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let seed_sql = format!(
             "SELECT {ENTRY_COLUMNS}
              FROM causal_edges ce
@@ -128,7 +128,7 @@ impl CausalStore {
     /// Search past causal episodes by task tag and/or text similarity.
     /// Returns entries ordered by confidence descending.
     pub fn recent_decisions(&self, limit: usize) -> Result<Vec<super::DecisionDirectoryEntry>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut stmt = conn.prepare(
             "SELECT cf.id, ce.task_tag, cf.text, ct.text, ce.relation
              FROM causal_edges ce
@@ -165,7 +165,7 @@ impl CausalStore {
         &self,
         limit: usize,
     ) -> Result<Vec<super::DecisionDirectoryEntry>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut stmt = conn.prepare(
             "SELECT cf.id, ce.task_tag, cf.text, ct.text, ce.relation
              FROM causal_edges ce
@@ -200,7 +200,7 @@ impl CausalStore {
     /// Get all valid causal edges (for the pattern miner). Ordered by edge id
     /// so pair iteration is deterministic across runs.
     pub fn all_valid_edges(&self) -> Result<Vec<super::CausalEntry>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let sql = format!(
             "SELECT {ENTRY_COLUMNS}
              FROM causal_edges ce
@@ -242,7 +242,7 @@ impl CausalStore {
         confounded: Option<bool>,
         simpson: Option<bool>,
     ) -> Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let now = chrono::Utc::now().timestamp();
         let strata_json = strata
             .map(serde_json::to_string)
@@ -309,7 +309,7 @@ impl CausalStore {
         task_tag: Option<&str>,
         limit: usize,
     ) -> Result<Vec<super::MetaEdge>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut sql = String::from(
             "SELECT m.id, m.from_id, m.to_id, m.relation, m.pattern, m.confidence,
                     m.discovered_at, m.valid_to, cf.text, ct.text,
@@ -365,7 +365,7 @@ impl CausalStore {
 
     /// Count causal edges (for diagnostics).
     pub fn count_edges(&self) -> Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM causal_edges", [], |row| row.get(0))?;
         Ok(n)
     }
@@ -373,25 +373,44 @@ impl CausalStore {
     // ─── Internal helpers ──────────────────────────────────────────────────
 
     /// Bump access counters for edges returned by a read-path query.
-    fn record_access(conn: &rusqlite::Connection, edge_ids: impl Iterator<Item = i64>) -> Result<()> {
-        let mut ids: Vec<i64> = edge_ids.collect();
-        ids.sort_unstable();
-        ids.dedup();
-        if ids.is_empty() {
-            return Ok(());
+    ///
+    /// Architecture hardening A4: this no longer writes to the DB per
+    /// query. Counts accumulate in an in-memory buffer and are flushed in
+    /// bulk by the next connection checkout (CausalStore::acquire), so a
+    /// search no longer costs a write transaction.
+    fn record_access(&self, edge_ids: impl Iterator<Item = i64>) -> Result<()> {
+        let mut buf = self
+            .access_buffer
+            .lock()
+            .map_err(|e| anyhow!("access buffer lock: {e}"))?;
+        // Same semantics as the old immediate-UPDATE path: dedup within a
+        // single call (an edge appearing in several chains counts once),
+        // and each buffered id bumps the counter exactly once at flush.
+        for id in edge_ids {
+            buf.insert(id);
+        }
+        Ok(())
+    }
+
+    /// Flush buffered access counts to the DB (one UPDATE per edge).
+    /// Idempotent; a no-op when the buffer is empty. Failures are
+    /// swallowed — access tracking must never block a memory operation.
+    pub(crate) fn flush_access_buffer(&self, conn: &rusqlite::Connection) {
+        let mut buf = match self.access_buffer.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if buf.is_empty() {
+            return;
         }
         let now = chrono::Utc::now().timestamp();
-        let placeholders = vec!["?"; ids.len()].join(",");
-        let sql = format!(
-            "UPDATE causal_edges
-             SET access_count = access_count + 1, last_accessed_at = ?1
-             WHERE id IN ({placeholders})"
-        );
-        conn.execute(
-            &sql,
-            rusqlite::params_from_iter(std::iter::once(now).chain(ids)),
-        )?;
-        Ok(())
+        for &id in buf.iter() {
+            let _ = conn.execute(
+                "UPDATE causal_edges SET access_count = access_count + 1, last_accessed_at = ?1 WHERE id = ?2",
+                rusqlite::params![now, id],
+            );
+        }
+        buf.clear();
     }
 
     fn resolve_chunk_pair(
@@ -427,7 +446,7 @@ impl CausalStore {
     ///    decision in its session.
     /// 5. Combine segments into `CrossSessionChain` results.
     fn task_tag_for_chunk(&self, chunk_id: &str) -> Result<Option<String>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let tag: Option<String> = conn
             .query_row(
                 "SELECT task_tag FROM causal_edges
@@ -446,7 +465,7 @@ impl CausalStore {
     /// in that session so the answerer gets full context, not just the 2
     /// turns BM25 happened to hit.
     pub fn chunks_by_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut stmt =
             conn.prepare("SELECT id, text FROM chunks WHERE id LIKE ?1 ORDER BY id")?;
         let pattern = format!("{prefix}%");

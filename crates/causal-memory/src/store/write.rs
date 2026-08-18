@@ -75,7 +75,7 @@ impl CausalStore {
         event_time: i64,
         outcome_polarity: Option<&str>,
     ) -> Result<String> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let db_time = chrono::Utc::now().timestamp();
         let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
         let dec_id = format!("d{}{}", event_time, seq);
@@ -188,7 +188,7 @@ impl CausalStore {
         item: &crate::distill::MemoryItem,
         task_tag: Option<&str>,
     ) -> Result<super::RecordDistilledOutcome> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let now = chrono::Utc::now().timestamp();
         let date_str = item.date.clone().unwrap_or_else(|| {
             chrono::DateTime::from_timestamp(now, 0)
@@ -438,7 +438,7 @@ impl CausalStore {
         query_embedding: &[f32],
         min_similarity: f64,
     ) -> Result<usize> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let now = chrono::Utc::now().timestamp();
         let mut stmt = conn.prepare(
             "SELECT ce.id, ct.text, ce.outcome_polarity, ee.vector
@@ -483,7 +483,7 @@ impl CausalStore {
     /// actually invalidated; false if the edge does not exist or was already
     /// invalidated (no-op).
     pub fn invalidate_edge(&self, edge_id: i64) -> Result<bool> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let now = chrono::Utc::now().timestamp();
         let n = conn.execute(
             "UPDATE causal_edges SET valid_to = ?1 WHERE id = ?2 AND valid_to IS NULL",
@@ -514,7 +514,7 @@ impl CausalStore {
         task_tag: Option<&str>,
         embedding: Option<&[f32]>,
     ) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let embedding_blob = embedding.map(crate::embed::vec_to_blob);
         conn.execute(
             "INSERT OR IGNORE INTO session_logs
@@ -538,7 +538,7 @@ impl CausalStore {
 
     /// Mark a session's turn group as distilled (recurrence check resolved).
     pub fn mark_session_distilled(&self, session_id: i64, at: Option<i64>) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let now = at.unwrap_or_else(|| chrono::Utc::now().timestamp());
         conn.execute(
             "UPDATE session_logs SET distilled_at = ?1 WHERE session_id = ?2",
@@ -550,7 +550,7 @@ impl CausalStore {
     /// Session ids whose turns are still waiting for their distill decision,
     /// oldest first (batch drain order), capped at `limit`.
     pub fn undistilled_session_ids(&self, limit: usize) -> Result<Vec<i64>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut stmt = conn.prepare(
             "SELECT session_id FROM session_logs
              WHERE distilled_at IS NULL
@@ -564,7 +564,7 @@ impl CausalStore {
 
     /// Ordered (speaker, text) turns of one session.
     pub fn session_turns(&self, session_id: i64) -> Result<Vec<(String, String)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut stmt = conn.prepare(
             "SELECT speaker, text FROM session_logs
              WHERE session_id = ?1 ORDER BY turn_index ASC",
@@ -577,7 +577,7 @@ impl CausalStore {
 
     /// Session date of a turn group (first turn's event_time), if any.
     pub fn session_date(&self, session_id: i64) -> Result<Option<i64>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let ts: Option<i64> = conn
             .query_row(
                 "SELECT MIN(event_time) FROM session_logs WHERE session_id = ?1",
@@ -591,7 +591,7 @@ impl CausalStore {
     /// The stored session embedding (ridding on turn_index 0, where
     /// `distill_recurrence` puts it), if any.
     pub fn session_embedding(&self, session_id: i64) -> Result<Option<Vec<f32>>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let blob: Option<Vec<u8>> = conn
             .query_row(
                 "SELECT embedding FROM session_logs
@@ -608,7 +608,7 @@ impl CausalStore {
     /// All (session_id, embedding) pairs for DISTILLED sessions that carry
     /// one — the candidate set for the recurrence check.
     pub fn sessions_with_embeddings(&self, limit: usize) -> Result<Vec<(i64, Vec<f32>)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut stmt = conn.prepare(
             "SELECT session_id, embedding FROM session_logs
              WHERE embedding IS NOT NULL AND distilled_at IS NOT NULL AND turn_index = 0
@@ -639,7 +639,7 @@ impl CausalStore {
     /// Memory): when later evidence proves the old memory right, the
     /// supersession is undone instead of being permanent.
     pub fn restore_edge(&self, edge_id: i64) -> Result<bool> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let n = conn.execute(
             "UPDATE causal_edges
              SET valid_to = NULL, superseded_by = NULL
@@ -652,7 +652,7 @@ impl CausalStore {
     /// All superseded edges (valid_to set AND superseded_by set), newest
     /// first — the audit view of what reversible consolidation marked.
     pub fn superseded_edges(&self, limit: usize) -> Result<Vec<super::CausalEntry>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let sql = format!(
             "SELECT {ENTRY_COLUMNS}
              FROM causal_edges ce

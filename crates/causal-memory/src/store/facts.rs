@@ -1,6 +1,6 @@
 //! Agent-fact layer (v6, unified-memory-design Phase 1).
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use rusqlite::params;
 
 use super::{CausalStore, SUPERSEDES_MIN_SHARED_TOKENS, SUPERSEDES_SIM_THRESHOLD};
@@ -19,7 +19,7 @@ impl CausalStore {
         source: &str,
         confidence: f64,
     ) -> Result<i64> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let now = chrono::Utc::now().timestamp();
         conn.execute(
             "INSERT INTO agent_facts (key, value, scope, source, confidence, created_at, updated_at)
@@ -42,7 +42,7 @@ impl CausalStore {
     /// Soft-invalidate a fact: set valid_to = now. Returns true if a row was
     /// actually invalidated; false if missing or already invalid (no-op).
     pub fn invalidate_fact(&self, fact_id: i64) -> Result<bool> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let now = chrono::Utc::now().timestamp();
         let n = conn.execute(
             "UPDATE agent_facts SET valid_to = ?1 WHERE id = ?2 AND valid_to IS NULL",
@@ -125,7 +125,7 @@ impl CausalStore {
         source: &str,
         confidence: f64,
     ) -> Result<(i64, usize)> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let now = chrono::Utc::now().timestamp();
         conn.execute(
             "INSERT INTO agent_facts (key, value, scope, source, confidence, created_at, updated_at)
@@ -161,7 +161,7 @@ impl CausalStore {
         scope: &str,
         keep_value: &str,
     ) -> Result<usize> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let now = chrono::Utc::now().timestamp();
         let n = conn.execute(
             "UPDATE agent_facts SET valid_to = ?1
@@ -173,7 +173,7 @@ impl CausalStore {
 
     /// List valid facts, optionally filtered by scope, newest first.
     pub fn list_facts(&self, scope: Option<&str>, limit: usize) -> Result<Vec<super::AgentFact>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut sql = String::from(
             "SELECT id, key, value, scope, source, confidence, created_at, updated_at
              FROM agent_facts WHERE valid_to IS NULL",
@@ -205,7 +205,7 @@ impl CausalStore {
         if query_tokens.is_empty() {
             return self.list_facts(scope, limit);
         }
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut sql = String::from(
             "SELECT id, key, value, scope, source, confidence, created_at, updated_at
              FROM agent_facts WHERE valid_to IS NULL",
@@ -239,7 +239,7 @@ impl CausalStore {
 
     /// Store/replace the embedding of a fact (mirrors put_embedding for edges).
     pub fn put_fact_embedding(&self, fact_id: i64, model: &str, vector: &[f32]) -> Result<()> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         conn.execute(
             "INSERT INTO agent_facts_embeddings (fact_id, model, vector, created_at)
              VALUES (?1, ?2, ?3, ?4)
@@ -271,7 +271,7 @@ impl CausalStore {
         scope: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(super::AgentFact, f64)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut sql = String::from(
             "SELECT f.id, f.key, f.value, f.scope, f.source, f.confidence,
                     f.created_at, f.updated_at, e.vector

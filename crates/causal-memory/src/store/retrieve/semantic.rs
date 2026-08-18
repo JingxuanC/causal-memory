@@ -12,7 +12,7 @@ impl CausalStore {
         task_tag: Option<&str>,
         limit: usize,
     ) -> Result<Vec<(crate::store::CausalEntry, f64)>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
 
         let mut sql = format!(
             "SELECT {ENTRY_COLUMNS}, ee.vector
@@ -45,7 +45,7 @@ impl CausalStore {
         }
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(limit);
-        Self::record_access(&conn, scored.iter().map(|(e, _)| e.edge_id))?;
+        self.record_access(scored.iter().map(|(e, _)| e.edge_id))?;
         Ok(scored)
     }
 
@@ -72,7 +72,7 @@ impl CausalStore {
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(0.5);
         let q_entities = crate::patterns::entity_tokens(query);
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
 
         let mut sql = format!(
             "SELECT {ENTRY_COLUMNS}, ee.vector
@@ -106,7 +106,7 @@ impl CausalStore {
         }
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(limit);
-        Self::record_access(&conn, scored.iter().map(|(e, _)| e.edge_id))?;
+        self.record_access(scored.iter().map(|(e, _)| e.edge_id))?;
         Ok(scored)
     }
 

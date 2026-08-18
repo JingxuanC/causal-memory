@@ -8,7 +8,7 @@ use crate::store::{CausalStore, ENTRY_COLUMNS, entry_from_row};
 
 impl CausalStore {
     pub fn trace_cause(&self, outcome_description: &str) -> Result<Vec<crate::store::CausalEntry>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let pattern = format!("%{}%", outcome_description);
         let sql = format!(
             "SELECT {ENTRY_COLUMNS}
@@ -23,7 +23,7 @@ impl CausalStore {
         let entries = rows
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| anyhow!("Query failed: {e}"))?;
-        Self::record_access(&conn, entries.iter().map(|e| e.edge_id))?;
+        self.record_access(entries.iter().map(|e| e.edge_id))?;
         Ok(entries)
     }
 
@@ -34,7 +34,7 @@ impl CausalStore {
         max_depth: usize,
         min_confidence: f64,
     ) -> Result<Vec<Vec<crate::store::ChainHop>>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let pattern = format!("%{}%", outcome_description);
 
         let sql = r#"
@@ -134,7 +134,7 @@ impl CausalStore {
                 chains.push(chain);
             }
         }
-        Self::record_access(&conn, chains.iter().flatten().map(|hop| hop.edge_id))?;
+        self.record_access(chains.iter().flatten().map(|hop| hop.edge_id))?;
         Ok(chains)
     }
 
@@ -184,7 +184,7 @@ impl CausalStore {
         max_depth: usize,
         min_confidence: f64,
     ) -> Result<Vec<Vec<crate::store::ChainHop>>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let conf_p = anchor_binds.len() + 1;
         let depth_p = anchor_binds.len() + 2;
 
@@ -291,7 +291,7 @@ impl CausalStore {
                 chains.push(chain);
             }
         }
-        Self::record_access(&conn, chains.iter().flatten().map(|hop| hop.edge_id))?;
+        self.record_access(chains.iter().flatten().map(|hop| hop.edge_id))?;
         Ok(chains)
     }
 
@@ -434,7 +434,7 @@ impl CausalStore {
         max_depth: usize,
         min_confidence: f64,
     ) -> Result<Vec<Vec<crate::store::ChainHop>>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
 
         let mut sql = r#"
             WITH RECURSIVE chain(node_id, path_json, depth, chain_confidence) AS (
@@ -564,7 +564,7 @@ impl CausalStore {
                 chains.push(chain);
             }
         }
-        Self::record_access(&conn, chains.iter().flatten().map(|hop| hop.edge_id))?;
+        self.record_access(chains.iter().flatten().map(|hop| hop.edge_id))?;
         Ok(chains)
     }
 
@@ -574,7 +574,7 @@ impl CausalStore {
         decision_id: &str,
         min_confidence: f64,
     ) -> Result<Vec<crate::store::MetaEdge>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let sql = r#"
             SELECT m.id, m.from_id, m.to_id, m.relation, m.pattern, m.confidence,
                    m.discovered_at, m.valid_to, cf.text, ct.text,

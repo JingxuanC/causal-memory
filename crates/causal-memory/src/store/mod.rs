@@ -4,12 +4,14 @@
 //! SQLite operations are sync; we use tokio::task::spawn_blocking to avoid
 //! blocking the async runtime.
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::ops::{Deref, DerefMut};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
-use rusqlite::{Connection};
+use rusqlite::Connection;
 
 pub(crate) static ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -153,29 +155,81 @@ CREATE TABLE IF NOT EXISTS agent_facts_embeddings (
 "#;
 
 /// Thread-safe causal store backed by SQLite.
+///
+/// Architecture hardening A2: the single global `Mutex<Connection>` was a
+/// serialization bottleneck — every read and write queued on one lock. This
+/// is replaced by a small hand-rolled connection pool (a real pool like
+/// r2d2 was the first choice, but crates.io is unreachable in the target
+/// environment; this implementation is ~80 lines and zero-dependency).
+///
+/// WAL mode (apply_pragmas) is what makes pooling safe: concurrent readers
+/// no longer block the writer, and the 5s busy timeout turns write
+/// contention into waiting instead of SQLITE_BUSY. A connection is checked
+/// out for the duration of one store method and returned on drop.
 #[derive(Clone)]
 pub struct CausalStore {
-    pub(crate) conn: Arc<Mutex<Connection>>,
+    pub(crate) conn: Arc<ConnPool>,
+    /// A4: pending access_count bumps from read paths, flushed on the next
+    /// connection checkout (see acquire). Keeps reads read-only.
+    pub(crate) access_buffer: Arc<Mutex<HashSet<i64>>>,
 }
 
 impl CausalStore {
     /// Open an in-memory store (for tests).
     pub fn open_in_memory() -> Result<Self> {
-        let conn = Connection::open_in_memory()?;
+        let pool = ConnPool::new(None)?;
+        let conn = pool.take_conn()?;
         crate::migrate::migrate(&conn)?;
+        pool.release(conn);
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: Arc::new(pool),
+            access_buffer: Arc::new(Mutex::new(HashSet::new())),
         })
     }
 
     /// Open a file-backed store.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let conn = Connection::open(path)?;
+        let pool = ConnPool::new(Some(path.as_ref().to_path_buf()))?;
+        let conn = pool.take_conn()?;
         crate::migrate::migrate(&conn)?;
         Self::seed_id_counter(&conn);
+        pool.release(conn);
         Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
+            conn: Arc::new(pool),
+            access_buffer: Arc::new(Mutex::new(HashSet::new())),
         })
+    }
+
+    /// Check out a pooled connection for the duration of one method.
+    /// This is what every store method uses instead of locking a global
+    /// connection. The guard returns the connection to the pool on drop
+    /// (rolling back any dangling transaction first).
+    pub(crate) fn acquire(&self) -> Result<PooledConn> {
+        let conn = self.conn.take_conn()?;
+        // A4: pending access bumps land on this checkout, before any query
+        // runs — readers stay read-only, counters lag by at most one method.
+        self.flush_access_buffer(&conn);
+        Ok(PooledConn {
+            conn: Some(conn),
+            pool: Arc::clone(&self.conn),
+        })
+    }
+
+    /// Connection pragmas for the file-backed store (architecture hardening A1):
+    /// - journal_mode=WAL: concurrent readers + a single writer no longer
+    ///   block each other (the HTTP multi-connection mode depends on this);
+    /// - busy_timeout=5s: a contended writer waits instead of failing with
+    ///   SQLITE_BUSY the moment another connection holds the write lock;
+    /// - synchronous=NORMAL: WAL-safe durability (a crash can lose at most
+    ///   the last checkpoint, never corrupt), removing a synchronous fsync
+    ///   from every committed write.
+    /// In-memory stores (open_in_memory) skip this: WAL is meaningless for
+    /// :memory: and the defaults are fine for tests.
+    fn apply_pragmas(conn: &Connection) -> Result<()> {
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
+        Ok(())
     }
 
     /// Seed the process-global id counter from the DB.
@@ -196,8 +250,108 @@ impl CausalStore {
     where
         F: FnOnce(&rusqlite::Connection) -> Result<T>,
     {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         f(&conn)
+    }
+}
+
+// ─── Hand-rolled connection pool (A2) ────────────────────────────────
+
+/// A tiny zero-dependency connection pool. Keeps up to `max_idle`
+/// connections open; beyond that, connections are closed on return.
+/// All pooled connections are file-backed (or in-memory) with the same
+/// pragmas applied, so WAL concurrency semantics hold across the pool.
+pub(crate) struct ConnPool {
+    idle: Mutex<Vec<Connection>>,
+    path: Option<PathBuf>,
+    max_idle: usize,
+}
+
+impl ConnPool {
+    /// Create a pool. `Some(path)` = file-backed (pragmas applied);
+    /// `None` = in-memory (test only). The first connection is opened
+    /// here so WAL/pragma setup happens exactly once.
+    fn new(path: Option<PathBuf>) -> Result<Self> {
+        let is_file = path.is_some();
+        let pool = ConnPool {
+            idle: Mutex::new(Vec::new()),
+            path,
+            max_idle: if is_file { 8 } else { 4 },
+        };
+        let first = pool.open_conn()?;
+        pool.idle
+            .lock()
+            .map_err(|e| anyhow!("pool lock: {e}"))?
+            .push(first);
+        Ok(pool)
+    }
+
+    fn open_conn(&self) -> Result<Connection> {
+        let conn = match &self.path {
+            Some(p) => Connection::open(p)?,
+            None => Connection::open_in_memory()?,
+        };
+        if self.path.is_some() {
+            CausalStore::apply_pragmas(&conn)?;
+        }
+        Ok(conn)
+    }
+
+    /// Take a connection from the pool (or open a new one).
+    fn take_conn(&self) -> Result<Connection> {
+        match self
+            .idle
+            .lock()
+            .map_err(|e| anyhow!("pool lock: {e}"))?
+            .pop()
+        {
+            Some(c) => Ok(c),
+            None => self.open_conn(),
+        }
+    }
+
+    /// Return a connection to the pool (or close it when over capacity).
+    fn release(&self, conn: Connection) {
+        // Never return a connection mid-transaction: roll back so the next
+        // user starts from a clean autocommit state.
+        if !conn.is_autocommit() {
+            let _ = conn.execute_batch("ROLLBACK");
+        }
+        let mut idle = match self.idle.lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        if idle.len() < self.max_idle {
+            idle.push(conn);
+        }
+    }
+}
+
+/// RAII guard: a connection checked out of the pool, returned on drop.
+pub(crate) struct PooledConn {
+    conn: Option<Connection>,
+    pool: Arc<ConnPool>,
+}
+
+
+impl Deref for PooledConn {
+    type Target = Connection;
+    fn deref(&self) -> &Connection {
+        self.conn.as_ref().expect("pooled conn present")
+    }
+}
+
+impl DerefMut for PooledConn {
+    fn deref_mut(&mut self) -> &mut Connection {
+        self.conn.as_mut().expect("pooled conn present")
+    }
+}
+
+impl Drop for PooledConn {
+    fn drop(&mut self) {
+        if let Some(c) = self.conn.take() {
+            self.pool.release(c);
+        }
     }
 }
 

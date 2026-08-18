@@ -11,7 +11,7 @@ impl CausalStore {
         task_tag: Option<&str>,
         query: Option<&str>,
     ) -> Result<Vec<crate::store::CausalEntry>> {
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
 
         let mut sql = format!(
             "SELECT {ENTRY_COLUMNS}
@@ -40,7 +40,7 @@ impl CausalStore {
         let entries = rows
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| anyhow!("Query failed: {e}"))?;
-        Self::record_access(&conn, entries.iter().map(|e| e.edge_id))?;
+        self.record_access(entries.iter().map(|e| e.edge_id))?;
         Ok(entries)
     }
 
@@ -58,7 +58,7 @@ impl CausalStore {
             return Ok(entries);
         }
 
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut sql = format!(
             "SELECT {ENTRY_COLUMNS}
              FROM causal_edges ce
@@ -95,7 +95,7 @@ impl CausalStore {
             .filter_map(|(key, _)| key.parse::<i64>().ok())
             .filter_map(|id| by_id.get(&id).cloned())
             .collect();
-        Self::record_access(&conn, entries.iter().map(|e| e.edge_id))?;
+        self.record_access(entries.iter().map(|e| e.edge_id))?;
         Ok(entries)
     }
 

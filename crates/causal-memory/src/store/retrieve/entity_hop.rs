@@ -16,7 +16,7 @@ impl CausalStore {
         if q_entities.is_empty() {
             return Ok(Vec::new());
         }
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
         let mut stmt = conn.prepare(&format!(
             "SELECT {ENTRY_COLUMNS}
              FROM causal_edges ce
@@ -41,7 +41,7 @@ impl CausalStore {
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.edge_id.cmp(&b.1.edge_id)));
         let entries: Vec<crate::store::CausalEntry> =
             scored.into_iter().take(limit).map(|(_, e)| e).collect();
-        Self::record_access(&conn, entries.iter().map(|e| e.edge_id))?;
+        self.record_access(entries.iter().map(|e| e.edge_id))?;
         Ok(entries)
     }
 
@@ -66,7 +66,7 @@ impl CausalStore {
             return Ok(Vec::new());
         }
         let q_tokens = crate::patterns::tokenize(query);
-        let conn = self.conn.lock().map_err(|e| anyhow!("DB lock: {e}"))?;
+        let conn = self.acquire()?;
 
         let overlap = |entry: &crate::store::CausalEntry| -> usize {
             let toks = crate::patterns::tokenize(&format!(
@@ -191,7 +191,7 @@ impl CausalStore {
         scored2.sort_by(|a, b| b.0.cmp(&a.0).then(by_conf(&a.1, &b.1)));
         ranked.extend(scored2.into_iter().map(|(_, e)| e));
         ranked.truncate(limit);
-        Self::record_access(&conn, ranked.iter().map(|e| e.edge_id))?;
+        self.record_access(ranked.iter().map(|e| e.edge_id))?;
         Ok(ranked)
     }
 
