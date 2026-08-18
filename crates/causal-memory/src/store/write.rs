@@ -32,6 +32,7 @@ impl CausalStore {
             discovered_by,
             chrono::Utc::now().timestamp(),
         )
+        .map(|(dec_id, _)| dec_id)
     }
 
     /// Record with an explicit event_time (for extractors that know the real event time).
@@ -46,7 +47,7 @@ impl CausalStore {
         confidence: f64,
         discovered_by: &str,
         event_time: i64,
-    ) -> Result<String> {
+    ) -> Result<(String, i64)> {
         self.record_decision_full(
             decision,
             outcome,
@@ -74,7 +75,7 @@ impl CausalStore {
         discovered_by: &str,
         event_time: i64,
         outcome_polarity: Option<&str>,
-    ) -> Result<String> {
+    ) -> Result<(String, i64)> {
         let conn = self.acquire()?;
         let db_time = chrono::Utc::now().timestamp();
         let seq = ID_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -100,7 +101,9 @@ impl CausalStore {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![&dec_id, &out_id, relation, confidence, discovered_by, event_time, db_time, task_tag, outcome_polarity],
         )?;
-        Ok(dec_id)
+        // C3: return the edge id too — callers no longer need a follow-up
+        // SELECT to resolve it (the server used to re-query by from_id).
+        Ok((dec_id, conn.last_insert_rowid()))
     }
 
     /// Soft-invalidate valid edges on the same decision text whose outcome

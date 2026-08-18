@@ -261,39 +261,26 @@ impl CausalMemoryServer {
             chrono::Utc::now().timestamp(),
             Some(&polarity),
         ) {
-            Ok(id) => {
-                // Phase 6: opportunistically embed the new edge so semantic
-                // search finds it. Silent on any failure — embedding must never
+            Ok((_dec_id, edge_id)) => {
+                // Opportunistically embed the new edge so semantic search
+                // finds it. Silent on any failure — embedding must never
                 // block recording; the `causal-memory embed` CLI backfills
-                // anything missed.
+                // anything missed. C3: record_decision_full now returns the
+                // edge id directly (the old code re-queried it by from_id).
                 let text = format!("{} {}", params.decision, params.outcome);
                 if let Some(Ok(vec)) = block_on(causal_memory::embed::embed_shared(&text)) {
-                    // record_decision returns the decision chunk id; resolve
-                    // the edge id (chunk ids are unique per record).
-                    let edge_id = self.store.with_conn(|conn| {
-                        Ok(conn
-                            .query_row(
-                                "SELECT id FROM causal_edges WHERE from_id = ?1
-                                 ORDER BY id DESC LIMIT 1",
-                                rusqlite::params![&id],
-                                |r| r.get::<_, i64>(0),
-                            )
-                            .optional()?)
-                    });
-                    if let Ok(Some(eid)) = edge_id {
-                        let _ = self.store.put_embedding(eid, "shared", &vec);
-                        // Semantic contradiction scan: the exact-text path
-                        // already ran inside record_decision; this catches
-                        // paraphrased duplicates of the same decision.
-                        // High threshold, silent on any error.
-                        let _ = self.store.invalidate_semantic_contradictions(
-                            &params.decision,
-                            &params.outcome,
-                            Some(&polarity),
-                            &vec,
-                            SEMANTIC_CONTRADICTION_MIN_SIMILARITY,
-                        );
-                    }
+                    let _ = self.store.put_embedding(edge_id, "shared", &vec);
+                    // Semantic contradiction scan: the exact-text path
+                    // already ran inside record_decision; this catches
+                    // paraphrased duplicates of the same decision.
+                    // High threshold, silent on any error.
+                    let _ = self.store.invalidate_semantic_contradictions(
+                        &params.decision,
+                        &params.outcome,
+                        Some(&polarity),
+                        &vec,
+                        SEMANTIC_CONTRADICTION_MIN_SIMILARITY,
+                    );
                 }
                 format!(
                     "✅ Recorded: [{}] {} →({})→ {} (confidence: {:.2}, id: {})",
@@ -302,7 +289,7 @@ impl CausalMemoryServer {
                     params.relation,
                     truncate_chars(&params.outcome, 60),
                     confidence,
-                    id
+                    edge_id
                 )
             }
             Err(e) => format!("❌ Failed to record: {e}"),
@@ -1182,11 +1169,22 @@ impl CausalMemoryServer {
         // The optional task_tag param pins the reference stratum AND filters
         // the displayed chain list to it; the summary always sees all chains.
         // Chain traversal above is untouched — this is aggregation only.
+        // C4: resolve every chain's anchor edge in ONE batch query instead
+        // of a get_edge per chain.
+        let anchor_ids: Vec<i64> = chains
+            .iter()
+            .filter_map(|c| c.first().map(|h| h.edge_id))
+            .collect();
+        let anchors = self.store.get_edges_batch(&anchor_ids).unwrap_or_default();
+        let tag_of: std::collections::HashMap<i64, String> = anchors
+            .into_iter()
+            .filter_map(|e| e.task_tag.map(|t| (e.edge_id, t)))
+            .collect();
         let pooled: Vec<(Option<String>, &'static str)> = chains
             .iter()
             .map(|c| {
                 (
-                    self.chain_stratum(c),
+                    c.first().and_then(|h| tag_of.get(&h.edge_id).cloned()),
                     c.last().map(terminal_bucket).unwrap_or("neutral"),
                 )
             })
@@ -1248,14 +1246,6 @@ impl CausalMemoryServer {
         out
     }
 
-    /// The stratum (task_tag) of a chain's anchor edge — the similar past
-    /// action this chain started from. None when untagged or lookup fails.
-    fn chain_stratum(&self, chain: &[ChainHop]) -> Option<String> {
-        chain
-            .first()
-            .and_then(|h| self.store.get_edge(h.edge_id).ok().flatten())
-            .and_then(|e| e.task_tag)
-    }
 
     /// Semantic seed path for intervention_query: embed the action, find
     /// similar past decisions (cosine >= INTERVENTION_MIN_SIMILARITY), then

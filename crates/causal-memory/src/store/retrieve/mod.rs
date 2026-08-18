@@ -52,6 +52,27 @@ impl CausalStore {
         Ok(entry)
     }
 
+    /// Fetch many edges in one query (C4: replaces per-chain get_edge loops,
+    /// e.g. intervention_query's chain_stratum aggregation).
+    pub fn get_edges_batch(&self, edge_ids: &[i64]) -> Result<Vec<super::CausalEntry>> {
+        if edge_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.acquire()?;
+        let ph = vec!["?"; edge_ids.len()].join(",");
+        let sql = format!(
+            "SELECT {ENTRY_COLUMNS}
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             JOIN chunks ct ON ct.id = ce.to_id
+             WHERE ce.id IN ({ph})"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(edge_ids.iter()), entry_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))
+    }
+
     /// Markov blanket subgraph around seed edges: the seeds themselves plus
     /// every valid edge sharing a `from_id` or `to_id` chunk with a seed
     /// (parents, children, and co-parents). Seeds come first (in input
@@ -64,25 +85,31 @@ impl CausalStore {
         max_edges: usize,
     ) -> Result<Vec<super::CausalEntry>> {
         let conn = self.acquire()?;
+        if seed_edge_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // C5: one IN query for all seeds instead of one query per seed.
+        let seed_ph = vec!["?"; seed_edge_ids.len()].join(",");
         let seed_sql = format!(
             "SELECT {ENTRY_COLUMNS}
              FROM causal_edges ce
              JOIN chunks cf ON cf.id = ce.from_id
              JOIN chunks ct ON ct.id = ce.to_id
-             WHERE ce.id = ?1"
+             WHERE ce.id IN ({seed_ph})"
         );
+        let mut seed_stmt = conn.prepare(&seed_sql)?;
+        let seed_rows = seed_stmt.query_map(
+            rusqlite::params_from_iter(seed_edge_ids.iter()),
+            entry_from_row,
+        )?;
 
         let mut seeds: Vec<super::CausalEntry> = Vec::new();
         let mut chunk_ids: Vec<String> = Vec::new();
-        for &id in seed_edge_ids {
-            if let Some(e) = conn
-                .query_row(&seed_sql, params![id], entry_from_row)
-                .optional()?
-            {
-                chunk_ids.push(e.decision_id.clone());
-                chunk_ids.push(e.outcome_id.clone());
-                seeds.push(e);
-            }
+        for e in seed_rows {
+            let e = e?;
+            chunk_ids.push(e.decision_id.clone());
+            chunk_ids.push(e.outcome_id.clone());
+            seeds.push(e);
         }
         if seeds.is_empty() {
             return Ok(Vec::new());
