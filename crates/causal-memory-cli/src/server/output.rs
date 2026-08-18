@@ -5,13 +5,20 @@ use super::format::truncate_chars;
 use causal_memory::store::{outcome_polarity, ChainHop};
 
 pub(crate) fn judge_outcome_polarity(decision: &str, outcome: &str) -> String {
-    if let Some(config) = causal_memory::llm::LlmConfig::from_env() {
+    // C2: the LLM judge runs synchronously inside record_decision (8s
+    // timeout). CAUSAL_MEMORY_NO_LLM_POLARITY=1 skips it entirely and uses
+    // the signal-word heuristic — write latency stays flat when the LLM is
+    // only wanted for reading. The `polarity` backfill CLI can re-judge
+    // edges later (edges_without_polarity).
+    if std::env::var("CAUSAL_MEMORY_NO_LLM_POLARITY").is_err() {
+        if let Some(config) = causal_memory::llm::LlmConfig::from_env() {
         if let Ok(pol) = block_on(causal_memory::llm::judge_polarity(
             &config, decision, outcome,
         )) {
             return pol;
         }
-        // LLM failed — fall through to the heuristic.
+            // LLM failed — fall through to the heuristic.
+        }
     }
     match outcome_polarity(outcome) {
         Some(true) => "positive",

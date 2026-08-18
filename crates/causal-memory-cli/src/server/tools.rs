@@ -1297,8 +1297,15 @@ impl CausalMemoryServer {
         task_tag: Option<&str>,
         limit: usize,
     ) -> String {
-        let (dist_a, reps_a, tag_a) = self.side_evidence(decision, task_tag, limit);
-        let (dist_b, reps_b, tag_b) = self.side_evidence(alternative, task_tag, limit);
+        // C2: run both sides' embedding + retrieval concurrently (the two
+        // side_evidence calls used to serialize two HTTP round-trips).
+        let (a, b) = block_on(async {
+            let fa = self.side_evidence(decision, task_tag, limit);
+            let fb = self.side_evidence(alternative, task_tag, limit);
+            tokio::join!(fa, fb)
+        });
+        let (dist_a, reps_a, tag_a) = a;
+        let (dist_b, reps_b, tag_b) = b;
         let tag = if tag_a == "semantic" && tag_b == "semantic" {
             "[semantic]"
         } else {
@@ -1336,13 +1343,15 @@ impl CausalMemoryServer {
     /// One side of the counterfactual: retrieve similar past decision edges
     /// (semantic with BM25 fallback, same pattern as search_causal) and
     /// aggregate their outcome distribution + representative outcomes.
-    fn side_evidence(
+    async fn side_evidence(
         &self,
         query: &str,
         task_tag: Option<&str>,
         limit: usize,
     ) -> (CfDist, Vec<String>, &'static str) {
-        let semantic = block_on(causal_memory::embed::embed_shared(query)).and_then(|r| {
+        let semantic = causal_memory::embed::embed_shared(query)
+            .await
+            .and_then(|r| {
             let vec = r.ok()?;
             let hits = self
                 .store
