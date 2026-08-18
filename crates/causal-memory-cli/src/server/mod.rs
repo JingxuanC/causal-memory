@@ -50,6 +50,10 @@ pub struct CausalMemoryServer {
     graph_writes: AtomicUsize,
     /// Unix ts of the last rebuild.
     graph_last_rebuild: AtomicI64,
+    /// D1: co-activated chunk pairs buffered by retrieval, flushed to the
+    /// cooccurrence_edges table when the graph rebuilds. Keeps Hebbian
+    /// learning off the read path (batched, low-frequency writes).
+    cooc_buffer: Mutex<Vec<(String, String)>>,
 }
 
 impl CausalMemoryServer {
@@ -61,6 +65,7 @@ impl CausalMemoryServer {
             graph: Mutex::new(graph),
             graph_writes: AtomicUsize::new(0),
             graph_last_rebuild: AtomicI64::new(chrono::Utc::now().timestamp()),
+            cooc_buffer: Mutex::new(Vec::new()),
         }
     }
 
@@ -88,6 +93,41 @@ impl CausalMemoryServer {
             }
             self.graph_writes.store(0, Ordering::Relaxed);
             self.graph_last_rebuild.store(now, Ordering::Relaxed);
+            // D1: flush buffered co-activation pairs alongside the rebuild.
+            self.flush_cooccurrences();
+        }
+    }
+
+    /// Record every unordered pair of co-activated chunks (D1). Retrieval
+    /// results are typically small (<10 nodes -> <45 pairs), so this is
+    /// cheap; the pairs are flushed to the DB only at graph-rebuild time.
+    fn buffer_cooccurrences(&self, active_ids: &[String]) {
+        if active_ids.len() < 2 {
+            return;
+        }
+        let mut pairs = Vec::with_capacity(active_ids.len() * active_ids.len() / 2);
+        for i in 0..active_ids.len() {
+            for j in (i + 1)..active_ids.len() {
+                pairs.push((active_ids[i].clone(), active_ids[j].clone()));
+            }
+        }
+        if let Ok(mut buf) = self.cooc_buffer.lock() {
+            buf.extend(pairs);
+            // Hard cap so a pathological store never grows unbounded.
+            if buf.len() > 4000 {
+                buf.truncate(4000);
+            }
+        }
+    }
+
+    fn flush_cooccurrences(&self) {
+        let pairs: Vec<(String, String)> = self
+            .cooc_buffer
+            .lock()
+            .map(|mut b| std::mem::take(&mut *b))
+            .unwrap_or_default();
+        if !pairs.is_empty() {
+            let _ = self.store.bump_cooccurrences(&pairs);
         }
     }
 
@@ -111,6 +151,16 @@ impl CausalMemoryServer {
         if results.is_empty() {
             return None;
         }
+
+        // D1: co-activated chunks (above threshold) wire together — buffer
+        // the pairs for the Hebbian co-occurrence table (flushed at graph
+        // rebuild). Only nodes that actually lit up participate.
+        let active_ids: Vec<String> = results
+            .iter()
+            .filter(|r| r.activation.abs() >= graph.threshold())
+            .map(|r| graph.node_id(r.node_idx as usize).to_string())
+            .collect();
+        self.buffer_cooccurrences(&active_ids);
 
         let count = results.len().min(limit);
         let direction = if reverse { "reverse" } else { "forward" };

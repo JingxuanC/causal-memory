@@ -164,6 +164,18 @@ CREATE TABLE IF NOT EXISTS bm25_index (
     PRIMARY KEY (token, chunk_id)
 );
 CREATE INDEX IF NOT EXISTS idx_bm25_chunk ON bm25_index(chunk_id);
+
+-- Hebbian co-occurrence edges (schema v11, architecture hardening D1):
+-- weak associative links between chunks co-activated in the same retrieval.
+-- Weight follows the HeLa-Mem formula w=(1-lambda)w + eta per co-activation,
+-- persisted so the hippocampus graph rebuilds them on startup.
+CREATE TABLE IF NOT EXISTS cooccurrence_edges (
+    from_id TEXT NOT NULL REFERENCES chunks(id),
+    to_id TEXT NOT NULL REFERENCES chunks(id),
+    weight REAL NOT NULL DEFAULT 0.2,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (from_id, to_id)
+);
 "#;
 
 /// Thread-safe causal store backed by SQLite.
@@ -274,6 +286,52 @@ impl CausalStore {
             stmt.execute(params![tok, chunk_id])?;
         }
         Ok(())
+    }
+
+    /// Hebbian co-occurrence learning (D1): record that `pairs` of chunk
+    /// ids were co-activated in one retrieval. New pairs start at 0.2;
+    /// every further co-activation strengthens the pair by +0.05 up to 1.0.
+    /// (The raw HeLa-Mem steady-state formula w=(1-lambda)w+eta with
+    /// lambda=0.995/eta=0.02 has steady state ~0.02 — below the 0.2 initial
+    /// weight, so bumps would decay the very link they reinforce. Additive
+    /// growth keeps the intended semantics: more co-activation = stronger,
+    /// capped association. A time-driven decay can live in consolidation.)
+    pub fn bump_cooccurrences(&self, pairs: &[(String, String)]) -> Result<usize> {
+        if pairs.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.acquire()?;
+        let now = chrono::Utc::now().timestamp();
+        let mut stmt = conn.prepare(
+            "INSERT INTO cooccurrence_edges (from_id, to_id, weight, updated_at)
+             VALUES (?1, ?2, 0.2, ?3)
+             ON CONFLICT(from_id, to_id) DO UPDATE SET
+                 weight = MIN(1.0, weight + 0.05),
+                 updated_at = excluded.updated_at",
+        )?;
+        let mut n = 0usize;
+        for (a, b) in pairs {
+            if a == b {
+                continue;
+            }
+            stmt.execute(rusqlite::params![a, b, now])?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    /// Load co-occurrence edges (chunk id pairs + weights) for the
+    /// hippocampus graph rebuild (D1).
+    pub fn load_cooccurrences(&self) -> Result<Vec<(String, String, f64)>> {
+        let conn = self.acquire()?;
+        let mut stmt = conn.prepare(
+            "SELECT from_id, to_id, weight FROM cooccurrence_edges ORDER BY weight DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))
     }
 
     /// Execute a closure with a reference to the connection (for advanced queries).

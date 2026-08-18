@@ -31,7 +31,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 10;
+pub const SCHEMA_VERSION: u32 = 11;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -73,6 +73,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 10 {
         migrate_to_v10(&tx)?;
+    }
+    if version < 11 {
+        migrate_to_v11(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -916,5 +919,21 @@ fn migrate_to_v10(conn: &Connection) -> Result<()> {
         }
     }
     tracing::debug!(count, "v10 migration: bm25 index backfilled");
+    Ok(())
+}
+/// v10 → v11: Hebbian co-occurrence edges (architecture hardening D1).
+/// Weak associative links between chunks co-activated in retrieval; the
+/// hippocampus graph loads them as CoOccurrence edges and reinforces them
+/// via hebbian_update. Plain CREATE IF NOT EXISTS — nothing to backfill.
+fn migrate_to_v11(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS cooccurrence_edges (
+            from_id TEXT NOT NULL REFERENCES chunks(id),
+            to_id TEXT NOT NULL REFERENCES chunks(id),
+            weight REAL NOT NULL DEFAULT 0.2,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (from_id, to_id)
+         );"
+    )?;
     Ok(())
 }

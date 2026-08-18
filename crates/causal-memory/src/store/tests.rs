@@ -2107,6 +2107,54 @@ use rusqlite::params;
         assert_eq!(n, 5 + 4 * 25, "writers must all commit, got {n}");
     }
 
+    // ── D1: Hebbian co-occurrence edges ────────────────────────────────
+    // bump_cooccurrences creates pairs at 0.2 and reinforces them;
+    // load_cooccurrences returns them; reopening the store and rebuilding
+    // the graph loads them as CoOccurrence edges (learned associations
+    // survive restarts).
+
+    #[test]
+    fn test_cooccurrence_learning_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("cooc.db");
+        let store = CausalStore::open(&db).unwrap();
+        store
+            .record_decision("used Redis cache", "fast reads", "caused", Some("t"), 0.8, "rule")
+            .unwrap();
+        store
+            .record_decision("added TTL", "no stale data", "caused", Some("t"), 0.8, "rule")
+            .unwrap();
+
+        // First co-activation creates the pair at 0.2.
+        let d1: String = store
+            .with_conn(|c| Ok(c.query_row("SELECT id FROM chunks WHERE text = ?1", rusqlite::params!["used Redis cache"], |r| r.get(0))?))
+            .unwrap();
+        let d2: String = store
+            .with_conn(|c| Ok(c.query_row("SELECT id FROM chunks WHERE text = ?1", rusqlite::params!["added TTL"], |r| r.get(0))?))
+            .unwrap();
+        store.bump_cooccurrences(&[(d1.clone(), d2.clone())]).unwrap();
+        store.bump_cooccurrences(&[(d1.clone(), d2.clone())]).unwrap();
+
+        let loaded = store.load_cooccurrences().unwrap();
+        assert_eq!(loaded.len(), 1, "one pair created");
+        let (a, b, w) = &loaded[0];
+        assert!(a == &d1 || a == &d2, "pair endpoint matches");
+        assert!(*w > 0.2, "second bump reinforced the weight, got {w}");
+
+        // Reopen (simulates restart) and rebuild the graph: the pair must
+        // load as a CoOccurrence edge.
+        drop(store);
+        let store2 = CausalStore::open(&db).unwrap();
+        let graph = crate::hippocampus::CausalGraph::from_store(&store2).unwrap();
+        let mut found_cooc = false;
+        for e in 0..graph.num_edges() {
+            if graph.edge_relation_at(e) == crate::hippocampus::Relation::CoOccurrence {
+                found_cooc = true;
+            }
+        }
+        assert!(found_cooc, "reopened store loads the learned co-occurrence edge");
+    }
+
 // ── trace_cause_cross_session ──────────────────────────────────────────
 
 fn link_tagged(

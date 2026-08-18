@@ -102,6 +102,7 @@ pub struct CausalGraph {
 
     // Node attributes (SoA — Structure of Arrays)
     node_text: Vec<String>,
+    node_ids: Vec<String>,
     node_q_value: Vec<f32>,
     node_replay_count: Vec<u16>,
     node_last_activated: Vec<i64>,
@@ -135,6 +136,7 @@ impl CausalGraph {
             values_rev: Vec::new(),
             rev_to_fwd_idx: Vec::new(),
             node_text: Vec::new(),
+            node_ids: Vec::new(),
             node_q_value: Vec::new(),
             node_replay_count: Vec::new(),
             node_last_activated: Vec::new(),
@@ -163,6 +165,7 @@ impl CausalGraph {
 
         // SoA node attributes
         graph.node_text = nodes.iter().map(|n| n.text.clone()).collect();
+        graph.node_ids = nodes.iter().map(|n| n.id.clone()).collect();
         graph.node_q_value = nodes.iter().map(|n| n.q_value).collect();
         graph.node_replay_count = nodes.iter().map(|n| n.replay_count).collect();
         graph.node_last_activated = nodes.iter().map(|n| n.last_activated).collect();
@@ -951,6 +954,12 @@ impl CausalGraph {
         }
     }
 
+    /// Activation floor — nodes with |activation| below this are filtered
+    /// from results (D1 uses it to decide which nodes count as co-active).
+    pub fn threshold(&self) -> f32 {
+        self.threshold
+    }
+
     pub fn num_nodes(&self) -> usize {
         self.num_nodes
     }
@@ -965,6 +974,12 @@ impl CausalGraph {
 
     pub fn node_text(&self, idx: usize) -> &str {
         &self.node_text[idx]
+    }
+
+    /// The chunk id backing a node (D1: co-occurrence edges are keyed by
+    /// chunk id, so retrieval results need the id, not just the text).
+    pub fn node_id(&self, idx: usize) -> &str {
+        &self.node_ids[idx]
     }
 
     pub fn node_q_value(&self, idx: usize) -> f32 {
@@ -1212,6 +1227,38 @@ impl CausalGraph {
                             to_id: m_to,
                             relation: Relation::Meta,
                             weight: m_conf as f32,
+                            valid: true,
+                        });
+                    }
+                }
+            }
+
+            // D1: Hebbian co-occurrence edges — weak associative links
+            // between chunks co-activated in retrieval, loaded from the
+            // persistent table so learned associations survive restarts.
+            let has_cooc = conn
+                .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='cooccurrence_edges'")?
+                .query_row([], |r| r.get::<_, i64>(0))?
+                > 0;
+            if has_cooc {
+                let mut cooc_stmt = conn.prepare(
+                    "SELECT from_id, to_id, weight FROM cooccurrence_edges",
+                )?;
+                let cooc_rows = cooc_stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, f64>(2)?,
+                    ))
+                })?;
+                for row in cooc_rows {
+                    let (c_from, c_to, c_w) = row?;
+                    if id_to_idx.contains_key(&c_from) && id_to_idx.contains_key(&c_to) {
+                        edges.push(EdgeData {
+                            from_id: c_from,
+                            to_id: c_to,
+                            relation: Relation::CoOccurrence,
+                            weight: c_w as f32,
                             valid: true,
                         });
                     }
