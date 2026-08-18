@@ -70,13 +70,16 @@ Not all causal links are equally certain. Per [insights/11 §3 step three](https
 
 Search returns results ordered by confidence — high-confidence lessons surface first.
 
-### Why 13 tools (and no more)
+### Why 14 tools (and no more)
 
 The MCP surface is intentionally minimal — every tool must earn its place by
 covering a distinct moment in the agent's decision loop:
 
 - `record_decision` — write path (after action); also runs the contradiction
   short-circuit that auto-invalidates falsified older edges
+- `remember` — zero-friction write path: paste conversation text, the system's
+  LLM auto-extracts facts/lessons/causal edges (mem0-style)
+- `record_fact` — fact write path: stable "what is" information
 - `search_causal` — read path (before action)
 - `record_fact` — fact write path: stable "what is" information
   (preferences / tech stack / config), idempotent on (key, value, scope)
@@ -98,7 +101,7 @@ covering a distinct moment in the agent's decision loop:
 - `reconstruct_lesson` — distillation path: turn a past episode into a
   *transferable* narrative lesson instead of raw records
 
-More tools would mean more decisions for the agent: "which tool do I call?" That cognitive overhead reduces usage. Per [insights/14 §2.2](https://github.com/JingxuanC/agent-teardown/blob/main/insights/14-on-deep-digging.md): "complete-looking is the enemy of depth" — and in tool design, "feature-rich is the enemy of used." Each of the thirteen maps to one unambiguous call moment; anything further would overlap.
+More tools would mean more decisions for the agent: "which tool do I call?" That cognitive overhead reduces usage. Per [insights/14 §2.2](https://github.com/JingxuanC/agent-teardown/blob/main/insights/14-on-deep-digging.md): "complete-looking is the enemy of depth" — and in tool design, "feature-rich is the enemy of used." Each of the fourteen maps to one unambiguous call moment; anything further would overlap.
 
 ### Why MCP
 
@@ -121,7 +124,7 @@ This is the same pattern Mem0's OpenMemory uses — memory-as-MCP-tool. We diffe
 ### Schema migrations
 
 The store version-marks the DB with `PRAGMA user_version` and migrates
-idempotently in a single transaction (`src/migrate.rs`, current: v4). A
+idempotently in a single transaction (`src/migrate.rs`, current: v9). A
 `table_info` probe handles pre-marker v0.6 DBs; legacy columns (e.g.
 `created_at`) are backfilled into the temporal columns and dropped. Opening
 any older DB upgrades it automatically; `causal-memory migrate` runs an

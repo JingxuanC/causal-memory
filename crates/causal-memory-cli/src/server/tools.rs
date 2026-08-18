@@ -1,4 +1,4 @@
-//! The 13 MCP tools. `#[tool_router]` must stay on a single impl block,
+//! The 14 MCP tools. `#[tool_router]` must stay on a single impl block,
 //! so all tool methods live here; helpers live in `super` modules.
 
 use rmcp::{handler::server::wrapper::Parameters, schemars, tool, tool_handler, tool_router, ServerHandler};

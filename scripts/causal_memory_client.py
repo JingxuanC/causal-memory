@@ -23,7 +23,7 @@ from typing import Optional, List, Dict, Any
 
 
 class CausalMemoryClient:
-    """Client for the causal-memory MCP server (13 tools)."""
+    """Client for the causal-memory MCP server (14 tools)."""
 
     def __init__(self, transport: str = "http", url: str = "", binary_path: str = "", db_path: str = ""):
         self._transport = transport
@@ -91,7 +91,7 @@ class CausalMemoryClient:
             return content[0].get("text", "")
         return ""
 
-    # ─── 13 MCP tools ─────────────────────────────────────────────
+    # ─── 14 MCP tools ─────────────────────────────────────────────
 
     def record_decision(self, decision: str, outcome: str, relation: str = "caused",
                         task_tag: str = "general", confidence: float = 0.6,

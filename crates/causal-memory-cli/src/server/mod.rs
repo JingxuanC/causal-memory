@@ -1,4 +1,4 @@
-//! MCP server handler — exposes 13 tools for unified agent memory.
+//! MCP server handler — exposes 14 tools for unified agent memory.
 //!
 //! Tools:
 //! - record_decision: agent calls after completing an action, to log

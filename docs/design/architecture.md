@@ -8,7 +8,7 @@
 ## The map
 
 ```
-        WRITE (three channels)                    STORE (SQLite, schema v7)
+        WRITE (three channels)                    STORE (SQLite, schema v9)
 ┌───────────────────────────────┐
 │ raw ingest                    │── one chunk per turn ──────────▶ ┌──────────────┐
 │   (every turn, verbatim)      │── adjacent-turn "caused" edges ─▶│ chunks       │
@@ -23,7 +23,7 @@
 │                               │     record_distilled             │ causal_edges │   │ (old value retired,
 │                               │     (decision → outcome edges)   │ (causal)     │   │  new value written;
 ├───────────────────────────────┤                                  └──────────────┘   │  retrieval never sees
-│ MCP direct writes (13 tools)  │── record_decision / record_fact ──────────────────────┘  stale values)
+│ MCP direct writes (14 tools)  │── record_decision / record_fact ──────────────────────┘  stale values)
 │   (agent-authored at runtime) │    replace_same_key = atomic swap
 └───────────────────────────────┘
    heavy sessions also dual-write raw turns (quantitative detail survives distillation);
