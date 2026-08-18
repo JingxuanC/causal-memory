@@ -32,11 +32,24 @@
 
 use causal_memory::hippocampus::CausalGraph;
 use causal_memory::store::CausalStore;
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Mutex;
+
+/// C7: rebuild the hippocampus graph only after enough writes accumulated
+/// (or enough time passed) — a full from_store per write is O(store) and
+/// dominates the write path as the store grows. The graph is a retrieval
+/// accelerator: briefly serving the previous version while writes batch is
+/// fine (keyword/semantic paths below still see the fresh store).
+const GRAPH_REBUILD_WRITES: usize = 5;
+const GRAPH_REBUILD_SECS: i64 = 30;
 
 pub struct CausalMemoryServer {
     store: CausalStore,
     graph: Mutex<Option<CausalGraph>>,
+    /// Pending writes since the last rebuild (monotonic counter).
+    graph_writes: AtomicUsize,
+    /// Unix ts of the last rebuild.
+    graph_last_rebuild: AtomicI64,
 }
 
 impl CausalMemoryServer {
@@ -46,15 +59,35 @@ impl CausalMemoryServer {
         Self {
             store,
             graph: Mutex::new(graph),
+            graph_writes: AtomicUsize::new(0),
+            graph_last_rebuild: AtomicI64::new(chrono::Utc::now().timestamp()),
         }
     }
 
-    /// Reload the hippocampus graph from the store (after new data is written).
-    fn reload_graph(&self) {
-        if let Ok(g) = CausalGraph::from_store(&self.store) {
-            if let Ok(mut guard) = self.graph.lock() {
-                *guard = Some(g);
+    /// Mark the in-memory graph as stale after a write. Cheap; the actual
+    /// rebuild happens lazily in maybe_rebuild_graph on the next
+    /// hippocampus query.
+    fn mark_graph_dirty(&self) {
+        self.graph_writes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Rebuild the graph when enough writes have accumulated or enough time
+    /// passed. Called at the top of every hippocampus search.
+    fn maybe_rebuild_graph(&self) {
+        let writes = self.graph_writes.load(Ordering::Relaxed);
+        if writes == 0 {
+            return;
+        }
+        let now = chrono::Utc::now().timestamp();
+        let last = self.graph_last_rebuild.load(Ordering::Relaxed);
+        if writes >= GRAPH_REBUILD_WRITES || now - last >= GRAPH_REBUILD_SECS {
+            if let Ok(g) = CausalGraph::from_store(&self.store) {
+                if let Ok(mut guard) = self.graph.lock() {
+                    *guard = Some(g);
+                }
             }
+            self.graph_writes.store(0, Ordering::Relaxed);
+            self.graph_last_rebuild.store(now, Ordering::Relaxed);
         }
     }
 
@@ -67,6 +100,7 @@ impl CausalMemoryServer {
         reverse: bool,
         limit: usize,
     ) -> Option<String> {
+        self.maybe_rebuild_graph();
         let mut guard = self.graph.lock().ok()?;
         let graph = guard.as_mut()?;
         if graph.num_nodes() == 0 {

@@ -296,7 +296,7 @@ impl CausalMemoryServer {
         };
         // After recording, rebuild the hippocampus graph so the new edge is
         // immediately available for spreading activation queries.
-        self.reload_graph();
+        self.mark_graph_dirty();
         result
     }
 
@@ -441,7 +441,7 @@ impl CausalMemoryServer {
         }
 
         // Reload graph
-        self.reload_graph();
+        self.mark_graph_dirty();
 
         format!(
             "✅ Extracted {} memories: {} facts, {} causal edges, {} episodes\n{}",
