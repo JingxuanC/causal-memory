@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use super::format::{format_entry_layered, rrf_fuse_many, truncate_chars, TokenBudget};
 use super::output::*;
 use super::{block_on, CausalMemoryServer, INTERVENTION_MIN_SIMILARITY, SEMANTIC_CONTRADICTION_MIN_SIMILARITY};
-use causal_memory::embed::{EmbedConfig, Embedder};
+use causal_memory::embed;
 use causal_memory::store::{AgentFact, CausalEntry, ChainHop};
 use rusqlite::OptionalExtension;
 
@@ -266,35 +266,33 @@ impl CausalMemoryServer {
                 // search finds it. Silent on any failure — embedding must never
                 // block recording; the `causal-memory embed` CLI backfills
                 // anything missed.
-                if let Some(mut embedder) = causal_memory::embed::init_embedder() {
-                    let text = format!("{} {}", params.decision, params.outcome);
-                    if let Ok(vec) = block_on(causal_memory::embed::embed_cached(&mut embedder, &text)) {
-                        // record_decision returns the decision chunk id; resolve
-                        // the edge id (chunk ids are unique per record).
-                        let edge_id = self.store.with_conn(|conn| {
-                            Ok(conn
-                                .query_row(
-                                    "SELECT id FROM causal_edges WHERE from_id = ?1
-                                     ORDER BY id DESC LIMIT 1",
-                                    rusqlite::params![&id],
-                                    |r| r.get::<_, i64>(0),
-                                )
-                                .optional()?)
-                        });
-                        if let Ok(Some(eid)) = edge_id {
-                            let _ = self.store.put_embedding(eid, embedder.model(), &vec);
-                            // Semantic contradiction scan: the exact-text path
-                            // already ran inside record_decision; this catches
-                            // paraphrased duplicates of the same decision.
-                            // High threshold, silent on any error.
-                            let _ = self.store.invalidate_semantic_contradictions(
-                                &params.decision,
-                                &params.outcome,
-                                Some(&polarity),
-                                &vec,
-                                SEMANTIC_CONTRADICTION_MIN_SIMILARITY,
-                            );
-                        }
+                let text = format!("{} {}", params.decision, params.outcome);
+                if let Some(Ok(vec)) = block_on(causal_memory::embed::embed_shared(&text)) {
+                    // record_decision returns the decision chunk id; resolve
+                    // the edge id (chunk ids are unique per record).
+                    let edge_id = self.store.with_conn(|conn| {
+                        Ok(conn
+                            .query_row(
+                                "SELECT id FROM causal_edges WHERE from_id = ?1
+                                 ORDER BY id DESC LIMIT 1",
+                                rusqlite::params![&id],
+                                |r| r.get::<_, i64>(0),
+                            )
+                            .optional()?)
+                    });
+                    if let Ok(Some(eid)) = edge_id {
+                        let _ = self.store.put_embedding(eid, "shared", &vec);
+                        // Semantic contradiction scan: the exact-text path
+                        // already ran inside record_decision; this catches
+                        // paraphrased duplicates of the same decision.
+                        // High threshold, silent on any error.
+                        let _ = self.store.invalidate_semantic_contradictions(
+                            &params.decision,
+                            &params.outcome,
+                            Some(&polarity),
+                            &vec,
+                            SEMANTIC_CONTRADICTION_MIN_SIMILARITY,
+                        );
                     }
                 }
                 format!(
@@ -493,17 +491,16 @@ impl CausalMemoryServer {
             // ── Semantic path: embed + cosine ──
             // Requires a configured embedding endpoint; any failure falls back to
             // the BM25 path below.
-            if let Some(mut embedder) = causal_memory::embed::init_embedder() {
-                let semantic = block_on(causal_memory::embed::embed_cached(&mut embedder, query)).ok().and_then(|vec| {
-                    self.store
-                        .search_causal_semantic_entity_boosted(
-                            &vec,
-                            query,
-                            params.task_tag.as_deref(),
-                            limit,
-                        )
-                        .ok()
-                });
+            if let Some(Ok(vec)) = block_on(causal_memory::embed::embed_shared(query)) {
+                let semantic = self
+                    .store
+                    .search_causal_semantic_entity_boosted(
+                        &vec,
+                        query,
+                        params.task_tag.as_deref(),
+                        limit,
+                    )
+                    .ok();
                 if let Some(results) = semantic {
                     if results.is_empty() {
                         return "[semantic] 📭 No past causal episodes found matching your query."
@@ -637,13 +634,9 @@ impl CausalMemoryServer {
 
         // Opportunistic embedding (silent on any failure — must never block
         // recording; a CLI backfill path can catch up later).
-        if let Some(mut embedder) = causal_memory::embed::init_embedder() {
-            let text = format!("{} {}", params.key.replace('_', " "), params.value);
-            if let Ok(vec) = block_on(causal_memory::embed::embed_cached(&mut embedder, &text)) {
-                let _ = self
-                    .store
-                    .put_fact_embedding(fact_id, embedder.model(), &vec);
-            }
+        let text = format!("{} {}", params.key.replace('_', " "), params.value);
+        if let Some(Ok(vec)) = block_on(causal_memory::embed::embed_shared(&text)) {
+            let _ = self.store.put_fact_embedding(fact_id, "shared", &vec);
         }
 
         let mut out = format!(
@@ -677,10 +670,8 @@ impl CausalMemoryServer {
 
         if let Some(query) = params.query.as_deref().filter(|q| !q.trim().is_empty()) {
             // Semantic path: embed + cosine (requires a configured endpoint).
-            if let Some(mut embedder) = causal_memory::embed::init_embedder() {
-                let semantic = block_on(causal_memory::embed::embed_cached(&mut embedder, query))
-                    .ok()
-                    .and_then(|vec| self.store.search_facts_semantic(&vec, scope, limit).ok());
+            if let Some(Ok(vec)) = block_on(causal_memory::embed::embed_shared(query)) {
+                let semantic = self.store.search_facts_semantic(&vec, scope, limit).ok();
                 // Only short-circuit on actual hits — an empty semantic
                 // result (e.g. facts written without embeddings) falls
                 // through to BM25 instead of falsely reporting "no facts".
@@ -766,8 +757,8 @@ impl CausalMemoryServer {
         // serves both layers. Per-layer fallthrough: an empty/failed
         // semantic result (e.g. records stored without embeddings) degrades
         // that layer to BM25 instead of silently missing hits.
-        let query_vec = causal_memory::embed::init_embedder()
-            .and_then(|mut e| block_on(causal_memory::embed::embed_cached(&mut e, &params.query)).ok());
+        let query_vec = block_on(causal_memory::embed::embed_shared(&params.query))
+            .and_then(|r| r.ok());
 
         let mut used_semantic = false;
         let facts: Vec<AgentFact> = match &query_vec {
@@ -1278,8 +1269,9 @@ impl CausalMemoryServer {
         min_confidence: f64,
         limit: usize,
     ) -> Option<Vec<Vec<ChainHop>>> {
-        let mut embedder = EmbedConfig::from_env().map(Embedder::new)?;
-        let vec = block_on(causal_memory::embed::embed_cached(&mut embedder, action)).ok()?;
+        let Some(Ok(vec)) = block_on(causal_memory::embed::embed_shared(action)) else {
+            return None;
+        };
         let seeds = self
             .store
             .similar_decision_edges(&vec, limit, INTERVENTION_MIN_SIMILARITY)
@@ -1298,13 +1290,11 @@ impl CausalMemoryServer {
         description = "Contrastive (empirical) counterfactual: compare the recorded outcomes of a decision vs an alternative in similar past situations. Call when choosing between two concrete options BEFORE acting. Reports recorded evidence only — this is NOT a Pearl Rung-3 SCM counterfactual."
     )]
     fn counterfactual_query(&self, Parameters(params): Parameters<CounterfactualParams>) -> String {
-        let mut embedder = EmbedConfig::from_env().map(Embedder::new);
         self.counterfactual_inner(
             &params.decision,
             &params.alternative,
             params.task_tag.as_deref(),
             params.limit.unwrap_or(5),
-            embedder.as_mut(),
         )
     }
 
@@ -1316,10 +1306,9 @@ impl CausalMemoryServer {
         alternative: &str,
         task_tag: Option<&str>,
         limit: usize,
-        mut embedder: Option<&mut Embedder>,
     ) -> String {
-        let (dist_a, reps_a, tag_a) = self.side_evidence(decision, task_tag, limit, embedder.as_deref_mut());
-        let (dist_b, reps_b, tag_b) = self.side_evidence(alternative, task_tag, limit, embedder.as_deref_mut());
+        let (dist_a, reps_a, tag_a) = self.side_evidence(decision, task_tag, limit);
+        let (dist_b, reps_b, tag_b) = self.side_evidence(alternative, task_tag, limit);
         let tag = if tag_a == "semantic" && tag_b == "semantic" {
             "[semantic]"
         } else {
@@ -1362,10 +1351,9 @@ impl CausalMemoryServer {
         query: &str,
         task_tag: Option<&str>,
         limit: usize,
-        embedder: Option<&mut Embedder>,
     ) -> (CfDist, Vec<String>, &'static str) {
-        let semantic = embedder.and_then(|mut emb| {
-            let vec = block_on(causal_memory::embed::embed_cached(emb, query)).ok()?;
+        let semantic = block_on(causal_memory::embed::embed_shared(query)).and_then(|r| {
+            let vec = r.ok()?;
             let hits = self
                 .store
                 .similar_decision_edges(&vec, limit * 2, INTERVENTION_MIN_SIMILARITY)
@@ -1419,13 +1407,11 @@ impl CausalMemoryServer {
         &self,
         Parameters(params): Parameters<ReconstructLessonParams>,
     ) -> String {
-        let mut embedder = EmbedConfig::from_env().map(Embedder::new);
         let llm = causal_memory::llm::LlmConfig::from_env();
         self.reconstruct_lesson_inner(
             &params.query,
             params.max_edges.unwrap_or(20),
             params.calibrate.unwrap_or(0),
-            embedder.as_mut(),
             llm.as_ref(),
         )
     }
@@ -1437,23 +1423,20 @@ impl CausalMemoryServer {
         query: &str,
         max_edges: usize,
         calibrate: usize,
-        embedder: Option<&mut Embedder>,
         llm: Option<&causal_memory::llm::LlmConfig>,
     ) -> String {
         // 1. Subgraph layer (always local): seed via semantic/BM25, then the
         //    Markov blanket around the seeds, serialized as compact stubs.
         let mut tag = "[bm25]";
         let mut seeds: Vec<causal_memory::store::CausalEntry> = Vec::new();
-        if let Some(mut emb) = embedder {
-            if let Ok(vec) = block_on(causal_memory::embed::embed_cached(emb, query)) {
-                if let Ok(hits) =
-                    self.store
-                        .similar_decision_edges(&vec, 3, INTERVENTION_MIN_SIMILARITY)
-                {
-                    if !hits.is_empty() {
-                        tag = "[semantic]";
-                        seeds = hits.into_iter().map(|(e, _)| e).collect();
-                    }
+        if let Some(Ok(vec)) = block_on(causal_memory::embed::embed_shared(query)) {
+            if let Ok(hits) =
+                self.store
+                    .similar_decision_edges(&vec, 3, INTERVENTION_MIN_SIMILARITY)
+            {
+                if !hits.is_empty() {
+                    tag = "[semantic]";
+                    seeds = hits.into_iter().map(|(e, _)| e).collect();
                 }
             }
         }

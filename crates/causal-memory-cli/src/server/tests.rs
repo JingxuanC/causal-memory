@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn test_counterfactual_inner_bm25_path() {
         let server = counterfactual_server();
-        let out = server.counterfactual_inner("redis mutex", "channel", None, 5, None);
+        let out = server.counterfactual_inner("redis mutex", "channel", None, 5);
         assert!(out.starts_with(
             "⚠️ contrastive/empirical counterfactual over recorded alternatives — not a Pearl Rung-3 SCM counterfactual"
         ));
@@ -335,14 +335,14 @@ mod tests {
         assert!(out.contains("recorded evidence favors B"), "{out}");
 
         // One side without recorded episodes → insufficient.
-        let out = server.counterfactual_inner("redis mutex", "nonexistent option", None, 5, None);
+        let out = server.counterfactual_inner("redis mutex", "nonexistent option", None, 5);
         assert!(
             out.contains("insufficient evidence: no recorded episodes matching option B"),
             "{out}"
         );
 
         // task_tag filter excludes everything → both sides empty.
-        let out = server.counterfactual_inner("redis mutex", "channel", Some("other-tag"), 5, None);
+        let out = server.counterfactual_inner("redis mutex", "channel", Some("other-tag"), 5);
         assert!(
             out.contains("no recorded episodes for either option"),
             "{out}"
@@ -416,7 +416,7 @@ mod tests {
     #[test]
     fn test_reconstruct_lesson_degraded_without_llm() {
         let server = counterfactual_server();
-        let out = server.reconstruct_lesson_inner("redis mutex", 20, 0, None, None);
+        let out = server.reconstruct_lesson_inner("redis mutex", 20, 0, None);
         assert!(
             out.contains("[bm25] Causal subgraph for \"redis mutex\""),
             "{out}"
@@ -433,7 +433,7 @@ mod tests {
         );
 
         // No matching history at all.
-        let out = server.reconstruct_lesson_inner("totally unknown topic", 20, 0, None, None);
+        let out = server.reconstruct_lesson_inner("totally unknown topic", 20, 0, None);
         assert!(out.contains("📭 No recorded causal context"), "{out}");
     }
 

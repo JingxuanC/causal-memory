@@ -266,6 +266,36 @@ pub fn init_embedder() -> Option<UnifiedEmbedder> {
     None
 }
 
+/// Process-global shared embedder (C1): one reqwest Client (or one ONNX
+/// model) for the whole process instead of a fresh client per tool call.
+/// Lazily initialized on first use; returns None when no embedder is
+/// configured (callers fall back to BM25 as before). Callers lock the
+/// returned Mutex briefly around each embed — the endpoint call dominates
+/// the cost, the lock is held only for the HTTP round-trip.
+pub fn shared_embedder() -> Option<&'static std::sync::Mutex<Option<UnifiedEmbedder>>> {
+    use std::sync::OnceLock;
+    static SLOT: OnceLock<std::sync::Mutex<Option<UnifiedEmbedder>>> = OnceLock::new();
+    let slot = SLOT.get_or_init(|| std::sync::Mutex::new(init_embedder()));
+    // A poisoned/locked mutex must never block a memory operation.
+    match slot.lock() {
+        Ok(g) if g.is_some() => Some(slot),
+        _ => None,
+    }
+}
+
+/// Run one embed through the shared embedder and the LRU cache. This is
+/// the single entry point tool handlers should use: it takes the shared
+/// mutex for the duration of one call, so callers never manage the
+/// embedder type. Returns `Some(Ok(vec))` on success, `Some(Err)` when the
+/// endpoint failed, `None` when no embedder is configured (callers fall
+/// back to BM25).
+pub async fn embed_shared(text: &str) -> Option<Result<Vec<f32>>> {
+    let slot = shared_embedder()?;
+    let mut guard = slot.lock().ok()?;
+    let embedder = guard.as_mut()?;
+    Some(embed_cached(embedder, text).await)
+}
+
 // ─── Embedding result cache (B4) ───────────────────────────────────────
 
 /// Simple process-global LRU of query -> embedding. The same query text
