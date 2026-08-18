@@ -867,7 +867,6 @@ fn migrate_to_v9(conn: &Connection) -> Result<()> {
 /// so retrieval semantics are identical to the old in-memory scoring —
 /// the table only narrows the candidate set.
 fn migrate_to_v10(conn: &Connection) -> Result<()> {
-    eprintln!("[DEBUG] migrate_to_v10 called");
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS bm25_index (
             token TEXT NOT NULL,

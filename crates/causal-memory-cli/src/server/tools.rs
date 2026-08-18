@@ -8,9 +8,7 @@ use std::collections::HashMap;
 use super::format::{format_entry_layered, rrf_fuse_many, truncate_chars, TokenBudget};
 use super::output::*;
 use super::{block_on, CausalMemoryServer, INTERVENTION_MIN_SIMILARITY, SEMANTIC_CONTRADICTION_MIN_SIMILARITY};
-use causal_memory::embed;
 use causal_memory::store::{AgentFact, CausalEntry, ChainHop};
-use rusqlite::OptionalExtension;
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
 #[schemars(description = "Parameters for recording a decision and its outcome")]

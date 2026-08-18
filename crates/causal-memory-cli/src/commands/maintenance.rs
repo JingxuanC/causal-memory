@@ -213,13 +213,45 @@ pub(crate) fn run_sleep(args: &[String]) -> anyhow::Result<()> {
     use causal_memory::consolidate::{consolidate, ConsolidateConfig};
 
     let auto = args.iter().any(|a| a == "--auto");
-    // --auto is sleep-specific: strip it before the shared flag parser.
-    let filtered: Vec<String> = args.iter().filter(|a| *a != "--auto").cloned().collect();
-    let flags = parse_db_flags(&filtered, "Usage: causal-memory sleep [--db <PATH>] [--dry-run] [--auto]")?;
+    let immutable = args.iter().any(|a| a == "--immutable");
+
+    // D2 (SWR 2.0 / Dreams-aligned): --restore swaps the live DB for a
+    // consolidated snapshot (backing up the current DB first). Handled
+    // before the shared flag parser — it takes its own positional path.
+    if let Some(pos) = args.iter().position(|a| a == "--restore") {
+        let Some(src) = args.get(pos + 1) else {
+            anyhow::bail!("--restore requires a path\nUsage: causal-memory sleep --restore <consolidated.db> [--db <PATH>]");
+        };
+        let mut target = get_db_path();
+        let mut i = pos + 2;
+        while i < args.len() {
+            if args[i] == "--db" {
+                if let Some(p) = args.get(i + 1) {
+                    target = std::path::PathBuf::from(p);
+                    i += 2;
+                    continue;
+                }
+            }
+            anyhow::bail!("unexpected arg: {}\nUsage: causal-memory sleep --restore <consolidated.db> [--db <PATH>]", args[i]);
+        }
+        return restore_from_consolidated(std::path::Path::new(src), &target);
+    }
+
+    // --auto / --immutable are sleep-specific: strip them before the shared
+    // flag parser.
+    let filtered: Vec<String> = args
+        .iter()
+        .filter(|a| *a != "--auto" && *a != "--immutable")
+        .cloned()
+        .collect();
+    let flags = parse_db_flags(
+        &filtered,
+        "Usage: causal-memory sleep [--db <PATH>] [--dry-run] [--auto] [--immutable] | sleep --restore <consolidated.db>",
+    )?;
     if let Some(parent) = flags.db.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let store = CausalStore::open(&flags.db)?;
+
     let now = chrono::Utc::now().timestamp();
     // --auto: P6 novelty gate — skip the cycle when recent experience is too
     // uniform to have consolidation material (min_diversity = 0.4).
@@ -231,45 +263,73 @@ pub(crate) fn run_sleep(args: &[String]) -> anyhow::Result<()> {
     } else {
         ConsolidateConfig::default()
     };
+
+    // D2: --immutable produces a NEW store — the original file is never
+    // mutated (Dreams alignment: produce a new store, keep the original
+    // untouched and auditable). Preview via dry-run on the live DB, then
+    // VACUUM INTO a timestamped copy and run the real consolidation there.
+    if immutable {
+        let preview_store = CausalStore::open(&flags.db)?;
+        let preview = consolidate(&preview_store, &config, true, now)?;
+        let stem = flags
+            .db
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "causal".to_string());
+        let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let new_path = flags.db.with_file_name(format!("{stem}.consolidated-{ts}"));
+        if new_path.exists() {
+            anyhow::bail!("target {} already exists — refusing to overwrite", new_path.display());
+        }
+        vacuum_into(&flags.db, &new_path)?;
+        let new_store = CausalStore::open(&new_path)?;
+        let report = consolidate(&new_store, &config, false, now)?;
+        println!("=== Sleep Consolidation (IMMUTABLE — new store) ===");
+        println!("  original untouched: {}", flags.db.display());
+        println!("  consolidated store: {}", new_path.display());
+        println!("  preview diversity: {:.2} ({} edges)", preview.diversity, report.reactivated.len());
+        println!("  to activate: sleep --restore {} [--db {}]", new_path.display(), flags.db.display());
+        println!();
+        return print_consolidation_report(&report, flags.db.as_path(), Some(new_path.as_path()));
+    }
+
+    let store = CausalStore::open(&flags.db)?;
     let report = consolidate(&store, &config, flags.dry_run, now)?;
 
     if report.skipped_low_diversity {
         println!("=== Sleep Consolidation: SKIPPED (recent diversity {:.2} < 0.4) — nothing new to consolidate ===", report.diversity);
         return Ok(());
     }
+    print_consolidation_report(&report, flags.db.as_path(), None)
+}
 
+/// Print the shared consolidation report body. `extra_store` is Some when
+/// the report was produced on a brand-new immutable store (D2).
+fn print_consolidation_report(
+    report: &causal_memory::consolidate::ConsolidateReport,
+    db_path: &std::path::Path,
+    extra_store: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
     println!(
         "=== Sleep Consolidation Report{} ===",
         if report.dry_run { " (DRY RUN)" } else { "" }
     );
-    println!(
-        "DB: {} (recent diversity {:.2})\n",
-        flags.db.display(),
-        report.diversity
-    );
+    println!("DB: {} (recent diversity {:.2})", db_path.display(), report.diversity);
+    if let Some(p) = extra_store {
+        println!("Consolidated store (original untouched): {}", p.display());
+    }
+    println!();
 
-    println!(
-        "① Reactivation (replay priority, top {}):",
-        report.reactivated.len().min(10)
-    );
+    println!("① Reactivation (replay priority, top {}):", report.reactivated.len().min(10));
     for (i, entry) in report.reactivated.iter().take(10).enumerate() {
         let snippet: String = entry.decision_text.chars().take(60).collect();
-        println!(
-            "  {}. [edge {}] score {:.2} — {}",
-            i + 1,
-            entry.edge_id,
-            entry.score,
-            snippet
-        );
+        println!("  {}. [edge {}] score {:.2} — {}", i + 1, entry.edge_id, entry.score, snippet);
         println!("     ({})", entry.reasons.join(", "));
     }
     if report.reactivated.is_empty() {
         println!("  (no valid edges)");
     }
-    println!(
-        "  → {} edge(s) replay-protected & marked (half decay, lenient GC)",
-        report.replayed
-    );
+    println!("  → {} edge(s) replay-protected & marked (half decay, lenient GC)", report.replayed);
 
     println!("\n② Generalization:");
     println!("  redundant edges merged: {}", report.merged_edges);
@@ -299,6 +359,39 @@ pub(crate) fn run_sleep(args: &[String]) -> anyhow::Result<()> {
     if report.dry_run {
         println!("\n(dry run — no changes were written)");
     }
+    Ok(())
+}
+
+/// Copy the current DB into a brand-new file via SQLite's VACUUM INTO
+/// (the Dreams-aligned "produce a new store" primitive). The target must
+/// not exist; the copy is a complete, consistent snapshot.
+fn vacuum_into(src: &std::path::Path, dst: &std::path::Path) -> anyhow::Result<()> {
+    let conn = rusqlite::Connection::open(src)?;
+    let dst_str = dst.to_string_lossy().replace('\'', "''");
+    conn.execute_batch(&format!("VACUUM INTO '{dst_str}'"))?;
+    Ok(())
+}
+
+/// Swap the live DB for a consolidated snapshot (D2): back up the current
+/// file, then copy the snapshot over it. The snapshot is a complete DB, so
+/// a plain file copy is enough; the original backup allows rollback.
+fn restore_from_consolidated(src: &std::path::Path, target: &std::path::Path) -> anyhow::Result<()> {
+    if !src.exists() {
+        anyhow::bail!("consolidated store not found: {}", src.display());
+    }
+    let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+    let stem = target
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "causal".to_string());
+    let backup = target.with_file_name(format!("{stem}.bak.{ts}"));
+    if target.exists() {
+        std::fs::copy(target, &backup)?;
+        println!("Backed up current store: {}", backup.display());
+    }
+    std::fs::copy(src, target)?;
+    println!("Restored consolidated store: {} → {}", src.display(), target.display());
+    println!("Backup (rollback): {}", backup.display());
     Ok(())
 }
 
