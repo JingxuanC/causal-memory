@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>causal-memory — architecture</title>
+<style>
+  :root {
+    --bg: #0b1220; --panel: #101a2e; --panel2: #0d1526; --line: #1e2c46;
+    --txt: #dbe4f3; --dim: #8fa3c4; --accent: #4cc2ff; --ok: #34d399;
+    --warn: #fbbf24; --bad: #f87171; --purple: #a78bfa; --pink: #f472b6;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: var(--bg); color: var(--txt); font: 14px/1.45 "SF Mono", ui-monospace, Menlo, Consolas, monospace; padding: 32px 40px; }
+  h1 { font-size: 22px; letter-spacing: .5px; margin-bottom: 4px; }
+  h1 .v { color: var(--accent); font-size: 13px; font-weight: normal; }
+  .sub { color: var(--dim); font-size: 12px; margin-bottom: 22px; }
+  .arrow { text-align: center; color: var(--accent); font-size: 18px; padding: 4px 0; }
+  .arrow .lbl { display: block; font-size: 10px; color: var(--dim); letter-spacing: 1px; }
+  .row { display: flex; gap: 14px; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; flex: 1; }
+  .box h2 { font-size: 12px; letter-spacing: 1.2px; text-transform: uppercase; color: var(--accent); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+  .box h2 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .box p { color: var(--dim); font-size: 11.5px; }
+  .tags { display: flex; flex-wrap: wrap; gap: 5px; }
+  .tag { background: #16233d; border: 1px solid #24375c; color: var(--txt); font-size: 11px; padding: 2px 7px; border-radius: 5px; }
+  .tag.hl { border-color: var(--accent); color: var(--accent); }
+  .tag.ok { border-color: #1f6f4f; color: var(--ok); }
+  .tag.warn { border-color: #7a5a1a; color: var(--warn); }
+  .tag.purple { border-color: #5b4b8a; color: var(--purple); }
+  .tag.pink { border-color: #7a3a5e; color: var(--pink); }
+  .kpi { display: flex; gap: 18px; font-size: 12px; margin-top: 10px; flex-wrap: wrap; }
+  .kpi b { color: var(--accent); }
+  .note { color: var(--dim); font-size: 11px; margin-top: 8px; }
+  .stage { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px; font-size: 11px; }
+  .stage .s { background: #0e1a30; border: 1px solid #1d2f52; padding: 3px 8px; border-radius: 6px; color: var(--txt); }
+  .stage .s b { color: var(--accent); }
+  .stage .sep { color: var(--dim); }
+  .flow { background: var(--panel2); border: 1px dashed #2a3a5e; border-radius: 10px; padding: 12px 14px; margin-top: 16px; }
+  .flow h3 { font-size: 11px; letter-spacing: 1.5px; color: var(--purple); text-transform: uppercase; margin-bottom: 8px; }
+  .flow .steps { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 11.5px; }
+  .flow .steps .step { background: #13213a; border: 1px solid #26395e; padding: 4px 9px; border-radius: 6px; }
+  .flow .steps .gt { color: var(--accent); }
+  .foot { margin-top: 18px; color: var(--dim); font-size: 10.5px; text-align: right; }
+</style>
+</head>
+<body>
+  <h1>causal-memory <span class="v">v0.9.0 · agent memory with a causal core · rust + sqlite</span></h1>
+  <div class="sub">Facts, temporal state and decision→outcome causal edges on one store — typed spreading activation (excitatory + inhibitory), Hebbian co-occurrence, Q-value dynamics, immutable SWR consolidation.</div>
+
+  <!-- Layer 0: entry points -->
+  <div class="row">
+    <div class="box">
+      <h2><span class="dot" style="background:var(--pink)"></span>Agent / clients</h2>
+      <div class="tags">
+        <span class="tag pink">Claude Code</span><span class="tag pink">Cursor</span><span class="tag pink">grok-build</span><span class="tag pink">remote agents (HTTP)</span>
+      </div>
+      <div class="note">stdio / streamable-HTTP transport</div>
+    </div>
+    <div class="box">
+      <h2><span class="dot" style="background:var(--pink)"></span>MCP server — 14 tools</h2>
+      <div class="tags">
+        <span class="tag">record_decision</span><span class="tag">remember</span><span class="tag">search_causal</span>
+        <span class="tag">record_fact</span><span class="tag">search_facts</span><span class="tag">search_memory</span>
+        <span class="tag">trace_cause</span><span class="tag">trace_cause_chain</span><span class="tag">invalidate_decision</span>
+        <span class="tag">search_patterns</span><span class="tag">causal_directory</span><span class="tag">intervention_query</span>
+        <span class="tag">counterfactual_query</span><span class="tag">reconstruct_lesson</span>
+      </div>
+    </div>
+    <div class="box">
+      <h2><span class="dot" style="background:var(--pink)"></span>CLI · PyO3 · benches</h2>
+      <div class="tags">
+        <span class="tag">sleep (consolidate)</span><span class="tag">resolve-updates (C7)</span><span class="tag">ingest / distill</span>
+        <span class="tag">python bindings</span>
+      </div>
+      <div class="note">CausalEval · LoCoMo · LongMemEval · Memora · AMC</div>
+    </div>
+  </div>
+
+  <div class="arrow">▼<span class="lbl">tool_handler → facade</span></div>
+
+  <!-- Layer 1: facade -->
+  <div class="row">
+    <div class="box">
+      <h2><span class="dot" style="background:var(--accent)"></span>Memory facade — 15+ ops (sync → tokio bridge)</h2>
+      <div class="tags">
+        <span class="tag hl">search_memory</span><span class="tag hl">search_memory_multi_pass</span><span class="tag">search_causal</span><span class="tag">search_facts</span>
+        <span class="tag">trace_cause(_chain)</span><span class="tag">intervention_query</span><span class="tag">counterfactual_query</span>
+        <span class="tag">reconstruct_lesson</span><span class="tag">search_patterns</span><span class="tag">causal_directory</span><span class="tag">record_*</span><span class="tag">invalidate_decision</span>
+      </div>
+      <div class="note">query_router (D4) dispatches display intent · block_on bridges runtime</div>
+    </div>
+  </div>
+
+  <div class="arrow">▼<span class="lbl">read path</span></div>
+
+  <!-- Layer 2: core engines -->
+  <div class="row">
+    <div class="box">
+      <h2><span class="dot" style="background:var(--ok)"></span>Store — SQLite schema v11</h2>
+      <div class="tags">
+        <span class="tag ok">chunks</span><span class="tag ok">causal_edges</span><span class="tag ok">agent_facts</span>
+        <span class="tag ok">meta_causal_edges</span><span class="tag ok">cooccurrence_edges</span><span class="tag ok">sessions</span><span class="tag ok">bm25_index</span>
+      </div>
+      <div class="note">WAL · connection pool · never compacted (lives outside the context window)</div>
+      <div class="kpi"><span>write gatekeeping: <b>record_decision / distill / supersede / invalidation</b></span></div>
+    </div>
+    <div class="box">
+      <h2><span class="dot" style="background:var(--purple)"></span>Hippocampus — CausalGraph</h2>
+      <div class="tags">
+        <span class="tag purple">spreading activation</span><span class="tag purple">inhibition (GABA)</span><span class="tag purple">Hebbian co-occurrence</span><span class="tag purple">Q-value Bellman</span>
+      </div>
+      <div class="note">caused +1.0 · enabled +0.5 · prevented −0.3 · fact +0.8 · meta +0.6</div>
+      <div class="note">intervention / counterfactual · cross-task transfer (REM)</div>
+    </div>
+    <div class="box">
+      <h2><span class="dot" style="background:var(--warn)"></span>Retrieval — unified + multi-pass</h2>
+      <div class="tags">
+        <span class="tag warn">BM25 (inverted)</span><span class="tag warn">semantic cosine</span><span class="tag warn">hop expansion</span><span class="tag warn">RRF fusion</span>
+        <span class="tag warn hl">multi-pass: entities + time anchor + session expansion + verify loop</span>
+      </div>
+      <div class="note">type-agnostic evidence topology (docs/design/multi-session-retrieval-2026-08.md)</div>
+    </div>
+  </div>
+
+  <div class="arrow">▼<span class="lbl">offline sleep cycle</span></div>
+
+  <!-- Layer 3: consolidation -->
+  <div class="row">
+    <div class="box">
+      <h2><span class="dot" style="background:var(--bad)"></span>Consolidation — sleep stages</h2>
+      <div class="stage">
+        <span class="s"><b>0</b> novelty gate</span><span class="sep">→</span>
+        <span class="s"><b>1</b> reactivation</span><span class="sep">→</span>
+        <span class="s"><b>1.5</b> Q-value</span><span class="sep">→</span>
+        <span class="s"><b>1.7</b> C7 supersession (LLM judge)</span><span class="sep">→</span>
+        <span class="s"><b>2</b> generalization</span><span class="sep">→</span>
+        <span class="s"><b>3</b> downscale (half-life tiers + GC)</span><span class="sep">→</span>
+        <span class="s"><b>4</b> REM transfer</span>
+      </div>
+      <div class="note">dry-run · --immutable (VACUUM INTO new store) · --restore with backup</div>
+    </div>
+  </div>
+
+  <!-- Layer 4: cross-cutting -->
+  <div class="row" style="margin-top:16px">
+    <div class="box">
+      <h2><span class="dot" style="background:var(--pink)"></span>LLM judges</h2>
+      <div class="tags"><span class="tag pink">polarity</span><span class="tag pink">causality</span><span class="tag pink">supersession (C7)</span><span class="tag pink">narrative reconstruction</span></div>
+    </div>
+    <div class="box">
+      <h2><span class="dot" style="background:var(--pink)"></span>Distill</h2>
+      <div class="tags"><span class="tag pink">session → facts / preferences / lessons / events</span></div>
+    </div>
+    <div class="box">
+      <h2><span class="dot" style="background:var(--pink)"></span>Embed</h2>
+      <div class="tags"><span class="tag pink">HTTP / fastembed (local)</span><span class="tag pink">LRU cache</span><span class="tag pink">shared embedder</span></div>
+    </div>
+    <div class="box">
+      <h2><span class="dot" style="background:var(--pink)"></span>Support</h2>
+      <div class="tags"><span class="tag pink">patterns miner</span><span class="tag pink">chain_linker</span><span class="tag pink">refute</span><span class="tag pink">tokenizer (CJK)</span></div>
+    </div>
+  </div>
+
+  <!-- Data flow -->
+  <div class="flow">
+    <h3>Data flow</h3>
+    <div class="steps">
+      <span class="step">raw turns → session_logs</span><span class="gt">→</span>
+      <span class="step">distill → facts + causal edges</span><span class="gt">→</span>
+      <span class="step">hippocampus graph (lazy rebuild)</span><span class="gt">→</span>
+      <span class="step">SQLite (never compacted)</span><span class="gt">→</span>
+      <span class="step">sleep: merge / retire / decay / transfer</span>
+    </div>
+    <div class="steps" style="margin-top:8px">
+      <span class="step">query</span><span class="gt">→</span>
+      <span class="step">search_memory fusion (facts + causal + hop, RRF)</span><span class="gt">→</span>
+      <span class="step">multi-pass retrieval (cross-session)</span><span class="gt">→</span>
+      <span class="step">answer (LLM) · judge (LLM)</span>
+    </div>
+  </div>
+
+  <div class="foot">generated from the codebase · docs/architecture.html · keep in sync with src/ layout</div>
+</body>
+</html>

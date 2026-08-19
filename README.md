@@ -127,6 +127,10 @@ this from happening again."
 
 ## Architecture
 
+![architecture](docs/architecture.png)
+
+*Interactive version: [docs/architecture.html](docs/architecture.html)*
+
 ```
   ┌───────────────────────────────────────────────┐
   │           causal-memory (Rust, MCP)            │
