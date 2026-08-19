@@ -10,6 +10,7 @@ pub mod memory;
 pub mod migrate;
 pub mod patterns;
 pub mod query_router;
+pub mod retrieval;
 pub mod reasoning_extractor;
 pub mod refute;
 pub mod session;

@@ -677,6 +677,87 @@ impl Memory {
         out
     }
 
+    /// Step A (multi-session retrieval design, docs/design/): multi-pass
+    /// retrieval path for cross-session questions — query decomposition
+    /// (content entities + temporal anchor), one BM25 per entity, time-window
+    /// weighting, and full-coverage session expansion for aggregation shapes.
+    /// Deterministic and LLM-free; the verification loop lives at callers.
+    /// This is the lib-level capability behind the harness's type-agnostic
+    /// retrieve(); default-off behind its own method (search_memory keeps the
+    /// single-pass contract).
+    pub fn search_memory_multi_pass(
+        &self,
+        query: &str,
+        task_tag: Option<&str>,
+        scope: Option<&str>,
+        limit: Option<usize>,
+    ) -> String {
+        let _ = scope;
+        let limit = limit.unwrap_or(10);
+        let per_layer = limit.saturating_mul(2).max(10);
+        let plan = crate::retrieval::plan_query(query, chrono::Utc::now().timestamp());
+        let entries = match crate::retrieval::retrieve_multi_pass(
+            &self.store,
+            task_tag,
+            query,
+            &plan,
+            per_layer,
+        ) {
+            Ok(e) => e,
+            Err(err) => return format!("❌ Multi-pass retrieval failed: {err}"),
+        };
+        if entries.is_empty() {
+            return "[multi-pass] 📭 No memories found matching your query.".to_string();
+        }
+        let mut out = format!(
+            "[multi-pass] {} causal edge(s){}:\n",
+            entries.len(),
+            if plan.time_window.is_some() {
+                " (time-anchored)"
+            } else {
+                ""
+            }
+        );
+        for (i, e) in entries.iter().enumerate() {
+            out.push_str(&format!(
+                "  {}. \"{}\" →({})→ \"{}\" (confidence: {:.0}%)\n",
+                i + 1,
+                truncate_chars(&e.decision_text, 50),
+                e.relation,
+                truncate_chars(&e.outcome_text, 50),
+                e.confidence * 100.0,
+            ));
+        }
+        // Aggregation shapes: append full session context (chunks not already
+        // covered by a retrieved edge) so a complete evidence set is visible.
+        if plan.aggregation {
+            let ids: Vec<String> = entries
+                .iter()
+                .flat_map(|e| [e.decision_id.clone(), e.outcome_id.clone()])
+                .collect();
+            if let Ok(chunks) =
+                crate::retrieval::expand_session_chunks(&self.store, &ids, 40)
+            {
+                let covered: std::collections::HashSet<String> =
+                    ids.into_iter().collect();
+                let extra: Vec<&(String, String)> = chunks
+                    .iter()
+                    .filter(|(id, _)| !covered.contains(id))
+                    .collect();
+                if !extra.is_empty() {
+                    out.push_str(&format!(
+                        "\nFull session context ({} additional turn(s)):\n",
+                        extra.len()
+                    ));
+                    for (_, text) in extra.iter().take(20) {
+                        out.push_str(&format!("  - {}\n", truncate_chars(text, 100)));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// `trace_cause` — single-hop reverse: which decision caused this outcome.
     pub fn trace_cause(&self, outcome_description: &str) -> String {
         // ── Hippocampus path: reverse spreading activation ──

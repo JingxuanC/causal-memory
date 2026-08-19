@@ -27,7 +27,7 @@
 //!
 //! Ingest is one-time and idempotent per question (chunk-count match skips).
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -35,6 +35,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 use causal_memory::distill::{Distiller, ItemKind};
 use causal_memory::hippocampus::CausalGraph;
+use causal_memory::retrieval;
 use causal_memory::store::{CausalEntry, CausalStore};
 use causal_memory::token::estimate_tokens;
 use chrono::NaiveDateTime;
@@ -617,110 +618,72 @@ async fn distill_question(
 /// this question's haystack via the task_tag = question_id edge filter.
 ///
 /// For coverage-limited question types (multi-session, temporal-reasoning),
-/// does **iterative retrieval**: extracts content nouns from the question
-/// and runs additional BM25 queries per noun, merging results by dedup on
-/// edge_id. This widens the evidence net — a single top-k query misses
-/// fragments scattered across 40+ sessions, but per-noun queries catch
-/// them. Measured: multi-session 41.4% → 50.4% (full-coverage 38% → 45%).
-/// NOTE: this keys on the dataset's type label — a harness-level experiment
-/// measuring the ceiling of multi-query expansion. The lib-level port must
-/// infer evidence topology at runtime instead (no type labels in prod).
+/// does **iterative retrieval**: lib-level multi-pass (causal_memory::retrieval)
+/// decomposes the question into content entities + an optional temporal
+/// anchor, runs base BM25 + one query per entity (dedup by edge_id), and —
+/// for aggregation shapes inferred from the TEXT (no type labels) — expands
+/// every touched session fully so a complete evidence set reaches the
+/// answerer. Session budget SESSION_BUDGET (was top-5/40 in the P8 harness
+/// experiment; the diagnosis showed evidence scattered over low-hit
+/// sessions gets cut by the top-5 cap).
 fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize) -> Result<Vec<CausalEntry>> {
-    let base = store.search_causal_bm25(Some(&q.question_id), &q.question, topk)?;
+    let now = parse_lme_datetime(&q.question_date).unwrap_or(SYNTH_BASE_TS);
+    let plan = retrieval::plan_query(&q.question, now);
+    let merged = retrieval::retrieve_multi_pass(
+        store,
+        Some(&q.question_id),
+        &q.question,
+        &plan,
+        topk,
+    )?;
 
-    // P7: retrieval boost for coverage-limited types.
-    const COVERAGE_LIMITED: [&str; 2] = ["multi-session", "temporal-reasoning"];
-    if !COVERAGE_LIMITED.contains(&q.question_type.as_str()) || base.len() < 2 {
-        return Ok(base);
-    }
-
-    // Extract content words from the question (skip stopwords, short words).
-    let stopwords: HashSet<&str> = [
-        "how", "many", "what", "which", "who", "whom", "whose", "where", "when",
-        "why", "do", "did", "does", "is", "are", "was", "were", "have", "has",
-        "had", "i", "you", "we", "they", "he", "she", "it", "the", "a", "an",
-        "of", "in", "on", "at", "to", "for", "with", "from", "by", "and", "or",
-        "but", "not", "this", "that", "these", "those", "my", "your", "me",
-        "need", "pick", "up", "return", "list", "all", "items", "kind", "types",
-        "led", "leading", "worked", "bought", "am", "currently",
-    ]
-    .into_iter()
-    .collect();
-
-    let mut seen_ids: HashSet<i64> = base.iter().map(|e| e.edge_id).collect();
-    let mut merged = base;
-
-    // Pull content nouns ≥4 chars that aren't stopwords.
-    let nouns: Vec<String> = q
-        .question
-        .split_whitespace()
-        .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
-        .filter(|w| w.len() >= 4 && !stopwords.contains(w.as_str()))
-        .collect();
-
-    // Run one BM25 query per noun, merge new hits.
-    for noun in &nouns {
-        let hits = store.search_causal_bm25(Some(&q.question_id), noun, topk / 2)?;
-        for entry in hits {
-            if seen_ids.insert(entry.edge_id) {
-                merged.push(entry);
-            }
-        }
-    }
-
-    // P8 Task A: session expansion — for each session touched by the merged
-    // entries, pull ALL chunks in that session (not just the 2-3 BM25 hit).
-    // A session has 10-30 turns; hitting 2 turns still misses context. This
-    // widens coverage from fragment-level to session-level.
-    //
-    // Only for multi-session: temporal-reasoning questions are more precise
-    // (resolve relative dates), and full-session turns add noise that
-    // degrades accuracy (-3pp measured). Multi-session benefits because it
-    // needs to count/aggregate across many sessions.
-    if q.question_type != "multi-session" {
+    // Full-coverage session expansion for aggregation shapes only (the P8
+    // guard, now inferred from the question text instead of the dataset's
+    // type label): full-session turns hurt precise/date questions.
+    if !plan.aggregation || merged.is_empty() {
         return Ok(merged);
     }
+    expand_and_inject(store, q, merged)
+}
 
-    let mut session_hits: HashMap<String, usize> = HashMap::new();
-    for entry in &merged {
-        for chunk_id in [&entry.decision_id, &entry.outcome_id] {
-            // chunk_id format: {question_id}::{session_id}::{turn}
-            let parts: Vec<&str> = chunk_id.split("::").collect();
-            if parts.len() >= 2 {
-                let session_prefix = format!("{}::{}", parts[0], parts[1]);
-                *session_hits.entry(session_prefix).or_insert(0) += 1;
-            }
-        }
-    }
+/// Session-expansion budget: how many full-session chunks may be injected
+/// into one answer prompt (design: ~80; the P8 harness used 40).
+const SESSION_BUDGET: usize = 80;
 
-    // Rank sessions by hit count, take top 5.
-    let mut ranked_sessions: Vec<(String, usize)> = session_hits.into_iter().collect();
-    ranked_sessions.sort_by_key(|b| std::cmp::Reverse(b.1));
-    let top_sessions: Vec<&String> = ranked_sessions.iter().take(5).map(|(s, _)| s).collect();
-
-    // Fetch all chunks for top sessions, cap at 40 total to prevent prompt explosion.
-    let mut session_chunk_texts: Vec<String> = Vec::new();
-    for session_prefix in &top_sessions {
-        let chunks = store.chunks_by_prefix(session_prefix).unwrap_or_default();
-        for (_id, text) in chunks {
-            session_chunk_texts.push(text);
-        }
-        if session_chunk_texts.len() >= 40 {
-            session_chunk_texts.truncate(40);
-            break;
-        }
-    }
-
-    // Inject session chunks as synthetic entries so memory_lines includes them.
-    // Use negative edge_ids and unique chunk ids to avoid dedup collision.
+/// Inject every chunk of the sessions touched by `entries` as synthetic
+/// CausalEntry rows (negative edge ids, relation "session") so memory_lines
+/// renders them. Chunks already covered by a real entry are skipped — the
+/// P8 harness duplicated them; skipping keeps the prompt clean.
+fn expand_and_inject(
+    store: &CausalStore,
+    q: &LmeQuestion,
+    entries: Vec<CausalEntry>,
+) -> Result<Vec<CausalEntry>> {
+    let ids: Vec<String> = entries
+        .iter()
+        .flat_map(|e| [e.decision_id.clone(), e.outcome_id.clone()])
+        .collect();
+    let chunks = retrieval::expand_session_chunks(store, &ids, SESSION_BUDGET)?;
+    let covered: HashSet<String> = ids.into_iter().collect();
+    // Text-level dedup too: the verification loop re-expands after merging
+    // new hits, and a session chunk already injected in an earlier round must
+    // not appear twice under a fresh synthetic id.
+    let present: HashSet<String> = entries
+        .iter()
+        .flat_map(|e| [e.decision_text.clone(), e.outcome_text.clone()])
+        .collect();
+    let mut merged = entries;
     let mut synth_id = -1_i64;
-    for (i, text) in session_chunk_texts.into_iter().enumerate() {
-        let chunk_id = format!("{}::session_expansion::{}", q.question_id, i);
+    for (cid, text) in chunks {
+        if covered.contains(&cid) || present.contains(&text) {
+            continue;
+        }
+        let sid = format!("{}::session_expansion::{}", q.question_id, -synth_id);
         merged.push(CausalEntry {
             edge_id: synth_id,
-            decision_id: chunk_id.clone(),
+            decision_id: sid.clone(),
             decision_text: text.clone(),
-            outcome_id: chunk_id,
+            outcome_id: sid,
             outcome_text: text,
             relation: "session".into(),
             confidence: 0.0,
@@ -736,7 +699,6 @@ fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize) -> Result<Vec<Cau
         });
         synth_id -= 1;
     }
-
     Ok(merged)
 }
 
@@ -1103,6 +1065,9 @@ struct Args {
     ingest_only: bool,
     /// E4: answer prompt version (v1 legacy | v2 7-step reasoning, default v2).
     prompt_version: LmePromptVersion,
+    /// Step A: verification loop — for aggregation questions, list the items
+    /// found, re-query with extracted entities, re-answer (<=2 rounds).
+    verify_loop: bool,
 }
 
 fn parse_args(argv: &[String]) -> Result<Option<Args>> {
@@ -1123,6 +1088,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
     let mut ingest = IngestMode::Raw;
     let mut ingest_only = false;
     let mut prompt_version = LmePromptVersion::V2;
+    let mut verify_loop = false;
 
     let mut i = 1;
     let take = |i: &mut usize, flag: &str| -> Result<String> {
@@ -1149,6 +1115,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
                 }
             }
             "--ingest-only" => ingest_only = true,
+            "--verify-loop" => verify_loop = true,
             "--prompt-version" => {
                 prompt_version = match take(&mut i, "--prompt-version")?.as_str() {
                     "v1" => LmePromptVersion::V1,
@@ -1173,6 +1140,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
         ingest,
         ingest_only,
         prompt_version,
+        verify_loop,
     }))
 }
 
@@ -1305,6 +1273,7 @@ fn git_commit() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn answer_question(
     cfg: &LlmConfig,
     store: &CausalStore,
@@ -1314,93 +1283,25 @@ async fn answer_question(
     topk: usize,
     with_facts: bool,
     prompt_version: LmePromptVersion,
+    verify_loop: bool,
 ) -> ResultRow {
-    let retrieved = retrieve(store, q, topk).unwrap_or_default();
-    let retrieved_ids = retrieved_chunk_ids(&retrieved);
+    let now = parse_lme_datetime(&q.question_date).unwrap_or(SYNTH_BASE_TS);
+    let plan = retrieval::plan_query(&q.question, now);
+
+    let mut final_entries = retrieve(store, q, topk).unwrap_or_default();
+    let mut seen_chunk: HashSet<String> = retrieved_chunk_ids(&final_entries).into_iter().collect();
+    let retrieved_ids: Vec<String> = seen_chunk.iter().cloned().collect();
     let evidence_hit = retrieved_ids.iter().any(|r| evidence_ids.contains(r));
+
     // Distill mode additionally queries the fact layer (BM25, scoped to this
-    // question's haystack, same topk) and puts fact lines FIRST: they are
-    // the high-precision layer for the factual-recall slice the causal-only
-    // baseline conceded. Evidence-hit stays computed from causal entries
-    // only (facts carry no chunk ids) — protocol unchanged.
-    let memories = if with_facts {
-        let fact_scope = format!("lme:{}", q.question_id);
-        // P7: multi-session questions need ALL matching facts, not top-k.
-        // "How many X?" questions require scanning every fact that mentions
-        // the entity — top-k truncates and the count comes out wrong.
-        // Use a very large top-k (500) to effectively list all matching facts.
-        let fact_topk = if q.question_type == "multi-session" {
-            500
-        } else {
-            topk
-        };
-        let facts = store
-            .search_facts_bm25(&q.question, Some(&fact_scope), fact_topk)
-            .unwrap_or_default();
-        let mut lines: Vec<String> = facts.iter().map(|f| format!("- {}", f.value)).collect();
+    // question's haystack) and puts fact lines FIRST: the high-precision
+    // layer for the factual-recall slice. Evidence-hit stays computed from
+    // causal entries only (facts carry no chunk ids) — protocol unchanged.
+    let mut final_memories = render_memories(store, graph, q, &final_entries, with_facts, plan.aggregation, topk);
 
-        // P7: for multi-session, also run per-noun fact queries and merge,
-        // catching facts that the full-question BM25 missed (different
-        // phrasing in distill vs question).
-        if q.question_type == "multi-session" {
-            let mut seen_values: HashSet<String> =
-                facts.iter().map(|f| f.value.clone()).collect();
-            let nouns: Vec<String> = q
-                .question
-                .split_whitespace()
-                .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase())
-                .filter(|w| w.len() >= 4)
-                .filter(|w| !["what", "which", "how", "many", "have", "been", "does", "that", "this", "with", "from", "they", "them"].contains(&w.as_str()))
-                .take(5)
-                .collect();
-            for noun in &nouns {
-                let extra = store
-                    .search_facts_bm25(noun, Some(&fact_scope), 50)
-                    .unwrap_or_default();
-                for f in extra {
-                    if seen_values.insert(f.value.clone()) {
-                        lines.push(format!("- {}", f.value));
-                    }
-                }
-            }
-        }
-
-        let causal = memory_lines(&retrieved);
-        if !causal.is_empty() {
-            lines.push(causal);
-        }
-
-        // P7+: hippocampus spreading activation — finds associative hits
-        // that BM25 missed (semantically related via edge traversal).
-        // NOTE: in practice on LongMemEval, the BM25 + full-scan fact layer
-        // already covers most evidence; hippocampus spreading finds few NEW
-        // nodes. Its value is in the agent ablation bench (repeated exposure,
-        // where associative recall accumulates). Kept wired but guarded by
-        // CAUSAL_MEMORY_HIPPOCAMPUS_BENCH env var for controlled experiments.
-        if std::env::var("CAUSAL_MEMORY_HIPPOCAMPUS_BENCH").is_ok() {
-            let existing: HashSet<String> = lines
-                .iter()
-                .map(|l| l.trim_start_matches("- ").to_lowercase())
-                .collect();
-            let hippo_extra = hippocampus_boost(graph.as_ref(), q, &existing);
-            if !hippo_extra.is_empty() {
-                lines.push("[associative memory]".to_string());
-                lines.extend(hippo_extra);
-            }
-        }
-
-        lines.join("\n")
-    } else {
-        memory_lines(&retrieved)
-    };
-
-    let system = answer_system_prompt(&q.question_type, prompt_version);
-    let answer_user = answer_user_prompt(q, &memories);
-    // (P6) token accounting — estimated context cost of this question.
-    let ctx_tokens = estimate_tokens(&system) + estimate_tokens(&answer_user);
-    let max_tokens = if prompt_version == LmePromptVersion::V2 { 800 } else { ANSWER_MAX_TOKENS };
-    let raw_predicted = match chat(cfg, &system, &answer_user, max_tokens).await {
-        Ok(s) => s,
+    // First answer (V1 precision contract; V2 extracts the ANSWER: tail).
+    let mut predicted = match answer_once(cfg, q, &final_memories, prompt_version).await {
+        Ok(p) => p,
         Err(e) => {
             return ResultRow {
                 question_id: q.question_id.clone(),
@@ -1415,27 +1316,58 @@ async fn answer_question(
                 evidence_ids,
                 answer_session_ids: q.answer_session_ids.clone(),
                 evidence_hit,
-                ctx_tokens,
+                ctx_tokens: 0,
                 ans_tokens: 0,
             }
         }
     };
+    let mut ans_tokens = estimate_tokens(&predicted);
 
-    // E4: V2 outputs "ANSWER: <final>" after reasoning — extract it.
-    let predicted = if prompt_version == LmePromptVersion::V2 {
-        raw_predicted
-            .rsplit("ANSWER:")
-            .next()
-            .unwrap_or(&raw_predicted)
-            .trim()
-            .to_string()
-    } else {
-        raw_predicted
-    };
+    // Step A verification loop: aggregation questions need the COMPLETE
+    // evidence set. Each round asks the model to list what it found, extracts
+    // entity terms from that list, re-queries BM25, and re-answers ONLY when
+    // genuinely new chunks arrived (budget: <=2 rounds, 1 list + 1 re-answer
+    // per round, so <=4 extra LLM calls per aggregation question).
+    if verify_loop && plan.aggregation && !final_entries.is_empty() {
+        for _ in 0..2 {
+            let list = match llm_list_items(cfg, q, &final_memories).await {
+                Ok(l) => l,
+                Err(_) => break, // LLM hiccup → keep the current answer
+            };
+            let terms = extract_terms_from_list(&list);
+            if terms.is_empty() {
+                break;
+            }
+            let extra = retrieval::query_terms(store, Some(&q.question_id), &terms, topk)
+                .unwrap_or_default();
+            let new_ids: Vec<String> = retrieved_chunk_ids(&extra)
+                .into_iter()
+                .filter(|id| !seen_chunk.contains(id))
+                .collect();
+            if new_ids.is_empty() {
+                break;
+            }
+            let mut merged = final_entries.clone();
+            for e in extra {
+                if !merged.iter().any(|m| m.edge_id == e.edge_id) {
+                    merged.push(e);
+                }
+            }
+            final_entries = expand_and_inject(store, q, merged).unwrap_or(final_entries.clone());
+            seen_chunk.extend(new_ids);
+            final_memories = render_memories(store, graph, q, &final_entries, with_facts, plan.aggregation, topk);
+            predicted = match answer_once(cfg, q, &final_memories, prompt_version).await {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            ans_tokens = estimate_tokens(&predicted);
+        }
+    }
 
-    // (P6) answer-token accounting — must precede the move of `predicted`
-    // into the result row.
-    let ans_tokens = estimate_tokens(&predicted);
+    let system = answer_system_prompt(&q.question_type, prompt_version);
+    let answer_user = answer_user_prompt(q, &final_memories);
+    // (P6) token accounting — the FINAL prompt actually fed to the answerer.
+    let ctx_tokens = estimate_tokens(&system) + estimate_tokens(&answer_user);
 
     let judge_user = judge_user_prompt(q, &predicted);
     let (verdict, reason) =
@@ -1463,6 +1395,115 @@ async fn answer_question(
         ctx_tokens,
         ans_tokens,
     }
+}
+
+/// Render the answer-prompt memory block: fact lines first (distill mode),
+/// then the causal memory lines, with the hippocampus ablation hook.
+fn render_memories(
+    store: &CausalStore,
+    graph: &Option<CausalGraph>,
+    q: &LmeQuestion,
+    entries: &[CausalEntry],
+    with_facts: bool,
+    aggregation: bool,
+    topk: usize,
+) -> String {
+    if !with_facts {
+        return memory_lines(entries);
+    }
+    let fact_scope = format!("lme:{}", q.question_id);
+    // Aggregation shapes need ALL matching facts, not top-k: counting asks
+    // for every fact mentioning the entity — top-k truncates the count.
+    let fact_topk = if aggregation { 500 } else { topk };
+    let facts = store
+        .search_facts_bm25(&q.question, Some(&fact_scope), fact_topk)
+        .unwrap_or_default();
+    let mut lines: Vec<String> = facts.iter().map(|f| format!("- {}", f.value)).collect();
+
+    // Aggregation: also run per-entity fact queries and merge, catching
+    // facts the full-question BM25 missed (phrasing drift between distill
+    // and question). Type-agnostic: entities come from the lib decomposer.
+    if aggregation {
+        let mut seen_values: HashSet<String> = facts.iter().map(|f| f.value.clone()).collect();
+        for entity in retrieval::extract_entities(&q.question).into_iter().take(5) {
+            let extra = store
+                .search_facts_bm25(&entity, Some(&fact_scope), 50)
+                .unwrap_or_default();
+            for f in extra {
+                if seen_values.insert(f.value.clone()) {
+                    lines.push(format!("- {}", f.value));
+                }
+            }
+        }
+    }
+
+    let causal = memory_lines(entries);
+    if !causal.is_empty() {
+        lines.push(causal);
+    }
+
+    // Hippocampus spreading activation — associative hits BM25 missed. Its
+    // value is in the agent ablation bench; kept wired but guarded by env.
+    if std::env::var("CAUSAL_MEMORY_HIPPOCAMPUS_BENCH").is_ok() {
+        let existing: HashSet<String> = lines
+            .iter()
+            .map(|l| l.trim_start_matches("- ").to_lowercase())
+            .collect();
+        let hippo_extra = hippocampus_boost(graph.as_ref(), q, &existing);
+        if !hippo_extra.is_empty() {
+            lines.push("[associative memory]".to_string());
+            lines.extend(hippo_extra);
+        }
+    }
+    lines.join("\n")
+}
+
+/// One answer attempt (system prompt dispatch + ANSWER: tail extraction).
+async fn answer_once(
+    cfg: &LlmConfig,
+    q: &LmeQuestion,
+    memories: &str,
+    prompt_version: LmePromptVersion,
+) -> Result<String> {
+    let system = answer_system_prompt(&q.question_type, prompt_version);
+    let user = answer_user_prompt(q, memories);
+    let max_tokens = if prompt_version == LmePromptVersion::V2 { 800 } else { ANSWER_MAX_TOKENS };
+    let raw = chat(cfg, &system, &user, max_tokens).await?;
+    Ok(if prompt_version == LmePromptVersion::V2 {
+        raw.rsplit("ANSWER:").next().unwrap_or(&raw).trim().to_string()
+    } else {
+        raw
+    })
+}
+
+/// Verification-loop step 1: have the model list every distinct item the
+/// question asks about that it can see in the retrieved memories.
+async fn llm_list_items(cfg: &LlmConfig, q: &LmeQuestion, memories: &str) -> Result<String> {
+    const LIST_PROMPT: &str = "You are extracting evidence from retrieved memories. List EVERY distinct item, purchase, event, or number the question asks about — exactly one per line, using the name as it appears in the memories. If the memories contain no matching items, reply: none";
+    let user = format!("Question: {}\n\nMemories:\n{}", q.question, memories);
+    chat(cfg, LIST_PROMPT, &user, 300).await
+}
+
+/// Verification-loop step 2: extract re-query terms from the model's item
+/// list (lib entity extraction: >=4 chars, stopwords removed, deduped).
+fn extract_terms_from_list(list: &str) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for line in list.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.eq_ignore_ascii_case("none") {
+            continue;
+        }
+        for term in retrieval::extract_entities(line) {
+            if seen.insert(term.clone()) {
+                out.push(term);
+            }
+        }
+        if out.len() >= 10 {
+            break;
+        }
+    }
+    out
 }
 
 async fn run(args: Args) -> Result<()> {
@@ -1619,7 +1660,7 @@ async fn run(args: Args) -> Result<()> {
             .cloned()
             .unwrap_or_default();
         async move {
-            let row = answer_question(&cfg, &store, &graph, q, evidence, args.topk, with_facts, args.prompt_version).await;
+            let row = answer_question(&cfg, &store, &graph, q, evidence, args.topk, with_facts, args.prompt_version, args.verify_loop).await;
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d.is_multiple_of(25) || d == total {
                 eprintln!("{d}/{total} questions done");
