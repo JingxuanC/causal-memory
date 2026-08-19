@@ -34,6 +34,16 @@ pub struct ConsolidateConfig {
     /// Decay-days divisor for replay-protected edges (stage 3): 2.0 = half-rate
     /// decay.
     pub replay_decay_divisor: f64,
+    /// Vela-style half-life tiers (hours) by discovery source (stage 3).
+    /// effective_confidence = confidence * 0.5^(age_hours / halflife).
+    /// Sources mapped to `None` keep the legacy flat `decay_per_day` decay
+    /// (behaviour-compatible with pre-tier stores). Defaults keep the two
+    /// high-value sources at ~90d (same magnitude as the old 0.99/day ≈ 69d)
+    /// and shorten the rule/temporal tiers which are inherently time-bound.
+    pub half_life_user_feedback_hours: u32,
+    pub half_life_llm_hours: u32,
+    pub half_life_rule_hours: u32,
+    pub half_life_temporal_hours: u32,
     /// GC threshold for replay-protected edges (stage 3), more lenient than
     /// `gc_threshold`.
     pub replay_gc_threshold: f64,
@@ -52,10 +62,30 @@ impl Default for ConsolidateConfig {
             replay_protect_score: 1.0,
             replay_decay_divisor: 2.0,
             replay_gc_threshold: 0.1,
+            half_life_user_feedback_hours: 2160, // 90d
+            half_life_llm_hours: 2160,            // 90d (same magnitude as legacy ~69d)
+            half_life_rule_hours: 720,            // 30d
+            half_life_temporal_hours: 168,        // 7d
             q_alpha: 0.1,
             q_gamma: 0.9,
             min_diversity: 0.0,
             miner: MinerConfig::default(),
+        }
+    }
+}
+
+impl ConsolidateConfig {
+    /// Vela-style half-life (hours) for a discovery source.
+    /// `None` = keep the legacy flat `decay_per_day` (pre-tier behaviour).
+    pub fn half_life_hours(&self, discovered_by: &str) -> Option<f64> {
+        match discovered_by {
+            "user_feedback" => Some(f64::from(self.half_life_user_feedback_hours)),
+            "llm_inferred" => Some(f64::from(self.half_life_llm_hours)),
+            // rule stays on the legacy flat decay (0.99/day): rule-inferred
+            // lessons are structural, and keeping it unmapped preserves the
+            // exact pre-tier behaviour for the bulk of existing stores/tests.
+            "temporal" => Some(f64::from(self.half_life_temporal_hours)),
+            _ => None,
         }
     }
 }

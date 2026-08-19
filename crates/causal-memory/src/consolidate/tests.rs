@@ -101,6 +101,78 @@ fn test_same_day_edge_not_decayed() {
     assert_eq!(report.decayed, 0);
 }
 
+#[test]
+fn test_half_life_temporal_tier() {
+    // temporal edges decay by half-life 168h (7d): 10 days -> 0.5^(240/168)
+    let store = CausalStore::open_in_memory().unwrap();
+    let id = insert_edge(
+        &store,
+        "noticed flaky test",
+        "suspect timing",
+        0.8,
+        "temporal",
+        Some("db"),
+        NOW - 10 * DAY,
+        None,
+    );
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    let expected = 0.8 * 0.5_f64.powf(10.0 * 24.0 / 168.0);
+    assert!(
+        (edge_conf(&store, id) - expected).abs() < 1e-9,
+        "temporal half-life: got {}, expected {expected}",
+        edge_conf(&store, id)
+    );
+    assert_eq!(report.decayed, 1);
+}
+
+#[test]
+fn test_half_life_user_feedback_tier() {
+    // user_feedback half-life 2160h (90d): 10 days -> 0.5^(240/2160).
+    // conf 0.5 keeps the edge below the replay-protect score (0.5+0.3=0.8)
+    // so the tier math is tested directly, not halved by protection.
+    let store = CausalStore::open_in_memory().unwrap();
+    let id = insert_edge(
+        &store,
+        "pinned by user",
+        "confirmed correct",
+        0.5,
+        "user_feedback",
+        Some("db"),
+        NOW - 10 * DAY,
+        None,
+    );
+    consolidate(&store, &default_config(), false, NOW).unwrap();
+    let expected = 0.5 * 0.5_f64.powf(10.0 * 24.0 / 2160.0);
+    assert!(
+        (edge_conf(&store, id) - expected).abs() < 1e-9,
+        "user_feedback half-life: got {}, expected {expected}",
+        edge_conf(&store, id)
+    );
+}
+
+#[test]
+fn test_half_life_legacy_unmapped_source() {
+    // Unmapped source (distill) keeps the legacy flat 0.99/day decay.
+    let store = CausalStore::open_in_memory().unwrap();
+    let id = insert_edge(
+        &store,
+        "distilled lesson",
+        "noted",
+        0.7,
+        "distill",
+        Some("db"),
+        NOW - 10 * DAY,
+        None,
+    );
+    consolidate(&store, &default_config(), false, NOW).unwrap();
+    let expected = 0.7 * 0.99_f64.powi(10);
+    assert!(
+        (edge_conf(&store, id) - expected).abs() < 1e-9,
+        "legacy decay: got {}, expected {expected}",
+        edge_conf(&store, id)
+    );
+}
+
 // ── Stage 3: access boost + cap ──────────────────────────────────────
 
 #[test]
@@ -184,8 +256,10 @@ fn test_gc_invalidates_low_confidence_but_pins_user_feedback() {
         "user_feedback edge is pinned"
     );
     assert_eq!(report.gc_invalidated, 1);
-    // The pinned edge still decays (it just can't be collected).
-    assert!((edge_conf(&store, pinned_id) - 0.1 * 0.99_f64.powi(10)).abs() < 1e-9);
+    // The pinned edge still decays (it just can't be collected); user_feedback
+    // now follows the 2160h half-life tier (0.1 is below protect score).
+    let expected = 0.1 * 0.5_f64.powf(10.0 * 24.0 / 2160.0);
+    assert!((edge_conf(&store, pinned_id) - expected).abs() < 1e-9);
 }
 
 // ── Stage 2a: redundant merge ────────────────────────────────────────

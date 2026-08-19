@@ -171,7 +171,12 @@ pub fn downscale(
             } else {
                 days
             };
-            new_conf *= config.decay_per_day.powf(effective_days);
+            // Vela-style half-life tiers by discovery source; None = legacy
+            // flat decay_per_day (behaviour-compatible for unmapped sources).
+            new_conf *= match config.half_life_hours(&e.discovered_by) {
+                Some(halflife) => 0.5f64.powf(effective_days * 24.0 / halflife),
+                None => config.decay_per_day.powf(effective_days),
+            };
             report.decayed += 1;
             changed = true;
         }

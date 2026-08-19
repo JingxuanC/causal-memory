@@ -70,6 +70,23 @@ Categories:
 Respond with ONLY a JSON object:
 {"polarity": "positive|negative|mixed|neutral"}"#;
 
+const SUPERSESSION_JUDGE_PROMPT: &str = r#"You are an update-resolver for an agent's causal memory.
+
+An agent recorded an OLD lesson (decision -> outcome). Later it recorded a NEW decision with a different outcome. Determine whether the NEW evidence FALSIFIES / SUPERSEDES the OLD lesson — i.e. the old belief is now known to be wrong and should be retired — or whether they are separate lessons that should both stay.
+
+Supersedes = TRUE when:
+- the same underlying decision/approach was re-attempted and the new outcome contradicts the old one (e.g. "used X -> failed" then "used X -> worked")
+- the new information explains why the old conclusion no longer holds
+- the new decision is a correction/retraction of the old one
+
+Supersedes = FALSE when:
+- the decisions are genuinely different actions
+- the outcomes are different but not contradictory (different facets)
+- the new record is a refinement/extension, not a contradiction
+
+Respond with ONLY a JSON object:
+{"supersedes": <true|false>, "reasoning": "<one sentence>"}"#;
+
 const RECONSTRUCT_PROMPT: &str = r#"You are reconstructing a LESSON from an agent's causal memory.
 
 You are given a subgraph of causal edges (decision → outcome, with relation, confidence, and polarity) around a topic. Write one short, coherent narrative (3-6 sentences) that distils the lesson these edges teach.
@@ -182,6 +199,39 @@ pub async fn judge_polarity(config: &LlmConfig, decision: &str, outcome: &str) -
         "positive" | "negative" | "mixed" | "neutral" => Ok(judgment.polarity),
         other => anyhow::bail!("LLM returned unknown polarity: {other}"),
     }
+}
+
+/// Verdict of the update-resolver (C7): does the new evidence falsify the
+/// old lesson?
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct SupersessionVerdict {
+    pub supersedes: bool,
+    #[serde(default)]
+    pub reasoning: String,
+}
+
+/// Judge whether NEW evidence supersedes (falsifies) an OLD recorded lesson
+/// (C7 update-resolver). Returns the verdict; any failure is an Err so the
+/// caller can keep the rule-based behaviour as the fallback.
+pub async fn judge_supersession(
+    config: &LlmConfig,
+    old_decision: &str,
+    old_outcome: &str,
+    new_decision: &str,
+    new_outcome: &str,
+) -> Result<SupersessionVerdict> {
+    let user_msg = format!(
+        "OLD lesson:\n  decision: {}\n  outcome: {}\n\nNEW evidence:\n  decision: {}\n  outcome: {}\n\nDoes the new evidence supersede the old lesson?",
+        old_decision.chars().take(300).collect::<String>(),
+        old_outcome.chars().take(300).collect::<String>(),
+        new_decision.chars().take(300).collect::<String>(),
+        new_outcome.chars().take(300).collect::<String>(),
+    );
+
+    let content = chat(config, SUPERSESSION_JUDGE_PROMPT, &user_msg, 120, 0.0).await?;
+    serde_json::from_str(&content).map_err(|e| {
+        anyhow::anyhow!("Failed to parse supersession verdict: {e}\nRaw: {content}")
+    })
 }
 
 /// Reconstruct a lesson narrative from a causal subgraph (reconstructive

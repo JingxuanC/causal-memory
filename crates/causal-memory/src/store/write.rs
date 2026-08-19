@@ -12,6 +12,10 @@ use super::{
     entry_from_row, is_retraction_record,
 };
 
+/// One C7 falsification candidate: (old_edge_id, old_decision, old_outcome,
+/// new_decision, new_outcome).
+pub type FalsificationCandidate = (i64, String, String, String, String);
+
 impl CausalStore {
     /// Record a decision and its outcome, creating the causal edge.
     pub fn record_decision(
@@ -105,7 +109,44 @@ impl CausalStore {
         // SELECT to resolve it (the server used to re-query by from_id).
         Ok((dec_id, conn.last_insert_rowid()))
     }
-
+    /// C7 update-resolver candidate scan: valid edges whose decision text
+    /// repeats (exact or high token overlap) with a DIFFERENT valid outcome
+    /// — the signal that new evidence may have falsified the old lesson.
+    /// The rule-based contradiction pass only auto-invalidates the
+    /// conservative "old negative -> new positive" case; everything else in
+    /// this set needs the LLM judge (resolve-updates) to decide. Returns
+    /// (old_edge_id, old_decision, old_outcome, new_decision, new_outcome).
+    pub fn find_falsified_candidates(&self, limit: usize) -> Result<Vec<FalsificationCandidate>> {
+        let conn = self.acquire()?;
+        let mut stmt = conn.prepare(
+            "SELECT old_e.id, old_d.text, old_o.text, new_d.text, new_o.text
+             FROM causal_edges old_e
+             JOIN chunks old_d ON old_d.id = old_e.from_id
+             JOIN chunks old_o ON old_o.id = old_e.to_id
+             JOIN causal_edges new_e ON new_e.from_id = old_e.from_id
+             JOIN chunks new_d ON new_d.id = new_e.from_id
+             JOIN chunks new_o ON new_o.id = new_e.to_id
+             WHERE old_e.valid_to IS NULL AND new_e.valid_to IS NULL
+               AND old_e.id != new_e.id
+               -- id is monotonic (AUTOINCREMENT); event_time can collide within a second
+               AND old_e.id < new_e.id
+               AND old_o.text != new_o.text
+               AND new_d.text = old_d.text
+             ORDER BY new_e.event_time DESC
+             LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))
+    }
     /// Soft-invalidate valid edges on the same decision text whose outcome
     /// contradicts the new outcome. Returns the number of invalidated edges.
     ///

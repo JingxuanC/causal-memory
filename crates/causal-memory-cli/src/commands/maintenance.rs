@@ -180,6 +180,94 @@ pub(crate) async fn run_judge(args: &[String]) -> anyhow::Result<()> {
 
     Ok(())
 }
+/// C7 update-resolver: scan for lessons that new evidence may have falsified
+/// and let the LLM judge each candidate. Without `--apply` this is a
+/// read-only preview (candidates + LLM verdicts); with `--apply` the
+/// superseded edges are soft-invalidated. No LLM configured (or a judge
+/// failure) leaves the candidate untouched — rule-based behaviour is the
+/// fallback.
+pub(crate) async fn run_resolve_updates(args: &[String]) -> anyhow::Result<()> {
+    use causal_memory::llm::{judge_supersession, LlmConfig};
+
+    let mut db: Option<PathBuf> = None;
+    let mut limit: usize = 50;
+    let mut apply = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--db" => {
+                i += 1;
+                let Some(p) = args.get(i) else {
+                    anyhow::bail!("--db requires a path\nUsage: causal-memory resolve-updates [--db <PATH>] [--limit N] [--apply]");
+                };
+                db = Some(PathBuf::from(p));
+            }
+            "--limit" => {
+                i += 1;
+                let Some(n) = args.get(i) else {
+                    anyhow::bail!("--limit requires a number");
+                };
+                limit = n.parse().map_err(|_| anyhow::anyhow!("bad limit: {n}"))?;
+            }
+            "--apply" => apply = true,
+            other => anyhow::bail!("unknown flag: {other}\nUsage: causal-memory resolve-updates [--db <PATH>] [--limit N] [--apply]"),
+        }
+        i += 1;
+    }
+
+    let store = CausalStore::open(db.unwrap_or_else(get_db_path))?;
+    let llm = LlmConfig::from_env();
+    let candidates = store.find_falsified_candidates(limit)?;
+    if candidates.is_empty() {
+        println!("No repeated-decision candidates found — nothing to resolve.");
+        return Ok(());
+    }
+    println!("C7 update-resolver: {} candidate edge(s) with repeated decisions but different outcomes", candidates.len());
+    if llm.is_none() {
+        println!("No CAUSAL_MEMORY_LLM_API configured — set it to get LLM verdicts (rule-based fallback only).");
+    }
+    println!();
+
+    let mut superseded = 0usize;
+    for (edge_id, old_dec, old_out, new_dec, new_out) in &candidates {
+        let old_d: String = old_dec.chars().take(60).collect();
+        let old_o: String = old_out.chars().take(60).collect();
+        let new_o: String = new_out.chars().take(60).collect();
+        print!("[edge {edge_id}] \"{old_d}\" → \"{old_o}\"\n            now: \"{new_o}\"");
+        let verdict = match &llm {
+            Some(config) => match judge_supersession(config, old_dec, old_out, new_dec, new_out).await {
+                Ok(v) => v,
+                Err(e) => {
+                    println!("  ⚠ judge failed: {e} (kept, rule-based fallback)");
+                    continue;
+                }
+            },
+            None => {
+                println!("  (no LLM — preview only)");
+                continue;
+            }
+        };
+        if verdict.supersedes {
+            if apply {
+                store.invalidate_edge(*edge_id)?;
+                superseded += 1;
+                println!("  ✗ SUPERSEDED{}", if !verdict.reasoning.is_empty() { format!(" — {}", verdict.reasoning) } else { String::new() });
+            } else {
+                println!("  ✗ would supersede{}", if !verdict.reasoning.is_empty() { format!(" — {}", verdict.reasoning) } else { String::new() });
+            }
+        } else {
+            println!("  ✓ keep{}", if !verdict.reasoning.is_empty() { format!(" — {}", verdict.reasoning) } else { String::new() });
+        }
+    }
+    println!();
+    if apply {
+        println!("Applied: {superseded} edge(s) invalidated.");
+    } else {
+        println!("Preview only (no changes). Re-run with --apply to invalidate the superseded edges.");
+    }
+    Ok(())
+}
+
 struct DbFlags {
     db: PathBuf,
     dry_run: bool,

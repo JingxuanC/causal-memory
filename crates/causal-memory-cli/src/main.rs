@@ -13,7 +13,7 @@ mod commands;
 mod server;
 use commands::distill::{run_distill, run_novelty};
 use commands::io::{run_export, run_import};
-use commands::maintenance::{run_embed, run_judge, run_migrate, run_polarity, run_restore, run_sleep};
+use commands::maintenance::{run_embed, run_judge, run_migrate, run_polarity, run_resolve_updates, run_restore, run_sleep};
 use commands::misc::{run_extract, run_http_server, run_link, run_mcp_server, run_reasoning};
 use commands::wiki::run_wiki;
 use commands::misc::run_refute;
@@ -101,6 +101,12 @@ fn main() -> anyhow::Result<()> {
     if args.len() >= 2 && args[1] == "polarity" {
         let rt = tokio::runtime::Runtime::new()?;
         return rt.block_on(run_polarity(&args[2..]));
+    }
+
+    // Subcommand: resolve-updates — C7 LLM update-resolver (falsified lessons)
+    if args.len() >= 2 && args[1] == "resolve-updates" {
+        let rt = tokio::runtime::Runtime::new()?;
+        return rt.block_on(run_resolve_updates(&args[2..]));
     }
 
     // Subcommand: export <file.jsonl> — share causal memory across agents
