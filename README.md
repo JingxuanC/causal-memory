@@ -10,7 +10,8 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Status: v0.9.0](https://img.shields.io/badge/status-v0.9.0--alpha-orange.svg)](#status)
-[![Tests: 322](https://img.shields.io/badge/tests-322-brightgreen.svg)](#build--test)
+[![Tests: 341](https://img.shields.io/badge/tests-341-brightgreen.svg)](#build--test)
+[![Release: v0.9.0](https://img.shields.io/badge/release-v0.9.0-blue.svg)](https://github.com/JingxuanC/causal-memory/releases)
 
 ---
 
@@ -403,12 +404,17 @@ What works (16/16 layers with end-to-end validation):
 - ✅ Novelty-entropy consolidation trigger + sleep-wake cycle
 - ✅ Meta-edge cross-session pattern mining
 - ✅ Forward simulation (intervention_query) with prevented-edge warnings
-- ✅ Benchmark harnesses: LoCoMo, LongMemEval, Memora, compaction, agent ablation, capability, longitudinal, advanced
-- ✅ 322/322 tests passing + clippy clean
+- ✅ Benchmark harnesses: LoCoMo, LongMemEval, Memora, CausalEval, compaction, agent ablation, capability, longitudinal, advanced
+- ✅ C7 LLM update-resolver (resolve-updates CLI + sleep stage 1.7 supersession)
+- ✅ Vela-style half-life decay tiers (90d / 7d / legacy 0.99-per-day)
+- ✅ Multi-session multi-pass retrieval (LongMemEval multi-session 42.9% → 57.9%, same-codebase)
+- ✅ PyO3 Python bindings (crates/causal-memory-py)
+- ✅ DSH native plugin (dsh-plugin/) + architecture visualization (docs/architecture.html)
+- ✅ 341/341 tests passing + clippy clean
 
 What's not done yet:
 
-- ❌ Python/TS bindings (PyO3 planned)
+- ❌ TS bindings
 - ❌ Forward-simulation prediction-accuracy benchmark (designed, not yet run)
 - ❌ 7×24 production deployment validation
 

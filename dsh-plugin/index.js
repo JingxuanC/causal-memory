@@ -16,17 +16,40 @@
  */
 
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 export const name = 'causal-memory'
 
 /** Services this plugin requires. */
 export const inject = ['tools', 'systemPrompt']
 
-const DEFAULT_COMMAND = '/Users/hjx/project/causal-memory/target/release/causal-memory'
+const PLUGIN_DIR = dirname(fileURLToPath(import.meta.url))
 const DEFAULT_DB = () => join(homedir(), '.local', 'share', 'causal-memory', 'causal.db')
 const DEFAULT_TIMEOUT_MS = 60_000
+
+/**
+ * Resolve the causal-memory server binary. DSH convention (see the official
+ * @deepseek-ai/dsh-mcp-client + examples/mcp-memory): never hardcode an
+ * absolute build path — the machine layout differs. Resolution chain:
+ *   1. config.command        (cordis overlay, highest priority)
+ *   2. CAUSAL_MEMORY_BIN     (ambient env override)
+ *   3. <plugin>/../target/release/causal-memory  (this repo checked out
+ *      anywhere — the dev workflow: cargo build --release --bin causal-memory)
+ *   4. bare `causal-memory`  (resolved from PATH — the release-binary install:
+ *      copy the GitHub release asset somewhere on PATH)
+ */
+function resolveCommand(explicit) {
+  if (explicit) return explicit
+  const envBin = process.env.CAUSAL_MEMORY_BIN
+  if (envBin) return envBin
+  const suffix = process.platform === 'win32' ? '.exe' : ''
+  const repoBin = join(PLUGIN_DIR, '..', 'target', 'release', `causal-memory${suffix}`)
+  if (existsSync(repoBin)) return repoBin
+  return `causal-memory${suffix}` // resolved from PATH by the OS
+}
 
 /**
  * Minimal newline-delimited JSON-RPC client over a child's stdio.
@@ -119,7 +142,7 @@ function toolNames(tools) {
  *   `exclude` (array of raw tool names to skip), `failOnStartupError`.
  */
 export async function apply(ctx, config = {}) {
-  const command = config.command ?? process.env.CAUSAL_MEMORY_BIN ?? DEFAULT_COMMAND
+  const command = resolveCommand(config.command)
   const dbPath = config.dbPath ?? process.env.CAUSAL_MEMORY_DB ?? DEFAULT_DB()
   const timeoutMs = config.toolCallTimeoutMs ?? DEFAULT_TIMEOUT_MS
   const exclude = new Set(Array.isArray(config.exclude) ? config.exclude : [])

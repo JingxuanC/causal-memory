@@ -4,10 +4,24 @@ DeepSeek Harness 原生记忆插件：把 causal-memory 的 14 个工具以**干
 （无 `mcp__` 前缀）挂到 DSH 的 `ctx.tools`，并注入一条系统提示词段落
 （order 300），告诉模型何时查阅因果记忆库。
 
+## 前置：causal-memory 二进制
+
+插件按 DSH 惯例解析服务端二进制（不写死路径），二选一：
+
+1. **本仓库开发构建**（克隆到任意位置即可）：
+   ```bash
+   cargo build --release --bin causal-memory
+   ```
+   插件会自动找到 `<仓库>/target/release/causal-memory`。
+2. **PATH 全局安装**（发布二进制）：从 GitHub Releases 下载对应平台的
+   `causal-memory` 放到 PATH 上（如 `~/bin` 或 `/usr/local/bin`），插件回退到
+   PATH 查找裸名 `causal-memory`。
+
 ## 安装
 
 ```bash
-dsh plugin --profile web add /Users/hjx/project/causal-memory/dsh-plugin
+cd <causal-memory 仓库路径>
+dsh plugin --profile web add "$PWD/dsh-plugin"
 ```
 
 以 `link:` 方式安装（pnpm link）——修改本目录代码即时生效，无需重装。
@@ -27,7 +41,7 @@ dsh plugin --profile web add /Users/hjx/project/causal-memory/dsh-plugin
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `command` | `~/project/causal-memory/target/release/causal-memory` | 二进制路径（或 `CAUSAL_MEMORY_BIN` 环境变量） |
+| `command` | 自动解析 | 二进制路径：`config.command` → `CAUSAL_MEMORY_BIN` → 仓库 `target/release` → PATH 裸名 |
 | `dbPath` | `~/.local/share/causal-memory/causal.db` | SQLite 路径（或 `CAUSAL_MEMORY_DB`） |
 | `toolCallTimeoutMs` | `60000` | 单次工具调用超时 |
 | `exclude` | `[]` | 不挂载的工具名数组 |
