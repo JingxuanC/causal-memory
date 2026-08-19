@@ -882,3 +882,29 @@ fn test_supersession_judge_failure_keeps_edge() {
     let valid = store.all_valid_edges().unwrap();
     assert_eq!(valid.len(), 2, "failing judge must not invalidate the edge");
 }
+/// LIVE verification (not run by default): seeds a falsified pair and runs
+/// the stage with a REAL LLM judge from the environment, asserting the old
+/// edge is retired on the write path (2 recorded -> 1 valid).
+/// Run explicitly:
+///   CAUSAL_MEMORY_LLM_API=... CAUSAL_MEMORY_LLM_KEY=... \
+///     cargo test -p causal-memory --lib -- --ignored test_supersession_live_apply
+#[test]
+#[ignore = "requires CAUSAL_MEMORY_LLM_API/KEY (real LLM calls)"]
+fn test_supersession_live_apply() {
+    let Some(llm) = crate::llm::LlmConfig::from_env() else {
+        eprintln!("skipped: no CAUSAL_MEMORY_LLM_API/KEY configured");
+        return;
+    };
+    let store = CausalStore::open_in_memory().unwrap();
+    insert_falsified_pair(&store);
+    assert_eq!(store.all_valid_edges().unwrap().len(), 2, "precondition");
+    let mut report = ConsolidateReport::default();
+    resolve_supersessions_with(&store, &default_config(), false, &mut report, Some(&llm)).unwrap();
+    let valid = store.all_valid_edges().unwrap();
+    assert_eq!(
+        valid.len(), 1,
+        "live judge must retire the falsified old edge (got {:?})",
+        valid.iter().map(|e| e.outcome_text.as_str()).collect::<Vec<_>>()
+    );
+    assert_eq!(report.superseded_lessons, 1);
+}

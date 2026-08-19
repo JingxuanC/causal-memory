@@ -119,19 +119,19 @@ impl CausalStore {
     pub fn find_falsified_candidates(&self, limit: usize) -> Result<Vec<FalsificationCandidate>> {
         let conn = self.acquire()?;
         let mut stmt = conn.prepare(
-            "SELECT old_e.id, old_d.text, old_o.text, new_d.text, new_o.text
+            "SELECT old_e.id, old_d.text, old_o.text, old_d.text, new_o.text
              FROM causal_edges old_e
              JOIN chunks old_d ON old_d.id = old_e.from_id
              JOIN chunks old_o ON old_o.id = old_e.to_id
              JOIN causal_edges new_e ON new_e.from_id = old_e.from_id
-             JOIN chunks new_d ON new_d.id = new_e.from_id
              JOIN chunks new_o ON new_o.id = new_e.to_id
              WHERE old_e.valid_to IS NULL AND new_e.valid_to IS NULL
                AND old_e.id != new_e.id
                -- id is monotonic (AUTOINCREMENT); event_time can collide within a second
                AND old_e.id < new_e.id
                AND old_o.text != new_o.text
-               AND new_d.text = old_d.text
+               -- new decision text equals old_d.text: the join is on from_id
+               -- (chunk reuse), so the decision chunk is the same row.
              ORDER BY new_e.event_time DESC
              LIMIT ?1",
         )?;

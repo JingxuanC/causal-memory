@@ -185,11 +185,18 @@ fn resolve_supersessions_with(
     }
     let rt = tokio::runtime::Runtime::new()?;
     let mut superseded = 0usize;
+    // One old edge can pair with several newer records: once a verdict
+    // retires it, skip the remaining pairs (no re-judge, no duplicate count).
+    let mut retired: HashSet<i64> = HashSet::new();
     for (edge_id, old_d, old_o, new_d, new_o) in &candidates {
+        if retired.contains(edge_id) {
+            continue;
+        }
         match rt.block_on(crate::llm::judge_supersession(
             llm, old_d, old_o, new_d, new_o,
         )) {
             Ok(v) if v.supersedes => {
+                retired.insert(*edge_id);
                 superseded += 1;
                 if !dry_run {
                     store.invalidate_edge(*edge_id)?;

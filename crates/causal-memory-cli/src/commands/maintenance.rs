@@ -3,6 +3,7 @@
 use causal_memory::extractor::DecisionExtractor;
 use causal_memory::store::CausalStore;
 use crate::get_db_path;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 pub(crate) fn run_restore(args: &[String]) -> anyhow::Result<()> {
@@ -229,7 +230,14 @@ pub(crate) async fn run_resolve_updates(args: &[String]) -> anyhow::Result<()> {
     println!();
 
     let mut superseded = 0usize;
+    // One old edge can pair with several newer records (each is a candidate):
+    // once a verdict retires it, later pairs for the same edge are redundant
+    // (no re-judge, no duplicate SUPERSEDED line, no second invalidate).
+    let mut retired: HashSet<i64> = HashSet::new();
     for (edge_id, old_dec, old_out, new_dec, new_out) in &candidates {
+        if retired.contains(edge_id) {
+            continue;
+        }
         let old_d: String = old_dec.chars().take(60).collect();
         let old_o: String = old_out.chars().take(60).collect();
         let new_o: String = new_out.chars().take(60).collect();
@@ -250,6 +258,7 @@ pub(crate) async fn run_resolve_updates(args: &[String]) -> anyhow::Result<()> {
         if verdict.supersedes {
             if apply {
                 store.invalidate_edge(*edge_id)?;
+                retired.insert(*edge_id);
                 superseded += 1;
                 println!("  ✗ SUPERSEDED{}", if !verdict.reasoning.is_empty() { format!(" — {}", verdict.reasoning) } else { String::new() });
             } else {
