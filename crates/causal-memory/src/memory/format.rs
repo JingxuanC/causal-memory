@@ -1,9 +1,11 @@
 //! Layered formatting, token budgets, and the shared RRF fusion.
 
 use super::RRF_K;
-use causal_memory::store::CausalEntry;
+use crate::store::CausalEntry;
 
-pub(crate) fn format_entry_layered(entry: &CausalEntry, rank: usize, level: &str) -> (String, usize) {
+/// Format one entry at L0/L1/L2 detail, with an approximate token cost.
+/// Pub: the CLI's bench_tokens binary re-uses it for token measurements.
+pub fn format_entry_layered(entry: &CausalEntry, rank: usize, level: &str) -> (String, usize) {
     let dt = entry.decision_text.as_str();
     let ot = entry.outcome_text.as_str();
     let tag = entry.task_tag.as_deref().unwrap_or("untagged");
@@ -84,8 +86,9 @@ pub(crate) fn rrf_fuse_many(lists: &[&[String]]) -> Vec<(String, f64)> {
     scores
 }
 
-/// Two-list convenience wrapper (kept for tests).
-pub(crate) fn rrf_fuse(a: &[String], b: &[String]) -> Vec<(String, f64)> {
+/// Two-list convenience wrapper (kept for tests and for the CLI's
+/// bench_tokens, which re-exports it). Pub: re-exported cross-crate.
+pub fn rrf_fuse(a: &[String], b: &[String]) -> Vec<(String, f64)> {
     rrf_fuse_many(&[a, b])
 }
 

@@ -1,8 +1,8 @@
-//! Output-shaping helpers for the tool responses.
+//! Output-shaping helpers for the memory op responses.
 
 use super::block_on;
 use super::format::truncate_chars;
-use causal_memory::store::{outcome_polarity, ChainHop};
+use crate::store::{outcome_polarity, ChainHop};
 
 pub(crate) fn judge_outcome_polarity(decision: &str, outcome: &str) -> String {
     // C2: the LLM judge runs synchronously inside record_decision (8s
@@ -11,8 +11,8 @@ pub(crate) fn judge_outcome_polarity(decision: &str, outcome: &str) -> String {
     // only wanted for reading. The `polarity` backfill CLI can re-judge
     // edges later (edges_without_polarity).
     if std::env::var("CAUSAL_MEMORY_NO_LLM_POLARITY").is_err() {
-        if let Some(config) = causal_memory::llm::LlmConfig::from_env() {
-        if let Ok(pol) = block_on(causal_memory::llm::judge_polarity(
+        if let Some(config) = crate::llm::LlmConfig::from_env() {
+        if let Ok(pol) = block_on(crate::llm::judge_polarity(
             &config, decision, outcome,
         )) {
             return pol;
@@ -40,7 +40,7 @@ pub(crate) fn chain_label(
     if terminal_polarity == Some("mixed") {
         return "⚠️ WARNING (mixed outcome)";
     }
-    match causal_memory::store::effective_polarity(terminal_polarity, terminal_text) {
+    match crate::store::effective_polarity(terminal_polarity, terminal_text) {
         Some(false) if has_prevented => {
             "ℹ️ UNKNOWN (failure outcome, but a prevented edge on this path blocked it before)"
         }
@@ -227,7 +227,7 @@ pub(crate) fn counterfactual_verdict(a: &CfDist, b: &CfDist) -> String {
 }
 
 /// Char-safe truncation to at most `n` chars, appending "…" when cut.
-pub(crate) fn edge_stub(e: &causal_memory::store::CausalEntry) -> String {
+pub(crate) fn edge_stub(e: &crate::store::CausalEntry) -> String {
     let pol = e.outcome_polarity.as_deref().unwrap_or("?");
     let base = format!(
         "#{} {} conf={:.2} pol={pol}",
@@ -251,7 +251,7 @@ pub(crate) fn reconstruction_agreement(texts: &[String]) -> f64 {
     }
     let sets: Vec<std::collections::HashSet<String>> = texts
         .iter()
-        .map(|t| causal_memory::patterns::tokenize(t).into_iter().collect())
+        .map(|t| crate::patterns::tokenize(t).into_iter().collect())
         .collect();
     let mut sum = 0.0;
     let mut pairs = 0usize;
@@ -269,5 +269,3 @@ pub(crate) fn reconstruction_agreement(texts: &[String]) -> f64 {
     }
     sum / pairs as f64
 }
-
-// ─── Tool parameter types ─────────────────────────────────────────────────

@@ -6,6 +6,7 @@ pub mod embed;
 pub mod extractor;
 pub mod hippocampus;
 pub mod llm;
+pub mod memory;
 pub mod migrate;
 pub mod patterns;
 pub mod query_router;

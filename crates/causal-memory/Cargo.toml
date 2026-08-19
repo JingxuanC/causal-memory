@@ -17,7 +17,7 @@ schemars.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 reqwest.workspace = true
-tokio = { workspace = true, features = ["time"] }
+tokio = { workspace = true, features = ["time", "rt-multi-thread"] }
 
 # Local embedding via ONNX (optional). Enable with --features local-embed.
 # Uses fastembed-rs (BAAI/bge-small-en-v1.5, 384 dims, ~130MB, downloads on first use).
