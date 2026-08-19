@@ -2137,7 +2137,7 @@ use rusqlite::params;
 
         let loaded = store.load_cooccurrences().unwrap();
         assert_eq!(loaded.len(), 1, "one pair created");
-        let (a, b, w) = &loaded[0];
+        let (a, _b, w) = &loaded[0];
         assert!(a == &d1 || a == &d2, "pair endpoint matches");
         assert!(*w > 0.2, "second bump reinforced the weight, got {w}");
 

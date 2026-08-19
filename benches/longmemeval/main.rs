@@ -695,7 +695,7 @@ fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize) -> Result<Vec<Cau
 
     // Rank sessions by hit count, take top 5.
     let mut ranked_sessions: Vec<(String, usize)> = session_hits.into_iter().collect();
-    ranked_sessions.sort_by(|a, b| b.1.cmp(&a.1));
+    ranked_sessions.sort_by_key(|b| std::cmp::Reverse(b.1));
     let top_sessions: Vec<&String> = ranked_sessions.iter().take(5).map(|(s, _)| s).collect();
 
     // Fetch all chunks for top sessions, cap at 40 total to prevent prompt explosion.

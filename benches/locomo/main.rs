@@ -412,7 +412,7 @@ fn ingest_conversation(store: &CausalStore, conv: &LocomoConversation) -> Result
                 // Keep the persistent BM25 inverted index complete: raw turn
                 // chunks are inserted directly (not via the store API), so
                 // index them here or search would never see them (B2).
-                causal_memory::store::CausalStore::index_chunk(&c, &turn.dia_id, &chunk_text)?;
+                causal_memory::store::CausalStore::index_chunk(c, &turn.dia_id, &chunk_text)?;
                 Ok(())
             })?;
 
@@ -1759,7 +1759,7 @@ async fn rejudge(argv: &[String]) -> Result<()> {
 
         let done = Arc::new(AtomicUsize::new(0));
         let total = rows.len();
-        let rejudged: Vec<ResultRow> = futures::stream::iter(rows.into_iter())
+        let rejudged: Vec<ResultRow> = futures::stream::iter(rows)
             .map(|mut row| {
                 let cfg = cfg.clone();
                 let done = done.clone();

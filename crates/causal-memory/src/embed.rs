@@ -289,6 +289,13 @@ pub fn shared_embedder() -> Option<&'static std::sync::Mutex<Option<UnifiedEmbed
 /// embedder type. Returns `Some(Ok(vec))` on success, `Some(Err)` when the
 /// endpoint failed, `None` when no embedder is configured (callers fall
 /// back to BM25).
+// Holding the std Mutex across the await is deliberate: it serializes the
+// HTTP round-trips through the single shared embedder, and std (not tokio)
+// keeps the poisoned/locked-never-blocks semantics documented above.
+#[allow(
+    clippy::await_holding_lock,
+    reason = "deliberate serialization of shared-embedder HTTP calls"
+)]
 pub async fn embed_shared(text: &str) -> Option<Result<Vec<f32>>> {
     let slot = shared_embedder()?;
     let mut guard = slot.lock().ok()?;

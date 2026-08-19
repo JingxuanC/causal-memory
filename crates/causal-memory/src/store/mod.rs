@@ -247,6 +247,7 @@ impl CausalStore {
     /// - synchronous=NORMAL: WAL-safe durability (a crash can lose at most
     ///   the last checkpoint, never corrupt), removing a synchronous fsync
     ///   from every committed write.
+    ///
     /// In-memory stores (open_in_memory) skip this: WAL is meaningless for
     /// :memory: and the defaults are fine for tests.
     fn apply_pragmas(conn: &Connection) -> Result<()> {
@@ -427,12 +428,22 @@ pub(crate) struct PooledConn {
 
 impl Deref for PooledConn {
     type Target = Connection;
+    // conn is Some for the whole borrowable lifetime; it is only taken out
+    // inside Drop when the connection returns to the pool.
+    #[allow(
+        clippy::expect_used,
+        reason = "conn is invariantly Some outside Drop"
+    )]
     fn deref(&self) -> &Connection {
         self.conn.as_ref().expect("pooled conn present")
     }
 }
 
 impl DerefMut for PooledConn {
+    #[allow(
+        clippy::expect_used,
+        reason = "conn is invariantly Some outside Drop"
+    )]
     fn deref_mut(&mut self) -> &mut Connection {
         self.conn.as_mut().expect("pooled conn present")
     }
