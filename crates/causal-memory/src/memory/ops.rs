@@ -9,6 +9,24 @@ use super::output::*;
 use super::{block_on, Memory, INTERVENTION_MIN_SIMILARITY, SEMANTIC_CONTRADICTION_MIN_SIMILARITY};
 use crate::store::{AgentFact, CausalEntry, ChainHop};
 
+/// One structured retrieval hit — the machine-readable form of
+/// `search_memory`'s output, so non-LLM frontends (the AMC leaderboard
+/// contract: `{id, content, score, created_at}`) consume the same fused
+/// result agents see as text. `score` is the RRF fused rank score; `rank`
+/// is the 1-based fused position.
+#[derive(Debug, Clone)]
+pub struct MemoryHit {
+    /// Layer-namespaced key: `fact:{id}` or `causal:{edge_id}`.
+    pub key: String,
+    /// Human-readable content of the underlying memory.
+    pub content: String,
+    /// RRF fused score (higher = more relevant).
+    pub score: f64,
+    /// 1-based position in the fused ranking.
+    pub rank: usize,
+    pub created_at: Option<i64>,
+}
+
 impl Memory {
     /// `record_decision` — log a decision → outcome causal edge.
     pub fn record_decision(
@@ -486,6 +504,170 @@ impl Memory {
             ));
         }
         out
+    }
+
+    /// `remember_raw_turns` — pre-gatekeeping write path: raw conversation
+    /// turns go straight into the retrieval pool (chunks) with adjacent-turn
+    /// temporal edges. No LLM, no distillation — this is what `remember`
+    /// does when no distiller is available, productized for backends (the
+    /// AMC server's `--write-mode raw`) that need write-time LLM calls off
+    /// the synchronous path. The full pipeline (`remember`) keeps
+    /// write-time gatekeeping: LLM extraction is the sole path into the
+    /// pool (0afb9f1) — choose deliberately.
+    ///
+    /// Returns the number of turns written.
+    pub fn remember_raw_turns(&self, turns: &[(String, String)], session: &str) -> usize {
+        let now = chrono::Utc::now().timestamp();
+        let mut written = 0usize;
+        for (idx, (speaker, text)) in turns.iter().enumerate() {
+            let chunk_id = format!("raw:{session}:{idx}");
+            let payload = format!("[{session}] {speaker}: {text}");
+            let ok = self
+                .store
+                .with_conn(|c| {
+                    use rusqlite::params;
+                    c.execute(
+                        "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
+                        params![&chunk_id, &payload, now],
+                    )?;
+                    if idx > 0 {
+                        let prev_id = format!("raw:{session}:{}", idx - 1);
+                        c.execute(
+                            "INSERT OR IGNORE INTO causal_edges
+                             (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
+                             VALUES (?1, ?2, 'no_effect', 0.4, 'temporal', ?3, ?3, NULL)",
+                            params![&prev_id, &chunk_id, now],
+                        )?;
+                    }
+                    Ok(())
+                })
+                .is_ok();
+            if ok {
+                written += 1;
+            }
+        }
+        written
+    }
+
+    /// Structured core of `search_memory`: both layers (facts + causal),
+    /// semantic/BM25 per-layer fallthrough, hop expansion, RRF fusion and
+    /// top-`limit` truncation. The text tool and the AMC server both wrap
+    /// this — one retrieval pipeline, two presentations. Display-only
+    /// concerns (D4 intent routing) stay in the text wrapper. See
+    /// [`MemoryHit`] for the hit shape.
+    pub fn search_memory_entries(
+        &self,
+        query: &str,
+        task_tag: Option<&str>,
+        scope: Option<&str>,
+        limit: usize,
+    ) -> (Vec<MemoryHit>, &'static str) {
+        let per_layer = limit.saturating_mul(2).max(10);
+        let query_vec = block_on(crate::embed::embed_shared(query)).and_then(|r| r.ok());
+        let mut used_semantic = false;
+
+        let facts: Vec<AgentFact> = match &query_vec {
+            Some(v) => {
+                let sem: Vec<AgentFact> = self
+                    .store
+                    .search_facts_semantic(v, scope, per_layer)
+                    .map(|hits| hits.into_iter().map(|(f, _)| f).collect())
+                    .unwrap_or_default();
+                if sem.is_empty() {
+                    self.store
+                        .search_facts_bm25(query, scope, per_layer)
+                        .unwrap_or_default()
+                } else {
+                    used_semantic = true;
+                    sem
+                }
+            }
+            None => self
+                .store
+                .search_facts_bm25(query, scope, per_layer)
+                .unwrap_or_default(),
+        };
+        let causal: Vec<CausalEntry> = match &query_vec {
+            Some(v) => {
+                let sem: Vec<CausalEntry> = self
+                    .store
+                    .search_causal_semantic_entity_boosted(v, query, task_tag, per_layer)
+                    .map(|hits| hits.into_iter().map(|(e, _)| e).collect())
+                    .unwrap_or_default();
+                if sem.is_empty() {
+                    self.store
+                        .search_causal_bm25(task_tag, query, per_layer)
+                        .unwrap_or_default()
+                } else {
+                    used_semantic = true;
+                    sem
+                }
+            }
+            None => self
+                .store
+                .search_causal_bm25(task_tag, query, per_layer)
+                .unwrap_or_default(),
+        };
+        let mode = if used_semantic { "semantic" } else { "bm25" };
+
+        if facts.is_empty() && causal.is_empty() {
+            return (Vec::new(), mode);
+        }
+
+        // A2: hop expansion from the causal seeds.
+        let mut causal_by_id: HashMap<i64, CausalEntry> = HashMap::new();
+        for e in &causal {
+            causal_by_id.insert(e.edge_id, e.clone());
+        }
+        let seed_ids: Vec<i64> = causal.iter().map(|e| e.edge_id).collect();
+        let hop = self
+            .store
+            .search_causal_hop(query, &seed_ids, per_layer)
+            .unwrap_or_default();
+        for e in &hop {
+            causal_by_id.entry(e.edge_id).or_insert_with(|| e.clone());
+        }
+
+        // RRF fusion over layer-prefixed keys, then materialize the fused
+        // top-`limit` as structured hits (facts first, then causal — within
+        // each layer, fused-rank order).
+        let fact_keys: Vec<String> = facts.iter().map(|f| format!("fact:{}", f.id)).collect();
+        let causal_keys: Vec<String> = causal
+            .iter()
+            .map(|e| format!("causal:{}", e.edge_id))
+            .collect();
+        let fused = rrf_fuse_many(&[&fact_keys, &causal_keys]);
+        let mut hits: Vec<MemoryHit> = Vec::new();
+        for (i, (key, score)) in fused.into_iter().take(limit).enumerate() {
+            let rank = i + 1;
+            if let Some(id) = key.strip_prefix("fact:").and_then(|s| s.parse::<i64>().ok()) {
+                if let Some(f) = facts.iter().find(|f| f.id == id) {
+                    hits.push(MemoryHit {
+                        key: key.clone(),
+                        content: format!("[{}] {} = \"{}\"", f.scope, f.key, f.value),
+                        score,
+                        rank,
+                        created_at: Some(f.updated_at),
+                    });
+                }
+            } else if let Some(id) = key.strip_prefix("causal:") {
+                if let Ok(edge_id) = id.parse::<i64>() {
+                    if let Some(e) = causal_by_id.get(&edge_id) {
+                        hits.push(MemoryHit {
+                            key: key.clone(),
+                            content: format!(
+                                "\"{}\" →({})→ \"{}\"",
+                                e.decision_text, e.relation, e.outcome_text
+                            ),
+                            score,
+                            rank,
+                            created_at: Some(e.event_time),
+                        });
+                    }
+                }
+            }
+        }
+        (hits, mode)
     }
 
     /// `search_memory` — unified retrieval: facts + causal lessons fused by

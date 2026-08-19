@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.0] - Unreleased
 
 ### Added
+- **AMC server on the production pipeline (single-track)**: the Agent
+  Memory Challenge server is now a thin HTTP frontend over the shared
+  `Memory` facade — `/add` → `remember`, `/search` →
+  `search_memory_entries` — the same pipeline as MCP stdio/HTTP and the
+  Python bindings. The private AmcStore/lexical scoring/private RRF
+  (~400 lines) is deleted; per-user_id store isolation is physical (one
+  db per user). `--write-mode distill|raw` controls the write-time
+  strategy: full distillation (default; honest degrade to raw with a
+  warning when no LLM env) vs pre-gatekeeping raw turns — both modes
+  share the same BM25 + semantic + entity retrieval stack, so an A/B
+  rerun of the leaderboard isolates the value of write-time
+  distillation.
+- **`search_memory_entries` + `MemoryHit`** (facade): the structured core
+  of `search_memory` — both layers, per-layer semantic/BM25 fallthrough,
+  hop expansion, RRF fusion, top-k — returning machine-readable hits
+  for non-LLM frontends; the text tool wraps it unchanged.
+- **`remember_raw_turns`** (facade): raw conversation turns into the
+  retrieval pool with adjacent temporal edges (no write-time LLM).
 - **`resolve_updates` MCP tool (15th)**: the C7 knowledge-update pass
   (candidate scan + LLM judge, the same pipeline sleep runs as stage 1.7)
   is now callable by agents — preview by default, `apply=true` writes.

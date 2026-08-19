@@ -408,4 +408,48 @@ mod tests {
         let out = memory.reconstruct_lesson_inner("totally unknown topic", 20, 0, None);
         assert!(out.contains("📭 No recorded causal context"), "{out}");
     }
+
+    // ─── AMC backend: raw write path + structured retrieval core ──────────
+
+    #[test]
+    fn test_remember_raw_turns_writes_searchable_pool() {
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let turns = vec![
+            ("alice".to_string(), "we moved the build to bazel".to_string()),
+            ("bob".to_string(), "bazel cut our build time in half".to_string()),
+        ];
+        let written = memory.remember_raw_turns(&turns, "s7");
+        assert_eq!(written, 2);
+        let (hits, _mode) = memory.search_memory_entries("bazel build", None, None, 5);
+        assert!(!hits.is_empty(), "raw turns must be retrievable");
+        let all: String = hits.iter().map(|h| h.content.as_str()).collect();
+        assert!(all.contains("bazel"), "hit content: {all}");
+        // Layer-namespaced keys, ranked, fused score present.
+        assert!(hits[0].key.starts_with("causal:") || hits[0].key.starts_with("fact:"));
+        assert_eq!(hits[0].rank, 1);
+        assert!(hits[0].score > 0.0);
+    }
+
+    #[test]
+    fn test_search_memory_entries_matches_text_tool_layers() {
+        let memory = counterfactual_memory();
+        // Same query through both presentations: the structured core must
+        // surface the same memories the text tool reports.
+        let text = memory.search_memory("redis mutex", None, None, Some(10));
+        let (hits, _mode) = memory.search_memory_entries("redis mutex", None, None, 10);
+        assert!(!hits.is_empty(), "seeded edges must surface");
+        assert!(text.contains("redis"), "text tool: {text}");
+        // Every structured hit's decision text appears in the text output.
+        for h in &hits {
+            let needle = h.content.split('"').nth(1).unwrap_or_default();
+            if !needle.is_empty() && h.key.starts_with("causal:") {
+                assert!(
+                    text.contains(&needle[..needle.len().min(20)]),
+                    "text tool missing {} from {}",
+                    needle,
+                    h.key
+                );
+            }
+        }
+    }
 }
