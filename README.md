@@ -354,11 +354,14 @@ cargo clippy --workspace -- -D warnings # Lint
 ## Agent Memory Challenge (AMC/01)
 
 causal-memory enters the [Agent Memory Leaderboard](https://agentmemories.ai/competition/)
-first evaluation cycle via a standalone Add/Search integration server:
+first evaluation cycle via an Add/Search integration server — a thin HTTP
+frontend over the same `Memory` facade the MCP server runs (BM25 + semantic +
+entity retrieval, RRF-fused; one store per `user_id`):
 
 ```bash
 cargo build --release --bin causal-memory-amc
-./target/release/causal-memory-amc --db amc.db --port 8787
+./target/release/causal-memory-amc --db-dir amc_data --port 8787 --write-mode raw
+# --write-mode raw (no LLM, platform default) | distill (write-time LLM extraction)
 # POST /add (store memory, user_id-isolated) · POST /search (ordered evidence) · GET /health
 ```
 
