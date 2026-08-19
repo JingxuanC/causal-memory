@@ -222,6 +222,37 @@ export CAUSAL_MEMORY_EMBED_KEY=your-key
 export CAUSAL_MEMORY_EMBED_MODEL=embedding-3
 ```
 
+### Python bindings (PyO3)
+
+All 14 memory operations are also available as a Python package, built on the
+same `causal_memory::memory::Memory` facade the MCP server uses:
+
+```bash
+cd crates/causal-memory-py
+pip install maturin
+maturin develop          # builds and installs into the active venv
+```
+
+```python
+from causal_memory import CausalMemory
+
+mem = CausalMemory("~/.local/share/causal-memory/causal.db")  # or CausalMemory.in_memory()
+mem.record_decision("used Redis mutex for cache stampede protection",
+                    "deadlock under load", "caused", "concurrency")
+print(mem.search_causal(query="cache stampede protection"))
+print(mem.intervention_query("skip the test suite before shipping"))
+```
+
+Methods mirror the 14 MCP tools one-to-one and return the same text. Embedding
+and LLM features use the same `CAUSAL_MEMORY_EMBED_*` / `CAUSAL_MEMORY_LLM_*`
+environment variables; without them the bindings degrade gracefully to
+BM25-only retrieval. Smoke tests: `maturin develop && pytest tests/`.
+
+> **macOS note:** always build the bindings through maturin. Plain
+> `cargo build -p causal-memory-py --release` fails to link — the Xcode CLT
+> Python ships no `libpython3.9` dylib (this is why the py crate sits outside
+> the workspace `default-members`).
+
 ---
 
 ## Fourteen MCP tools

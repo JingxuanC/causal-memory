@@ -1,0 +1,42 @@
+[package]
+name = "causal-memory-py"
+description = "Python bindings (PyO3) for causal-memory — the agent memory system with a causal core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "causal_memory"
+crate-type = ["cdylib"]
+# No Rust tests in this crate (the Python pytest suite covers it via
+# maturin develop). Building a lib-test harness would fail to link: pyo3
+# without extension-module links -lpython3.9, which the Xcode CLT Python
+# does not ship as a dylib. Skip the harness instead of fighting the linker.
+test = false
+doctest = false
+
+[dependencies]
+# Aliased: the built module is also named `causal_memory`, and the bare
+# extern-crate name would be ambiguous inside the #[pymodule] macro.
+cm = { path = "../causal-memory", package = "causal-memory" }
+pyo3 = { version = "0.24", features = ["abi3-py39"] }
+
+# Canonical pyo3 layout: `extension-module` stays OFF for plain cargo builds
+# (so `cargo test --workspace` links libpython and succeeds), and maturin
+# turns it on for wheel builds (see pyproject.toml [tool.maturin] features).
+[features]
+extension-module = ["pyo3/extension-module"]
+
+# PyO3 macros generate unsafe code, so this crate cannot inherit the
+# workspace's `unsafe_code = "deny"`. The other workspace lint levels are
+# kept in sync manually.
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+style = { level = "warn", priority = -1 }
+complexity = { level = "warn", priority = -1 }
+perf = { level = "warn", priority = -1 }

@@ -5,6 +5,16 @@ resolver = "2"
 members = [
     "crates/causal-memory",
     "crates/causal-memory-cli",
+    "crates/causal-memory-py",
+]
+# The py crate is a cdylib for maturin wheels; plain release profile links
+# -lpython3.9, which the macOS system Python does not ship. Build/test it
+# through maturin (see crates/causal-memory-py/pyproject.toml); unqualified
+# `cargo build --release` / `cargo test` cover the Rust crates only
+# (`cargo test --workspace` still includes it — dev linking works there).
+default-members = [
+    "crates/causal-memory",
+    "crates/causal-memory-cli",
 ]
 
 [workspace.package]

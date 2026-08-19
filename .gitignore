@@ -34,3 +34,6 @@ graph-*.html
 # Local agent config, may contain credentials
 *.cordis.yml
 .DS_Store
+
+# Python bindings local dev environment
+.venv/
