@@ -278,7 +278,7 @@ async fn handle_search(
         return Json(SearchResponse { data: Vec::new() });
     }
 
-    // Signal 1 — morphology-robust lexical scores (per-user corpus).
+    // Signal 1 — morphology-robust, IDF-weighted lexical scores (per-user corpus).
     let query_tokens = causal_memory::patterns::tokenize(&req.query);
     if query_tokens.is_empty() && req.query.trim().is_empty() {
         // Contract requires a query, but guard anyway: most recent first.
@@ -295,15 +295,32 @@ async fn handle_search(
             .collect();
         return Json(SearchResponse { data: hits });
     }
-    let mut scored: Vec<(f64, &MemoryRow)> = rows
+    let doc_tokens: Vec<Vec<String>> = rows
         .iter()
-        .map(|r| {
-            (
-                prefix_score(&query_tokens, &causal_memory::patterns::tokenize(&r.content)),
-                r,
-            )
-        })
+        .map(|r| causal_memory::patterns::tokenize(&r.content))
         .collect();
+    let idfs = token_idfs(&query_tokens, &doc_tokens);
+    let lex_scores: Vec<(i64, f64)> = rows
+        .iter()
+        .zip(&doc_tokens)
+        .map(|(r, dt)| (r.id, lexical_score(&query_tokens, dt, &idfs)))
+        .collect();
+
+    let mut signals: Vec<Vec<(i64, usize)>> = Vec::new();
+    // Lexical rank list (score-descending; ties → newer id first).
+    let mut lex_ranked = lex_scores;
+    lex_ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.0.cmp(&a.0))
+    });
+    signals.push(
+        lex_ranked
+            .iter()
+            .enumerate()
+            .map(|(i, (id, _))| (*id, i + 1))
+            .collect(),
+    );
 
     // Signal 2 — semantic cosine, when an embedder AND stored vectors exist.
     let query_vec: Option<Vec<f32>> = {
@@ -319,31 +336,43 @@ async fn handle_search(
         }
     };
     if let Some(qv) = query_vec {
-        for (score, row) in &mut scored {
-            if let Some(dv) = &row.embedding {
-                let sim = cosine_similarity(&qv, dv);
-                // Fuse lexical + semantic: the lexical score is 0..=n
-                // (n query tokens), cosine is -1..=1 — normalize both to
-                // comparable weight before summing.
-                *score += sim.max(0.0) * query_tokens.len() as f64;
-            }
-        }
+        let mut sem: Vec<(i64, f64)> = rows
+            .iter()
+            .map(|r| {
+                let sim = r
+                    .embedding
+                    .as_ref()
+                    .map(|dv| cosine_similarity(&qv, dv).max(0.0))
+                    .unwrap_or(0.0);
+                (r.id, sim)
+            })
+            .collect();
+        sem.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.0.cmp(&a.0))
+        });
+        signals.push(
+            sem.iter()
+                .enumerate()
+                .map(|(i, (id, _))| (*id, i + 1))
+                .collect(),
+        );
     }
 
-    // Most relevant first; score ties → newer memory first (stable).
-    scored.sort_by(|a, b| {
-        b.0.partial_cmp(&a.0)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then(b.1.id.cmp(&a.1.id))
-    });
-    let hits: Vec<SearchHit> = scored
+    // Fuse by reciprocal rank — the contract promises RRF (see module docs).
+    // Fused ids always come from `rows`, so every id resolves.
+    let fused = rrf_fuse(&signals);
+    let hits: Vec<SearchHit> = fused
         .iter()
         .take(req.top_k)
-        .map(|(score, r)| SearchHit {
-            id: format!("mem_{}", r.id),
-            content: r.content.clone(),
-            score: *score,
-            created_at: r.event_time.map(iso_time),
+        .filter_map(|(id, score)| {
+            rows.iter().find(|r| r.id == *id).map(|row| SearchHit {
+                id: format!("mem_{}", row.id),
+                content: row.content.clone(),
+                score: *score,
+                created_at: row.event_time.map(iso_time),
+            })
         })
         .collect();
 
@@ -368,21 +397,68 @@ fn shared_prefix_len(a: &str, b: &str) -> usize {
         .count()
 }
 
-/// Morphology-robust relevance: for each query token, how many document
-/// tokens share a ≥4-char prefix. Score grows with matched query tokens
+/// Adaptive prefix threshold: words match on ≥4 shared chars; short tokens
+/// (git, vim, api, ide) match at their own length — a 3-char token can never
+/// share 4 chars, so the old flat rule silently dropped them from lexical
+/// recall and left them to the small embedder alone.
+fn prefix_threshold(a: &str, b: &str) -> usize {
+    4.min(a.len().min(b.len()))
+}
+
+fn token_prefix_hit(q: &str, d: &str) -> bool {
+    shared_prefix_len(q, d) >= prefix_threshold(q, d)
+}
+
+/// Per-query-token inverse document frequency over the corpus (prefix-aware
+/// document frequency). Common tokens ("code", "build") match many memories
+/// and must not drown the discriminative ones; rare tokens carry ranking.
+/// idf = ln((N+1)/(df+1)), floored at 0.3 so a common-but-present token
+/// still contributes.
+fn token_idfs(query_tokens: &[String], docs: &[Vec<String>]) -> Vec<f64> {
+    let n = docs.len() as f64;
+    query_tokens
+        .iter()
+        .map(|q| {
+            let df = docs
+                .iter()
+                .filter(|toks| toks.iter().any(|t| token_prefix_hit(q, t)))
+                .count() as f64;
+            ((n + 1.0) / (df + 1.0)).ln().max(0.3)
+        })
+        .collect()
+}
+
+/// Morphology-robust, IDF-weighted relevance: for each query token, how many
+/// document tokens share an adaptive-length prefix, weighted by the token's
+/// inverse document frequency. Score grows with matched query tokens
 /// (ln-weighted for repeated hits) — ordering is what the contract needs.
-fn prefix_score(query_tokens: &[String], doc_tokens: &[String]) -> f64 {
+fn lexical_score(query_tokens: &[String], doc_tokens: &[String], idfs: &[f64]) -> f64 {
     let mut score = 0.0;
-    for q in query_tokens {
-        let hits = doc_tokens
-            .iter()
-            .filter(|d| shared_prefix_len(q, d) >= 4)
-            .count();
+    for (q, idf) in query_tokens.iter().zip(idfs) {
+        let hits = doc_tokens.iter().filter(|d| token_prefix_hit(q, d)).count();
         if hits > 0 {
-            score += 1.0 + (hits as f64).ln();
+            score += idf * (1.0 + (hits as f64).ln());
         }
     }
     score
+}
+
+/// Reciprocal rank fusion over per-signal rank lists `(doc_id, rank)`:
+/// fused = Σ 1/(k + rank). Rank-based, so the unbounded lexical score and
+/// the [-1, 1] cosine never fight over scale — the module contract promises
+/// RRF; this is the implementation.
+const RRF_K: f64 = 60.0;
+
+fn rrf_fuse(signals: &[Vec<(i64, usize)>]) -> Vec<(i64, f64)> {
+    let mut acc: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+    for signal in signals {
+        for (id, rank) in signal {
+            *acc.entry(*id).or_insert(0.0) += 1.0 / (RRF_K + *rank as f64);
+        }
+    }
+    let mut out: Vec<(i64, f64)> = acc.into_iter().collect();
+    out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    out
 }
 
 /// Unix-millis timestamp → RFC3339 (contract example format).
@@ -463,45 +539,78 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_prefix_scoring_handles_morphology() {
+    fn test_lexical_scoring_morphology_and_short_tokens() {
         // Question morphology must match memory morphology — one rule, no
         // stemmer list: shared prefix ≥ 4 chars.
         assert_eq!(shared_prefix_len("editor", "editing"), 4);
         assert_eq!(shared_prefix_len("deployment", "deploy"), 6);
         assert_eq!(shared_prefix_len("preference", "preferences"), 10);
         assert!(shared_prefix_len("vim", "vivid") < 4);
-        // Scoring: a query token matches via shared prefix.
+        // Short tokens now match at their own length — the old flat >=4 rule
+        // could never match 3-char tokens (git/vim/api), so they had no
+        // lexical recall and leaned entirely on the small embedder.
+        assert!(token_prefix_hit("vim", "vim"));
+        assert!(token_prefix_hit("vim", "vimmer"));
+        assert!(!token_prefix_hit("vim", "visual"));
+        assert!(token_prefix_hit("git", "github"));
+        // Scoring with unit IDF: morphology + exact.
         let q = crate_patterns_tokens("which editor does the user prefer");
         let doc = crate_patterns_tokens("I prefer vim for editing all my work");
-        assert_eq!(prefix_score(&q, &doc), 2.0); // prefer + editor↔editing
+        let idfs = vec![1.0; q.len()];
+        assert_eq!(lexical_score(&q, &doc, &idfs), 2.0); // prefer + editor↔editing
         // Irrelevant doc scores zero.
         let other = crate_patterns_tokens("the cat is named Luna");
-        assert_eq!(prefix_score(&q, &other), 0.0);
+        assert_eq!(lexical_score(&q, &other, &idfs), 0.0);
+    }
+
+    #[test]
+    fn test_idf_weights_rare_tokens() {
+        // A rare discriminative token must outweigh a common one: the doc
+        // holding the rare token ranks above the doc holding the common one.
+        let q = vec!["code".into(), "zephyr".into()];
+        let docs = vec![
+            vec!["code".into(), "build".into()],
+            vec!["code".into(), "debug".into()],
+            vec!["zephyr".into(), "helm".into()],
+        ];
+        let idfs = token_idfs(&q, &docs);
+        assert!(idfs[1] > idfs[0], "rare zephyr must weigh more: {idfs:?}");
+        let common = lexical_score(&q, &docs[0], &idfs);
+        let rare = lexical_score(&q, &docs[2], &idfs);
+        assert!(rare > common, "zephyr doc must outrank code doc: {common} vs {rare}");
+    }
+
+    #[test]
+    fn test_rrf_fusion_prefers_rank_over_scale() {
+        // C: strong lexical (#1) + mid semantic (#2). B: strong semantic (#1)
+        // + weak lexical (#4). RRF must order C > B > A even though raw
+        // lexical scores would put C far ahead of B.
+        let signals = vec![
+            vec![(3, 1), (1, 2), (4, 3), (2, 4)], // lexical ranks
+            vec![(2, 1), (3, 2), (1, 3), (4, 4)], // semantic ranks
+        ];
+        let fused = rrf_fuse(&signals);
+        let order: Vec<i64> = fused.iter().map(|(id, _)| *id).collect();
+        assert_eq!(order, vec![3, 2, 1, 4], "got {order:?}");
+
+        // Zero-lexical high-cosine doc still beats a weak lexical-only doc.
+        let signals2 = vec![
+            vec![(9, 1), (8, 2), (7, 3), (6, 4)], // lexical: 9 best
+            vec![(6, 1), (9, 4), (7, 2), (8, 3)], // semantic: 6 best, 9 worst
+        ];
+        let fused2 = rrf_fuse(&signals2);
+        let first2 = fused2[0].0;
+        assert!(first2 == 6 || first2 == 9);
+        let score6 = fused2.iter().find(|(id, _)| *id == 6).map(|(_, s)| *s).unwrap();
+        let score8 = fused2.iter().find(|(id, _)| *id == 8).map(|(_, s)| *s).unwrap();
+        assert!(score6 > score8, "semantic-only #1 must beat weak lexical: {score6} vs {score8}");
     }
 
     fn crate_patterns_tokens(text: &str) -> Vec<String> {
         causal_memory::patterns::tokenize(text)
     }
 
-    #[test]
-    fn test_fusion_weights_cosine_like_lexical() {
-        // Semantic fusion: a cosine hit contributes as much as one lexical
-        // token hit (sim × query-token-count), so a question with zero
-        // lexical overlap can still outrank a weak lexical match.
-        let query_tokens: Vec<String> = vec!["text".into(), "editor".into()];
-        let mut scored = vec![
-            (1.0_f64, 101i64), // lexical hit on one token ("text")
-            (0.0_f64, 202i64), // no lexical overlap — but cosine 0.9 below
-        ];
-        for (score, _) in &mut scored {
-            // simulate: row 202 gets cosine 0.9, row 101 gets cosine 0.1
-            let sim = if *score == 0.0 { 0.9 } else { 0.1 };
-            *score += sim * query_tokens.len() as f64;
-        }
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-        assert_eq!(scored[0].1, 202, "semantic hit must rank above weak lexical");
-        assert!(scored[0].0 > scored[1].0);
-    }
+
 
     fn test_store() -> Arc<AmcStore> {
         Arc::new(AmcStore::open(":memory:").unwrap())
@@ -704,4 +813,81 @@ mod tests {
 
         server.abort();
     }
+
+    #[tokio::test]
+    async fn search_recalls_short_token_and_morphology_gold() {
+        // "Text recall" regression: the gold memory must surface in top-k even
+        // when (a) the query's discriminative token is short ("git", 3 chars —
+        // the old >=4-char prefix rule could never lexical-match it) and (b)
+        // the corpus is noisy with heavy keyword overlap.
+        let store = test_store();
+        let app = build_app(store, test_embedder()); // lexical-only path
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = test_client();
+        let base = format!("http://{addr}");
+        wait_ready(&client, &base).await;
+
+        let msgs: Vec<serde_json::Value> = vec![
+            "the team uses code reviews for every build",
+            "build times improved after the code refactor",
+            "code quality gates run on each build",
+            "build pipeline caches code artifacts",
+            "the user prefers git for version control", // gold
+        ]
+        .into_iter()
+        .map(|c| serde_json::json!({"role": "user", "content": c}))
+        .collect();
+        let _ = client
+            .post(format!("{base}/add"))
+            .json(&serde_json::json!({
+                "request_id": "r:chunk-0",
+                "messages": msgs,
+                "user_id": "u1",
+                "session_id": "s1"
+            }))
+            .send()
+            .await
+            .unwrap();
+
+        // Short discriminative token: git is 3 chars — the gold must still be
+        // first (old flat >=4 rule scored it 0 and it sank to the bottom).
+        let resp: SearchResponse = client
+            .post(format!("{base}/search"))
+            .json(&serde_json::json!({"query": "version control with git", "user_id": "u1", "top_k": 3}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            resp.data[0].content.contains("git"),
+            "short-token gold must rank first: {:?}",
+            resp.data.iter().map(|h| h.content.as_str()).collect::<Vec<_>>()
+        );
+
+        // Morphology + IDF: "prefers" matches "prefer" via shared prefix and
+        // the rare "control" token outweighs the noisy "code/build" overlap.
+        let resp2: SearchResponse = client
+            .post(format!("{base}/search"))
+            .json(&serde_json::json!({"query": "which editor does the user prefer", "user_id": "u1", "top_k": 3}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(
+            resp2.data[0].content.contains("git"),
+            "morphology gold must rank first: {:?}",
+            resp2.data.iter().map(|h| h.content.as_str()).collect::<Vec<_>>()
+        );
+
+        server.abort();
+    }
+
 }
