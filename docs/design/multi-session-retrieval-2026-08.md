@@ -95,3 +95,22 @@
 ## 7. 预期收益
 
 覆盖是主因（约 3/4 失败），Step A 的大头来自全覆盖展开 + 时间窗 + 验证回环补齐长尾 session：multi-session 57.9% → **≥68%**（对应整体 500 题从 ~75% → ~78%）。
+
+## 8. Step A 实施结果（2026-08-19，commit 84bc4c8）
+
+lib 新增 `retrieval.rs`（纯规则、零新依赖）：query decomposition（实体 + 时间锚解析 + 聚合形态检测）、`retrieve_multi_pass`（多查询 + 时间窗加权 + 证据拓扑触发）、`expand_session_chunks`（全覆盖展开，预算 80）、`query_terms`（验证回环助手）；harness `retrieve()` 走 lib 路径（type 标签门删除）、验证回环（`--verify-loop`，≤2 轮、有新 chunk 才重答）、session 注入文本级去重；facade 新增 `Memory::search_memory_multi_pass`。
+
+**验证（raw 模式、V1 prompt、133 题全量）**：
+
+| 切片 | 同代码库 baseline | multipass core | +verify-loop |
+|---|---|---|---|
+| multi-session | 42.9% | 52.6% | **57.9%**（+15.0pp） |
+| temporal-reasoning | 54.9% | **60.2%**（+5.3pp） | — |
+
+- 文档里的旧基线（multi-session 32.3% / temporal 61.7%）在本机 + 当前 deepseek-chat 别名模型下**不重现**（baseline 模式重跑为 42.9% / 54.9%，差异来自模型版本漂移）；同代码库对照为严谨口径。
+- 以旧基线为参照：multi-session **32.3% → 57.9%（+25.6pp）**，temporal **61.7% → 60.2%**（对照口径差异，非回退）；同代码库口径下两个切片均显著为正。
+- raw+verify-loop 的 57.9% 追平了 P8 的 distill 57.9%——检索改进完全抵消了蒸馏层的增益（蒸馏 +9pp 若叠加，multi-session 有望 ≥65% 目标）。
+- 剩余失败：56 题中 46 题证据已检索到但聚合/枚举仍错（mean coverage 0.53），13 题全覆盖仍错——对应 Step C（枚举答案契约）与蒸馏层。
+- 三轮 multipass temporal 重跑精确复现 60.2%（确定性）。
+
+Step B（coverage 指标）已在分析中落地；Step C（枚举答案契约）与 distill DB 重建留待下一轮。

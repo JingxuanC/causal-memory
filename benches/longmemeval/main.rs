@@ -626,7 +626,12 @@ async fn distill_question(
 /// answerer. Session budget SESSION_BUDGET (was top-5/40 in the P8 harness
 /// experiment; the diagnosis showed evidence scattered over low-hit
 /// sessions gets cut by the top-5 cap).
-fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize) -> Result<Vec<CausalEntry>> {
+fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize, mode: &str) -> Result<Vec<CausalEntry>> {
+    // Frozen baseline: plain BM25 top-k, no expansion — for same-codebase
+    // comparisons against the multipass path.
+    if mode == "baseline" {
+        return store.search_causal_bm25(Some(&q.question_id), &q.question, topk);
+    }
     let now = parse_lme_datetime(&q.question_date).unwrap_or(SYNTH_BASE_TS);
     let plan = retrieval::plan_query(&q.question, now);
     let merged = retrieval::retrieve_multi_pass(
@@ -1068,6 +1073,9 @@ struct Args {
     /// Step A: verification loop — for aggregation questions, list the items
     /// found, re-query with extracted entities, re-answer (<=2 rounds).
     verify_loop: bool,
+    /// Retrieval mode: "multipass" (default, lib multi-pass) | "baseline"
+    /// (frozen plain BM25 top-k — for same-codebase baseline comparisons).
+    retrieval_mode: String,
 }
 
 fn parse_args(argv: &[String]) -> Result<Option<Args>> {
@@ -1089,6 +1097,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
     let mut ingest_only = false;
     let mut prompt_version = LmePromptVersion::V2;
     let mut verify_loop = false;
+    let mut retrieval_mode = "multipass".to_string();
 
     let mut i = 1;
     let take = |i: &mut usize, flag: &str| -> Result<String> {
@@ -1116,6 +1125,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
             }
             "--ingest-only" => ingest_only = true,
             "--verify-loop" => verify_loop = true,
+            "--retrieval" => retrieval_mode = take(&mut i, "--retrieval")?,
             "--prompt-version" => {
                 prompt_version = match take(&mut i, "--prompt-version")?.as_str() {
                     "v1" => LmePromptVersion::V1,
@@ -1141,6 +1151,7 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
         ingest_only,
         prompt_version,
         verify_loop,
+        retrieval_mode,
     }))
 }
 
@@ -1284,11 +1295,12 @@ async fn answer_question(
     with_facts: bool,
     prompt_version: LmePromptVersion,
     verify_loop: bool,
+    retrieval_mode: &str,
 ) -> ResultRow {
     let now = parse_lme_datetime(&q.question_date).unwrap_or(SYNTH_BASE_TS);
     let plan = retrieval::plan_query(&q.question, now);
 
-    let mut final_entries = retrieve(store, q, topk).unwrap_or_default();
+    let mut final_entries = retrieve(store, q, topk, retrieval_mode).unwrap_or_default();
     let mut seen_chunk: HashSet<String> = retrieved_chunk_ids(&final_entries).into_iter().collect();
     let retrieved_ids: Vec<String> = seen_chunk.iter().cloned().collect();
     let evidence_hit = retrieved_ids.iter().any(|r| evidence_ids.contains(r));
@@ -1513,6 +1525,7 @@ async fn run(args: Args) -> Result<()> {
     }
     let cfg = LlmConfig::from_env()?;
     eprintln!("LLM: {} @ {}", cfg.model, cfg.api_base);
+    let retrieval_mode = args.retrieval_mode.clone();
 
     let raw = std::fs::read_to_string(&args.data)
         .with_context(|| format!("reading {}", args.data.display()))?;
@@ -1655,12 +1668,13 @@ async fn run(args: Args) -> Result<()> {
         let store = store.clone();
         let done = done.clone();
         let graph = graph.clone();
+        let mode = retrieval_mode.clone();
         let evidence = evidence_by_qid
             .get(&q.question_id)
             .cloned()
             .unwrap_or_default();
         async move {
-            let row = answer_question(&cfg, &store, &graph, q, evidence, args.topk, with_facts, args.prompt_version, args.verify_loop).await;
+            let row = answer_question(&cfg, &store, &graph, q, evidence, args.topk, with_facts, args.prompt_version, args.verify_loop, &mode).await;
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d.is_multiple_of(25) || d == total {
                 eprintln!("{d}/{total} questions done");
@@ -1877,13 +1891,13 @@ mod tests {
         ingest_question(&store, &q1).unwrap();
         ingest_question(&store, &q2).unwrap();
 
-        let res = retrieve(&store, &q1, 10).unwrap();
+        let res = retrieve(&store, &q1, 10, "multipass").unwrap();
         assert!(!res.is_empty());
         let ids = retrieved_chunk_ids(&res);
         assert!(ids.iter().all(|id| id.starts_with("q1::")));
         assert!(ids.iter().any(|id| id == "q1::q1_s2::1"));
 
-        let res2 = retrieve(&store, &q2, 10).unwrap();
+        let res2 = retrieve(&store, &q2, 10, "multipass").unwrap();
         assert!(!res2.is_empty());
         assert!(retrieved_chunk_ids(&res2)
             .iter()
@@ -1895,7 +1909,7 @@ mod tests {
         let q = tiny_question("q1", "single-session-user");
         let store = CausalStore::open_in_memory().unwrap();
         let (_, evidence) = ingest_question(&store, &q).unwrap();
-        let res = retrieve(&store, &q, 10).unwrap();
+        let res = retrieve(&store, &q, 10, "multipass").unwrap();
         let ids = retrieved_chunk_ids(&res);
         assert!(ids.iter().any(|r| evidence.contains(r)));
     }
