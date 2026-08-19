@@ -409,6 +409,10 @@ fn ingest_conversation(store: &CausalStore, conv: &LocomoConversation) -> Result
                     "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
                     rusqlite::params![&turn.dia_id, &chunk_text, ts],
                 )?;
+                // Keep the persistent BM25 inverted index complete: raw turn
+                // chunks are inserted directly (not via the store API), so
+                // index them here or search would never see them (B2).
+                causal_memory::store::CausalStore::index_chunk(&c, &turn.dia_id, &chunk_text)?;
                 Ok(())
             })?;
 

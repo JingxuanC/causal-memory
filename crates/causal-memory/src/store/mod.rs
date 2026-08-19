@@ -274,7 +274,9 @@ impl CausalStore {
     /// idempotent for reused chunks. Called from every chunk creation site
     /// (distill writes and record_decision); facts use the `fact:{id}`
     /// namespace via the same helper.
-    pub(crate) fn index_chunk(conn: &Connection, chunk_id: &str, text: &str) -> Result<()> {
+    /// Public so bench harnesses that insert chunks directly (locomo's raw
+    /// turn ingest) can keep the persistent BM25 index complete.
+    pub fn index_chunk(conn: &Connection, chunk_id: &str, text: &str) -> Result<()> {
         let tokens = crate::patterns::tokenize(text);
         if tokens.is_empty() {
             return Ok(());

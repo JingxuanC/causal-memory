@@ -233,6 +233,7 @@ fn ingest_compressed_summaries(store: &CausalStore, summaries: &[SessionSummary]
                 "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
                 rusqlite::params![id, text, s.base_time],
             )?;
+            causal_memory::store::CausalStore::index_chunk(&c, &id, &text)?;
             Ok(())
         })?;
         if i > 0 {

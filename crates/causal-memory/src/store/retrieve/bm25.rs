@@ -78,6 +78,13 @@ impl CausalStore {
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| anyhow!("index query failed: {e}"))?;
 
+        // B2 recall guard: the persistent index only covers chunks written
+        // through the store API. Harnesses that insert chunks directly
+        // (locomo turn ingest) leave them unindexed, so a sparse candidate
+        // set would silently miss their evidence. When the index yields
+        // fewer than a few candidates, fall back to the full scan — the
+        // same result set the pre-index code produced.
+        let use_index = chunk_ids.len() >= 3;
         let mut sql = format!(
             "SELECT {ENTRY_COLUMNS}
              FROM causal_edges ce
@@ -86,7 +93,7 @@ impl CausalStore {
              WHERE ce.valid_to IS NULL"
         );
         let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        if !chunk_ids.is_empty() {
+        if use_index {
             let ph = vec!["?"; chunk_ids.len()].join(",");
             sql.push_str(&format!(
                 " AND (ce.from_id IN ({ph}) OR ce.to_id IN ({ph}))"
