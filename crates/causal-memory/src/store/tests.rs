@@ -2138,7 +2138,7 @@ use rusqlite::params;
         // recall-oriented). Both must carry the repeated decision text and
         // opposite outcomes.
         assert_eq!(cands.len(), 2, "both opposite-outcome pairs surface");
-        let pairs: Vec<(&str, &str)> = cands.iter().map(|(_, _, o, _, n)| (o.as_str(), n.as_str())).collect();
+        let pairs: Vec<(&str, &str)> = cands.iter().map(|(_, _, _, o, _, n)| (o.as_str(), n.as_str())).collect();
         assert!(
             pairs.iter().any(|(o, n)| o.contains("deadlock") && n.contains("worked fine")),
             "(failed -> worked) pair present, got {pairs:?}"
@@ -2147,7 +2147,7 @@ use rusqlite::params;
             pairs.iter().any(|(o, n)| o.contains("worked fine") && n.contains("deadlock")),
             "(worked -> failed re-record) pair present, got {pairs:?}"
         );
-        for (edge_id, old_d, ..) in &cands {
+        for (edge_id, _new_id, old_d, ..) in &cands {
             assert!(*edge_id > 0);
             assert_eq!(old_d, "used Redis mutex", "decision text repeated");
         }

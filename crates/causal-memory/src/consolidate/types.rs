@@ -52,8 +52,27 @@ pub struct ConsolidateConfig {
     /// judge considers per sleep cycle. A cap bounds per-cycle LLM cost;
     /// candidates beyond it wait for the next cycle.
     pub supersession_limit: usize,
+    /// C7 (stage 1.7): what the judge does to a falsified edge.
+    /// `Retire` = hard invalidation (`valid_to`, exits retrieval) — the
+    /// original shipped behaviour. `Annotate` = soft supersession
+    /// (`superseded_by`, stays retrievable with a correction pointer) —
+    /// the CausalEval v13 action layer. Default `Retire` until the 140q
+    /// A/B (detect vs detect-retire) says otherwise.
+    pub supersession_action: SupersessionAction,
     /// Pattern-miner configuration, reused for stages 2 and 4.
     pub miner: MinerConfig,
+}
+
+/// What stage 1.7 does to an edge the LLM judge marks as superseded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupersessionAction {
+    /// Hard-invalidate: set `valid_to`, the edge exits retrieval and is
+    /// subject to decay/GC as a retired lesson.
+    Retire,
+    /// Soft-supersede: set `superseded_by` only. The old lesson stays fully
+    /// retrievable (counterfactual gold preserved) and every retrieval
+    /// carries the correction as an explicit falsification signal.
+    Annotate,
 }
 
 impl Default for ConsolidateConfig {
@@ -71,6 +90,7 @@ impl Default for ConsolidateConfig {
             half_life_llm_hours: 2160,            // 90d (same magnitude as legacy ~69d)
             half_life_temporal_hours: 168,        // 7d
             supersession_limit: 20,
+            supersession_action: SupersessionAction::Retire,
             q_alpha: 0.1,
             q_gamma: 0.9,
             min_diversity: 0.0,

@@ -1,4 +1,4 @@
-//! The 14 MCP tools — thin rmcp handlers over the shared library facade
+//! The 15 MCP tools — thin rmcp handlers over the shared library facade
 //! (`causal_memory::memory::Memory`). All orchestration logic lives in the
 //! library; this file only declares parameter schemas and delegates.
 
@@ -147,6 +147,16 @@ pub struct InvalidateDecisionParams {
     /// Why this lesson is wrong (echoed back for confirmation; not persisted)
     #[schemars(description = "Reason for invalidation (optional, for confirmation only)")]
     pub reason: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct ResolveUpdatesParams {
+    /// Max repeated-decision candidate pairs the LLM judge considers
+    #[schemars(description = "Max candidates to judge this call (default 20)")]
+    pub limit: Option<usize>,
+    /// false = preview (count only, no writes); true = apply the supersessions
+    #[schemars(description = "Preview by default; set true to actually write the supersession marks")]
+    pub apply: Option<bool>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -330,6 +340,18 @@ impl CausalMemoryServer {
     ) -> String {
         self.memory
             .invalidate_decision(params.edge_id, params.reason.as_deref())
+    }
+
+    #[tool(
+        name = "resolve_updates",
+        description = "Knowledge-update pass: scan past decisions that were re-recorded with a DIFFERENT outcome, let an LLM judge decide whether the new evidence falsifies the old lesson, and supersede accordingly (the superseded lesson is annotated with its correction and stays auditable). Use after recording outcomes that contradict earlier lessons. Preview by default — pass apply=true to write."
+    )]
+    fn resolve_updates(
+        &self,
+        Parameters(params): Parameters<ResolveUpdatesParams>,
+    ) -> String {
+        self.memory
+            .resolve_updates(params.limit, params.apply.unwrap_or(false))
     }
 
     #[tool(

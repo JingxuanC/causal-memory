@@ -12,9 +12,13 @@ use super::{
     entry_from_row, is_retraction_record,
 };
 
-/// One C7 falsification candidate: (old_edge_id, old_decision, old_outcome,
-/// new_decision, new_outcome).
-pub type FalsificationCandidate = (i64, String, String, String, String);
+/// One C7 falsification candidate: (old_edge_id, new_edge_id, old_decision,
+/// old_outcome, new_decision, new_outcome). The decision texts are identical
+/// by construction (the join is on chunk reuse) — `new_decision` is selected
+/// anyway so judge call sites stay symmetric. The new-edge id is what soft
+/// supersession (`annotate_superseded`) points at — provenance from the
+/// superseded lesson to the evidence that corrected it.
+pub type FalsificationCandidate = (i64, i64, String, String, String, String);
 
 impl CausalStore {
     /// Record a decision and its outcome, creating the causal edge.
@@ -119,7 +123,7 @@ impl CausalStore {
     pub fn find_falsified_candidates(&self, limit: usize) -> Result<Vec<FalsificationCandidate>> {
         let conn = self.acquire()?;
         let mut stmt = conn.prepare(
-            "SELECT old_e.id, old_d.text, old_o.text, old_d.text, new_o.text
+            "SELECT old_e.id, new_e.id, old_d.text, old_o.text, old_d.text, new_o.text
              FROM causal_edges old_e
              JOIN chunks old_d ON old_d.id = old_e.from_id
              JOIN chunks old_o ON old_o.id = old_e.to_id
@@ -138,10 +142,11 @@ impl CausalStore {
         let rows = stmt.query_map(params![limit as i64], |row| {
             Ok((
                 row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
+                row.get::<_, i64>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
             ))
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()

@@ -1,4 +1,4 @@
-//! High-level memory facade — the 14 memory operations shared by every
+//! High-level memory facade — the 15 memory operations shared by every
 //! frontend (MCP server, Python bindings, …).
 //!
 //! The orchestration logic (write-time polarity judging, opportunistic
@@ -45,7 +45,7 @@ mod tests;
 /// The unified agent memory: one `CausalStore` plus a lazily-rebuilt
 /// hippocampus graph accelerator and the Hebbian co-occurrence buffer.
 ///
-/// All 14 operations are methods on this struct (see `ops`). Frontends:
+/// All 15 operations are methods on this struct (see `ops`). Frontends:
 /// the MCP server (`causal-memory-cli::server`) and the Python bindings
 /// (`causal-memory-py`).
 pub struct Memory {

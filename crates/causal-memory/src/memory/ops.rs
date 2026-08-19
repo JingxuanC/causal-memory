@@ -1,4 +1,4 @@
-//! The 14 memory operations, shared by all frontends. Each method mirrors
+//! The 15 memory operations, shared by all frontends. Each method mirrors
 //! one MCP tool and returns the same text the tool would produce — agent
 //! frameworks (MCP host, Python bindings) consume these strings directly.
 
@@ -848,6 +848,67 @@ impl Memory {
             out.push('\n');
         }
         out
+    }
+
+    /// `resolve_updates` — C7 knowledge-update pass: scan repeated decisions
+    /// whose later outcomes diverged, LLM-judge whether the new evidence
+    /// falsifies the old lesson, and supersede accordingly (annotate = mark
+    /// `superseded_by`, old lesson stays retrievable with its correction).
+    ///
+    /// Preview by default (`apply: false` counts without writing) — same
+    /// discipline as the `resolve-updates` CLI. This is the same pipeline
+    /// sleep runs as stage 1.7; exposing it as a tool means an agent can
+    /// trigger a knowledge-update pass right after recording contradicting
+    /// evidence instead of waiting for the next sleep cycle.
+    pub fn resolve_updates(&self, limit: Option<usize>, apply: bool) -> String {
+        let Some(llm) = crate::llm::LlmConfig::from_env() else {
+            return "⚠ No LLM configured (set CAUSAL_MEMORY_LLM_API + CAUSAL_MEMORY_LLM_KEY). \
+                    Only the rule-based contradiction pass on the write path runs; \
+                    there is nothing for this tool to judge."
+                .into();
+        };
+        let mut config = crate::consolidate::ConsolidateConfig::default();
+        if let Some(l) = limit {
+            config.supersession_limit = l;
+        }
+        let mut report = crate::consolidate::ConsolidateReport::default();
+        match crate::consolidate::resolve_supersessions_with(
+            &self.store,
+            &config,
+            !apply, // dry_run = preview mode
+            &mut report,
+            Some(&llm),
+            config.supersession_action,
+        ) {
+            Ok(()) => {
+                if report.superseded_lessons == 0 {
+                    return format!(
+                        "✓ No falsifications found: scanned repeated-decision pairs \
+                         (limit {}) with the LLM judge; every old lesson held up. \
+                         Nothing {}.",
+                        config.supersession_limit,
+                        if apply { "was applied" } else { "to apply" },
+                    );
+                }
+                format!(
+                    "{} {} lesson(s){} — superseded edges {}.\n\
+                     Re-run with apply=true to write, or `causal-memory sleep` folds \
+                     this into the next consolidation cycle.",
+                    if apply { "✓ Superseded" } else { "👀 Would supersede" },
+                    report.superseded_lessons,
+                    if apply { "" } else { " (preview — nothing written)" },
+                    match config.supersession_action {
+                        crate::consolidate::SupersessionAction::Retire => {
+                            "exit retrieval (valid_to set)"
+                        }
+                        crate::consolidate::SupersessionAction::Annotate => {
+                            "stay retrievable, annotated with their correction"
+                        }
+                    },
+                )
+            }
+            Err(e) => format!("❌ resolve_updates failed: {e}"),
+        }
     }
 
     /// `invalidate_decision` — soft-invalidate a wrong lesson (kept for audit).

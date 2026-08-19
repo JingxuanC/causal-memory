@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.0] - Unreleased
 
 ### Added
+- **`resolve_updates` MCP tool (15th)**: the C7 knowledge-update pass
+  (candidate scan + LLM judge, the same pipeline sleep runs as stage 1.7)
+  is now callable by agents — preview by default, `apply=true` writes.
+  Exposed on stdio + HTTP via the shared facade, mirrored in the Python
+  bindings. Detection previously lived only in manual CLI/sleep cycles.
+- **`SupersessionAction` (Retire | Annotate)** parameterizes what the
+  judge does to a falsified edge: hard-invalidate (sleep default) or
+  soft-supersede (annotated, stays retrievable). `find_falsified_candidates`
+  now returns the new-edge id so annotation carries full provenance.
+- **CausalEval three-arm supersession experiment**
+  (`--supersession-mode oracle|detect|detect-retire`, per-arm db files):
+  - oracle (ground-truth + annotate): overall 84%, C7 100%
+  - detect (production pipeline, resolver action): overall 84%, C7 100%,
+    C3 100% — **the resolver itself fires 0 candidates on distilled
+    corpora** (chunk-reuse never happens); C7 here is solved by the
+    distill-path `supersedes` hint + negation memories, not by the
+    resolver or the oracle annotation
+  - detect-retire skipped: structurally identical to detect when the
+    resolver contributes nothing
+  Conclusion: the LLM resolver is for `record_decision`-path stores
+  (real agent usage, validated on the live store); distilled corpora
+  detect supersession at distill time instead.
 - **Soft supersession** (`annotate_superseded`): mark an edge
   `superseded_by` without hiding it — "superseded ≠ false". The old lesson
   stays fully retrievable (counterfactual gold intact) while carrying

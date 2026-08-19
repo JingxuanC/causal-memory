@@ -895,6 +895,16 @@ fn cmd_run(args: &[String]) -> Result<()> {
     let mut topk = 10usize;
     let mut concurrency = 4usize;
     let mut limit: Option<usize> = None;
+    // C7 supersession strategy (three-arm experiment):
+    //   oracle        — graph's ground-truth `invalidates` edge seeds soft
+    //                   supersession directly (measures the ACTION layer's
+    //                   ceiling; the original v13 protocol)
+    //   detect        — production detection pipeline (candidate scan + LLM
+    //                   judge) with the Annotate action (measures detection
+    //                   recall/precision with soft semantics)
+    //   detect-retire — same detection, Retire action (the remote sleep 1.7
+    //                   default; expected to lose C3 counterfactual gold)
+    let mut sup_mode = String::from("oracle");
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -903,9 +913,13 @@ fn cmd_run(args: &[String]) -> Result<()> {
             "--topk" => topk = take(args, &mut i, "--topk")?.parse()?,
             "--concurrency" => concurrency = take(args, &mut i, "--concurrency")?.parse()?,
             "--limit" => limit = Some(take(args, &mut i, "--limit")?.parse()?),
+            "--supersession-mode" => sup_mode = take(args, &mut i, "--supersession-mode")?,
             other => anyhow::bail!("unknown flag {other:?}"),
         }
         i += 1;
+    }
+    if !matches!(sup_mode.as_str(), "oracle" | "detect" | "detect-retire") {
+        anyhow::bail!("--supersession-mode must be oracle|detect|detect-retire (got {sup_mode:?})");
     }
     let cfg = LlmCfg::from_env()?;
     let bundles = load_bundles(&data)?;
@@ -919,9 +933,17 @@ fn cmd_run(args: &[String]) -> Result<()> {
             if let Some(l) = limit {
                 qas.truncate(l);
             }
-            // Per-graph store.
+            // Per-graph store. Detection arms get their OWN db files: the
+            // oracle arm bakes ground-truth `superseded_by` marks into its
+            // dbs, and retire marks `valid_to` — reusing either would
+            // contaminate the arm being measured.
+            let db_suffix = match sup_mode.as_str() {
+                "oracle" => "",
+                "detect" => "_detect",
+                _ => "_retire",
+            };
             std::fs::create_dir_all("benches/causal_eval/db")?;
-            let db_path = format!("benches/causal_eval/db/graph_{}.db", g.id);
+            let db_path = format!("benches/causal_eval/db/graph_{}{}.db", g.id, db_suffix);
             let store = causal_memory::store::CausalStore::open(&db_path)?;
             // Ingest conversations (turn chunks + temporal edges), if not present.
             let mut chunk_count: i64 = store
@@ -932,7 +954,54 @@ fn cmd_run(args: &[String]) -> Result<()> {
             if chunk_count == 0 {
                 ingest_conversations(&store, &bundle.conversations)?;
                 distill_if_available(&store, &bundle.conversations, concurrency).await?;
-                seed_graph_semantics(&store, g)?;
+                // similar_to meta edges (C6) are orthogonal to the C7 arms —
+                // every mode seeds them.
+                seed_similar_to_meta(&store, g);
+                // C7 supersession per arm.
+                match sup_mode.as_str() {
+                    "oracle" => seed_oracle_supersession(&store, g)?,
+                    mode => {
+                        // Rerun safety: clear stale soft marks from a previous
+                        // run of the same arm (retire's valid_to marks are
+                        // terminal — the retire arm never re-resolves on a
+                        // db an annotate arm touched, and vice versa, because
+                        // the suffixes differ).
+                        store.with_conn(|c| {
+                            c.execute("UPDATE causal_edges SET superseded_by = NULL", [])
+                                .map_err(|e| anyhow!("{e}"))
+                        })?;
+                        let action = if mode == "detect" {
+                            causal_memory::consolidate::SupersessionAction::Annotate
+                        } else {
+                            causal_memory::consolidate::SupersessionAction::Retire
+                        };
+                        let cc = causal_memory::consolidate::ConsolidateConfig {
+                            // Detection must see every candidate in the
+                            // (small) per-graph store — the sleep-cycle
+                            // cost cap would silently truncate the arm.
+                            supersession_limit: 500,
+                            ..Default::default()
+                        };
+                        let mut report = causal_memory::consolidate::ConsolidateReport::default();
+                        let llm = causal_memory::llm::LlmConfig {
+                            api_base: cfg.api_base.clone(),
+                            api_key: cfg.api_key.clone(),
+                            model: cfg.model.clone(),
+                        };
+                        causal_memory::consolidate::resolve_supersessions_with(
+                            &store,
+                            &cc,
+                            false,
+                            &mut report,
+                            Some(&llm),
+                            action,
+                        )?;
+                        eprintln!(
+                            "graph {}: detection superseded {} lesson(s) [{} arm]",
+                            g.id, report.superseded_lessons, mode
+                        );
+                    }
+                }
                 // Re-read AFTER ingest — printing the stale pre-ingest count
                 // once masked empty conversations as "0 chunks" mid-run.
                 chunk_count = store
@@ -1059,33 +1128,25 @@ fn find_node_chunks(store: &causal_memory::store::CausalStore, g: &CausalGraph) 
         .collect()
 }
 
-/// Seed the graph's cross-cutting semantics into the store after distillation:
-///
-/// 1. **`similar_to` meta edges** (C6): the graph declares a structural
-///    analogy between the main bad practice (node 0) and the twin bad practice
-///    (node 6). In production, the meta-edge miner discovers this during sleep
-///    consolidation. Here we seed it directly so the benchmark tests whether
-///    the *retrieval* path can use it — not whether the miner happens to fire.
-///
-/// 2. **Supersede** (C7): the graph declares `10 invalidates 3` (the
-///    correction supersedes the old fix). In production, the distiller's
-///    `supersedes` field would trigger soft-invalidation. Here we seed it
-///    directly: set `valid_to` on any edge whose text matches the old fix,
-///    ensuring the correction is the authoritative memory.
-fn seed_graph_semantics(store: &causal_memory::store::CausalStore, g: &CausalGraph) -> Result<()> {
+/// Seed the graph's `similar_to` meta edges (C6): the graph declares a
+/// structural analogy between the main bad practice (node 0) and the twin
+/// bad practice (node 6). In production, the meta-edge miner discovers this
+/// during sleep consolidation. Here we seed it directly so the benchmark
+/// tests whether the *retrieval* path can use it — not whether the miner
+/// happens to fire. Orthogonal to the C7 supersession arms: every mode
+/// seeds these.
+fn seed_similar_to_meta(store: &causal_memory::store::CausalStore, g: &CausalGraph) {
     let node_chunks = find_node_chunks(store, g);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| anyhow::anyhow!(e))?
-        .as_secs() as i64;
-
-    // ── 1. Seed similar_to meta edges ──
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     for edge in &g.edges {
         if edge.relation == "similar_to" {
             if let (Some(from_chunk), Some(to_chunk)) =
                 (node_chunks.get(&edge.from), node_chunks.get(&edge.to))
             {
-                store.with_conn(|c| {
+                let _ = store.with_conn(|c| {
                     c.execute(
                         "INSERT OR IGNORE INTO meta_causal_edges
                          (from_id, to_id, relation, confidence, discovered_at, valid_from)
@@ -1093,18 +1154,24 @@ fn seed_graph_semantics(store: &causal_memory::store::CausalStore, g: &CausalGra
                         rusqlite::params![from_chunk, to_chunk, now],
                     )?;
                     Ok(())
-                })?;
+                });
             }
         }
     }
+}
 
-    // ── 2. Soft supersession (C7): "superseded ≠ false" ──
-    // The graph declares `10 invalidates 3`. Hard invalidation (valid_to)
-    // would hide the old fix from ALL retrieval — but C3's counterfactual
-    // gold IS the old fix. Instead we set `superseded_by` on edges touching
-    // the old-fix chunk, pointing at the correction's edge: the old lesson
-    // stays retrievable, and answer-time formatting surfaces the annotation
-    // as an explicit falsification signal.
+/// Oracle C7 seeding (the original v13 protocol): the graph declares
+/// `10 invalidates 3` (the correction supersedes the old fix). Hard
+/// invalidation (`valid_to`) would hide the old fix from ALL retrieval —
+/// but C3's counterfactual gold IS the old fix. Instead we set
+/// `superseded_by` on edges touching the old-fix chunk, pointing at the
+/// correction's edge: the old lesson stays retrievable, and answer-time
+/// formatting surfaces the annotation as an explicit falsification signal.
+///
+/// This measures the ACTION layer's ceiling — detection is assumed perfect
+/// (it IS, we hold the ground truth). The `detect`/`detect-retire` arms
+/// replace this with the production detection pipeline.
+fn seed_oracle_supersession(store: &causal_memory::store::CausalStore, g: &CausalGraph) -> Result<()> {
     let node_chunks = find_node_chunks(store, g);
     for edge in &g.edges {
         if edge.relation != "invalidates" {
@@ -1134,7 +1201,6 @@ fn seed_graph_semantics(store: &causal_memory::store::CausalStore, g: &CausalGra
             Ok(())
         })?;
     }
-
     Ok(())
 }
 /// (review #1: chunk ids are an implementation detail; distilled items carry

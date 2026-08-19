@@ -234,7 +234,7 @@ pub(crate) async fn run_resolve_updates(args: &[String]) -> anyhow::Result<()> {
     // once a verdict retires it, later pairs for the same edge are redundant
     // (no re-judge, no duplicate SUPERSEDED line, no second invalidate).
     let mut retired: HashSet<i64> = HashSet::new();
-    for (edge_id, old_dec, old_out, new_dec, new_out) in &candidates {
+    for (edge_id, _new_edge_id, old_dec, old_out, new_dec, new_out) in &candidates {
         if retired.contains(edge_id) {
             continue;
         }

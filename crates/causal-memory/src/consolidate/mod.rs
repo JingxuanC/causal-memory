@@ -38,7 +38,7 @@ use crate::store::CausalStore;
 mod stages;
 mod types;
 
-pub use types::{ConsolidateConfig, ConsolidateReport, ReactivationEntry};
+pub use types::{ConsolidateConfig, ConsolidateReport, ReactivationEntry, SupersessionAction};
 
 use rusqlite::params;
 
@@ -158,7 +158,14 @@ fn resolve_supersessions(
     dry_run: bool,
     report: &mut ConsolidateReport,
 ) -> Result<()> {
-    resolve_supersessions_with(store, config, dry_run, report, LlmConfig::from_env().as_ref())
+    resolve_supersessions_with(
+        store,
+        config,
+        dry_run,
+        report,
+        LlmConfig::from_env().as_ref(),
+        config.supersession_action,
+    )
 }
 
 /// The LLM judge is injected (`Option`) so tests exercise both the no-LLM
@@ -166,12 +173,16 @@ fn resolve_supersessions(
 /// under `cargo test`'s parallel harness, and worse, `EmbedConfig::from_env`
 /// falls back to the LLM env vars, so a test that sets them can poison the
 /// process-global embedder slot (`embed::SLOT`) for every other test.
-fn resolve_supersessions_with(
+///
+/// Public so the eval harness and the MCP `resolve_updates` tool drive the
+/// same pipeline sleep uses — one detection layer, three entry points.
+pub fn resolve_supersessions_with(
     store: &CausalStore,
     config: &ConsolidateConfig,
     dry_run: bool,
     report: &mut ConsolidateReport,
     llm: Option<&LlmConfig>,
+    action: SupersessionAction,
 ) -> Result<()> {
     // No LLM configured: the rule-based contradiction pass on the write path
     // is all we have — skip silently (the CLI sleep report notes it when run
@@ -183,23 +194,34 @@ fn resolve_supersessions_with(
     if candidates.is_empty() {
         return Ok(());
     }
-    let rt = tokio::runtime::Runtime::new()?;
     let mut superseded = 0usize;
     // One old edge can pair with several newer records: once a verdict
     // retires it, skip the remaining pairs (no re-judge, no duplicate count).
-    let mut retired: HashSet<i64> = HashSet::new();
-    for (edge_id, old_d, old_o, new_d, new_o) in &candidates {
-        if retired.contains(edge_id) {
+    let mut decided: HashSet<i64> = HashSet::new();
+    for (edge_id, new_edge_id, old_d, old_o, new_d, new_o) in &candidates {
+        if decided.contains(edge_id) {
             continue;
         }
-        match rt.block_on(crate::llm::judge_supersession(
+        // memory::block_on is async-context-safe (block_in_place on an
+        // existing runtime handle, fresh runtime otherwise): this stage is
+        // reachable from the MCP server's async handlers, where a nested
+        // `Runtime::new().block_on` would panic.
+        let verdict = crate::memory::block_on(crate::llm::judge_supersession(
             llm, old_d, old_o, new_d, new_o,
-        )) {
+        ));
+        match verdict {
             Ok(v) if v.supersedes => {
-                retired.insert(*edge_id);
+                decided.insert(*edge_id);
                 superseded += 1;
                 if !dry_run {
-                    store.invalidate_edge(*edge_id)?;
+                    match action {
+                        SupersessionAction::Retire => {
+                            store.invalidate_edge(*edge_id)?;
+                        }
+                        SupersessionAction::Annotate => {
+                            store.annotate_superseded(*edge_id, *new_edge_id)?;
+                        }
+                    }
                 }
             }
             _ => {} // keep, or judge failure -> keep (conservative)

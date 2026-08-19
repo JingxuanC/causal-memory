@@ -182,6 +182,13 @@ impl PyCausalMemory {
         py.allow_threads(|| self.inner.invalidate_decision(edge_id, reason))
     }
 
+    /// Knowledge-update pass: LLM-judge repeated decisions whose outcomes
+    /// diverged and supersede the falsified old lessons (preview by default).
+    #[pyo3(signature = (limit=None, apply=False))]
+    fn resolve_updates(&self, py: Python<'_>, limit: Option<usize>, apply: bool) -> String {
+        py.allow_threads(|| self.inner.resolve_updates(limit, apply))
+    }
+
     /// Search mined cross-task patterns (meta edges: similar_to / repeated /
     /// contradicts / refines).
     #[pyo3(signature = (query=None, task_tag=None, limit=None))]

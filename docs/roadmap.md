@@ -74,9 +74,9 @@ Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
 
 ## Current state — v0.9.0+ (main)
 
-**Fourteen MCP tools**: `record_decision` / `search_causal` / `record_fact` /
+**Fifteen MCP tools**: `record_decision` / `search_causal` / `record_fact` /
 `search_facts` / `search_memory` / `trace_cause` / `trace_cause_chain` /
-`invalidate_decision` / `search_patterns` / `causal_directory` /
+`invalidate_decision` / `resolve_updates` / `search_patterns` / `causal_directory` /
 `intervention_query` / `counterfactual_query` / `reconstruct_lesson` /
 `remember` — over stdio **and** HTTP transport (`causal-memory-http
 --port 9938`).
@@ -192,9 +192,9 @@ Ecosystem:
 
 - [x] **Python bindings (PyO3)** — ✅ shipped 2026-08-19: orchestration logic
   extracted from the MCP server into a shared library facade
-  (`causal_memory::memory::Memory`, 14 ops, MCP behavior preserved 1:1);
+  (`causal_memory::memory::Memory`, 15 ops, MCP behavior preserved 1:1);
   `crates/causal-memory-py` binds it as the `causal_memory` Python module
-  (abi3 ≥ 3.9, maturin build, `CausalMemory` class mirroring all 14 tools,
+  (abi3 ≥ 3.9, maturin build, `CausalMemory` class mirroring all 15 tools,
   pytest smoke suite). Remaining for the ecosystem entry: PyPI publishing +
   CI wheels, then the Hermes provider slot
 - [ ] TS bindings (after Python)
