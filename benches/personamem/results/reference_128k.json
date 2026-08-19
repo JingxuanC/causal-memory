@@ -1,0 +1,46 @@
+{
+  "version": "128k",
+  "personas": 3,
+  "questions": 15,
+  "conditions": {
+    "baseline": {
+      "correct": 11,
+      "total": 15,
+      "accuracy": 73.3,
+      "est_tokens": 1318200,
+      "est_tokens_per_q": 87880,
+      "seconds": 612
+    },
+    "memory": {
+      "correct": 8,
+      "total": 15,
+      "accuracy": 53.3,
+      "est_tokens": 121720,
+      "est_tokens_per_q": 8114,
+      "seconds": 963
+    }
+  },
+  "per_type": {
+    "acknowledge_latest_user_preferences": {
+      "baseline": "2/3",
+      "memory": "1/3"
+    },
+    "generalize_to_new_scenarios": {
+      "baseline": "3/3",
+      "memory": "3/3"
+    },
+    "provide_preference_aligned_recommendations": {
+      "baseline": "3/3",
+      "memory": "2/3"
+    },
+    "recall_user_shared_facts": {
+      "baseline": "3/3",
+      "memory": "1/3"
+    },
+    "suggest_new_ideas": {
+      "baseline": "0/3",
+      "memory": "1/3"
+    }
+  },
+  "notes": "Persona-level distillation (fixed protocol). Baseline context capped per-message (GLM ctx limit); memory distills first 30k chars of persona. Token advantage ~11x; recall gap = distillation coverage."
+}

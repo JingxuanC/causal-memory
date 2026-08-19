@@ -1,0 +1,54 @@
+{
+  "version": "32k",
+  "personas": 3,
+  "questions": 15,
+  "conditions": {
+    "baseline": {
+      "correct": 10,
+      "total": 15,
+      "accuracy": 66.7,
+      "est_tokens": 1318200,
+      "est_tokens_per_q": 87880,
+      "seconds": 612
+    },
+    "memory": {
+      "correct": 6,
+      "total": 15,
+      "accuracy": 40,
+      "est_tokens": 121720,
+      "est_tokens_per_q": 8114,
+      "seconds": 963
+    }
+  },
+  "per_type": {
+    "generalizing_to_new_scenarios": {
+      "baseline": "2/2",
+      "memory": "0/2"
+    },
+    "provide_preference_aligned_recommendations": {
+      "baseline": "3/3",
+      "memory": "2/3"
+    },
+    "recall_user_shared_facts": {
+      "baseline": "3/3",
+      "memory": "2/3"
+    },
+    "recalling_facts_mentioned_by_the_user": {
+      "baseline": "0/1",
+      "memory": "0/1"
+    },
+    "recalling_the_reasons_behind_previous_updates": {
+      "baseline": "0/2",
+      "memory": "0/2"
+    },
+    "suggest_new_ideas": {
+      "baseline": "1/3",
+      "memory": "1/3"
+    },
+    "track_full_preference_evolution": {
+      "baseline": "1/1",
+      "memory": "1/1"
+    }
+  },
+  "notes": "First-round protocol: per-question distillation (not persona-level), truncated context, 3 questions unparsed in memory condition. See README for the fixed protocol."
+}
