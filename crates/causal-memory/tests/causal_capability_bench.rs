@@ -436,7 +436,7 @@ fn causal_capability_summary() {
         }),
     ];
 
-    for (name, test) in &tests {
+    for (_name, test) in &tests {
         total += 1;
         if std::panic::catch_unwind(std::panic::AssertUnwindSafe(test)).is_ok() {
             passed += 1;

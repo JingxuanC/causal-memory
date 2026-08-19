@@ -2115,7 +2115,7 @@ use rusqlite::params;
     fn test_find_falsified_candidates() {
         let store = CausalStore::open_in_memory().unwrap();
         // Old lesson: used X -> failed.
-        let old = store
+        let _old = store
             .record_decision("used Redis mutex", "deadlock under load", "caused", Some("t"), 0.8, "rule")
             .unwrap();
         // New evidence: same decision text, different outcome -> candidate.

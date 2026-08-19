@@ -249,6 +249,7 @@ Phase 0-4 已按本设计落地并全部通过 `cargo test`（328 个，含新�
 | Phase 3 服务器层 | ✅ 104870f + ca39da2 + 67d981d + 54a4371 | C1 共享 embedder 单例；C3/C4/C5 去冗余 SQL+N+1；C7 图惰性重建；C2 部分（counterfactual 并行 + polarity 开关）；**C6/2c 评估后跳过**（A2 连接池已消除锁瓶颈；stdio 模式后台任务不可靠） |
 | Phase 4 图引擎 | ✅ 692b2d2 + d0ef129 + 文档 | D1 Hebbian 共现边（schema v11：cooccurrence_edges 表 + 检索共现缓冲 + 图加载）；D2 SWR 2.0（sleep --immutable 经 VACUUM INTO 产出新 store + --restore 带备份）；D3 Q-value 采用方案 B（保持节点 seeding，roadmap 表述修正；边权重变体留待 CausalEval A/B） |
 | Phase 5 查询路由 | ✅ ecd1c7c 后 | D4 规则分类器（query_router.rs，50 条标注 query 准确率 86%，search_memory 展示层路由，检索仍融合兜底） |
+| Phase 6 知识更新 | ✅ cec325b 后 | **C7 LLM 更新解析器**：`judge_supersession` JSON 判官 + `resolve-updates` CLI（--dry-run/--apply）；**接线进 sleep 的 consolidate stage 1.7**（LLM 判官审 repeated-decision 候选，falsified 边软失效；无 LLM 静默降级、判官失败保守保留、dry-run 只计数）；Vela 式半衰期分层衰减（user_feedback/llm 90d、temporal 7d、rule 保持 legacy 0.99/d） |
 
 **实施中与设计的偏差**（均为环境约束或工程判断）：
 1. B2：FTS5 → 自建 bm25_index 倒排表（中文分词语义不变，零新依赖）。

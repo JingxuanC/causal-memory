@@ -31,6 +31,7 @@ use std::collections::HashSet;
 
 use anyhow::Result;
 
+use crate::llm::LlmConfig;
 use crate::patterns::PatternMiner;
 use crate::store::CausalStore;
 
@@ -112,6 +113,14 @@ pub fn consolidate(
         }
     }
 
+    // ── Stage 1.7: C7 supersession resolution ───────────────────────────
+    // Knowledge-update pass: lessons whose decision chunk was re-recorded
+    // with a different outcome may be falsified. The LLM judge decides;
+    // superseded edges are soft-invalidated (retired before decay/GC).
+    // No LLM configured -> skipped (rule-based contradiction already ran on
+    // the write path); failures keep the edge (conservative).
+    resolve_supersessions(store, config, dry_run, &mut report)?;
+
     // ── Stage 2: Generalization ─────────────────────────────────────────
     report.merged_edges = merge_redundant_edges(store, dry_run, now)?;
     let meta_before = snapshot_meta_edges(store)?;
@@ -134,6 +143,63 @@ pub fn consolidate(
     report.rem_transfers = rem_integrate(store, config, dry_run, &meta_before)?;
 
     Ok(report)
+}
+
+/// Stage 1.7: C7 supersession resolution — LLM-judge repeated-decision
+/// candidates and retire the ones the new evidence falsifies.
+///
+/// Degradation discipline (project-wide): no LLM configured -> no-op;
+/// a judge failure keeps the edge (rule-based fallback). `dry_run` counts
+/// without writing. LLM calls run on a short-lived tokio runtime — this is
+/// an offline sleep cycle, latency is not a concern.
+fn resolve_supersessions(
+    store: &CausalStore,
+    config: &ConsolidateConfig,
+    dry_run: bool,
+    report: &mut ConsolidateReport,
+) -> Result<()> {
+    resolve_supersessions_with(store, config, dry_run, report, LlmConfig::from_env().as_ref())
+}
+
+/// The LLM judge is injected (`Option`) so tests exercise both the no-LLM
+/// and judge-failure paths WITHOUT mutating process env — env writes race
+/// under `cargo test`'s parallel harness, and worse, `EmbedConfig::from_env`
+/// falls back to the LLM env vars, so a test that sets them can poison the
+/// process-global embedder slot (`embed::SLOT`) for every other test.
+fn resolve_supersessions_with(
+    store: &CausalStore,
+    config: &ConsolidateConfig,
+    dry_run: bool,
+    report: &mut ConsolidateReport,
+    llm: Option<&LlmConfig>,
+) -> Result<()> {
+    // No LLM configured: the rule-based contradiction pass on the write path
+    // is all we have — skip silently (the CLI sleep report notes it when run
+    // with --llm expected).
+    let Some(llm) = llm else {
+        return Ok(());
+    };
+    let candidates = store.find_falsified_candidates(config.supersession_limit)?;
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let rt = tokio::runtime::Runtime::new()?;
+    let mut superseded = 0usize;
+    for (edge_id, old_d, old_o, new_d, new_o) in &candidates {
+        match rt.block_on(crate::llm::judge_supersession(
+            llm, old_d, old_o, new_d, new_o,
+        )) {
+            Ok(v) if v.supersedes => {
+                superseded += 1;
+                if !dry_run {
+                    store.invalidate_edge(*edge_id)?;
+                }
+            }
+            _ => {} // keep, or judge failure -> keep (conservative)
+        }
+    }
+    report.superseded_lessons = superseded;
+    Ok(())
 }
 
 #[cfg(test)]

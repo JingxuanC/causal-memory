@@ -165,7 +165,6 @@ mod tests {
     use crate::commands::io::{export_jsonl, import_jsonl, redact, ExportFilters};
     use crate::commands::maintenance::load_session;
     use causal_memory::store::CausalStore;
-    use super::*;
 
     fn export_store() -> CausalStore {
         let store = CausalStore::open_in_memory().unwrap();

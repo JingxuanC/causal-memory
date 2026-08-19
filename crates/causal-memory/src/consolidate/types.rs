@@ -37,16 +37,21 @@ pub struct ConsolidateConfig {
     /// Vela-style half-life tiers (hours) by discovery source (stage 3).
     /// effective_confidence = confidence * 0.5^(age_hours / halflife).
     /// Sources mapped to `None` keep the legacy flat `decay_per_day` decay
-    /// (behaviour-compatible with pre-tier stores). Defaults keep the two
-    /// high-value sources at ~90d (same magnitude as the old 0.99/day ≈ 69d)
-    /// and shorten the rule/temporal tiers which are inherently time-bound.
+    /// (behaviour-compatible with pre-tier stores). Defaults: the two
+    /// high-value sources at ~90d (same magnitude as the old 0.99/day ≈ 69d);
+    /// only the time-bound `temporal` tier is shortened (7d). `rule` stays on
+    /// the legacy flat decay (unmapped) so existing stores/tests keep the
+    /// exact pre-tier behaviour.
     pub half_life_user_feedback_hours: u32,
     pub half_life_llm_hours: u32,
-    pub half_life_rule_hours: u32,
     pub half_life_temporal_hours: u32,
     /// GC threshold for replay-protected edges (stage 3), more lenient than
     /// `gc_threshold`.
     pub replay_gc_threshold: f64,
+    /// C7 (stage 1.7): max repeated-decision candidates the LLM supersession
+    /// judge considers per sleep cycle. A cap bounds per-cycle LLM cost;
+    /// candidates beyond it wait for the next cycle.
+    pub supersession_limit: usize,
     /// Pattern-miner configuration, reused for stages 2 and 4.
     pub miner: MinerConfig,
 }
@@ -64,8 +69,8 @@ impl Default for ConsolidateConfig {
             replay_gc_threshold: 0.1,
             half_life_user_feedback_hours: 2160, // 90d
             half_life_llm_hours: 2160,            // 90d (same magnitude as legacy ~69d)
-            half_life_rule_hours: 720,            // 30d
             half_life_temporal_hours: 168,        // 7d
+            supersession_limit: 20,
             q_alpha: 0.1,
             q_gamma: 0.9,
             min_diversity: 0.0,
@@ -124,6 +129,9 @@ pub struct ConsolidateReport {
     pub rem_transfers: usize,
     /// Stage 1.5: chunk Q-values reinforced (Bellman) and persisted.
     pub q_updates: usize,
+    /// Stage 1.7: lessons the LLM supersession judge declared falsified by
+    /// newer evidence and that were soft-invalidated (retired before GC).
+    pub superseded_lessons: usize,
     /// P6: token-level diversity of recent experience (0..1).
     pub diversity: f64,
     /// P6: consolidation skipped because diversity < min_diversity.

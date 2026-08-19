@@ -270,9 +270,9 @@ fn ablation_inhibition_improves_precision() {
 
 #[test]
 fn ablation_inhibition_warning_signal() {
-    /// The qualitative test: with inhibition, prevented targets appear with
-    /// NEGATIVE activation (a warning signal). Without inhibition, they
-    /// disappear entirely. The system loses the "warning" capability.
+    // The qualitative test: with inhibition, prevented targets appear with
+    // NEGATIVE activation (a warning signal). Without inhibition, they
+    // disappear entirely. The system loses the "warning" capability.
     let scenarios = scenarios();
     let graph = make_graph(&scenarios);
 

@@ -109,13 +109,13 @@ impl CausalStore {
         // SELECT to resolve it (the server used to re-query by from_id).
         Ok((dec_id, conn.last_insert_rowid()))
     }
-    /// C7 update-resolver candidate scan: valid edges whose decision text
-    /// repeats (exact or high token overlap) with a DIFFERENT valid outcome
-    /// — the signal that new evidence may have falsified the old lesson.
-    /// The rule-based contradiction pass only auto-invalidates the
-    /// conservative "old negative -> new positive" case; everything else in
-    /// this set needs the LLM judge (resolve-updates) to decide. Returns
-    /// (old_edge_id, old_decision, old_outcome, new_decision, new_outcome).
+    /// C7 update-resolver candidate scan: valid edges whose decision chunk
+    /// is REUSED (exact same decision text — record_decision reuses chunks)
+    /// with a DIFFERENT outcome — the signal that new evidence may have
+    /// falsified the old lesson. The rule-based contradiction pass only
+    /// auto-invalidates the conservative "old negative -> new positive"
+    /// case; everything else in this set needs the LLM judge
+    /// (resolve-updates / sleep) to decide.
     pub fn find_falsified_candidates(&self, limit: usize) -> Result<Vec<FalsificationCandidate>> {
         let conn = self.acquire()?;
         let mut stmt = conn.prepare(

@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::consolidate::{consolidate, recent_diversity, ConsolidateConfig};
+use crate::consolidate::{consolidate, recent_diversity, resolve_supersessions_with, ConsolidateConfig, ConsolidateReport};
 use crate::store::CausalStore;
 const NOW: i64 = 1_700_000_000;
 const DAY: i64 = 86_400;
@@ -816,4 +816,69 @@ fn test_diversity_high_when_varied() {
     }
     let d = recent_diversity(&store, 64).unwrap();
     assert!(d > 0.5, "varied recent text must score high diversity (got {d:.2})");
+}
+
+// ── Stage 1.7: C7 supersession resolution ─────────────────────────────
+
+/// Re-record the same decision text with a *different* outcome: the newer
+/// evidence is a falsification candidate for the original edge.
+fn insert_falsified_pair(store: &CausalStore) {
+    store
+        .record_decision(
+            "deploy hotfix directly to prod",
+            "caused an outage",
+            "caused",
+            None,
+            0.8,
+            "rule",
+        )
+        .unwrap();
+    store
+        .record_decision(
+            "deploy hotfix directly to prod",
+            "was safe, no incident",
+            "caused",
+            None,
+            0.8,
+            "rule",
+        )
+        .unwrap();
+}
+
+/// The judge is injected directly (no process-env mutation): a `None`
+/// config must make the stage a silent no-op that invalidates nothing.
+#[test]
+fn test_supersession_skips_without_llm() {
+    let store = CausalStore::open_in_memory().unwrap();
+    insert_falsified_pair(&store);
+    let mut report = ConsolidateReport::default();
+    resolve_supersessions_with(&store, &default_config(), false, &mut report, None).unwrap();
+    assert_eq!(
+        report.superseded_lessons, 0,
+        "no LLM configured → stage must be a silent no-op"
+    );
+    let valid = store.all_valid_edges().unwrap();
+    assert_eq!(valid.len(), 2, "no-LLM cycle must not invalidate anything");
+}
+
+/// Unreachable endpoint: the judge call fails fast (connection refused)
+/// and the conservative fallback must keep the edge. Dry-run counts 0 and
+/// writes nothing either way.
+#[test]
+fn test_supersession_judge_failure_keeps_edge() {
+    let bad = crate::llm::LlmConfig {
+        api_base: "http://127.0.0.1:1/v1".to_string(),
+        api_key: "test-key".to_string(),
+        model: "test-model".to_string(),
+    };
+    let store = CausalStore::open_in_memory().unwrap();
+    insert_falsified_pair(&store);
+    let mut report = ConsolidateReport::default();
+    resolve_supersessions_with(&store, &default_config(), false, &mut report, Some(&bad)).unwrap();
+    assert_eq!(
+        report.superseded_lessons, 0,
+        "judge failure must be conservative (keep the edge)"
+    );
+    let valid = store.all_valid_edges().unwrap();
+    assert_eq!(valid.len(), 2, "failing judge must not invalidate the edge");
 }

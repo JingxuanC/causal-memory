@@ -419,6 +419,8 @@ fn print_consolidation_report(
     }
     println!("  → {} edge(s) replay-protected & marked (half decay, lenient GC)", report.replayed);
 
+    println!("\n①.7 C7 supersession (LLM judge): {} lesson(s) retired", report.superseded_lessons);
+
     println!("\n② Generalization:");
     println!("  redundant edges merged: {}", report.merged_edges);
     println!(
