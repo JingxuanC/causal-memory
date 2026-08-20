@@ -10,7 +10,7 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Status: v0.9.0](https://img.shields.io/badge/status-v0.9.0--alpha-orange.svg)](#status)
-[![Tests: 344](https://img.shields.io/badge/tests-344-brightgreen.svg)](#build--test)
+[![Tests: 347](https://img.shields.io/badge/tests-347-brightgreen.svg)](#build--test)
 [![Release: v0.9.0](https://img.shields.io/badge/release-v0.9.0-blue.svg)](https://github.com/JingxuanC/causal-memory/releases)
 
 ---
@@ -418,7 +418,7 @@ What works (16/16 layers with end-to-end validation):
 - ✅ Multi-session multi-pass retrieval (LongMemEval multi-session 42.9% → 57.9%, same-codebase)
 - ✅ PyO3 Python bindings (crates/causal-memory-py)
 - ✅ DSH native plugin (dsh-plugin/) + architecture visualization (docs/architecture.html)
-- ✅ 344/344 tests passing + clippy clean
+- ✅ 347/347 tests passing + clippy clean
 
 What's not done yet:
 

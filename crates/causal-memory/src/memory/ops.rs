@@ -407,6 +407,11 @@ impl Memory {
             let _ = self.store.put_fact_embedding(fact_id, "shared", &vec);
         }
 
+        // Phase A: fact changes now reach the graph — mark it dirty so the
+        // lazy rebuild picks the new fact node up (same contract as
+        // record_decision / remember).
+        self.mark_graph_dirty();
+
         let mut out = format!(
             "✅ Recorded fact: [{}] {} = \"{}\" (confidence: {:.2}, id: {})",
             scope,

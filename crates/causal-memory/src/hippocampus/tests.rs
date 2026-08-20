@@ -1038,4 +1038,114 @@ mod tests {
         assert_eq!(calls, 0, "confident entropy verdict must skip the LLM");
         assert!(!rep.should_record, "outcome matched the graph prediction");
     }
+
+    // ─── Phase A: fact entity linking (one-graph-convergence) ────────────
+
+    /// Store fixture: one causal edge plus one fact sharing exactly two
+    /// tokens ({module, typescript}) — enough for an entity link.
+    #[allow(
+        clippy::expect_used,
+        reason = "test fixture: panicking on setup failure is the desired behavior"
+    )]
+    fn linked_store() -> crate::store::CausalStore {
+        let store = crate::store::CausalStore::open_in_memory().expect("in-memory store");
+        store
+            .record_decision_at(
+                "rewrote module in TypeScript",
+                "compile errors dropped",
+                "caused",
+                Some("rust"),
+                0.8,
+                "llm_inferred",
+                1_700_000_000,
+            )
+            .expect("record decision");
+        store
+            .record_fact(
+                "editor_preference",
+                "user prefers TypeScript for module rewrites",
+                "user",
+                "agent",
+                0.8,
+            )
+            .expect("record fact");
+        store
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: graph construction must succeed or the test is meaningless"
+    )]
+    fn test_fact_entity_link_spread_includes_fact_and_causal_chain() {
+        let mut graph = CausalGraph::from_store(&linked_store()).expect("graph from store");
+        let results = graph.spreading_activation("TypeScript", None, false);
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("editor_preference")),
+            "fact node must surface via entity link: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("rewrote module in TypeScript")),
+            "causal decision must surface: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("compile errors dropped")),
+            "outcome must surface via the caused edge: {texts:?}"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: graph construction must succeed or the test is meaningless"
+    )]
+    fn test_fact_seed_spreads_to_causal_chain() {
+        // "prefers" appears ONLY in the fact — seeding there proves the
+        // fact→chunk direction: a fact seed reaches causal lessons.
+        let mut graph = CausalGraph::from_store(&linked_store()).expect("graph from store");
+        let results = graph.spreading_activation("prefers", None, false);
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("rewrote module in TypeScript")),
+            "fact seed must reach the causal decision node: {texts:?}"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: store/graph construction must succeed or the test is meaningless"
+    )]
+    fn test_fact_entity_link_requires_two_shared_tokens() {
+        let store = crate::store::CausalStore::open_in_memory().expect("in-memory store");
+        // Only ONE shared token per pair ({zsh}, {shell}) — below the
+        // conservative threshold, no link may be created.
+        store
+            .record_decision_at(
+                "configured zsh plugins",
+                "shell startup faster",
+                "caused",
+                Some("shell"),
+                0.8,
+                "llm_inferred",
+                1_700_000_000,
+            )
+            .expect("record decision");
+        store
+            .record_fact("shell", "zsh completion setup", "user", "agent", 0.8)
+            .expect("record fact");
+
+        let mut graph = CausalGraph::from_store(&store).expect("graph from store");
+        let results = graph.spreading_activation("completion", None, false);
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("zsh completion setup")),
+            "the seeded fact itself must surface: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("zsh plugins")),
+            "single-token overlap must NOT create a link: {texts:?}"
+        );
+    }
 }

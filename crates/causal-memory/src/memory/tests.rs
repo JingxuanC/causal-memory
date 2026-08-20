@@ -452,4 +452,36 @@ mod tests {
             }
         }
     }
+
+    // ─── Phase A: record_fact marks the graph dirty ──────────────────────
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: memory construction must succeed or the test is meaningless"
+    )]
+    fn test_record_fact_marks_graph_dirty_for_rebuild() {
+        let memory = Memory::open_in_memory().expect("memory");
+        // 1 causal write + 5 fact writes ≥ GRAPH_REBUILD_WRITES (5): the
+        // next hippocampus query must rebuild and see the fresh facts.
+        memory.record_decision("cfg", "zsh plugins load", "caused", "shell", None);
+        for i in 0..5 {
+            memory.record_fact(
+                &format!("pref_{i}"),
+                &format!("user prefers zsh setup variant {i}"),
+                Some("user"),
+                None,
+                None,
+            );
+        }
+        let out = memory.search_causal(None, Some("prefers zsh setup"), Some(5), None, None);
+        assert!(
+            out.starts_with("[hippocampus"),
+            "fresh fact must be reachable via the graph path, got: {out}"
+        );
+        assert!(
+            out.contains("user prefers zsh setup"),
+            "fact text must appear in the activation results: {out}"
+        );
+    }
 }

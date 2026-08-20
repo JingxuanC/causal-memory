@@ -1070,6 +1070,16 @@ impl Default for CausalGraph {
 
 // ─── SQLite loading ────────────────────────────────────────────────
 
+/// Phase A (one-graph-convergence): minimum number of distinct shared
+/// tokens before an entity link is created between a fact node and a
+/// chunk node. Conservative on purpose — a false link wires unrelated
+/// activation into every downstream query.
+const FACT_LINK_MIN_TOKENS: usize = 2;
+
+/// Phase A: max chunk links per fact — keeps a generic fact (key like
+/// `language`) from wiring itself to half the store.
+const FACT_LINK_MAX_PER_FACT: usize = 8;
+
 impl CausalGraph {
     /// Load graph from a CausalStore's SQLite database.
     ///
@@ -1156,6 +1166,8 @@ impl CausalGraph {
             }
 
             // P1: Load agent_facts as fact-type nodes + fact-type edges.
+            // Phase A: fact_indices feeds the entity linking below.
+            let mut fact_indices: Vec<usize> = Vec::new();
             let mut fact_stmt = conn.prepare(
                 "SELECT id, key, value, scope, confidence FROM agent_facts WHERE valid_to IS NULL",
             )?;
@@ -1184,6 +1196,7 @@ impl CausalGraph {
                         task_tag: None,
                     });
                 }
+                fact_indices.push(nodes.len());
                 id_to_idx.insert(fact_node_id.clone(), nodes.len());
                 nodes.push(NodeData {
                     id: fact_node_id.clone(),
@@ -1259,6 +1272,73 @@ impl CausalGraph {
                             to_id: c_to,
                             relation: Relation::CoOccurrence,
                             weight: c_w as f32,
+                            valid: true,
+                        });
+                    }
+                }
+            }
+
+            // Phase A: entity-link fact nodes into the causal content graph
+            // (deterministic, no LLM). Facts otherwise form isolated
+            // scope-hub islands, so spreading activation can never cross
+            // between lessons and facts. A fact links to a chunk when they
+            // share ≥ FACT_LINK_MIN_TOKENS distinct tokens
+            // (patterns::tokenize: ASCII words + CJK bigrams). Edges are
+            // created in BOTH directions — fact seeds reach causal chains,
+            // causal seeds surface facts. An inverted token→chunk index
+            // keeps this O(total tokens) instead of O(facts × chunks).
+            if !fact_indices.is_empty() {
+                let mut token_to_chunks: std::collections::HashMap<String, Vec<usize>> =
+                    std::collections::HashMap::new();
+                for (i, node) in nodes.iter().enumerate() {
+                    if node.id.starts_with("fact:") || node.id.starts_with("scope:") {
+                        continue; // only chunk nodes are link targets
+                    }
+                    for tok in crate::patterns::tokenize(&node.text) {
+                        token_to_chunks.entry(tok).or_default().push(i);
+                    }
+                }
+
+                for &fi in &fact_indices {
+                    let fact_id = nodes[fi].id.clone();
+                    let fact_tokens: std::collections::HashSet<String> =
+                        crate::patterns::tokenize(&nodes[fi].text).into_iter().collect();
+
+                    // Shared-token count per chunk (chunk idx → overlap).
+                    let mut overlap: std::collections::HashMap<usize, usize> =
+                        std::collections::HashMap::new();
+                    for tok in &fact_tokens {
+                        if let Some(chunks) = token_to_chunks.get(tok) {
+                            for &ci in chunks {
+                                *overlap.entry(ci).or_insert(0) += 1;
+                            }
+                        }
+                    }
+
+                    // Conservative threshold; deterministic order (overlap
+                    // desc, idx asc); per-fact cap.
+                    let mut linked: Vec<(usize, usize)> = overlap
+                        .into_iter()
+                        .filter(|&(_, n)| n >= FACT_LINK_MIN_TOKENS)
+                        .collect();
+                    linked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                    linked.truncate(FACT_LINK_MAX_PER_FACT);
+
+                    for (ci, n) in linked {
+                        let chunk_id = nodes[ci].id.clone();
+                        let weight = (0.3 + 0.1 * n as f32).min(0.8);
+                        edges.push(EdgeData {
+                            from_id: fact_id.clone(),
+                            to_id: chunk_id.clone(),
+                            relation: Relation::Fact,
+                            weight,
+                            valid: true,
+                        });
+                        edges.push(EdgeData {
+                            from_id: chunk_id,
+                            to_id: fact_id.clone(),
+                            relation: Relation::Fact,
+                            weight,
                             valid: true,
                         });
                     }

@@ -29,7 +29,14 @@ SQLite（真相源, 压缩免疫 P5）               内存 CausalGraph（查询
 
 ## 2. 分阶段路径
 
-### Phase A — fact 入图（逻辑一等公民）
+### Phase A — fact 入图（逻辑一等公民）✅ shipped 2026-08-20
+
+> 落地说明：节点装载与 `Fact=0.8` 传播系数此前已随 P1 存在；本次补齐的是**实体链接**与
+> **record_fact 标脏**。链接为确定性 token 重叠（`patterns::tokenize`，交集 ≥2 才建边，
+> 双向、每 fact 上限 8 条、倒排索引 O(total tokens)），权重 `0.3+0.1·overlap`（cap 0.8）。
+> 偏差：key→value 自链未做——fact 节点文本本身即 `{key}: {value}`，链接直接作用于全文。
+> 验证：4 个新单测（扩散同时含事实与因果链节点 / fact 种子到达因果链 / 单 token 不建边 /
+> record_fact 标脏可见性），workspace 347/347，clippy 零新增。
 
 目标：`agent_facts` 成为图上 fact 类型的节点/边，参与激活扩散。
 
@@ -110,6 +117,7 @@ Phase A（fact 入图）→ Phase B（统一引擎）→ Phase C（增量生命�
 ## 5. 阶段验收口径
 
 - Phase A 完成后：`search_causal` 能经扩散关联到事实节点；`search_facts` 不变；测试 344+。
+  ✅ 2026-08-20：347/347；`search_facts` 路径未动。
 - Phase B 完成后：`search_memory` 单一扩散引擎出结果；LongMemEval 500 不降。
 - Phase C 完成后：新写即查可见；差分断言过。
 - Phase D 完成后：sleep 报告含 fact 统计；CausalEval 不降。

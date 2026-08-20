@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.0] - Unreleased
 
 ### Added
+- **Phase A — fact entity linking into the causal graph**
+  (one-graph-convergence): `from_store` now deterministically links each
+  `agent_facts` node to chunk nodes sharing ≥ 2 distinct tokens
+  (`patterns::tokenize`, ASCII words + CJK bigrams; no LLM). Edges are
+  bidirectional `Fact` edges (weight `0.3 + 0.1·overlap`, cap 0.8), so
+  fact seeds reach causal chains and causal seeds surface facts —
+  previously facts formed isolated scope-hub islands and spreading
+  activation could never cross between the two memory layers. An
+  inverted token→chunk index keeps linking O(total tokens); a per-fact
+  cap (8) keeps generic keys from wiring to half the store.
+  `record_fact` now marks the graph dirty (same lazy-rebuild contract as
+  `record_decision`/`remember`). Deviation from the plan: the key→value
+  self-link is skipped — the fact node text already carries
+  `{key}: {value}` and linking runs on it.
 - **AMC server on the production pipeline (single-track)**: the Agent
   Memory Challenge server is now a thin HTTP frontend over the shared
   `Memory` facade — `/add` → `remember`, `/search` →
