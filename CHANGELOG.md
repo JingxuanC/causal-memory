@@ -50,6 +50,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   archived as `benches/causal_eval/results_phaseCD_20260820.jsonl`.
 
 ### Fixed
+- **Date-math questions misrouted into the aggregation pipeline**
+  (retrieval quality): `looks_aggregation`'s "how many" phrase matched
+  "How many days ago did I buy a smoker?" — a date-ARITHMETIC question
+  over ONE event, not an enumeration — arming the full-session expansion
+  (≤80 injected chunks), the 500-fact wide queries, and the verification
+  loop. Gold needs exactly one turn; the result was 2-3x context
+  inflation with ~64% noise tokens and answer dilution (LongMemEval
+  temporal-reasoning lost 11 questions under the multipass pipeline; 7
+  were date-math). The carve-out excludes "days/weeks/months/years/hours/
+  long ago" and "how many ... between"; true aggregations ("How many
+  books did I buy?") contain neither pattern and are unaffected.
+  A/B on the 133 temporal questions: date-math subset 65%→74% (+9pp)
+  with ctx median 23,988→9,914 tokens (-59%); non-date control flat
+  (53/87→51/87); zero evidence flips — a pure noise-reduction gain.
+  Context: the 8/9 baseline predated the multipass pipeline (Step A,
+  8/19), so the first full-500 multipass run conflated this with the
+  Phase A-D changes — source-level tracing showed entity links never
+  participate in bench retrieval (hippocampus_boost is env-gated).
 - **BM25 index candidates could exceed SQLite's host-variable limit**
   (pre-existing v10 bug, surfaced by LongMemEval's 246k-chunk shared
   store): `search_causal_bm25` / `search_facts_bm25` resolve candidate

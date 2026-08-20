@@ -286,6 +286,23 @@ pub fn parse_temporal_anchor(query: &str, now: i64) -> Option<(i64, i64)> {
 /// totals/sums/averages, and best-of comparisons.
 pub fn looks_aggregation(query: &str) -> bool {
     let l = query.to_lowercase();
+    // Date-math carve-out: "how many days ago did X" / "how many weeks
+    // between A and B" ask for arithmetic over ONE (or two) events, not an
+    // enumeration. Matching them as aggregation arms the full-session
+    // expansion, the wide fact queries, and the verification loop
+    // downstream — burying the single evidence turn in noise (LongMemEval
+    // temporal-reasoning: 7 of 11 multipass regressions were date-math
+    // questions at 2-3x context inflation; true aggregations like "how
+    // many books did I buy" contain neither pattern and stay matched).
+    const DATE_MATH_UNITS: &[&str] = &[
+        "days ago", "weeks ago", "months ago", "years ago", "hours ago", "long ago",
+    ];
+    if DATE_MATH_UNITS.iter().any(|p| l.contains(p)) {
+        return false;
+    }
+    if l.contains("how many") && l.contains("between") {
+        return false;
+    }
     const PHRASES: &[&str] = &[
         "how many",
         "how much",
@@ -442,6 +459,40 @@ pub fn expand_session_chunks(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn date_math_questions_are_not_aggregation() {
+        // Temporal-distance lookups: ONE event + date arithmetic — the
+        // aggregation pipeline (full-session expansion, wide fact queries,
+        // verify loop) buries their single evidence turn in noise.
+        assert!(!looks_aggregation("How many days ago did I buy a smoker?"));
+        assert!(!looks_aggregation(
+            "How many weeks ago did I attend the 'Summer Nights' festival?"
+        ));
+        assert!(!looks_aggregation("How many months ago did we last meet?"));
+        assert!(!looks_aggregation("How long ago did I harvest the herbs?"));
+        assert!(!looks_aggregation(
+            "How many days passed between the wedding and the sale?"
+        ));
+    }
+
+    #[test]
+    fn true_aggregations_still_match() {
+        assert!(looks_aggregation("How many books did I buy?"));
+        assert!(looks_aggregation("How much did I spend on groceries?"));
+        assert!(looks_aggregation("list all the concerts I attended"));
+        assert!(looks_aggregation("What's the total number of plants?"));
+    }
+
+    #[test]
+    fn plan_for_smoker_question_skips_expansion() {
+        // The exact LongMemEval regression shape: aggregation=false means
+        // the harness returns the merged multi-pass entries directly —
+        // no expand_and_inject, no verify loop, topk fact queries only.
+        let plan = plan_query("How many days ago did I buy a smoker?", 1_700_000_000);
+        assert!(!plan.aggregation);
+        assert!(!plan.entities.is_empty());
+    }
     use crate::store::CausalStore;
 
     fn insert_turn(store: &CausalStore, id: &str, text: &str, ts: i64, task_tag: &str) {
