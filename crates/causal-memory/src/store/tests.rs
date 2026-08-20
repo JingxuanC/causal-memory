@@ -2832,3 +2832,35 @@ fn test_bm25_seed_ids_spans_both_namespaces_and_filters_scope() {
         "{facts:?}"
     );
 }
+
+// ─── B2 index-size guard: oversized candidate sets fall back to scan ──
+
+#[test]
+#[allow(clippy::unwrap_used, reason = "test invariant: panicking on failure is desired")]
+fn test_search_causal_bm25_oversized_index_candidates_fall_back() {
+    // 950 edges (> MAX_INDEX_CANDIDATES 900) whose texts all share a
+    // common token: the inverted index returns 950 candidate chunk ids —
+    // an `IN (...)` list that size would exceed SQLite's host-variable
+    // limit on 999-variable builds. The guard must skip the narrowing
+    // step and answer from the task_tag-bounded full scan instead.
+    let store = CausalStore::open_in_memory().unwrap();
+    for i in 0..950 {
+        store
+            .record_decision_at(
+                &format!("shared token decision number {i}"),
+                &format!("shared token outcome number {i}"),
+                "caused",
+                Some("bigtag"),
+                0.8,
+                "rule",
+                1_700_000_000 + i as i64,
+            )
+            .unwrap();
+    }
+    let hits = store.search_causal_bm25(Some("bigtag"), "shared token", 5).unwrap();
+    assert!(!hits.is_empty(), "oversized candidates must fall back to the scan");
+    assert!(
+        hits.iter().all(|e| e.task_tag.as_deref() == Some("bigtag")),
+        "task_tag filter still applies on the fallback path"
+    );
+}

@@ -50,6 +50,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   archived as `benches/causal_eval/results_phaseCD_20260820.jsonl`.
 
 ### Fixed
+- **BM25 index candidates could exceed SQLite's host-variable limit**
+  (pre-existing v10 bug, surfaced by LongMemEval's 246k-chunk shared
+  store): `search_causal_bm25` / `search_facts_bm25` resolve candidate
+  chunk ids from the persistent inverted index WITHOUT a task_tag
+  filter (the tag applies to causal_edges below), so a few common tokens
+  matched 98k+ chunk ids — the `IN (...)` list blew past SQLite's
+  999-variable floor, the statement failed to prepare, and callers
+  silently degraded to empty results. Both paths now cap index
+  candidates at 900 and fall back to the task_tag-bounded full scan (the
+  pre-index behavior) for oversized sets; regression test at 950 edges.
+  First caught as LongMemEval 29.2% (empty retrieval) vs the 73.2%
+  baseline.
 - **Phase C+D review fixes** (3 regressions + 1 config):
   - Idempotent fact re-records no longer stack duplicate overlay edges —
     `add_patch_edge` upserts by (from, to): a repeat write updates the

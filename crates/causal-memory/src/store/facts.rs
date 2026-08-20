@@ -234,12 +234,19 @@ impl CausalStore {
             .filter_map(|s| s.parse::<i64>().ok())
             .collect();
 
+        // Same index-size guard as search_causal_bm25: an oversized
+        // candidate set would exceed SQLite's host-variable limit in the
+        // `IN (...)` below — oversized sets skip the narrowing step and
+        // scan all valid facts instead (bounded by the fact table).
+        const MAX_INDEX_CANDIDATES: usize = 900;
+        let use_index = !fact_ids.is_empty() && fact_ids.len() <= MAX_INDEX_CANDIDATES;
+
         let mut sql = String::from(
             "SELECT id, key, value, scope, source, confidence, created_at, updated_at
              FROM agent_facts WHERE valid_to IS NULL",
         );
         let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        if !fact_ids.is_empty() {
+        if use_index {
             let ph = vec!["?"; fact_ids.len()].join(",");
             sql.push_str(&format!(" AND id IN ({ph})"));
             for fid in &fact_ids {

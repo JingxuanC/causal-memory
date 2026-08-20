@@ -84,7 +84,16 @@ impl CausalStore {
         // set would silently miss their evidence. When the index yields
         // fewer than a few candidates, fall back to the full scan — the
         // same result set the pre-index code produced.
-        let use_index = chunk_ids.len() >= 3;
+        //
+        // Upper bound (index-size guard): the index lookup is NOT scoped
+        // by task_tag (that filter applies to causal_edges below), so on a
+        // large shared store a few common tokens match tens of thousands
+        // of chunk ids — the `IN (...)` list would exceed SQLite's host
+        // variable limit and fail to prepare. Oversized candidate sets are
+        // also useless as a narrowing step; both ends fall back to the
+        // full scan, which the task_tag filter already bounds.
+        const MAX_INDEX_CANDIDATES: usize = 900; // < SQLite's 999-variable floor
+        let use_index = (3..=MAX_INDEX_CANDIDATES).contains(&chunk_ids.len());
         let mut sql = format!(
             "SELECT {ENTRY_COLUMNS}
              FROM causal_edges ce
