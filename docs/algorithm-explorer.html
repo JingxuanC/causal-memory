@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>causal-memory 算法漫游 — 图结构 · 传播 · Q值</title>
+<style>
+  :root{--bg:#0b1220;--panel:#101a2e;--panel2:#0d1526;--line:#1e2c46;--txt:#dbe4f3;--dim:#8fa3c4;
+    --accent:#4cc2ff;--ok:#34d399;--warn:#fbbf24;--bad:#f87171;--purple:#a78bfa;--pink:#f472b6;}
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--txt);font:14px/1.6 "SF Mono",ui-monospace,Menlo,Consolas,monospace;padding:32px 6vw 80px}
+  h1{font-size:24px;letter-spacing:.5px}
+  h1 .v{color:var(--accent);font-size:13px;font-weight:normal}
+  .sub{color:var(--dim);font-size:12.5px;margin:6px 0 28px;max-width:900px}
+  section{margin-bottom:44px}
+  h2{font-size:17px;margin-bottom:4px;display:flex;align-items:center;gap:8px}
+  h2 .n{background:#16233d;border:1px solid var(--accent);color:var(--accent);font-size:11px;padding:2px 8px;border-radius:6px}
+  h2 .tag{font-size:11px;color:var(--dim);font-weight:normal}
+  .lead{color:var(--dim);font-size:12.5px;margin-bottom:14px;max-width:980px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px}
+  .panel h3{font-size:12.5px;letter-spacing:1px;color:var(--accent);text-transform:uppercase;margin-bottom:10px}
+  code{background:#16233d;border:1px solid #24375c;border-radius:4px;padding:1px 6px;font-size:12.5px;color:#bfe3ff}
+  .formula{background:#0e1a30;border:1px solid #24406e;border-radius:8px;padding:10px 14px;font-size:13px;color:#d7e9ff;margin:8px 0;overflow-x:auto}
+  .formula b{color:var(--accent)}
+  table{border-collapse:collapse;font-size:12.5px;margin:8px 0}
+  th,td{border:1px solid var(--line);padding:5px 10px;text-align:left}
+  th{background:#16233d;color:var(--accent);font-weight:normal}
+  .dim{color:var(--dim)}
+  .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}
+  button{background:#16233d;border:1px solid #2a3f6b;color:var(--txt);font:inherit;font-size:12.5px;padding:6px 14px;border-radius:7px;cursor:pointer}
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button.primary{background:var(--accent);color:#06121f;border-color:var(--accent)}
+  button:disabled{opacity:.4;cursor:default}
+  input[type=range]{width:150px;accent-color:var(--accent)}
+  .status{font-size:12px;color:var(--dim);min-height:18px}
+  .actbar{display:flex;align-items:center;gap:8px;margin:3px 0;font-size:12px}
+  .actbar .lbl{width:200px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dim)}
+  .actbar .bar{height:10px;border-radius:5px;background:#141f36;position:relative;min-width:60px}
+  .actbar .val{width:64px;text-align:right;color:var(--txt)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:900px){.grid2{grid-template-columns:1fr}}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--dim);margin:8px 0}
+  .legend span{display:flex;align-items:center;gap:5px}
+  .sw{width:12px;height:12px;border-radius:3px;display:inline-block}
+  svg text{font-family:"SF Mono",ui-monospace,Menlo,monospace}
+  .note{font-size:11.5px;color:var(--dim);border-left:2px solid #2a3f6b;padding-left:10px;margin-top:10px}
+</style>
+</head>
+<body>
+
+<h1>causal-memory 算法漫游 <span class="v">v0.9 · 图结构 / 查询传播 / Q值更新</span></h1>
+<div class="sub">从代码实现出发的可视化技术说明：图怎么存、查询怎么在图上传播、Q 值怎么更新、记忆怎么巩固与淘汰。所有动画按 <code>src/hippocampus</code> 与 <code>src/consolidate</code> 的真实算法逐步执行。</div>
+
+<section>
+<h2><span class="n">1</span> 图结构 <span class="tag">CSR 稀疏图 · typed edges · SQLite 为真相源</span></h2>
+<div class="lead">内存图是 SQLite 因果边的只读投影：节点 = chunk（决策/结果/事实文本），边 = typed 因果关系。图以 CSR（row_ptr / col_idx / values）存储，构建时把关系系数预乘进边值。</div>
+<div class="grid2">
+  <div class="panel">
+    <h3>节点与边的类型</h3>
+    <table>
+      <tr><th>关系</th><th>含义</th><th>传播系数</th><th>类比</th></tr>
+      <tr><td><span style="color:var(--ok)">caused</span></td><td>决策导致结果</td><td><b>+1.0</b></td><td>谷氨酸（兴奋）</td></tr>
+      <tr><td><span style="color:#7dd3fc">enabled</span></td><td>使能/促成</td><td>+0.5</td><td>弱兴奋</td></tr>
+      <tr><td><span style="color:var(--bad)">prevented</span></td><td>阻止了坏结果</td><td><b>&minus;0.3</b></td><td>GABA（抑制，本系统独有）</td></tr>
+      <tr><td><span style="color:var(--purple)">fact</span></td><td>语义关联</td><td>+0.8</td><td>P1 typed 统一</td></tr>
+      <tr><td><span style="color:var(--pink)">meta</span></td><td>跨任务模式</td><td>+0.6</td><td>皮层自上而下</td></tr>
+      <tr><td><span style="color:#fcd34d">co_occurrence</span></td><td>共现强化（动态权重）</td><td>w(&asymp;0.2)&times;1.0</td><td>Hebbian LTP</td></tr>
+    </table>
+    <div class="note">边权重 = 关系系数 &times; 动态因子（Hebbian 改变 co_occurrence 的 w；其余边权重静态）。失效边 <code>edge_valid=false</code> 在传播时被跳过。</div>
+  </div>
+  <div class="panel">
+    <h3>示例图（下方所有动画的底图，点节点看 Q）</h3>
+    <svg id="graph" viewBox="0 0 560 300" width="100%"></svg>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--ok)"></i>caused +1.0</span>
+      <span><i class="sw" style="background:#7dd3fc"></i>enabled +0.5</span>
+      <span><i class="sw" style="background:var(--bad)"></i>prevented &minus;0.3</span>
+      <span><i class="sw" style="background:var(--purple)"></i>fact +0.8</span>
+      <span><i class="sw" style="background:var(--pink)"></i>meta +0.6</span>
+    </div>
+  </div>
+</div>
+</section>
+
+<section>
+<h2><span class="n">2</span> 查询如何在图上传播 <span class="tag">spreading activation · Q 加权播种 · abs-max 合并</span></h2>
+<div class="lead">一次 <code>search_causal / intervention_query</code> 的图侧执行：1 查询文本经 BM25/语义找到种子节点；2 种子激活 = <code>0.5 + 0.5&times;Q</code>（证明过有用的节点初始更强）；3 每步沿有效边传播 <code>new_act[target] += a源 &times; 边权 &times; decay</code> 并 clamp 到 [&minus;1,1]；4 绝对值大于阈值的节点成为结果，按 |激活| 降序。prevented 边的负激活可以盖过零（abs-max 合并）——危险警示就是这样在图上流动的。</div>
+<div class="panel">
+  <h3>动画演示 — 查询："生产环境宕机了怎么办"（种子 D1 Q=0.8 / O1 Q=0.3 / D2 Q=0.2）</h3>
+  <svg id="spread" viewBox="0 0 560 300" width="100%"></svg>
+  <div class="controls">
+    <button id="stepBtn" class="primary">下一步 ▶</button>
+    <button id="playBtn">自动播放</button>
+    <button id="resetBtn">重置</button>
+    <span class="status" id="spreadStatus"></span>
+  </div>
+  <div id="actList"></div>
+  <div class="formula">每步：<b>new_act[target] += a源 &times; 边权 &times; decay(0.7)</b>　然后 <b>clamp[&minus;1,1]</b>；合并用 <b>|new| &gt; |old| &rarr; 替换</b>；|a| &ge; 阈值(0.1) 的节点进入结果集</div>
+</div>
+</section>
+
+<section>
+<h2><span class="n">3</span> Q 值怎么更新 <span class="tag">MemRL 风格 Bellman · 0 初始 · 持久化到 chunks.q_value</span></h2>
+<div class="lead">节点 Q &#8712; [0,1] 表示"这个 chunk 被证明有用"的程度，初始为 0（MemRL：失败本身有价值）。巩固周期对 replay 保护边的端点 chunk 给奖励 r，按 Bellman 更新；检索播种用 <code>0.5 + 0.5&times;Q</code> 让高 Q 节点初始激活更强。更新后写回 <code>chunks.q_value</code>（v9 持久化）。</div>
+<div class="grid2">
+  <div class="panel">
+    <h3>Bellman 公式与演示</h3>
+    <div class="formula"><b>Q &larr; Q + &alpha;&middot;[ r + &gamma;&middot;max_Q(有效邻居) &minus; Q ]</b>，clamp [0,1]<br>默认 &alpha;=0.1（学习率），&gamma;=0.9（折扣）</div>
+    <div class="controls">
+      <label class="dim">&alpha; <input type="range" id="alpha" min="0.01" max="0.9" step="0.01" value="0.1"></label>
+      <label class="dim">&gamma; <input type="range" id="gamma" min="0" max="0.99" step="0.01" value="0.9"></label>
+      <button id="qStep">执行一步 Q 更新</button>
+      <button id="qReset">重置</button>
+    </div>
+    <div id="qDemo" style="font-size:12.5px"></div>
+  </div>
+  <div class="panel">
+    <h3>Q 与检索的耦合</h3>
+    <div class="formula">播种：<b>activation_seed = 0.5 + 0.5&times;Q</b>　&rarr;　Q=0 时种子 0.5，Q=1 时种子 1.0</div>
+    <div class="dim" style="font-size:12.5px">三步闭环：<br>1 巩固 stage 1.5：对 replay 保护边的端点按结果极性给奖励 r，Bellman 更新 Q<br>2 persist_q_values 写回 SQLite<br>3 下次查询播种：高 Q 节点初始激活更强 &rarr; 更可能被检索到 &rarr; 再次被强化</div>
+    <div class="note">reward 规则：失败教训与 replay 保护边得正奖励；<code>update_q_value_by_chunk_id</code> 是生产入口，按 chunk id 更新。</div>
+  </div>
+</div>
+</section>
+
+<section>
+<h2><span class="n">4</span> 检索管线 <span class="tag">多信号融合 · 多遍 · 验证回环</span></h2>
+<div class="lead">图传播只是检索的一层。完整检索：BM25（倒排）+ 语义（bge-small）+ 图传播（spreading）+ hop 邻接，RRF 融合；跨会话问题走多遍检索（实体分解 + 时间锚 + session 展开 + 验证回环）。</div>
+<svg id="pipeline" viewBox="0 0 980 150" width="100%"></svg>
+</section>
+
+<section>
+<h2><span class="n">5</span> 巩固与遗忘 <span class="tag">sleep 周期 · 半衰期衰减 · C7 知识更新</span></h2>
+<div class="grid2">
+  <div class="panel">
+    <h3>sleep 阶段流</h3>
+    <div style="font-size:12.5px;line-height:2">0 新颖性门控 &rarr; 1 重激活 &rarr; 1.5 Q-value Bellman &rarr; <b style="color:var(--warn)">1.7 C7 supersession（LLM 判官）</b> &rarr; 2 泛化（合并+模式） &rarr; 3 降权+GC &rarr; 4 REM 跨域迁移</div>
+    <div class="formula">半衰期衰减：<b>eff_conf = conf &times; 0.5<sup>age/halflife</sup></b>　tier：user_feedback/llm 90d · temporal 7d · rule 保持 0.99/day</div>
+    <div class="note">C7：同一决策被以不同结果重新记录 &rarr; LLM 判官裁决 &rarr; Retire（硬失效）/ Annotate（软标注 superseded_by，不隐藏）。</div>
+  </div>
+  <div class="panel">
+    <h3>半衰期衰减曲线（交互）</h3>
+    <svg id="decay" viewBox="0 0 400 180" width="100%"></svg>
+    <div class="controls">
+      <label class="dim">半衰期(天) <input type="range" id="halflife" min="1" max="180" step="1" value="90"></label>
+      <span class="status" id="decayStatus"></span>
+    </div>
+  </div>
+</div>
+</section>
+
+<section>
+<h2><span class="n">6</span> 写入路径 <span class="tag">record_decision · 惰性图重建 · distill</span></h2>
+<div class="lead">决策&rarr;结果写入 SQLite（chunk 精确复用：同一决策文本是同一节点）；<code>GRAPH_REBUILD_WRITES=5 / 30s</code> 惰性重建内存图；LLM 蒸馏把会话转成 facts/lessons/events；同决策矛盾结果触发规则快路或留待 C7 判官。</div>
+<div class="formula">写入：<b>chunks（文本复用）&rarr; causal_edges（typed + confidence + polarity）&rarr; 惰性重建 CausalGraph &rarr; sleep 周期维护</b></div>
+</section>
+
+<div style="color:var(--dim);font-size:11px;text-align:right;margin-top:30px">docs/algorithm-explorer.html · 动画与实现对应：hippocampus/spread_step、update_q_value、consolidate/stages</div>
+
+<script>
+// 示例图数据
+var NODES=[{id:"D1",x:70,y:80,label:"直接部署热修复",kind:"decision"},{id:"O1",x:220,y:60,label:"生产宕机",kind:"outcome"},{id:"O2",x:220,y:180,label:"无事故",kind:"outcome"},{id:"D2",x:380,y:180,label:"先灰度发布",kind:"decision"},{id:"D3",x:70,y:230,label:"使用连接池",kind:"decision"},{id:"O3",x:220,y:250,label:"连接耗尽修复",kind:"outcome"},{id:"F1",x:380,y:60,label:"连接池是稳定方案",kind:"fact"}];
+var EDGES=[{from:"D1",to:"O1",rel:"caused",w:1.0},{from:"D1",to:"O2",rel:"prevented",w:-0.3},{from:"D2",to:"O2",rel:"enabled",w:0.5},{from:"D3",to:"O3",rel:"caused",w:1.0},{from:"D3",to:"F1",rel:"fact",w:0.8},{from:"O1",to:"D2",rel:"meta",w:0.6}];
+var RC={caused:"#34d399",enabled:"#7dd3fc",prevented:"#f87171",fact:"#a78bfa",meta:"#f472b6"};
+var DECAY=0.7,THRESH=0.1,MAX_HOPS=4;
+var SEED_Q={D1:0.8,O1:0.3,D2:0.2};
+
+function nodeById(id){for(var i=0;i<NODES.length;i++){if(NODES[i].id===id)return NODES[i];}return null;}
+
+function drawGraph(svgId){
+  var svg=document.getElementById(svgId);
+  var h="";
+  for(var i=0;i<EDGES.length;i++){
+    var e=EDGES[i],a=nodeById(e.from),b=nodeById(e.to);
+    var mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
+    var wl=(e.w>0?"+":"")+e.w;
+    h+="<line id=\""+svgId+"_e_"+e.from+"_"+e.to+"\" x1=\""+a.x+"\" y1=\""+a.y+"\" x2=\""+b.x+"\" y2=\""+b.y+"\" stroke=\""+RC[e.rel]+"\" stroke-width=\"2.5\" stroke-opacity=\"0.55\" marker-end=\"url(#arrow)\"/>";
+    h+="<text x=\""+(mx+6)+"\" y=\""+(my-5)+"\" font-size=\"10\" fill=\""+RC[e.rel]+"\" opacity=\"0.9\">"+e.rel+" "+wl+"</text>";
+  }
+  for(var j=0;j<NODES.length;j++){
+    var n=NODES[j];
+    var fill=n.kind==="decision"?"#1d3a5f":(n.kind==="fact"?"#3b2a5e":"#234f3a");
+    h+="<circle id=\""+svgId+"_n_"+n.id+"\" cx=\""+n.x+"\" cy=\""+n.y+"\" r=\"24\" fill=\""+fill+"\" stroke=\"#4cc2ff\" stroke-width=\"1.5\" stroke-opacity=\"0.5\"/>";
+    h+="<text x=\""+n.x+"\" y=\""+(n.y+3.5)+"\" text-anchor=\"middle\" font-size=\"10.5\" fill=\"#e8f1ff\">"+n.label+"</text>";
+  }
+  svg.innerHTML="<defs><marker id=\"arrow\" markerWidth=\"8\" markerHeight=\"8\" refX=\"7\" refY=\"3\" orient=\"auto\"><path d=\"M0,0 L7,3 L0,6 z\" fill=\"#5a719c\"/></marker></defs>"+h;
+}
+
+// 1. 静态图（可点节点看 Q）
+drawGraph("graph");
+for(var k=0;k<NODES.length;k++){
+  (function(n){
+    document.getElementById("graph_n_"+n.id).addEventListener("click",function(){
+      var q=SEED_Q[n.id];
+      alert("节点 "+n.id+"「"+n.label+"」\nQ 值："+(q===undefined?"未设(0)":q)+"\n播种强度："+(0.5+0.5*(q||0)).toFixed(3));
+    });
+  })(NODES[k]);
+}
+
+// 2. 传播动画
+drawGraph("spread");
+var stepBtn=document.getElementById("stepBtn"),playBtn=document.getElementById("playBtn"),resetBtn=document.getElementById("resetBtn");
+var spreadStatus=document.getElementById("spreadStatus"),actList=document.getElementById("actList");
+var act={},hop=0,done=false,playing=false,timer=null;
+
+function seedActivation(){
+  act={};
+  for(var id in SEED_Q){act[id]=0.5+0.5*SEED_Q[id];}
+}
+function spreadStep(){
+  var newAct={};
+  for(var i=0;i<EDGES.length;i++){
+    var e=EDGES[i],a=act[e.from];
+    if(a===undefined||Math.abs(a)<THRESH)continue;
+    newAct[e.to]=(newAct[e.to]||0)+a*e.w*DECAY;
+  }
+  for(var id in newAct){
+    newAct[id]=Math.max(-1,Math.min(1,newAct[id]));
+    var old=act[id]||0;
+    if(Math.abs(newAct[id])>Math.abs(old))act[id]=newAct[id];
+  }
+}
+function renderSpread(){
+  for(var i=0;i<NODES.length;i++){
+    var n=NODES[i],a=act[n.id]||0,node=document.getElementById("spread_n_"+n.id);
+    var glow=Math.min(1,Math.abs(a)/0.7);
+    node.setAttribute("r",24+10*glow);
+    node.setAttribute("stroke",a<0?"#f87171":"#34d399");
+    node.setAttribute("stroke-width",1+4*glow);
+    node.setAttribute("stroke-opacity",0.35+0.6*glow);
+  }
+  for(var j=0;j<EDGES.length;j++){
+    var e=EDGES[j],a=act[e.from]||0,ln=document.getElementById("spread_e_"+e.from+"_"+e.to);
+    if(ln)ln.setAttribute("stroke-opacity",Math.abs(a)>=THRESH?1:0.25);
+  }
+  var rows=[];
+  for(var m=0;m<NODES.length;m++){var nn=NODES[m];rows.push({id:nn.id,label:nn.label,a:act[nn.id]||0});}
+  rows=rows.filter(function(r){return Math.abs(r.a)>=THRESH;}).sort(function(x,y){return Math.abs(y.a)-Math.abs(x.a);});
+  var html="";
+  for(var p=0;p<rows.length;p++){
+    var r=rows[p],col=r.a<0?"#f87171":"#34d399",w=Math.abs(r.a)/1.0*50;
+    html+="<div class=\"actbar\"><span class=\"lbl\">"+r.id+" "+r.label+"</span><span class=\"bar\"><b style=\"width:"+w+"%;background:"+col+"\"></b></span><span class=\"val\" style=\"color:"+col+"\">"+(r.a>=0?"+":"")+r.a.toFixed(3)+"</span></div>";
+  }
+  actList.innerHTML=html||"<span class=\"dim\">（尚无超过阈值的节点）</span>";
+}
+function step(){
+  if(done)return;
+  if(hop===0){spreadStatus.textContent="① 播种：Q 加权初始激活（0.5+0.5Q）";}
+  else{
+    spreadStatus.textContent="② hop "+(hop+1)+"/"+MAX_HOPS+"：new_act += a源×边权×decay，abs-max 合并";
+    spreadStep();
+    if(hop+1>MAX_HOPS){done=true;stepBtn.disabled=true;spreadStatus.textContent="③ 传播结束：按 |激活| 降序，结果进入检索融合";}
+  }
+  renderSpread();
+  hop++;
+}
+function resetSpread(){hop=0;done=false;act={};stepBtn.disabled=false;seedActivation();renderSpread();spreadStatus.textContent="已播种（step 0）。点下一步逐步观察";actList.innerHTML="<span class=\"dim\">（点下一步开始）</span>";}
+stepBtn.addEventListener("click",step);
+resetBtn.addEventListener("click",function(){resetSpread();if(playing){clearInterval(timer);playing=false;playBtn.textContent="自动播放";}});
+playBtn.addEventListener("click",function(){
+  if(playing){clearInterval(timer);playing=false;playBtn.textContent="自动播放";return;}
+  if(done)resetSpread();
+  playing=true;playBtn.textContent="暂停";
+  timer=setInterval(function(){step();if(done){clearInterval(timer);playing=false;playBtn.textContent="自动播放";}},900);
+});
+resetSpread();
+
+// 3. Q 值 Bellman 演示
+var alphaEl=document.getElementById("alpha"),gammaEl=document.getElementById("gamma"),qDemo=document.getElementById("qDemo");
+var qv={D1:0.8,O1:0.3,D2:0.2,O3:0.5};
+var QN={O1:["D2"],D2:["O2"]};
+function renderQ(){
+  var h="<table><tr><th>节点</th><th>Q</th><th>播种强度 0.5+0.5Q</th></tr>";
+  var ids=["D1","O1","D2","O3"];
+  for(var i=0;i<ids.length;i++){var id=ids[i],q=qv[id]||0;h+="<tr><td>"+id+"</td><td>"+q.toFixed(3)+"</td><td>"+(0.5+0.5*q).toFixed(3)+"</td></tr>";}
+  h+="</table><div class=\"dim\" style=\"font-size:12px\">α="+alphaEl.value+" γ="+gammaEl.value+" ｜ 执行一步：对节点 O1（生产宕机，失败教训）给奖励 r=0.1，max_Q 邻居取 D2 的 Q</div>";
+  qDemo.innerHTML=h;
+}
+function qStep(){
+  var alpha=parseFloat(alphaEl.value),gamma=parseFloat(gammaEl.value);
+  var id="O1",r=0.1,nei=QN[id]||[],maxN=0;
+  for(var i=0;i<nei.length;i++){var q=qv[nei[i]]||0;if(q>maxN)maxN=q;}
+  var old=qv[id]||0,next=Math.max(0,Math.min(1,old+alpha*(r+gamma*maxN-old)));
+  qv[id]=next;
+  qDemo.innerHTML="<div class=\"formula\">Q(O1): "+old.toFixed(3)+" + "+alpha+"×[ "+r+" + "+gamma+"×max_Q(邻居="+maxN.toFixed(3)+") − "+old.toFixed(3)+" ] = <b>"+next.toFixed(3)+"</b></div>"+qDemo.innerHTML;
+}
+document.getElementById("qStep").addEventListener("click",qStep);
+document.getElementById("qReset").addEventListener("click",function(){qv={D1:0.8,O1:0.3,D2:0.2,O3:0.5};renderQ();});
+alphaEl.addEventListener("input",renderQ);gammaEl.addEventListener("input",renderQ);
+renderQ();
+
+// 4. 检索管线图
+(function(){
+  var boxes=[["query","查询"],["decomp","实体分解+时间锚"],["bm25","BM25 ×N"],["topo","证据拓扑判定"],["expand","session 展开"],["verify","验证回环"],["rrf","RRF 融合"],["ans","answer+judge"]];
+  var pos={query:[10,55],decomp:[140,30],bm25:[270,55],topo:[400,30],expand:[540,30],verify:[670,55],rrf:[800,30],ans:[920,55]};
+  var edges=[["query","decomp"],["decomp","bm25"],["bm25","topo"],["topo","expand"],["expand","verify"],["verify","rrf"],["rrf","ans"]];
+  var h="";
+  for(var i=0;i<edges.length;i++){var e=edges[i],a=pos[e[0]],b=pos[e[1]];
+    h+="<line x1=\""+(a[0]+70)+"\" y1=\""+(a[1]+16)+"\" x2=\""+b[0]+"\" y2=\""+(b[1]+16)+"\" stroke=\"#2a3f6b\" stroke-width=\"2\" marker-end=\"url(#pa)\"/>";}
+  for(var j=0;j<boxes.length;j++){var b2=boxes[j],p=pos[b2[0]];
+    h+="<rect x=\""+p[0]+"\" y=\""+p[1]+"\" width=\"140\" height=\"32\" rx=\"8\" fill=\"#13213a\" stroke=\"#2a3f6b\"/>";
+    h+="<text x=\""+(p[0]+70)+"\" y=\""+(p[1]+20)+"\" text-anchor=\"middle\" font-size=\"11\" fill=\"#cfe3ff\">"+b2[1]+"</text>";}
+  document.getElementById("pipeline").innerHTML="<defs><marker id=\"pa\" markerWidth=\"8\" markerHeight=\"8\" refX=\"7\" refY=\"3\" orient=\"auto\"><path d=\"M0,0 L7,3 L0,6 z\" fill=\"#2a3f6b\"/></marker></defs>"+h;
+})();
+
+// 5. 半衰期曲线
+(function(){
+  var svg=document.getElementById("decay"),hlEl=document.getElementById("halflife"),st=document.getElementById("decayStatus");
+  function draw(){
+    var hl=parseInt(hlEl.value),h="";
+    h+="<line x1=\"20\" y1=\"150\" x2=\"390\" y2=\"150\" stroke=\"#1e2c46\"/><line x1=\"20\" y1=\"20\" x2=\"20\" y2=\"150\" stroke=\"#1e2c46\"/>";
+    var pts1="",pts2="";
+    for(var d=0;d<=180;d+=2){
+      pts1+=(20+d*2)+","+(150-Math.pow(0.5,d/hl)*130)+" ";
+      pts2+=(20+d*2)+","+(150-Math.pow(0.99,d)*130)+" ";
+    }
+    h+="<polyline points=\""+pts2+"\" fill=\"none\" stroke=\"#8fa3c4\" stroke-width=\"1.5\" stroke-dasharray=\"4 3\"/>";
+    h+="<polyline points=\""+pts1+"\" fill=\"none\" stroke=\"#4cc2ff\" stroke-width=\"2.5\"/>";
+    h+="<text x=\"250\" y=\"30\" font-size=\"11\" fill=\"#4cc2ff\">半衰期 "+hl+" 天</text>";
+    h+="<text x=\"250\" y=\"48\" font-size=\"11\" fill=\"#8fa3c4\">旧策略 0.99^t（虚线）</text>";
+    svg.innerHTML=h;
+    st.textContent="30 天后置信度: "+(Math.pow(0.5,30/hl)).toFixed(3)+"；90 天: "+(Math.pow(0.5,90/hl)).toFixed(3);
+  }
+  hlEl.addEventListener("input",draw);
+  draw();
+})();
+</script>
+</body>
+</html>
