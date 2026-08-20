@@ -50,6 +50,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   archived as `benches/causal_eval/results_phaseCD_20260820.jsonl`.
 
 ### Fixed
+- **Phase C+D review fixes** (3 regressions + 1 config):
+  - Idempotent fact re-records no longer stack duplicate overlay edges —
+    `add_patch_edge` upserts by (from, to): a repeat write updates the
+    weight instead of adding a copy, so activation is never inflated and
+    the overlay never grows unboundedly (regression test pins the
+    one-edge activation value).
+  - `link_fact_node` uses an incremental token→chunk inverted index
+    (maintained by `append_node`, rebuilt by `build`) instead of
+    re-tokenizing every graph node per fact write — write-path linking is
+    now O(fact tokens × hits), the same shape as the rebuild-time linker,
+    instead of O(V) tokenizes per write.
+  - Fact participants no longer enter the stratified-replication pool:
+    a fact's scope leaked into the strata set, clearing `confounded` for
+    single-domain decision pairs (strata len ≥ 2 without any actual
+    cross-task replication). Only causal endpoints pool; facts still mine
+    `similar_to` as endpoints (regression test pins confounded=true
+    despite a matching fact).
+  - `half_life_fact_hours` (default 2160) replaces the hardcoded reuse of
+    the user_feedback tier — facts have their own tunable decay knob.
 - **Phase A entity-link overlap counted repeated tokens**: a chunk whose
   text repeated a word contributed the same token twice to the overlap
   count, letting a single distinct shared token fake "≥ 2 distinct

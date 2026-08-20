@@ -225,12 +225,11 @@ pub fn downscale(
 
 /// Phase D (one-graph-convergence): stage 3 fact downscaling — the same
 /// half-life decay and GC the causal edges get, applied to `agent_facts`.
-/// Age runs from `updated_at`; the tier is the slowest one
-/// (`half_life_user_feedback_hours`, default 90d): facts are high-trust
-/// "what is" knowledge, so they fade far slower than temporal lessons.
-/// Facts below the GC threshold retire (`valid_to`); supersession lineage
-/// (`superseded_by`) is untouched. Same-day facts are not decayed,
-/// mirroring the edge path.
+/// Age runs from `updated_at`; the tier is `half_life_fact_hours`
+/// (default 90d): facts are high-trust "what is" knowledge, so they fade
+/// far slower than temporal lessons. Facts below the GC threshold retire
+/// (`valid_to`); supersession lineage (`superseded_by`) is untouched.
+/// Same-day facts are not decayed, mirroring the edge path.
 pub fn downscale_facts(
     store: &CausalStore,
     config: &ConsolidateConfig,
@@ -254,7 +253,7 @@ pub fn downscale_facts(
         if days < 1.0 {
             continue;
         }
-        let halflife = f64::from(config.half_life_user_feedback_hours);
+        let halflife = f64::from(config.half_life_fact_hours);
         let new_conf = confidence * 0.5f64.powf(days * 24.0 / halflife);
         report.facts_decayed += 1;
         let collect = new_conf < config.gc_threshold;

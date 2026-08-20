@@ -144,7 +144,6 @@ impl<'a> PatternMiner<'a> {
         struct MineItem<'a> {
             id: String,
             text: String,
-            task_tag: Option<String>,
             edge: Option<&'a crate::store::CausalEntry>,
         }
         let mut items: Vec<MineItem> = Vec::new();
@@ -156,7 +155,6 @@ impl<'a> PatternMiner<'a> {
                 items.push(MineItem {
                     id: e.decision_id.clone(),
                     text: e.decision_text.clone(),
-                    task_tag: e.task_tag.clone(),
                     edge: Some(e),
                 });
             }
@@ -176,7 +174,7 @@ impl<'a> PatternMiner<'a> {
             let v: std::result::Result<Vec<_>, rusqlite::Error> = rows.collect();
             Ok(v?)
         })?;
-        for (id, key, value, scope) in facts {
+        for (id, key, value, _scope) in facts {
             let text = format!("{key}: {value}");
             let key = normalize(&text);
             if let std::collections::hash_map::Entry::Vacant(entry) = seen.entry(key) {
@@ -184,7 +182,6 @@ impl<'a> PatternMiner<'a> {
                 items.push(MineItem {
                     id: format!("fact:{id}"),
                     text,
-                    task_tag: Some(scope),
                     edge: None,
                 });
             }
@@ -257,13 +254,16 @@ impl<'a> PatternMiner<'a> {
                 if let Some(hit) = hit {
                     let sig = pair_signature(&tokens[i], &tokens[j]);
                     let acc = strata_groups.entry(sig.clone()).or_default();
-                    match items[i].edge {
-                        Some(e) => acc.observe(e),
-                        None => acc.observe_tag(items[i].task_tag.as_deref().unwrap_or("untagged")),
+                    // Stratified replication pools only CAUSAL endpoints —
+                    // a fact is not a task stratum and replicates nothing;
+                    // letting it into the pool would clear `confounded`
+                    // for single-domain patterns (strata len ≥ 2 without
+                    // any actual cross-task replication).
+                    if let Some(e) = items[i].edge {
+                        acc.observe(e);
                     }
-                    match items[j].edge {
-                        Some(e) => acc.observe(e),
-                        None => acc.observe_tag(items[j].task_tag.as_deref().unwrap_or("untagged")),
+                    if let Some(e) = items[j].edge {
+                        acc.observe(e);
                     }
                     candidates.push(Candidate { hit, sim, sig });
                 }

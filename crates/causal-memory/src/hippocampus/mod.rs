@@ -126,6 +126,14 @@ pub struct CausalGraph {
     /// (from_store filters `valid_to IS NULL`).
     retired_nodes: std::collections::HashSet<u32>,
 
+    /// Phase C: incremental inverted index — distinct token → chunk-node
+    /// indices (fact/scope nodes excluded). Maintained by `append_node`,
+    /// consumed by `link_fact_node`, so the write-path linker costs
+    /// O(fact tokens) instead of re-tokenizing every node per write. The
+    /// rebuild-time linker (`entity_link_facts`) stays store-side; both
+    /// use the same thresholds and weights.
+    token_index: HashMap<String, Vec<u32>>,
+
     // Config
     decay: f32,
     threshold: f32,
@@ -171,6 +179,7 @@ impl CausalGraph {
             patch_fwd: HashMap::new(),
             patch_rev: HashMap::new(),
             retired_nodes: std::collections::HashSet::new(),
+            token_index: HashMap::new(),
             decay: 0.7,
             threshold: 0.1,
             max_hops: 5,
@@ -263,6 +272,22 @@ impl CausalGraph {
                 graph.col_idx_rev.push(target);
                 graph.values_rev.push(val);
                 graph.rev_to_fwd_idx.push(csr_idx);
+            }
+        }
+
+        // Phase C: (re)build the incremental token index — distinct tokens
+        // → chunk-node indices, deduped posting lists. This mirrors what
+        // append_node maintains patch-side, so post-rebuild writes link
+        // against the full node set without re-tokenizing it.
+        graph.token_index.reserve(nodes.len());
+        for (i, node) in nodes.iter().enumerate() {
+            if node.id.starts_with("fact:") || node.id.starts_with("scope:") {
+                continue;
+            }
+            let distinct: std::collections::HashSet<String> =
+                crate::patterns::tokenize(&node.text).into_iter().collect();
+            for tok in distinct {
+                graph.token_index.entry(tok).or_default().push(i as u32);
             }
         }
 
@@ -1089,7 +1114,8 @@ impl CausalGraph {
         let idx = self.num_nodes as u32;
         self.node_id_to_idx.insert(data.id.clone(), idx);
         self.node_text.push(data.text);
-        self.node_ids.push(data.id);
+        let idx_id = data.id;
+        self.node_ids.push(idx_id.clone());
         self.node_q_value.push(data.q_value);
         self.node_replay_count.push(data.replay_count);
         self.node_last_activated.push(data.last_activated);
@@ -1100,28 +1126,49 @@ impl CausalGraph {
         // Zero-width CSR rows for the new node on both sides.
         self.row_ptr.push(*self.row_ptr.last().unwrap_or(&0));
         self.row_ptr_rev.push(*self.row_ptr_rev.last().unwrap_or(&0));
+        // Phase C: keep the incremental token index current for chunk
+        // nodes (fact/scope nodes are not link targets). Posting lists are
+        // deduped (distinct tokens only), matching the rebuild-time linker.
+        let is_link_target =
+            !(idx_id.starts_with("fact:") || idx_id.starts_with("scope:"));
+        if is_link_target {
+            let distinct: std::collections::HashSet<String> =
+                crate::patterns::tokenize(&self.node_text[idx as usize])
+                    .into_iter()
+                    .collect();
+            for tok in distinct {
+                self.token_index.entry(tok).or_default().push(idx);
+            }
+        }
         idx
     }
 
     /// Phase C: add an edge between (possibly just-appended) nodes without
     /// rebuilding. The edge lives in the overlay maps until the next full
     /// `from_store`; spread steps consult it in both directions.
+    /// Idempotent: a duplicate (from, to, relation) — e.g. an idempotent
+    /// fact re-record — updates the weight instead of stacking a copy, so
+    /// repeated writes never inflate activation or grow the overlay.
     pub fn add_patch_edge(&mut self, from: u32, to: u32, relation: Relation, weight: f32) {
         let value = weight * relation.spread_coeff();
         // Reviving write: a re-appended node leaves the retired set (the
         // store-side revive path re-records a previously retired fact).
         self.retired_nodes.remove(&from);
         self.retired_nodes.remove(&to);
-        self.patch_fwd.entry(from).or_default().push(PatchEdge {
-            other: to,
-            value,
-            valid: true,
-        });
-        self.patch_rev.entry(to).or_default().push(PatchEdge {
-            other: from,
-            value,
-            valid: true,
-        });
+        let upsert = |patches: &mut Vec<PatchEdge>, other: u32, value: f32| {
+            if let Some(p) = patches.iter_mut().find(|p| p.other == other) {
+                p.value = value;
+                p.valid = true;
+            } else {
+                patches.push(PatchEdge {
+                    other,
+                    value,
+                    valid: true,
+                });
+            }
+        };
+        upsert(self.patch_fwd.entry(from).or_default(), to, value);
+        upsert(self.patch_rev.entry(to).or_default(), from, value);
     }
 
     /// Phase C: retire a node from seeding and result surfacing (a fact
@@ -1192,20 +1239,14 @@ impl CausalGraph {
             return;
         }
 
-        // Distinct-shared-token count per chunk node (skipping facts and
-        // scope hubs, matching the rebuild-time linker).
+        // Distinct-shared-token count per chunk node via the incremental
+        // inverted index — O(fact tokens × hits), no per-node re-tokenize.
         let mut overlap: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
-        for i in 0..self.num_nodes {
-            let id = &self.node_ids[i];
-            if id.starts_with("fact:") || id.starts_with("scope:") {
-                continue;
-            }
-            let toks = crate::patterns::tokenize(&self.node_text[i]);
-            let distinct: std::collections::HashSet<&str> =
-                toks.iter().map(String::as_str).collect();
-            let shared = fact_tokens.iter().filter(|t| distinct.contains(t.as_str())).count();
-            if shared >= FACT_LINK_MIN_TOKENS {
-                overlap.insert(i as u32, shared);
+        for tok in &fact_tokens {
+            if let Some(chunks) = self.token_index.get(tok) {
+                for &ci in chunks {
+                    *overlap.entry(ci).or_insert(0) += 1;
+                }
             }
         }
 

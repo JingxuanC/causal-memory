@@ -45,6 +45,11 @@ pub struct ConsolidateConfig {
     pub half_life_user_feedback_hours: u32,
     pub half_life_llm_hours: u32,
     pub half_life_temporal_hours: u32,
+    /// Phase D (stage 3, facts): half-life tier (hours) for `agent_facts`
+    /// decay. Facts are high-trust "what is" knowledge — the slowest tier
+    /// by default (90d), independent of the edge tiers so it can be tuned
+    /// without touching lesson decay.
+    pub half_life_fact_hours: u32,
     /// GC threshold for replay-protected edges (stage 3), more lenient than
     /// `gc_threshold`.
     pub replay_gc_threshold: f64,
@@ -89,6 +94,7 @@ impl Default for ConsolidateConfig {
             half_life_user_feedback_hours: 2160, // 90d
             half_life_llm_hours: 2160,            // 90d (same magnitude as legacy ~69d)
             half_life_temporal_hours: 168,        // 7d
+            half_life_fact_hours: 2160,           // 90d — facts fade slowest
             supersession_limit: 20,
             supersession_action: SupersessionAction::Retire,
             q_alpha: 0.1,

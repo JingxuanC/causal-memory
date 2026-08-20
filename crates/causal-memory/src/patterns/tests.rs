@@ -757,3 +757,42 @@ fn test_fact_mines_similar_to_meta_edge() {
         "meta edge must surface the fact from a causal seed: {texts:?}"
     );
 }
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is the desired behavior"
+)]
+fn test_fact_does_not_dilute_stratification() {
+    // Two same-tag decisions (similar, single stratum) + a matching
+    // fact. The fact must NOT enter the strata pool: the decision pair
+    // alone is single-stratum (confounded → halved confidence). If the
+    // fact's scope leaked into the pool, strata would become {tag, scope}
+    // and wrongly clear `confounded`.
+    let store = store_with(&[
+        ("deployed the payments service without canary checks", "deploy failed", Some("ops"), 100),
+        ("deployed the inventory service without canary checks", "deploy failed", Some("ops"), 200),
+    ]);
+    store
+        .record_fact(
+            "deploy_policy",
+            "never deploy services without canary checks",
+            "user",
+            "agent",
+            0.8,
+        )
+        .unwrap();
+
+    let report = mine(&store);
+    // The decision pair must still be marked confounded (single stratum).
+    assert!(
+        report.confounded >= 1,
+        "same-tag decision pair must stay confounded despite the fact: {report:?}"
+    );
+    // And the fact still participates as an endpoint (its similar_to
+    // edge exists), just not in the replication pool.
+    assert!(
+        report.similar_to >= 1,
+        "fact pairs still mine similar_to: {report:?}"
+    );
+}

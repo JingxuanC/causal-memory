@@ -1338,4 +1338,65 @@ mod tests {
             "invalidated edge must not spread: {results:?}"
         );
     }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: overlay entries must exist or the test is meaningless"
+    )]
+    fn test_add_patch_edge_idempotent_on_rewrite() {
+        // An idempotent re-record (same chunk ids) must UPDATE the overlay
+        // edge, not stack a duplicate — repeated writes must not inflate
+        // activation or grow the overlay unboundedly.
+        let mut graph = CausalGraph::build(&[node("d1", "alpha"), node("o1", "beta")], &[]);
+        let d1 = graph.append_node(node("d1", "alpha"));
+        let o1 = graph.append_node(node("o1", "beta"));
+        graph.add_patch_edge(d1, o1, Relation::Caused, 0.8);
+        graph.add_patch_edge(d1, o1, Relation::Caused, 0.9);
+        graph.add_patch_edge(d1, o1, Relation::Caused, 0.9);
+
+        let fwd = graph.patch_fwd.get(&d1).expect("overlay fwd entry");
+        assert_eq!(fwd.len(), 1, "no duplicate overlay edges: {fwd:?}");
+        let rev = graph.patch_rev.get(&o1).expect("overlay rev entry");
+        assert_eq!(rev.len(), 1, "no duplicate overlay edges: {rev:?}");
+        assert_eq!(fwd[0].value, 0.9 * Relation::Caused.spread_coeff());
+
+        // And the activation reflects ONE edge, not three (0.8 seed ×
+        // 0.9 value × 0.7 decay ≈ 0.5 → above the 0.1 threshold once; a
+        // triple-stacked edge would clamp at 1.0).
+        let results = graph.spreading_activation("alpha", None, false);
+        let o1_act = results
+            .iter()
+            .find(|r| r.text.contains("beta"))
+            .map(|r| r.activation)
+            .expect("beta activated");
+        assert!(
+            (o1_act - 0.75 * 0.9 * 0.7).abs() < 1e-4,
+            "activation must reflect one edge (got {o1_act})"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: overlay entries must exist or the test is meaningless"
+    )]
+    fn test_link_fact_node_uses_token_index_and_survives_rebuild() {
+        // Same thresholds as entity_link_facts, driven through the
+        // incremental index path: two shared tokens link, one doesn't —
+        // and identical behavior whether the graph was built from scratch
+        // (index populated by build) or grown by appends.
+        let mut graph = CausalGraph::build(
+            &[
+                node("d1", "configured zsh plugins for setup"),
+                node("d2", "unrelated work on the database"),
+            ],
+            &[],
+        );
+        let f1 = graph.append_node(node("fact:1", "shell: zsh completion setup"));
+        graph.link_fact_node(f1);
+        let fwd = graph.patch_fwd.get(&f1).expect("fact has links");
+        assert_eq!(fwd.len(), 1, "two shared tokens (zsh, setup) → one chunk: {fwd:?}");
+        assert_eq!(fwd[0].other, 0, "links to d1, not the unrelated d2");
+    }
 }
