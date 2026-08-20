@@ -347,14 +347,22 @@ impl Distiller {
             user_msg.push_str(&format!("{}: {}\n", speaker, message.trim()));
         }
 
-        // Up to 3 attempts with 2s/4s backoff: distill runs over thousands
-        // of sessions at high concurrency, and rate-limit (429) bursts need
-        // real backoff, not a single immediate retry (a burst otherwise
-        // fails EVERY session of a question — and with log-and-continue
-        // recording, the question then looks "successfully empty").
-        let mut last_err = anyhow::anyhow!("no attempt made");
-        for attempt in 0..3 {
-            match llm::chat(
+        // Up to 3 attempts with exponential backoff (2s → 4s): distill runs
+        // over thousands of sessions at high concurrency, and rate-limit
+        // (429) bursts need real backoff, not a single immediate retry (a
+        // burst otherwise fails EVERY session of a question — and with
+        // log-and-continue recording, the question then looks "successfully
+        // empty"). Uses the `backoff` crate (previously a hand-rolled loop);
+        // randomization disabled so retry timing stays deterministic.
+        let backoff_cfg = backoff::ExponentialBackoff {
+            initial_interval: std::time::Duration::from_secs(2),
+            multiplier: 2.0,
+            randomization_factor: 0.0,
+            max_elapsed_time: Some(std::time::Duration::from_secs(10)),
+            ..Default::default()
+        };
+        match backoff::future::retry(backoff_cfg, || async {
+            llm::chat(
                 &self.config,
                 DISTILL_PROMPT,
                 &user_msg,
@@ -362,17 +370,15 @@ impl Distiller {
                 0.0,
             )
             .await
-            {
-                Ok(raw) => return Ok(Self::parse_items(&raw, date)),
-                Err(e) => {
-                    last_err = e;
-                    if attempt < 2 {
-                        tokio::time::sleep(std::time::Duration::from_secs(2 << attempt)).await;
-                    }
-                }
-            }
+            .map_err(backoff::Error::transient)
+        })
+        .await
+        {
+            Ok(raw) => Ok(Self::parse_items(&raw, date)),
+            // `backoff::future::retry` unwraps the transient error — the final
+            // failure IS the underlying anyhow error.
+            Err(e) => Err(e),
         }
-        Err(last_err)
     }
 
     /// Max tokens for the distill reply: up to 30 detailed items per

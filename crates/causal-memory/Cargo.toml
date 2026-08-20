@@ -27,6 +27,9 @@ tokio = { workspace = true, features = ["time", "rt-multi-thread"] }
 # SDKs; static linking fails on CLT-only machines. load-dynamic dlopens a
 # system onnxruntime dylib at runtime instead (point ORT_DYLIB_PATH at it).
 fastembed = { version = "5", optional = true, default-features = false, features = ["ort-load-dynamic", "hf-hub-native-tls"] }
+regex = "1.13.1"
+lru = "0.18.2"
+backoff = { version = "0.4.0", features = ["futures", "tokio"] }
 
 [features]
 default = []

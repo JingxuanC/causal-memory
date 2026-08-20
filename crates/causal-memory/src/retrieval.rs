@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use chrono::Datelike;
+use regex::Regex;
 
 use crate::store::{CausalEntry, CausalStore};
 
@@ -131,8 +132,10 @@ fn month_index(name: &str) -> Option<u32> {
 /// timestamp `now` (the question's date in the benchmark; the call time in
 /// production). Returns an inclusive [start_ts, end_ts] window. Rule-based,
 /// conservative: unknown phrasing -> None (never blocks the main path).
+/// Matching uses the `regex` crate (previously hand-rolled word-window
+/// scanning); rule priority and window math are unchanged.
 pub fn parse_temporal_anchor(query: &str, now: i64) -> Option<(i64, i64)> {
-    let toks = words(query);
+    let q = query.to_lowercase();
     let now_dt = chrono::DateTime::from_timestamp(now, 0)?;
     let today = now_dt.date_naive();
     let y = today.year();
@@ -140,139 +143,115 @@ pub fn parse_temporal_anchor(query: &str, now: i64) -> Option<(i64, i64)> {
 
     // 1. "past|last N unit" / "in the last N unit" / "over the (last|past) N unit"
     //    -> rolling window ending now.
-    for w in toks.windows(3) {
-        if w[0] == "past" || w[0] == "last" {
-            if let Some(n) = parse_number(w[1].as_str()) {
-                if let Some((_, secs)) = unit_of(w[2].as_str()) {
-                    return Some((now - n * secs, now));
-                }
-            }
-        }
+    let re_num = Regex::new(
+        r"(?:past|last|in the last|over the (?:last|past))\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|year)s?",
+    )
+    .ok()?;
+    if let Some(c) = re_num.captures(&q) {
+        let n = parse_number(&c[1])?;
+        let (_, secs) = unit_of(&c[2])?;
+        return Some((now - n * secs, now));
     }
     // 2. "past few unit" -> roughly 3 units back.
-    for w in toks.windows(3) {
-        if w[0] == "past" && w[1] == "few" {
-            if let Some((_, secs)) = unit_of(w[2].as_str()) {
-                return Some((now - 3 * secs, now));
-            }
-        }
+    let re_few = Regex::new(r"past few (day|week|month|year)s?").ok()?;
+    if let Some(c) = re_few.captures(&q) {
+        let (_, secs) = unit_of(&c[1])?;
+        return Some((now - 3 * secs, now));
     }
     // 3. "N unit ago".
-    for w in toks.windows(3) {
-        if w[2] == "ago" {
-            if let Some(n) = parse_number(w[0].as_str()) {
-                if let Some((_, secs)) = unit_of(w[1].as_str()) {
-                    return Some((now - (n + 1) * secs, now - n * secs));
-                }
-            }
-        }
+    let re_ago = Regex::new(
+        r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|year)s?\s+ago",
+    )
+    .ok()?;
+    if let Some(c) = re_ago.captures(&q) {
+        let n = parse_number(&c[1])?;
+        let (_, secs) = unit_of(&c[2])?;
+        return Some((now - (n + 1) * secs, now - n * secs));
     }
     // 4. bare "last month|week|year" -> previous calendar period.
-    for w in toks.windows(2) {
-        if w[0] == "last" {
-            let Some((unit, _)) = unit_of(w[1].as_str()) else {
-                continue;
-            };
-            return match unit {
-                UNITS_WEEK => {
-                    let dow = today.weekday().num_days_from_monday();
-                    let this_mon = today - chrono::Duration::days(dow as i64);
-                    let last_mon = this_mon - chrono::Duration::days(7);
-                    Some((
-                        day_start_ts(last_mon.year(), last_mon.month(), last_mon.day())?,
-                        day_start_ts(this_mon.year(), this_mon.month(), this_mon.day())? - 1,
-                    ))
-                }
-                UNITS_MONTH => {
-                    let first_this = today.with_day(1)?;
-                    let first_last = first_this.checked_sub_months(chrono::Months::new(1))?;
-                    let end_last = first_this - chrono::Duration::days(1);
-                    Some((
-                        day_start_ts(first_last.year(), first_last.month(), first_last.day())?,
-                        day_start_ts(end_last.year(), end_last.month(), end_last.day())? + 86_399,
-                    ))
-                }
-                UNITS_YEAR => Some((
-                    day_start_ts(y - 1, 1, 1)?,
-                    day_start_ts(y - 1, 12, 31)? + 86_399,
-                )),
-                _ => None,
-            };
-        }
-        // bare "past week|month|year" -> rolling window.
-        if w[0] == "past" {
-            if let Some((_, secs)) = unit_of(w[1].as_str()) {
-                return Some((now - secs, now));
+    let re_last = Regex::new(r"\blast (day|week|month|year)\b").ok()?;
+    if let Some(c) = re_last.captures(&q) {
+        let (unit, _) = unit_of(&c[1])?;
+        return match unit {
+            UNITS_WEEK => {
+                let dow = today.weekday().num_days_from_monday();
+                let this_mon = today - chrono::Duration::days(dow as i64);
+                let last_mon = this_mon - chrono::Duration::days(7);
+                Some((
+                    day_start_ts(last_mon.year(), last_mon.month(), last_mon.day())?,
+                    day_start_ts(this_mon.year(), this_mon.month(), this_mon.day())? - 1,
+                ))
             }
-        }
+            UNITS_MONTH => {
+                let first_this = today.with_day(1)?;
+                let first_last = first_this.checked_sub_months(chrono::Months::new(1))?;
+                let end_last = first_this - chrono::Duration::days(1);
+                Some((
+                    day_start_ts(first_last.year(), first_last.month(), first_last.day())?,
+                    day_start_ts(end_last.year(), end_last.month(), end_last.day())? + 86_399,
+                ))
+            }
+            UNITS_YEAR => Some((
+                day_start_ts(y - 1, 1, 1)?,
+                day_start_ts(y - 1, 12, 31)? + 86_399,
+            )),
+            _ => None,
+        };
+    }
+    // bare "past week|month|year" -> rolling window.
+    let re_past = Regex::new(r"\bpast (day|week|month|year)\b").ok()?;
+    if let Some(c) = re_past.captures(&q) {
+        let (_, secs) = unit_of(&c[1])?;
+        return Some((now - secs, now));
     }
     // 5. "this month|week|year" -> current period start -> now.
-    for w in toks.windows(2) {
-        if w[0] == "this" {
-            let Some((unit, _)) = unit_of(w[1].as_str()) else {
-                continue;
-            };
-            return match unit {
-                UNITS_WEEK => {
-                    let dow = today.weekday().num_days_from_monday();
-                    let mon = today - chrono::Duration::days(dow as i64);
-                    Some((day_start_ts(mon.year(), mon.month(), mon.day())?, now))
-                }
-                UNITS_MONTH => Some((day_start_ts(y, m, 1)?, now)),
-                UNITS_YEAR => Some((day_start_ts(y, 1, 1)?, now)),
-                _ => None,
-            };
-        }
+    let re_this = Regex::new(r"\bthis (day|week|month|year)\b").ok()?;
+    if let Some(c) = re_this.captures(&q) {
+        let (unit, _) = unit_of(&c[1])?;
+        return match unit {
+            UNITS_WEEK => {
+                let dow = today.weekday().num_days_from_monday();
+                let mon = today - chrono::Duration::days(dow as i64);
+                Some((day_start_ts(mon.year(), mon.month(), mon.day())?, now))
+            }
+            UNITS_MONTH => Some((day_start_ts(y, m, 1)?, now)),
+            UNITS_YEAR => Some((day_start_ts(y, 1, 1)?, now)),
+            _ => None,
+        };
     }
-    // 6. "since the (start|beginning) of the year" (6 tokens) and the
-    //    "since (start|beginning) of the year" variant (5 tokens).
-    for w in toks.windows(6) {
-        if w[0] == "since"
-            && w[1] == "the"
-            && (w[2] == "start" || w[2] == "beginning")
-            && w[3] == "of"
-            && w[4] == "the"
-            && w[5] == "year"
-        {
-            return Some((day_start_ts(y, 1, 1)?, now));
-        }
-    }
-    for w in toks.windows(5) {
-        if w[0] == "since"
-            && (w[1] == "start" || w[1] == "beginning")
-            && w[2] == "of"
-            && w[3] == "the"
-            && w[4] == "year"
-        {
-            return Some((day_start_ts(y, 1, 1)?, now));
-        }
+    // 6. "since the (start|beginning) of the year".
+    let re_since_year =
+        Regex::new(r"since (?:the )?(?:start|beginning) of (?:the )?year").ok()?;
+    if re_since_year.is_match(&q) {
+        return Some((day_start_ts(y, 1, 1)?, now));
     }
     // 7. "since <month name>" -> that month this year -> now.
-    for w in toks.windows(2) {
-        if w[0] == "since" {
-            if let Some(mi) = month_index(w[1].as_str()) {
-                return Some((day_start_ts(y, mi, 1)?, now));
-            }
-        }
+    let re_since_month = Regex::new(
+        r"since (january|february|march|april|may|june|july|august|september|october|november|december)",
+    )
+    .ok()?;
+    if let Some(c) = re_since_month.captures(&q) {
+        let mi = month_index(&c[1])?;
+        return Some((day_start_ts(y, mi, 1)?, now));
     }
     // 8. "in|during <month name>" -> that calendar month.
-    for w in toks.windows(2) {
-        if w[0] == "in" || w[0] == "during" {
-            let Some(mi) = month_index(w[1].as_str()) else {
-                continue;
-            };
-            let first = day_start_ts(y, mi, 1)?;
-            let first_next = first
-                .checked_add(30 * 86_400)
-                .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
-                .map(|dt| dt.date_naive().with_day(1))
-                .and_then(|d| d.and_then(|dd| dd.and_hms_opt(0, 0, 0)))
-                .and_then(|dt| dt.and_utc().timestamp().into());
-            return Some((first, first_next? - 1));
-        }
+    let re_in_month = Regex::new(
+        r"\b(?:in|during) (january|february|march|april|may|june|july|august|september|october|november|december)\b",
+    )
+    .ok()?;
+    if let Some(c) = re_in_month.captures(&q) {
+        let mi = month_index(&c[1])?;
+        let first = day_start_ts(y, mi, 1)?;
+        let first_next = first
+            .checked_add(30 * 86_400)
+            .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+            .map(|dt| dt.date_naive().with_day(1))
+            .and_then(|d| d.and_then(|dd| dd.and_hms_opt(0, 0, 0)))
+            .and_then(|dt| dt.and_utc().timestamp().into());
+        return Some((first, first_next? - 1));
     }
     // 9. "yesterday".
-    if toks.iter().any(|t| t == "yesterday") {
+    if q.contains("yesterday") {
         let yest = today - chrono::Duration::days(1);
         return Some((
             day_start_ts(yest.year(), yest.month(), yest.day())?,
