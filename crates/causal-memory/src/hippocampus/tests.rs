@@ -1174,4 +1174,41 @@ mod tests {
             "fact-id seed must reach the causal chain via the Phase A link: {texts:?}"
         );
     }
+
+    #[test]
+    fn test_entity_link_counts_distinct_tokens_only() {
+        // The chunk text REPEATS "zsh" — without posting-list dedup a
+        // single distinct shared token would count as overlap 2 and
+        // wrongly link below the documented "≥ 2 distinct tokens" bar.
+        let node = |id: &str, text: &str| NodeData {
+            id: id.into(),
+            text: text.into(),
+            event_time: 0,
+            q_value: 0.5,
+            replay_count: 0,
+            last_activated: 0,
+            task_tag: None,
+        };
+        let nodes = vec![
+            node("d1", "configured zsh zsh plugins"),
+            node("fact:1", "shell: zsh completion setup"),
+        ];
+        let edges = crate::hippocampus::entity_link_facts(&nodes, &[1]);
+        assert!(
+            edges.is_empty(),
+            "one distinct shared token must not link, even repeated: {edges:?}"
+        );
+
+        // Control: a second distinct shared token does link, bidirectionally.
+        let nodes = vec![
+            node("d1", "configured zsh zsh plugins for setup"),
+            node("fact:1", "shell: zsh completion setup"),
+        ];
+        let edges = crate::hippocampus::entity_link_facts(&nodes, &[1]);
+        assert_eq!(
+            edges.len(),
+            2,
+            "two distinct tokens (zsh, setup) link both ways"
+        );
+    }
 }

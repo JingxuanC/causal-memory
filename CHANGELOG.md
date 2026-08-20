@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.9.0] - Unreleased
 
+### Fixed
+- **Phase A entity-link overlap counted repeated tokens**: a chunk whose
+  text repeated a word contributed the same token twice to the overlap
+  count, letting a single distinct shared token fake "≥ 2 distinct
+  tokens" and link below the documented threshold. Posting lists are now
+  deduped at index-build time; regression test included (pure-function
+  test, no store needed — the linker is extracted as
+  `entity_link_facts`).
+- **`MemoryHit.score` dual semantics**: the spread path returned
+  `1/rank` while the RRF fallback returned `1/(60+rank)`. Both paths now
+  use the RRF formula, so the field has one meaning across modes.
+
+### Changed
+- **Phase B review refactor (net −193 lines)**: `search_memory` /
+  `search_memory_entries` converge on one shared presentation — both
+  retrieval paths (spread engine, dual-pool RRF) produce the same
+  `RankedHits` shape and share D4 routing + grouped rendering
+  (`render_unified`) and hit materialization (`hits_from_ranked`). The
+  unified engine moved to its own module (`memory/unified.rs`) with
+  seeding (`unified_seed_ids`), freshness (`ensure_fresh_for`), typed
+  split (`split_typed`) and edge ranking (`rank_edges_by_activation`) as
+  named steps. `search_memory_entries` now joins hop-expansion edges in
+  the RRF fusion like the text tool already did (they were computed but
+  silently discarded before). `bm25_seed_ids` builds its scope filter
+  conditionally, matching the module's SQL convention.
+
 ### Added
 - **Phase B — unified retrieval engine (one engine)**
   (one-graph-convergence): `search_memory` / `search_memory_entries` are now

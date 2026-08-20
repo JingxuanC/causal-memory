@@ -155,28 +155,29 @@ impl CausalStore {
         let conn = self.acquire()?;
 
         let token_ph = vec!["?"; query_tokens.len()].join(",");
-        // Two plain `?` placeholders each bind the next parameter, so the
-        // scope Option is bound twice (NULL-safe on both sides).
-        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = query_tokens
-            .iter()
-            .map(|t| Box::new(t.clone()) as Box<dyn rusqlite::ToSql>)
-            .collect();
-        binds.push(Box::new(scope));
-        binds.push(Box::new(scope));
-        binds.push(Box::new(limit as i64));
-        let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
-
-        let mut stmt = conn.prepare(&format!(
+        // Validity always applies to fact rows; the scope filter binds
+        // only when set (same conditional-SQL discipline as the other
+        // retrieval queries in this module).
+        let mut sql = format!(
             "SELECT b.chunk_id, COUNT(DISTINCT b.token) AS overlap
              FROM bm25_index b
              LEFT JOIN agent_facts af ON ('fact:' || af.id) = b.chunk_id
              WHERE b.token IN ({token_ph})
-               AND (af.id IS NULL
-                    OR (af.valid_to IS NULL AND (? IS NULL OR af.scope = ?)))
-             GROUP BY b.chunk_id
-             ORDER BY overlap DESC, b.chunk_id
-             LIMIT ?"
-        ))?;
+               AND (af.id IS NULL OR af.valid_to IS NULL)"
+        );
+        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = query_tokens
+            .iter()
+            .map(|t| Box::new(t.clone()) as Box<dyn rusqlite::ToSql>)
+            .collect();
+        if let Some(s) = scope {
+            sql.push_str(" AND (af.id IS NULL OR af.scope = ?)");
+            binds.push(Box::new(s.to_string()));
+        }
+        sql.push_str(" GROUP BY b.chunk_id ORDER BY overlap DESC, b.chunk_id LIMIT ?");
+        binds.push(Box::new(limit as i64));
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(bind_refs.as_slice(), |r| r.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| anyhow!("seed query failed: {e}"))
