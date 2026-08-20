@@ -450,6 +450,10 @@ fn print_consolidation_report(
     println!("  decayed:        {}", report.decayed);
     println!("  access-boosted: {}", report.boosted);
     println!("  GC invalidated: {}", report.gc_invalidated);
+    println!(
+        "  facts decayed:  {} (GC'd: {})",
+        report.facts_decayed, report.facts_gc
+    );
 
     println!("\n④ REM integration:");
     println!("  cross-domain transfers: {}", report.rem_transfers);

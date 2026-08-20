@@ -134,21 +134,67 @@ impl<'a> PatternMiner<'a> {
         //    by id) represents the group. Mining compares groups, not edges, so
         //    N identical texts can never self-pair (X ≈ X) and produce at most
         //    one pair per text combination instead of N×M.
-        let mut groups: Vec<&crate::store::CausalEntry> = Vec::new();
+        //
+        //    Phase D (one-graph-convergence): valid facts join the input as
+        //    first-class participants — a standing fact ("user prefers
+        //    TypeScript") can be similar_to a past decision ("rewrote module
+        //    in TypeScript"), mining a meta edge between the fact node and
+        //    the decision chunk. Facts carry no outcome semantics, so they
+        //    can never contradicts/refines/repeat — only similar_to.
+        struct MineItem<'a> {
+            id: String,
+            text: String,
+            task_tag: Option<String>,
+            edge: Option<&'a crate::store::CausalEntry>,
+        }
+        let mut items: Vec<MineItem> = Vec::new();
         let mut seen: HashMap<String, usize> = HashMap::new();
         for e in &edges {
             let key = normalize(&e.decision_text);
             if let std::collections::hash_map::Entry::Vacant(entry) = seen.entry(key) {
-                entry.insert(groups.len());
-                groups.push(e);
+                entry.insert(items.len());
+                items.push(MineItem {
+                    id: e.decision_id.clone(),
+                    text: e.decision_text.clone(),
+                    task_tag: e.task_tag.clone(),
+                    edge: Some(e),
+                });
+            }
+        }
+        let facts: Vec<(i64, String, String, String)> = self.store.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, key, value, scope FROM agent_facts WHERE valid_to IS NULL",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })?;
+            let v: std::result::Result<Vec<_>, rusqlite::Error> = rows.collect();
+            Ok(v?)
+        })?;
+        for (id, key, value, scope) in facts {
+            let text = format!("{key}: {value}");
+            let key = normalize(&text);
+            if let std::collections::hash_map::Entry::Vacant(entry) = seen.entry(key) {
+                entry.insert(items.len());
+                items.push(MineItem {
+                    id: format!("fact:{id}"),
+                    text,
+                    task_tag: Some(scope),
+                    edge: None,
+                });
             }
         }
 
-        // 2. Precompute normalized texts and content-token sets per group.
-        let norms: Vec<String> = groups.iter().map(|e| normalize(&e.decision_text)).collect();
-        let tokens: Vec<Vec<String>> = groups
+        // 2. Precompute normalized texts and content-token sets per item.
+        let norms: Vec<String> = items.iter().map(|it| normalize(&it.text)).collect();
+        let tokens: Vec<Vec<String>> = items
             .iter()
-            .map(|e| content_tokens(&e.decision_text, &boilerplate))
+            .map(|it| content_tokens(&it.text, &boilerplate))
             .collect();
         let token_sets: Vec<std::collections::HashSet<&str>> = tokens
             .iter()
@@ -166,8 +212,8 @@ impl<'a> PatternMiner<'a> {
         let mut candidates: Vec<Candidate> = Vec::new();
         // signature → strata accumulator
         let mut strata_groups: HashMap<String, StrataAcc> = HashMap::new();
-        for i in 0..groups.len() {
-            for j in i + 1..groups.len() {
+        for i in 0..items.len() {
+            for j in i + 1..items.len() {
                 // Trivial similarity: identical token sets (pure punctuation /
                 // word-order differences → would score 1.0) or one text a
                 // substring of the other. No signal — skip.
@@ -190,11 +236,35 @@ impl<'a> PatternMiner<'a> {
                 if sim < self.config.similarity_threshold {
                     continue;
                 }
-                if let Some(hit) = classify_pair(groups[i], groups[j], sim) {
+                let hit = match (items[i].edge, items[j].edge) {
+                    (Some(a), Some(b)) => classify_pair(a, b, sim),
+                    _ => {
+                        // Phase D: fact-involving pair — similar_to only
+                        // (facts have no outcome to contradict/refine/repeat).
+                        let (fi, oi) = if items[i].edge.is_none() { (i, j) } else { (j, i) };
+                        Some(PatternHit {
+                            relation: "similar_to",
+                            from_id: items[fi].id.as_str(),
+                            to_id: items[oi].id.as_str(),
+                            confidence: sim * 0.8,
+                            pattern: format!(
+                                "\"{}\" ≈ \"{}\" (事实关联)",
+                                items[fi].text, items[oi].text
+                            ),
+                        })
+                    }
+                };
+                if let Some(hit) = hit {
                     let sig = pair_signature(&tokens[i], &tokens[j]);
                     let acc = strata_groups.entry(sig.clone()).or_default();
-                    acc.observe(groups[i]);
-                    acc.observe(groups[j]);
+                    match items[i].edge {
+                        Some(e) => acc.observe(e),
+                        None => acc.observe_tag(items[i].task_tag.as_deref().unwrap_or("untagged")),
+                    }
+                    match items[j].edge {
+                        Some(e) => acc.observe(e),
+                        None => acc.observe_tag(items[j].task_tag.as_deref().unwrap_or("untagged")),
+                    }
                     candidates.push(Candidate { hit, sim, sig });
                 }
             }

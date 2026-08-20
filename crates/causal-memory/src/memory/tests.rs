@@ -574,4 +574,70 @@ mod tests {
         assert!(text.contains("editor_preference"), "{text}");
         assert!(text.contains("Causal lessons"), "{text}");
     }
+
+    // ─── Phase C: write-path patches — instant visibility + differential ──
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: temp file and memory construction must succeed"
+    )]
+    fn test_write_then_query_patched_equals_rebuilt() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("phase_c.db");
+
+        // Instance 1: write, then query IMMEDIATELY (2 writes < the lazy
+        // threshold of 5, well inside the 30s window → no rebuild may have
+        // run; the visibility must come from the write-path patch).
+        let m1 = Memory::open(&db).expect("memory 1");
+        m1.record_decision(
+            "rewrote module in TypeScript",
+            "compile errors dropped",
+            "caused",
+            "rust",
+            None,
+        );
+        m1.record_fact(
+            "editor_preference",
+            "user prefers TypeScript for module rewrites",
+            Some("user"),
+            None,
+            None,
+        );
+        let writes_before = m1.graph_writes.load(Ordering::Relaxed);
+
+        let (hits1, mode) = m1.search_memory_entries("TypeScript module", None, None, 10);
+        assert_eq!(mode, "spread");
+        assert!(
+            hits1.iter().any(|h| h.key.starts_with("fact:")),
+            "patched fact must surface instantly: {hits1:?}"
+        );
+        assert!(
+            hits1.iter().any(|h| h.key.starts_with("causal:")),
+            "patched edge must surface instantly: {hits1:?}"
+        );
+        // No rebuild consumed the dirty counter: the 2 writes are still
+        // pending (below threshold), so visibility came from patches.
+        assert_eq!(
+            m1.graph_writes.load(Ordering::Relaxed),
+            writes_before,
+            "no lazy rebuild may have fired (writes pending: {})",
+            writes_before
+        );
+
+        // Differential: a SECOND instance on the same file does a full
+        // from_store at startup — its results must match the patched view.
+        let m2 = Memory::open(&db).expect("memory 2");
+        let (hits2, _) = m2.search_memory_entries("TypeScript module", None, None, 10);
+        let keys1: std::collections::HashSet<String> =
+            hits1.iter().map(|h| h.key.clone()).collect();
+        let keys2: std::collections::HashSet<String> =
+            hits2.iter().map(|h| h.key.clone()).collect();
+        assert_eq!(
+            keys1, keys2,
+            "patched state must equal fully-rebuilt state (differential assertion)"
+        );
+    }
 }

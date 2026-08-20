@@ -45,6 +45,12 @@ impl StrataAcc {
         }
     }
 
+    /// Phase D: register a stratum without outcome direction — used for
+    /// fact participants, which carry no outcome semantics.
+    pub fn observe_tag(&mut self, tag: &str) {
+        self.dirs.entry(tag.to_string()).or_default();
+    }
+
     pub fn verdict(&self) -> StrataVerdict {
         let mut strata: Vec<String> = self.dirs.keys().cloned().collect();
         strata.sort();

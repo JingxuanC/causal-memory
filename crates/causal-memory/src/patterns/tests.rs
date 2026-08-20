@@ -692,3 +692,68 @@ fn test_entity_tokens_names_and_noise() {
     assert!(entity_tokens("What is the name of the city?").is_empty());
     assert!(entity_tokens("which editor does the user prefer").is_empty());
 }
+
+// ── Phase D: facts as first-class mining participants ────────────────
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is the desired behavior"
+)]
+fn test_fact_mines_similar_to_meta_edge() {
+    // A rich decision and a fact echoing its vocabulary — jaccard above
+    // the 0.65 bar, both above min_tokens. The miner must connect the
+    // fact node to the decision chunk with a similar_to meta edge.
+    let store = store_with(&[(
+        "migrated the config parsing to serde derive with proc macros",
+        "boilerplate halved",
+        Some("rust"),
+        1_700_000_000,
+    )]);
+    store
+        .record_fact(
+            "parser_choice",
+            "config parsing migrated to serde derive proc macros",
+            "user",
+            "agent",
+            0.8,
+        )
+        .unwrap();
+
+    let report = mine(&store);
+    assert!(
+        report.similar_to >= 1,
+        "fact↔decision pair must mine similar_to: {report:?}"
+    );
+
+    // The meta edge endpoints are the fact node id and the decision chunk.
+    let (from_id, to_id, relation): (String, String, String) = store
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT from_id, to_id, relation FROM meta_causal_edges LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(relation, "similar_to");
+    let ids = [from_id.as_str(), to_id.as_str()];
+    assert!(
+        ids.iter().any(|i| i.starts_with("fact:")),
+        "one endpoint must be the fact node: {ids:?}"
+    );
+    assert!(
+        ids.iter().any(|i| !i.starts_with("fact:")),
+        "one endpoint must be the decision chunk: {ids:?}"
+    );
+
+    // Post-Phase-A, the graph loads fact nodes — so the meta edge wires
+    // the fact into the causal content graph (Meta spread +0.6).
+    let mut graph = crate::hippocampus::CausalGraph::from_store(&store).unwrap();
+    let results = graph.spreading_activation("config parsing", None, false);
+    let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+    assert!(
+        texts.iter().any(|t| t.contains("parser_choice")),
+        "meta edge must surface the fact from a causal seed: {texts:?}"
+    );
+}

@@ -111,7 +111,7 @@ Core capabilities (all shipped, all tested):
   #2)
 - Cross-agent sharing: `causal-memory export` / `import` (JSONL, idempotent,
   best-effort redaction)
-- 352 tests (unit + e2e: migration / pipeline / MCP stdio)
+- 359 tests (unit + e2e: migration / pipeline / MCP stdio)
 
 ## Benchmarks (frozen protocols, all published in docs/benchmarks/)
 

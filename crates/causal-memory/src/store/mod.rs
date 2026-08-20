@@ -137,6 +137,7 @@ CREATE TABLE IF NOT EXISTS agent_facts (
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL,
     valid_to INTEGER,
+    superseded_by INTEGER,
     embedding_model TEXT,
     UNIQUE(key, value, scope)
 );

@@ -145,6 +145,10 @@ pub struct ConsolidateReport {
     pub boosted: usize,
     /// Stage 3: edges soft-invalidated by garbage collection.
     pub gc_invalidated: usize,
+    /// Stage 3 (Phase D): facts whose confidence decayed (age ≥ 1 day).
+    pub facts_decayed: usize,
+    /// Stage 3 (Phase D): facts retired by garbage collection.
+    pub facts_gc: usize,
     /// Stage 4: cross-domain transfer meta edges written.
     pub rem_transfers: usize,
     /// Stage 1.5: chunk Q-values reinforced (Bellman) and persisted.

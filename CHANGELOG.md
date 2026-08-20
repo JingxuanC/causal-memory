@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.9.0] - Unreleased
 
+### Added
+- **Phase C — incremental graph lifecycle (write-path patches)**
+  (one-graph-convergence): `CausalGraph` gains live-patch APIs —
+  `append_node` (O(1) SoA append), `add_patch_edge` (per-node overlay
+  maps; a CSR middle insert is O(E) and shifts every stored edge index,
+  so patches ride alongside the CSR segments in both spread directions),
+  `invalidate_edges_between` (O(deg) validity flip), and
+  `retire_node`/revive (superseded fact nodes neither seed nor surface
+  until the next rebuild drops them). `record_decision` /
+  `record_fact` (including replace, which retires the superseded nodes)
+  and `invalidate_decision` patch the live graph, so new memories are
+  visible to the very next query — verified by a dirty-counter assertion
+  (no lazy rebuild fired) and a differential assertion (patched results
+  == fully-rebuilt results across two instances on the same store). The
+  lazy 5-writes/30s full rebuild stays as the drift bound; Phase B's
+  seed-miss rebuild now rarely triggers.
+- **Phase D — one consolidation loop over all types**
+  (one-graph-convergence):
+  - Fact half-life: stage 3 `downscale_facts` decays `agent_facts.confidence`
+    by age from `updated_at` on the slowest tier (user_feedback, 90d —
+    facts are high-trust "what is" knowledge); below `gc_threshold` facts
+    retire. Report gains `facts_decayed` / `facts_gc` (dry-run counts too).
+  - Fact supersession lineage (schema v12): `agent_facts.superseded_by`
+    — `record_fact_replacing` retires AND records which fact replaced
+    which in one write; revive clears it. The id powers the graph's
+    write-path retire. Full soft-supersession display deferred to its own
+    eval A/B (the current knowledge-update contract — new value replaces,
+    old exits retrieval — is pinned by the MCP e2e).
+  - REM/meta mining input includes facts: the pattern miner's input is a
+    unified `MineItem` list — valid facts participate first-class
+    (`fact:{id}`, stratum = scope), `similar_to` only (no outcome
+    semantics), and the mined meta edges wire fact nodes into the causal
+    content graph (+0.6 Meta spread). Fact-free stores (CausalEval) mine
+    identically.
+- **CausalEval 140-question regression (post Phase C+D)**: overall
+  111/140 = 79.3% vs the 8/19 detect baseline 117/140 = 83.6%. The delta
+  is judge noise, not retrieval: `evidence_hit` is statistically flat
+  (122 vs 125; only 2 lost / 1 gained), and 16 of the 20 verdict flips
+  had evidence retrieved in BOTH runs. Both lost-evidence questions are
+  C16 (the cross-domain category that swings 7-9/20 run to run). Results
+  archived as `benches/causal_eval/results_phaseCD_20260820.jsonl`.
+
 ### Fixed
 - **Phase A entity-link overlap counted repeated tokens**: a chunk whose
   text repeated a word contributed the same token twice to the overlap

@@ -28,7 +28,8 @@ impl CausalStore {
                  updated_at = excluded.updated_at,
                  confidence = excluded.confidence,
                  source = excluded.source,
-                 valid_to = NULL",
+                 valid_to = NULL,
+                 superseded_by = NULL",
             params![key, value, scope, source, confidence.clamp(0.0, 1.0), now],
         )?;
         let id = conn.query_row(
@@ -135,7 +136,8 @@ impl CausalStore {
                  updated_at = excluded.updated_at,
                  confidence = excluded.confidence,
                  source = excluded.source,
-                 valid_to = NULL",
+                 valid_to = NULL,
+                 superseded_by = NULL",
             params![key, value, scope, source, confidence.clamp(0.0, 1.0), now],
         )?;
         let id = conn.query_row(
@@ -144,10 +146,13 @@ impl CausalStore {
             |r| r.get(0),
         )?;
         Self::index_chunk(&conn, &format!("fact:{id}"), &format!("{key} {value}"))?;
+        // Phase D: retire + supersession lineage in one write — the old
+        // values exit retrieval (valid_to) AND record which fact replaced
+        // them (superseded_by), powering the graph's write-path retire.
         let retired = conn.execute(
-            "UPDATE agent_facts SET valid_to = ?1
+            "UPDATE agent_facts SET valid_to = ?1, superseded_by = ?5
              WHERE key = ?2 AND scope = ?3 AND value != ?4 AND valid_to IS NULL",
-            params![now, key, scope, value],
+            params![now, key, scope, value, id],
         )?;
         Ok((id, retired))
     }

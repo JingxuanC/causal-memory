@@ -31,7 +31,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 12;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -76,6 +76,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 11 {
         migrate_to_v11(&tx)?;
+    }
+    if version < 12 {
+        migrate_to_v12(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -934,5 +937,22 @@ fn migrate_to_v11(conn: &Connection) -> Result<()> {
             PRIMARY KEY (from_id, to_id)
          );"
     )?;
+    Ok(())
+}
+
+/// v11 → v12: fact supersession lineage (one-graph-convergence Phase D).
+/// `agent_facts.superseded_by` records which fact replaced a retired one
+/// (set by `record_fact_replacing`, cleared on revive). The column is
+/// audit/lineage — default retrieval behavior is unchanged (retired facts
+/// stay hidden; the id powers the graph's write-path retire patch).
+fn migrate_to_v12(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "agent_facts")? {
+        // Created with the column by CAUSAL_SCHEMA_SQL below.
+        return Ok(());
+    }
+    let cols = table_columns(conn, "agent_facts")?;
+    if !cols.contains("superseded_by") {
+        conn.execute_batch("ALTER TABLE agent_facts ADD COLUMN superseded_by INTEGER")?;
+    }
     Ok(())
 }

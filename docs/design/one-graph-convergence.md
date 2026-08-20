@@ -80,7 +80,16 @@ SQLite（真相源, 压缩免疫 P5）               内存 CausalGraph（查询
 - `search_memory` 对混合查询（事实+教训）结果不劣于现状（同一 query 对比新旧输出，手工抽 20 条）。
 - 全量 500 题 LongMemEval 回归（多会话 57.9% 不降）。
 
-### Phase C — 图生命周期升级（增量，CodeGraph 启示）
+### Phase C — 图生命周期升级（增量，CodeGraph 启示）✅ shipped 2026-08-20
+
+> 落地说明：`CausalGraph` 新增写路径补丁能力——`append_node`（SoA 数组 O(1) 追加）+
+> `add_patch_edge`（CSR 中段插入是 O(E) 且会移动所有已存 CSR 边索引，故补丁边进 per-node
+> overlay map，扩散步两个方向都消费）+ `invalidate_edges_between`（O(deg) 翻转）+
+> `retire_node`/复活（被取代的 fact 节点在重建前不再播种/浮出）。`record_decision` /
+> `record_fact`（含取代）/ `invalidate_decision` 即时补丁；懒重建保留为漂移兜底。
+> `ensure_fresh_for`（Phase B 预演）在补丁模式下极少触发——种子都能命中，O(store) 重建
+> 从每查询摊薄回周期性。验证：新写入在**同一次查询**可见且**懒重建未触发**（脏计数断言）；
+> 差分断言：补丁态查询结果 == 全量重建态（双实例对照）；补丁边正/反向扩散 == 全量构建等价。
 
 目标：从「5 写/30s 全量重建」升级为「写路径增量修补 + 懒全量兜底」，新教训即时出现在图侧。
 
@@ -94,7 +103,24 @@ SQLite（真相源, 压缩免疫 P5）               内存 CausalGraph（查询
 - 新写入的边在**同一次查询**（无重建）即出现在扩散结果里（当前要等 30s/5 写）。
 - probe 测试：连续写 + 查，图节点数单调一致；全量重建后与补丁状态一致（差分断言）。
 
-### Phase D — 一个巩固循环覆盖全类型
+### Phase D — 一个巩固循环覆盖全类型 ✅ shipped 2026-08-20
+
+> 落地说明：
+> ① **fact 半衰期**：stage 3 新增 `downscale_facts`——按 `updated_at` 年龄、
+> `user_feedback` 档（90d，fact 是高信任「what is」知识，取最慢档）衰减
+> `agent_facts.confidence`，低于 gc_threshold 退休（valid_to）；当日 fact 不衰减（对齐边路径）。
+> 报告新增 `facts_decayed` / `facts_gc` 统计行（dry-run 同样计数）。
+> ② **fact 取代**：schema v12 `agent_facts.superseded_by`——`record_fact_replacing` 一次写
+> 同时退休 + 记录 lineage（谁取代了谁），复活时清除；该 id 直接驱动图侧 `retire_node` 补丁。
+> **偏差**：完整的「软取代不隐藏 + 检索时标注版本」未做——fact 的检索契约（知识更新=新值
+> 顶旧值、旧值退出检索）由 MCP e2e 固化，改动需独立的评测 A/B（对齐 C7 当年的做法），
+> 先落 lineage 列。
+> ③ **REM/meta 挖掘**：挖掘输入统一为 `MineItem`——有效 fact 作为一等参与者
+> （id=`fact:{id}`，stratum=scope）；fact 无 outcome 语义，只参与 `similar_to`
+> （conf = sim×0.8），`observe_tag` 记 stratum 不记方向。挖出的 meta 边在图上把 fact 节点
+> 接进因果内容（Phase A 后 fact 节点在图中，端点校验通过）。
+> 验证：fact 衰减/GC + dry-run 不写 + lineage 复活清除（3 测试）；fact↔决策挖出 similar_to
+> meta 边且扩散可达（1 测试）；CausalEval 140 题全量回归（fact-free 存储 → 行为不变）。
 
 目标：sleep 对 fact 边同样生效——降权（半衰期）、GC（valid_to）、取代（新 fact 顶旧 fact）。
 
@@ -133,6 +159,8 @@ Phase A（fact 入图）→ Phase B（统一引擎）→ Phase C（增量生命�
 - Phase B 完成后：`search_memory` 单一扩散引擎出结果；LongMemEval 500 不降。
   ✅ 2026-08-20（引擎 + 单测）：单一扩散引擎为默认路径；LongMemEval 回归待 LLM API 环境补跑。
 - Phase C 完成后：新写即查可见；差分断言过。
+  ✅ 2026-08-20：补丁即查可见（脏计数断言证明无重建）+ 双实例差分断言过。
 - Phase D 完成后：sleep 报告含 fact 统计；CausalEval 不降。
+  ✅ 2026-08-20：报告含 facts decayed/GC'd 行；79.3% vs 83.6%（噪声主导，evidence 持平，详见 CHANGELOG）。
 
 每阶段独立提交、独立验证，不阻塞其他工作。

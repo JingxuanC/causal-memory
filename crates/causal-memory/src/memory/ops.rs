@@ -71,6 +71,11 @@ impl Memory {
             Some(&polarity),
         ) {
             Ok((_dec_id, edge_id)) => {
+                // Phase C: patch the live graph so the new lesson is
+                // visible to the very next query (no rebuild wait).
+                if let Ok(Some(entry)) = self.store.get_edge(edge_id) {
+                    self.patch_graph_new_edge(&entry);
+                }
                 // Opportunistically embed the new edge so semantic search
                 // finds it. Silent on any failure — embedding must never
                 // block recording; the `causal-memory embed` CLI backfills
@@ -408,6 +413,15 @@ impl Memory {
                 Err(e) => return format!("❌ Failed to record fact: {e}"),
             }
         };
+
+        // Phase C: patch the live graph (scope hub + fact node + entity
+        // links); on replace, retire the superseded fact nodes too — the
+        // old value stops seeding/surfacing immediately, not at the next
+        // lazy rebuild.
+        self.patch_graph_new_fact(fact_id, key, value, scope, confidence);
+        if retired > 0 {
+            self.patch_graph_retire_facts(fact_id);
+        }
 
         // Opportunistic embedding (silent on any failure — must never block
         // recording; a CLI backfill path can catch up later).
@@ -1016,6 +1030,13 @@ impl Memory {
 
         match self.store.invalidate_edge(edge_id) {
             Ok(true) => {
+                // Phase C: the falsified lesson stops spreading immediately
+                // (O(deg) flip) instead of at the next lazy rebuild.
+                if let Ok(mut guard) = self.graph.lock() {
+                    if let Some(graph) = guard.as_mut() {
+                        graph.invalidate_edges_between(&edge.decision_id, &edge.outcome_id);
+                    }
+                }
                 let reason = reason.map(|r| format!(" (reason: {r})")).unwrap_or_default();
                 format!(
                     "✅ Invalidated edge #{}: \"{}\" →({})→ \"{}\"{reason}. It will no longer appear in search/trace results, but is kept for audit.",

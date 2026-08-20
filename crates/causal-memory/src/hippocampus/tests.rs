@@ -1211,4 +1211,131 @@ mod tests {
             "two distinct tokens (zsh, setup) link both ways"
         );
     }
+
+    // ─── Phase C: write-path graph patches (one-graph-convergence) ───────
+
+    fn node(id: &str, text: &str) -> NodeData {
+        NodeData {
+            id: id.into(),
+            text: text.into(),
+            event_time: 0,
+            q_value: 0.5,
+            replay_count: 0,
+            last_activated: 0,
+            task_tag: None,
+        }
+    }
+
+    #[test]
+    fn test_patch_edge_spreads_without_rebuild() {
+        // Base graph: one edge d0 → o0. Then a write-path patch appends
+        // d1/o1 and the edge d0 → d1 (chunk reuse: d0 is an EXISTING node,
+        // the hard case for CSR). The patched edge must spread both ways.
+        let mut graph = CausalGraph::build(
+            &[node("d0", "used global lock"), node("o0", "deadlock error")],
+            &[EdgeData {
+                from_id: "d0".into(),
+                to_id: "o0".into(),
+                relation: Relation::Caused,
+                weight: 0.9,
+                valid: true,
+            }],
+        );
+        let d0 = graph.append_node(node("d0", "used global lock"));
+        let d1 = graph.append_node(node("d1", "replaced with sharded locks"));
+        graph.add_patch_edge(d0, d1, Relation::Caused, 0.8);
+
+        // Forward: seed at d0's text reaches the PATCHED target d1.
+        let fwd = graph.spreading_activation("global lock", None, false);
+        let texts: Vec<&str> = fwd.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("sharded locks")),
+            "patched edge must spread forward: {texts:?}"
+        );
+
+        // Reverse: seed at d1 reaches the EXISTING d0 through the patch.
+        let rev = graph.spreading_activation("sharded", None, true);
+        let texts: Vec<&str> = rev.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("global lock")),
+            "patched edge must spread reverse: {texts:?}"
+        );
+
+        // Differential: a full build with the same nodes+edges reaches the
+        // same set (patch state == rebuilt state).
+        let mut rebuilt = CausalGraph::build(
+            &[
+                node("d0", "used global lock"),
+                node("o0", "deadlock error"),
+                node("d1", "replaced with sharded locks"),
+            ],
+            &[
+                EdgeData {
+                    from_id: "d0".into(),
+                    to_id: "o0".into(),
+                    relation: Relation::Caused,
+                    weight: 0.9,
+                    valid: true,
+                },
+                EdgeData {
+                    from_id: "d0".into(),
+                    to_id: "d1".into(),
+                    relation: Relation::Caused,
+                    weight: 0.8,
+                    valid: true,
+                },
+            ],
+        );
+        let rb = rebuilt.spreading_activation("global lock", None, false);
+        let rb_texts: Vec<&str> = rb.iter().map(|r| r.text.as_str()).collect();
+        let patched: std::collections::HashSet<&str> =
+            fwd.iter().map(|r| r.text.as_str()).collect();
+        for t in rb_texts {
+            assert!(patched.contains(t), "rebuilt hit {t:?} missing from patched");
+        }
+    }
+
+    #[test]
+    fn test_retire_node_never_seeds_or_surfaces() {
+        let mut graph = CausalGraph::build(
+            &[node("fact:1", "db: redis 7.2"), node("d1", "deployed redis")],
+            &[],
+        );
+        // Suppose the fact was already linked and then replaced: retire it.
+        assert!(graph.retire_node("fact:1"));
+        let results = graph.spreading_activation("redis 7.2", None, false);
+        assert!(
+            results.is_empty() || !results.iter().any(|r| r.text.contains("7.2")),
+            "retired fact must not surface: {results:?}"
+        );
+        // Re-appending the same id revives it (store-side revive path).
+        let idx = graph.append_node(node("fact:1", "db: redis 7.2"));
+        let d2 = graph.append_node(node("d2", "upgraded redis"));
+        graph.add_patch_edge(idx, d2, Relation::Fact, 0.5);
+        let results = graph.spreading_activation("redis 7.2", None, false);
+        assert!(
+            results.iter().any(|r| r.text.contains("7.2")),
+            "revived fact must surface again: {results:?}"
+        );
+    }
+
+    #[test]
+    fn test_invalidate_edges_between_stops_spread() {
+        let mut graph = CausalGraph::build(
+            &[node("d1", "skipped backup"), node("o1", "data loss")],
+            &[EdgeData {
+                from_id: "d1".into(),
+                to_id: "o1".into(),
+                relation: Relation::Caused,
+                weight: 0.9,
+                valid: true,
+            }],
+        );
+        assert_eq!(graph.invalidate_edges_between("d1", "o1"), 1);
+        let results = graph.spreading_activation("skipped backup", None, false);
+        assert!(
+            !results.iter().any(|r| r.text.contains("data loss")),
+            "invalidated edge must not spread: {results:?}"
+        );
+    }
 }

@@ -111,6 +111,21 @@ pub struct CausalGraph {
     node_task_tag: Vec<Option<String>>,
     node_id_to_idx: HashMap<String, u32>,
 
+    // Phase C (one-graph-convergence): write-path patches. Inserting an
+    // edge into the middle of a CSR array is O(E) and shifts every stored
+    // CSR edge index, so edges added since the last full build live in
+    // per-node overlay maps consulted alongside the CSR segments by the
+    // spread steps. A full `from_store` rebuild folds them in (the
+    // overlays are dropped and the store is the truth).
+    patch_fwd: HashMap<u32, Vec<PatchEdge>>,
+    patch_rev: HashMap<u32, Vec<PatchEdge>>,
+
+    /// Phase C: node indices retired since the last full build (e.g. a
+    /// fact replaced under the same key). Retired nodes neither seed nor
+    /// surface in results; the next full rebuild drops them entirely
+    /// (from_store filters `valid_to IS NULL`).
+    retired_nodes: std::collections::HashSet<u32>,
+
     // Config
     decay: f32,
     threshold: f32,
@@ -118,6 +133,15 @@ pub struct CausalGraph {
     ltp_rate: f32,
     ltd_rate: f32,
     gc_threshold: f32,
+}
+
+/// Phase C: one overlay edge — the "other" node, its pre-multiplied spread
+/// value, and its validity flag (flippable in O(1), mirroring `edge_valid`).
+#[derive(Debug, Clone, Copy)]
+struct PatchEdge {
+    other: u32,
+    value: f32,
+    valid: bool,
 }
 
 impl CausalGraph {
@@ -144,6 +168,9 @@ impl CausalGraph {
             node_sparse_code: Vec::new(),
             node_task_tag: Vec::new(),
             node_id_to_idx: HashMap::new(),
+            patch_fwd: HashMap::new(),
+            patch_rev: HashMap::new(),
+            retired_nodes: std::collections::HashSet::new(),
             decay: 0.7,
             threshold: 0.1,
             max_hops: 5,
@@ -252,6 +279,11 @@ impl CausalGraph {
 
         let mut seeds = Vec::new();
         for i in 0..self.num_nodes {
+            // Phase C: retired nodes never seed (a replaced fact must not
+            // activate from a query match while patches are in flight).
+            if self.retired_nodes.contains(&(i as u32)) {
+                continue;
+            }
             if let Some(tag) = task_tag {
                 if self.node_task_tag[i].as_deref() != Some(tag) {
                     continue;
@@ -285,6 +317,15 @@ impl CausalGraph {
                 let weight = self.values[edge_idx];
                 new_act[target] += a * weight * decay;
             }
+
+            // Phase C: write-path patch edges from this node.
+            if let Some(patches) = self.patch_fwd.get(&(i as u32)) {
+                for p in patches {
+                    if p.valid {
+                        new_act[p.other as usize] += a * p.value * decay;
+                    }
+                }
+            }
         }
 
         for a in &mut new_act {
@@ -316,6 +357,15 @@ impl CausalGraph {
                 let target = self.col_idx_rev[rev_idx] as usize;
                 let weight = self.values_rev[rev_idx];
                 new_act[target] += a * weight * decay;
+            }
+
+            // Phase C: write-path patch edges pointing INTO this node.
+            if let Some(patches) = self.patch_rev.get(&(i as u32)) {
+                for p in patches {
+                    if p.valid {
+                        new_act[p.other as usize] += a * p.value * decay;
+                    }
+                }
             }
         }
 
@@ -443,7 +493,7 @@ impl CausalGraph {
         let mut results: Vec<ActivationResult> = activations
             .iter()
             .enumerate()
-            .filter(|(_, &a)| a.abs() >= self.threshold)
+            .filter(|(i, &a)| a.abs() >= self.threshold && !self.retired_nodes.contains(&(*i as u32)))
             .map(|(i, &a)| ActivationResult {
                 node_idx: i as u32,
                 activation: a,
@@ -1024,6 +1074,149 @@ impl CausalGraph {
     /// unified engine uses this as a freshness signal.
     pub fn has_node(&self, id: &str) -> bool {
         self.node_id_to_idx.contains_key(id)
+    }
+
+    /// Phase C: append a node to the graph (write-path patch). Node arrays
+    /// are plain `Vec`s, so appending is O(1); the new node's CSR rows
+    /// start empty (zero-width) — its edges go through [`add_patch_edge`].
+    /// Returns the new node index. No-op (returns the existing index) when
+    /// the id already exists — callers patch after any write, including
+    /// chunk reuse where only the edge is new.
+    pub fn append_node(&mut self, data: NodeData) -> u32 {
+        if let Some(&idx) = self.node_id_to_idx.get(&data.id) {
+            return idx;
+        }
+        let idx = self.num_nodes as u32;
+        self.node_id_to_idx.insert(data.id.clone(), idx);
+        self.node_text.push(data.text);
+        self.node_ids.push(data.id);
+        self.node_q_value.push(data.q_value);
+        self.node_replay_count.push(data.replay_count);
+        self.node_last_activated.push(data.last_activated);
+        self.node_event_time.push(data.event_time);
+        self.node_sparse_code.push(crate::hippocampus::utils::simhash(&self.node_text[idx as usize]));
+        self.node_task_tag.push(data.task_tag);
+        self.num_nodes += 1;
+        // Zero-width CSR rows for the new node on both sides.
+        self.row_ptr.push(*self.row_ptr.last().unwrap_or(&0));
+        self.row_ptr_rev.push(*self.row_ptr_rev.last().unwrap_or(&0));
+        idx
+    }
+
+    /// Phase C: add an edge between (possibly just-appended) nodes without
+    /// rebuilding. The edge lives in the overlay maps until the next full
+    /// `from_store`; spread steps consult it in both directions.
+    pub fn add_patch_edge(&mut self, from: u32, to: u32, relation: Relation, weight: f32) {
+        let value = weight * relation.spread_coeff();
+        // Reviving write: a re-appended node leaves the retired set (the
+        // store-side revive path re-records a previously retired fact).
+        self.retired_nodes.remove(&from);
+        self.retired_nodes.remove(&to);
+        self.patch_fwd.entry(from).or_default().push(PatchEdge {
+            other: to,
+            value,
+            valid: true,
+        });
+        self.patch_rev.entry(to).or_default().push(PatchEdge {
+            other: from,
+            value,
+            valid: true,
+        });
+    }
+
+    /// Phase C: retire a node from seeding and result surfacing (a fact
+    /// replaced under the same key). Its edges stay so activation may
+    /// still bridge THROUGH it, but its own text never appears; the next
+    /// full rebuild removes it completely. Returns true when the id was
+    /// live in the graph.
+    pub fn retire_node(&mut self, id: &str) -> bool {
+        match self.node_id_to_idx.get(id) {
+            Some(&idx) => self.retired_nodes.insert(idx),
+            None => false,
+        }
+    }
+
+    /// Phase C: flip validity off for every edge (CSR or patch) between the
+    /// two chunk ids — the O(1)-amortized graph reaction to
+    /// `invalidate_decision`, so a falsified lesson stops spreading
+    /// immediately instead of after the next lazy rebuild.
+    /// Returns the number of edges flipped.
+    pub fn invalidate_edges_between(&mut self, from_id: &str, to_id: &str) -> usize {
+        let (Some(&from), Some(&to)) =
+            (self.node_id_to_idx.get(from_id), self.node_id_to_idx.get(to_id))
+        else {
+            return 0;
+        };
+        let mut flipped = 0usize;
+        // CSR forward rows of `from`.
+        let start = self.row_ptr[from as usize] as usize;
+        let end = self.row_ptr[from as usize + 1] as usize;
+        for edge_idx in start..end {
+            if self.col_idx[edge_idx] == to && self.edge_valid[edge_idx] {
+                self.edge_valid[edge_idx] = false;
+                flipped += 1;
+            }
+        }
+        // Overlay edges in both directions.
+        if let Some(patches) = self.patch_fwd.get_mut(&from) {
+            for p in patches {
+                if p.other == to && p.valid {
+                    p.valid = false;
+                    flipped += 1;
+                }
+            }
+        }
+        if let Some(patches) = self.patch_rev.get_mut(&to) {
+            for p in patches {
+                if p.other == from && p.valid {
+                    p.valid = false;
+                    flipped += 1;
+                }
+            }
+        }
+        flipped
+    }
+
+    /// Phase C: entity-link one (just-appended) fact node against the
+    /// chunk nodes already in the graph — the in-graph mirror of
+    /// `entity_link_facts`, using the same thresholds and weights, so a
+    /// fresh fact is wired into the causal content immediately (not after
+    /// the next rebuild). Facts link to chunks sharing
+    /// ≥ [`FACT_LINK_MIN_TOKENS`] distinct tokens; bidirectional; capped
+    /// at [`FACT_LINK_MAX_PER_FACT`].
+    pub fn link_fact_node(&mut self, fact_idx: u32) {
+        let fact_text = self.node_text[fact_idx as usize].clone();
+        let fact_tokens: std::collections::HashSet<String> =
+            crate::patterns::tokenize(&fact_text).into_iter().collect();
+        if fact_tokens.is_empty() {
+            return;
+        }
+
+        // Distinct-shared-token count per chunk node (skipping facts and
+        // scope hubs, matching the rebuild-time linker).
+        let mut overlap: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for i in 0..self.num_nodes {
+            let id = &self.node_ids[i];
+            if id.starts_with("fact:") || id.starts_with("scope:") {
+                continue;
+            }
+            let toks = crate::patterns::tokenize(&self.node_text[i]);
+            let distinct: std::collections::HashSet<&str> =
+                toks.iter().map(String::as_str).collect();
+            let shared = fact_tokens.iter().filter(|t| distinct.contains(t.as_str())).count();
+            if shared >= FACT_LINK_MIN_TOKENS {
+                overlap.insert(i as u32, shared);
+            }
+        }
+
+        let mut linked: Vec<(u32, usize)> = overlap.into_iter().collect();
+        linked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        linked.truncate(FACT_LINK_MAX_PER_FACT);
+        for (ci, n) in linked {
+            let weight = (0.3 + 0.1 * n as f32).min(0.8);
+            self.add_patch_edge(fact_idx, ci, Relation::Fact, weight);
+            self.add_patch_edge(ci, fact_idx, Relation::Fact, weight);
+        }
     }
 
     pub fn node_q_value(&self, idx: usize) -> f32 {
