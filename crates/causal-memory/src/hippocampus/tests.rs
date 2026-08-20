@@ -1148,4 +1148,30 @@ mod tests {
             "single-token overlap must NOT create a link: {texts:?}"
         );
     }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: graph construction must succeed or the test is meaningless"
+    )]
+    fn test_spreading_activation_seeded_by_fact_id_only() {
+        // The query text matches NOTHING in the graph (substring seeds are
+        // empty); the only seed is the store-resolved fact node id. Proves
+        // the Phase B seeded entry point: store-side BM25/semantic seeds
+        // drive the spread, not substring luck.
+        let mut graph = CausalGraph::from_store(&linked_store()).expect("graph from store");
+        let results = graph.spreading_activation_seeded(
+            "zzz-nomatch",
+            &["fact:1".to_string()],
+            None,
+            true,
+        );
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("rewrote module in TypeScript")),
+            "fact-id seed must reach the causal chain via the Phase A link: {texts:?}"
+        );
+    }
 }

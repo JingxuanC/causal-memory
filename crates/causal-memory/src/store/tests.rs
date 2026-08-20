@@ -2764,3 +2764,71 @@ fn test_q_value_persists_and_reinforces() {
         .fold(0.0f32, f32::max);
     assert!(max_q > 0.5, "graph must load persisted Q values");
 }
+
+// ─── Phase B: unified seed resolver + typed materialization ──────────
+
+#[test]
+#[allow(clippy::unwrap_used, reason = "test invariant: panicking on failure is desired")]
+fn test_bm25_seed_ids_spans_both_namespaces_and_filters_scope() {
+    let store = CausalStore::open_in_memory().unwrap();
+    store
+        .record_decision_at(
+            "rewrote module in TypeScript",
+            "compile errors dropped",
+            "caused",
+            Some("rust"),
+            0.8,
+            "llm_inferred",
+            1_700_000_000,
+        )
+        .unwrap();
+    store
+        .record_fact(
+            "editor_preference",
+            "user prefers TypeScript for module rewrites",
+            "user",
+            "agent",
+            0.8,
+        )
+        .unwrap();
+
+    // No scope: both namespaces appear — this is the one resolver that
+    // deliberately ignores the fact/chunk split.
+    let seeds = store.bm25_seed_ids("TypeScript module", None, 10).unwrap();
+    assert!(
+        seeds.iter().any(|s| s.starts_with("fact:")),
+        "fact namespace must seed: {seeds:?}"
+    );
+    assert!(
+        seeds.iter().any(|s| !s.starts_with("fact:")),
+        "chunk namespace must seed: {seeds:?}"
+    );
+
+    // Scope filter drops the user-scope fact seed; chunk seeds survive.
+    let scoped = store.bm25_seed_ids("TypeScript module", Some("agent"), 10).unwrap();
+    assert!(
+        scoped.iter().all(|s| !s.starts_with("fact:")),
+        "mismatched scope must drop fact seeds: {scoped:?}"
+    );
+
+    // Materialization helpers for the unified engine.
+    let chunks: Vec<String> = seeds
+        .iter()
+        .filter(|s| !s.starts_with("fact:"))
+        .cloned()
+        .collect();
+    let edges = store.edges_touching_chunks(&chunks, None, 10).unwrap();
+    assert!(
+        edges.iter().any(|e| e.decision_text.contains("TypeScript")),
+        "{edges:?}"
+    );
+    let fact_ids: Vec<i64> = seeds
+        .iter()
+        .filter_map(|s| s.strip_prefix("fact:").and_then(|n| n.parse().ok()))
+        .collect();
+    let facts = store.facts_by_ids(&fact_ids).unwrap();
+    assert!(
+        facts.iter().any(|f| f.key == "editor_preference"),
+        "{facts:?}"
+    );
+}

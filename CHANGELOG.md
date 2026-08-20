@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.0] - Unreleased
 
 ### Added
+- **Phase B — unified retrieval engine (one engine)**
+  (one-graph-convergence): `search_memory` / `search_memory_entries` are now
+  served by a single spreading-activation run over the whole typed graph.
+  Seeding is store-side and type-unified (`bm25_seed_ids`: the persistent
+  BM25 index over BOTH `fact:{id}` and chunk namespaces, ranked by distinct
+  token overlap, scope-filtered — plus semantic seeds when an embedder is
+  configured); the graph's substring matches union in
+  (`spreading_activation_seeded`, built on the extracted
+  `spread_and_collect` core). Results split back into typed display rows —
+  facts in activation order (`facts_by_ids`), causal edges ranked by their
+  strongest activated endpoint (`edges_touching_chunks`). The dual-pool RRF
+  path stays as fallback and A/B regression control; D4 intent routing and
+  the grouped fact/causal display are unchanged. **Freshness (Phase C
+  preview)**: a store-resolved seed that maps to no graph node proves the
+  graph predates the write (the lazy 5-writes/30s rebuild hasn't fired) —
+  the engine rebuilds once instead of silently dropping the seed, so it is
+  never weaker than the store-direct path it replaces (caught by the MCP
+  e2e: a fresh fact under the lazy threshold must still surface). Output
+  tag `[unified/spread]` / mode `"spread"`.
 - **Phase A — fact entity linking into the causal graph**
   (one-graph-convergence): `from_store` now deterministically links each
   `agent_facts` node to chunk nodes sharing ≥ 2 distinct tokens

@@ -54,7 +54,19 @@ SQLite（真相源, 压缩免疫 P5）               内存 CausalGraph（查询
   查询「TypeScript」的扩散结果必须同时含事实节点与因果链节点；`search_facts` 回归不降。
 - 护栏：全量 cargo test（当前 344）+ LongMemEval/AMC 不回归（fact 检索路径不变）。
 
-### Phase B — 统一检索引擎（one engine）
+### Phase B — 统一检索引擎（one engine）✅ shipped 2026-08-20
+
+> 落地说明：`search_memory` / `search_memory_entries` 由单一扩散引擎服务（输出 `[unified/spread]` /
+> mode `"spread"`）。播种层 = `bm25_seed_ids`（持久 BM25 索引、双命名空间、按 token 交集排序、
+> scope 过滤）+ 语义种子（有 embedder 时）+ 图内子串匹配（`spreading_activation_seeded`，扩散核心
+> 抽取为 `spread_and_collect` 共享）。结果按类型物化：facts 按 activation 序（`facts_by_ids`），
+> 因果边按最强端点 activation 排序（`edges_touching_chunks`）。双池 RRF 保留为 fallback + A/B
+> 回归对照；D4 意图路由与分组展示协议不变。
+> **新鲜度（Phase C 预演）**：store 种子映射不到图节点 = 图早于写入（懒重建未触发）——引擎立即
+> 重建一次而非静默丢种子（MCP e2e 抓到的场景：懒阈值 5 写之内的 fresh fact 必须可见）。
+> 验证：4 个新单测（播种双命名空间 + scope 过滤 + 物化 / 纯种子驱动扩散 / 引擎服务混合查询 /
+> 陈旧图种子丢失触发重建），workspace 351/351。**待补**：LongMemEval 500 题回归（需 LLM API
+> 环境）与 20 条人工对比——引擎已作为默认路径，RRF fallback 可随时切回对照。
 
 目标：检索 = 播种 → 一次全类型扩散 → 结果；BM25/语义退化为播种层。
 
@@ -119,6 +131,7 @@ Phase A（fact 入图）→ Phase B（统一引擎）→ Phase C（增量生命�
 - Phase A 完成后：`search_causal` 能经扩散关联到事实节点；`search_facts` 不变；测试 344+。
   ✅ 2026-08-20：347/347；`search_facts` 路径未动。
 - Phase B 完成后：`search_memory` 单一扩散引擎出结果；LongMemEval 500 不降。
+  ✅ 2026-08-20（引擎 + 单测）：单一扩散引擎为默认路径；LongMemEval 回归待 LLM API 环境补跑。
 - Phase C 完成后：新写即查可见；差分断言过。
 - Phase D 完成后：sleep 报告含 fact 统计；CausalEval 不降。
 

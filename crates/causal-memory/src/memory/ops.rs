@@ -567,6 +567,39 @@ impl Memory {
         scope: Option<&str>,
         limit: usize,
     ) -> (Vec<MemoryHit>, &'static str) {
+        // Phase B: unified engine first — one seeding pass over ALL node
+        // types, one spreading-activation run, typed hits. The dual-pool
+        // RRF path below is the fallback (and the regression control for
+        // A/B comparison). Score is rank-reciprocal so downstream sorters
+        // see a monotone "higher = stronger" signal, mirroring RRF scores.
+        if let Some(spread) = self.unified_spread_hits(query, task_tag, scope, limit) {
+            let mut hits = Vec::with_capacity(spread.facts.len() + spread.causal.len());
+            let mut rank = 0usize;
+            for f in &spread.facts {
+                rank += 1;
+                hits.push(MemoryHit {
+                    key: format!("fact:{}", f.id),
+                    content: format!("[{}] {} = \"{}\"", f.scope, f.key, f.value),
+                    score: 1.0 / rank as f64,
+                    rank,
+                    created_at: Some(f.updated_at),
+                });
+            }
+            for e in &spread.causal {
+                rank += 1;
+                hits.push(MemoryHit {
+                    key: format!("causal:{}", e.edge_id),
+                    content: format!(
+                        "\"{}\" →({})→ \"{}\"",
+                        e.decision_text, e.relation, e.outcome_text
+                    ),
+                    score: 1.0 / rank as f64,
+                    rank,
+                    created_at: Some(e.event_time),
+                });
+            }
+            return (hits, "spread");
+        }
         let per_layer = limit.saturating_mul(2).max(10);
         let query_vec = block_on(crate::embed::embed_shared(query)).and_then(|r| r.ok());
         let mut used_semantic = false;
@@ -690,6 +723,71 @@ impl Memory {
                 return format!("❌ Invalid scope '{s}' — use one of: user, session, agent");
             }
         }
+
+        // Phase B: unified engine first — one seeding pass over ALL node
+        // types, one spreading-activation run over the whole typed graph,
+        // typed results. The dual-pool RRF path below stays as the
+        // fallback and the regression control for A/B comparison.
+        if let Some(spread) = self.unified_spread_hits(query, task_tag, scope, limit) {
+            // D4 query routing, same discipline as the fused path: route
+            // the DISPLAY to the dominant layer when the classifier is
+            // confident AND that layer has hits (never hide evidence).
+            let intent = crate::query_router::classify_query(query);
+            let dominant_is_causal = matches!(
+                intent,
+                crate::query_router::QueryIntent::Causal | crate::query_router::QueryIntent::Chain
+            );
+            let dominant_is_fact = matches!(intent, crate::query_router::QueryIntent::Fact);
+            let facts: Vec<&AgentFact> = if dominant_is_causal && !spread.causal.is_empty() {
+                Vec::new()
+            } else {
+                spread.facts.iter().collect()
+            };
+            let causal: Vec<&CausalEntry> = if dominant_is_fact && !spread.facts.is_empty() {
+                Vec::new()
+            } else {
+                spread.causal.iter().collect()
+            };
+
+            let layers = usize::from(!facts.is_empty()) + usize::from(!causal.is_empty());
+            let total = facts.len() + causal.len();
+            let mut out = format!(
+                "[unified/spread] Found {total} memories across {layers} layer(s):\n\n"
+            );
+            // Ranks continue across the groups — the position in the
+            // engine's activation order (facts, then causal entries).
+            let mut rank = 0usize;
+            if !facts.is_empty() {
+                out.push_str(&format!("📊 Facts ({}):\n", facts.len()));
+                for fact in &facts {
+                    rank += 1;
+                    out.push_str(&format!(
+                        "  #{rank} [{}] {} = \"{}\" (confidence: {:.0}%)\n",
+                        fact.scope,
+                        fact.key,
+                        truncate_chars(&fact.value, 60),
+                        fact.confidence * 100.0,
+                    ));
+                }
+                out.push('\n');
+            }
+            if !causal.is_empty() {
+                out.push_str(&format!("🔗 Causal lessons ({}):\n", causal.len()));
+                for entry in &causal {
+                    rank += 1;
+                    out.push_str(&format!(
+                        "  #{rank} [{}] \"{}\" →({})→ \"{}\" (confidence: {:.0}%)\n",
+                        entry.task_tag.as_deref().unwrap_or("untagged"),
+                        truncate_chars(&entry.decision_text, 50),
+                        entry.relation,
+                        truncate_chars(&entry.outcome_text, 50),
+                        entry.confidence * 100.0,
+                    ));
+                }
+            }
+            return out;
+        }
+
         // Pull more than needed per layer so the fusion has real candidates.
         let per_layer = limit.saturating_mul(2).max(10);
 

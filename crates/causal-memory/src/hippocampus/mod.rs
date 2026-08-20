@@ -351,19 +351,56 @@ impl CausalGraph {
         run_hebbian: bool,
     ) -> Vec<ActivationResult> {
         // `reverse = true`: backward (outcome → decision, for trace_cause)
-        //
-        // Merge rule: uses absolute-value max (|new| > |old| → replace). This
-        // allows negative activations from prevented edges to replace zero
-        // (which signed-max could not: -0.126 > 0.0 is false). A node receiving
-        // both caused (+) and prevented (-) signals shows whichever is stronger.
         let seeds = self.find_seeds(query, task_tag);
         if seeds.is_empty() {
             return Vec::new();
         }
+        self.spread_and_collect(&seeds, reverse, run_hebbian)
+    }
 
+    /// Phase B (one-graph-convergence): seeded variant for the unified
+    /// engine. Seeds arrive from the store's resolvers (persistent BM25
+    /// index over ALL node types + optional semantic vectors) instead of
+    /// substring matching alone; the graph's own substring matches union
+    /// in. One spread over the whole typed graph follows.
+    pub fn spreading_activation_seeded(
+        &mut self,
+        query: &str,
+        seed_ids: &[String],
+        task_tag: Option<&str>,
+        run_hebbian: bool,
+    ) -> Vec<ActivationResult> {
+        let mut seeds = self.find_seeds(query, task_tag);
+        for id in seed_ids {
+            if let Some(&idx) = self.node_id_to_idx.get(id) {
+                if !seeds.contains(&idx) {
+                    seeds.push(idx);
+                }
+            }
+        }
+        if seeds.is_empty() {
+            return Vec::new();
+        }
+        self.spread_and_collect(&seeds, false, run_hebbian)
+    }
+
+    /// The shared spread engine: Q-weighted seeding → hops (forward or
+    /// reverse) with abs-max merge → threshold-collect → abs-sort →
+    /// optional Hebbian update.
+    ///
+    /// Merge rule: uses absolute-value max (|new| > |old| → replace). This
+    /// allows negative activations from prevented edges to replace zero
+    /// (which signed-max could not: -0.126 > 0.0 is false). A node receiving
+    /// both caused (+) and prevented (-) signals shows whichever is stronger.
+    fn spread_and_collect(
+        &mut self,
+        seeds: &[u32],
+        reverse: bool,
+        run_hebbian: bool,
+    ) -> Vec<ActivationResult> {
         let mut activations = vec![0.0_f32; self.num_nodes];
         let now = chrono::Utc::now().timestamp();
-        for &seed in &seeds {
+        for &seed in seeds {
             // P4: Q-value-weighted seeding. High-Q nodes (proven useful)
             // get stronger initial activation; low-Q nodes still seed but
             // weaker, so they don't dominate. Q defaults to 0.5 when unset.
@@ -980,6 +1017,13 @@ impl CausalGraph {
     /// chunk id, so retrieval results need the id, not just the text).
     pub fn node_id(&self, idx: usize) -> &str {
         &self.node_ids[idx]
+    }
+
+    /// Phase B: does the graph know this node id? A store-resolved seed
+    /// that maps to no node means the graph predates the write — the
+    /// unified engine uses this as a freshness signal.
+    pub fn has_node(&self, id: &str) -> bool {
+        self.node_id_to_idx.contains_key(id)
     }
 
     pub fn node_q_value(&self, idx: usize) -> f32 {

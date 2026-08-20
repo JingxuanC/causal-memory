@@ -484,4 +484,94 @@ mod tests {
             "fact text must appear in the activation results: {out}"
         );
     }
+
+    // ─── Phase B: search_memory served by the unified spread engine ─────
+
+    /// The exact staleness the MCP e2e caught: 4 writes < the lazy rebuild
+    /// threshold, so the graph still predates the facts — the engine must
+    /// detect the seed miss and rebuild, never serve a stale graph.
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: memory construction must succeed or the test is meaningless"
+    )]
+    fn test_unified_engine_rebuilds_on_stale_seed_miss() {
+        let memory = Memory::open_in_memory().expect("memory");
+        // Startup graph is EMPTY; these 4 writes stay under the lazy
+        // threshold (5), no rebuild fires before the query.
+        memory.record_decision(
+            "used global lock for cache",
+            "deadlock error under load",
+            "caused",
+            "locking",
+            None,
+        );
+        memory.record_decision("ran backup migration", "backup completed", "caused", "backup", None);
+        memory.record_fact("tech_stack", "Redis 7.2", Some("user"), None, None);
+        memory.record_fact("tech_stack", "Redis 8.0", Some("user"), None, Some(true));
+
+        let (hits, mode) = memory.search_memory_entries("redis cache", None, None, 10);
+        assert_eq!(mode, "spread", "engine must serve, got: {hits:?}");
+        assert!(
+            hits.iter().any(|h| h.key.starts_with("fact:")
+                && h.content.contains("Redis 8.0")),
+            "fresh fact must surface despite the stale graph: {hits:?}"
+        );
+        assert!(
+            !hits.iter().any(|h| h.content.contains("Redis 7.2")),
+            "retired fact must not surface: {hits:?}"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: memory construction must succeed or the test is meaningless"
+    )]
+    fn test_search_memory_uses_unified_spread_engine() {
+        let memory = Memory::open_in_memory().expect("memory");
+        memory.record_decision(
+            "rewrote module in TypeScript",
+            "compile errors dropped",
+            "caused",
+            "rust",
+            None,
+        );
+        memory.record_fact(
+            "editor_preference",
+            "user prefers TypeScript for module rewrites",
+            Some("user"),
+            None,
+            None,
+        );
+        // 2 real writes < GRAPH_REBUILD_WRITES(5): pad with 3 more writes
+        // so the lazy rebuild fires and the engine sees fresh nodes.
+        for i in 0..3 {
+            memory.record_fact(
+                &format!("pad_{i}"),
+                &format!("padding entry {i}"),
+                Some("user"),
+                None,
+                None,
+            );
+        }
+
+        // Structured core: one spread, typed hits, "spread" mode.
+        let (hits, mode) = memory.search_memory_entries("TypeScript module", None, None, 10);
+        assert_eq!(mode, "spread", "unified engine must serve this query");
+        assert!(
+            hits.iter().any(|h| h.key.starts_with("fact:")),
+            "fact hits: {hits:?}"
+        );
+        assert!(
+            hits.iter().any(|h| h.key.starts_with("causal:")),
+            "causal hits: {hits:?}"
+        );
+
+        // Text tool: same engine, grouped display.
+        let text = memory.search_memory("TypeScript module", None, None, None);
+        assert!(text.starts_with("[unified/spread]"), "{text}");
+        assert!(text.contains("editor_preference"), "{text}");
+        assert!(text.contains("Causal lessons"), "{text}");
+    }
 }

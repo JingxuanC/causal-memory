@@ -332,4 +332,30 @@ impl CausalStore {
         scored.truncate(limit);
         Ok(scored)
     }
+
+    /// Phase B (one-graph-convergence): fetch valid facts by id set — the
+    /// display rows for fact nodes the spreading-activation engine lit up.
+    /// Order follows the input ids (activation order); missing/retired ids
+    /// drop out silently.
+    pub fn facts_by_ids(&self, ids: &[i64]) -> Result<Vec<super::AgentFact>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.acquire()?;
+        let ph = vec!["?"; ids.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT f.id, f.key, f.value, f.scope, f.source, f.confidence,
+                    f.created_at, f.updated_at
+             FROM agent_facts f
+             WHERE f.valid_to IS NULL AND f.id IN ({ph})"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), super::fact_from_row)?;
+        let by_id: std::collections::HashMap<i64, super::AgentFact> = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))?
+            .into_iter()
+            .map(|f| (f.id, f))
+            .collect();
+        Ok(ids.iter().filter_map(|id| by_id.get(id).cloned()).collect())
+    }
 }

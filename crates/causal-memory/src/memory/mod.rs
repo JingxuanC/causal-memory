@@ -12,6 +12,7 @@
 use crate::hippocampus::CausalGraph;
 use crate::store::CausalStore;
 use anyhow::Result;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -108,16 +109,26 @@ impl Memory {
         let now = chrono::Utc::now().timestamp();
         let last = self.graph_last_rebuild.load(Ordering::Relaxed);
         if writes >= GRAPH_REBUILD_WRITES || now - last >= GRAPH_REBUILD_SECS {
-            if let Ok(g) = CausalGraph::from_store(&self.store) {
-                if let Ok(mut guard) = self.graph.lock() {
-                    *guard = Some(g);
-                }
-            }
-            self.graph_writes.store(0, Ordering::Relaxed);
-            self.graph_last_rebuild.store(now, Ordering::Relaxed);
-            // D1: flush buffered co-activation pairs alongside the rebuild.
-            self.flush_cooccurrences();
+            self.rebuild_graph_now();
         }
+    }
+
+    /// Phase B: rebuild the graph from the store unconditionally and reset
+    /// the lazy-rebuild bookkeeping. Same cost as the lazy trigger; called
+    /// when a query proves the graph is stale (a store-resolved seed maps
+    /// to no node) so the unified engine is never weaker than the store
+    /// paths it replaced.
+    fn rebuild_graph_now(&self) {
+        if let Ok(g) = CausalGraph::from_store(&self.store) {
+            if let Ok(mut guard) = self.graph.lock() {
+                *guard = Some(g);
+            }
+        }
+        self.graph_writes.store(0, Ordering::Relaxed);
+        self.graph_last_rebuild
+            .store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
+        // D1: flush buffered co-activation pairs alongside the rebuild.
+        self.flush_cooccurrences();
     }
 
     /// Record every unordered pair of co-activated chunks (D1). Retrieval
@@ -202,6 +213,159 @@ impl Memory {
             ));
         }
         Some(out)
+    }
+}
+
+/// Phase B: typed hits from the unified spreading-activation engine.
+/// Facts and causal entries in activation order (strongest first).
+pub(crate) struct UnifiedSpreadHits {
+    pub facts: Vec<crate::store::AgentFact>,
+    pub causal: Vec<crate::store::CausalEntry>,
+}
+
+impl Memory {
+    /// Phase B: the unified retrieval engine. Seeding is store-side and
+    /// type-unified (persistent BM25 index over both `fact:{id}` and chunk
+    /// namespaces + optional semantic seeds + the graph's own substring
+    /// matches); retrieval is a single spreading-activation run; results
+    /// split back into typed display rows. Returns None when the engine
+    /// can't serve the query (no graph / no seeds / nothing activated /
+    /// nothing materializable) — callers fall back to the dual-pool RRF
+    /// path, which stays as the regression control.
+    pub(crate) fn unified_spread_hits(
+        &self,
+        query: &str,
+        task_tag: Option<&str>,
+        scope: Option<&str>,
+        limit: usize,
+    ) -> Option<UnifiedSpreadHits> {
+        /// Cap on store-resolved seeds — spread cost scales with the seed
+        /// set, and beyond this the tail seeds contribute almost nothing.
+        const UNIFIED_SEED_LIMIT: usize = 16;
+
+        self.maybe_rebuild_graph();
+
+        // Seed layer (unified, all node types): the persistent BM25 index
+        // first — it deliberately spans BOTH namespaces — then semantic
+        // seeds when an embedder is configured.
+        let mut seed_ids: Vec<String> = self
+            .store
+            .bm25_seed_ids(query, scope, UNIFIED_SEED_LIMIT)
+            .unwrap_or_default();
+        if let Some(Ok(vec)) = block_on(crate::embed::embed_shared(query)) {
+            if let Ok(sem) = self.store.search_facts_semantic(&vec, scope, UNIFIED_SEED_LIMIT) {
+                seed_ids.extend(sem.into_iter().map(|(f, _)| format!("fact:{}", f.id)));
+            }
+            if let Ok(sem) =
+                self.store
+                    .search_causal_semantic_entity_boosted(&vec, query, task_tag, UNIFIED_SEED_LIMIT)
+            {
+                seed_ids.extend(sem.into_iter().map(|(e, _)| e.decision_id));
+            }
+        }
+
+        // Freshness (Phase C preview): a store-resolved seed that maps to
+        // no graph node means writes landed after the last (lazy) rebuild.
+        // Serving the query from the stale graph would silently drop that
+        // seed — weaker than the store-direct RRF path this engine
+        // replaces. Rebuild once and continue; the cost is the same
+        // from_store the lazy trigger would eventually pay anyway. An
+        // empty graph with resolvable seeds is the same staleness (the
+        // store grew after startup), not a reason to skip.
+        {
+            let guard = self.graph.lock().ok()?;
+            if let Some(graph) = guard.as_ref() {
+                if seed_ids.iter().any(|id| !graph.has_node(id)) {
+                    drop(guard);
+                    self.rebuild_graph_now();
+                }
+            }
+        }
+
+        let mut guard = self.graph.lock().ok()?;
+        let graph = guard.as_mut()?;
+        if graph.num_nodes() == 0 {
+            return None;
+        }
+
+        let results = graph.spreading_activation_seeded(query, &seed_ids, task_tag, true);
+        if results.is_empty() {
+            return None;
+        }
+
+        // Typed split while the graph is still locked: fact nodes carry
+        // `fact:{id}` ids; scope hubs are skipped; the rest are chunk
+        // nodes, kept with their activation for edge ranking below.
+        let mut fact_ids: Vec<i64> = Vec::new();
+        let mut chunk_activation: Vec<(String, f32)> = Vec::new();
+        let mut active_ids: Vec<String> = Vec::new();
+        for r in &results {
+            if r.activation.abs() < graph.threshold() {
+                continue;
+            }
+            let id = graph.node_id(r.node_idx as usize);
+            active_ids.push(id.to_string());
+            if let Some(fid) = id.strip_prefix("fact:") {
+                if let Ok(n) = fid.parse::<i64>() {
+                    if !fact_ids.contains(&n) {
+                        fact_ids.push(n);
+                    }
+                }
+            } else if !id.starts_with("scope:")
+                && !chunk_activation.iter().any(|(c, _)| c == id)
+            {
+                chunk_activation.push((id.to_string(), r.activation));
+            }
+        }
+        drop(guard);
+
+        // Hebbian co-activation buffering — same contract as the
+        // hippocampus path (buffered pairs flush at the next rebuild).
+        self.buffer_cooccurrences(&active_ids);
+
+        // Materialize display rows: facts in activation order, scoped.
+        let fact_map: HashMap<i64, crate::store::AgentFact> = self
+            .store
+            .facts_by_ids(&fact_ids)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| (f.id, f))
+            .collect();
+        let facts: Vec<crate::store::AgentFact> = fact_ids
+            .iter()
+            .filter_map(|id| fact_map.get(id))
+            .filter(|f| scope.is_none_or(|s| f.scope == s))
+            .take(limit)
+            .cloned()
+            .collect();
+
+        // Edges touching the activated chunks, ranked by their strongest
+        // endpoint activation (activation carries the engine's ordering;
+        // confidence is only the SQL prefilter's tiebreak).
+        let chunk_ids: Vec<String> = chunk_activation.iter().map(|(c, _)| c.clone()).collect();
+        let edges = self
+            .store
+            .edges_touching_chunks(&chunk_ids, task_tag, limit.saturating_mul(2).max(10))
+            .unwrap_or_default();
+        let mut scored: Vec<(f32, crate::store::CausalEntry)> = edges
+            .into_iter()
+            .map(|e| {
+                let strength = chunk_activation
+                    .iter()
+                    .filter(|(c, _)| *c == e.decision_id || *c == e.outcome_id)
+                    .map(|(_, a)| a.abs())
+                    .fold(0.0_f32, f32::max);
+                (strength, e)
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let causal: Vec<crate::store::CausalEntry> =
+            scored.into_iter().map(|(_, e)| e).take(limit).collect();
+
+        if facts.is_empty() && causal.is_empty() {
+            return None;
+        }
+        Some(UnifiedSpreadHits { facts, causal })
     }
 }
 
