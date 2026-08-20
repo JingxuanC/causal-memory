@@ -127,6 +127,15 @@ fn month_index(name: &str) -> Option<u32> {
     MONTHS.iter().position(|m| *m == name).map(|i| i as u32 + 1)
 }
 
+/// Weekday name -> days-from-Monday index (monday=0 … sunday=6), 0-based
+/// like `chrono::Weekday::num_days_from_monday`.
+fn weekday_index(name: &str) -> Option<u32> {
+    const DAYS: [&str; 7] = [
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    ];
+    DAYS.iter().position(|d| *d == name).map(|i| i as u32)
+}
+
 /// Parse a relative-time anchor from the query against the reference
 /// timestamp `now` (the question's date in the benchmark; the call time in
 /// production). Returns an inclusive [start_ts, end_ts] window. Rule-based,
@@ -157,10 +166,16 @@ pub fn parse_temporal_anchor(query: &str, now: i64) -> Option<(i64, i64)> {
             }
         }
     }
-    // 3. "N unit ago".
+    // 3. "N unit ago". "a"/"an" count as 1 ("a week ago" — LongMemEval's
+    // temporal questions use the article form as often as the numeral).
     for w in toks.windows(3) {
         if w[2] == "ago" {
-            if let Some(n) = parse_number(w[0].as_str()) {
+            let n = if w[0] == "a" || w[0] == "an" {
+                Some(1)
+            } else {
+                parse_number(w[0].as_str())
+            };
+            if let Some(n) = n {
                 if let Some((_, secs)) = unit_of(w[1].as_str()) {
                     return Some((now - (n + 1) * secs, now - n * secs));
                 }
@@ -278,6 +293,26 @@ pub fn parse_temporal_anchor(query: &str, now: i64) -> Option<(i64, i64)> {
             day_start_ts(yest.year(), yest.month(), yest.day())?,
             day_start_ts(yest.year(), yest.month(), yest.day())? + 86_399,
         ));
+    }
+    // 10. "last <weekday>" / "on <weekday>" -> the most recent OCCURRENCE
+    //     strictly before today (LongMemEval: "I received a piece of
+    //     jewelry last Saturday" — the article, not a calendar-period
+    //     reading, distinguishes this from rule 4's "last week").
+    //     The window is that single day.
+    for w in toks.windows(2) {
+        if let Some(dow) = weekday_index(w[1].as_str()) {
+            if w[0] == "last" || w[0] == "on" || w[0] == "this" {
+                let today_dow = today.weekday().num_days_from_monday();
+                // Days to subtract: 1..=7 (a weekday equal to today counts
+                // as the PREVIOUS week's occurrence, matching "last
+                // Saturday" said on a Saturday).
+                let back = (today_dow + 7 - dow) % 7;
+                let back = if back == 0 { 7 } else { back };
+                let day = today - chrono::Duration::days(back as i64);
+                let start = day_start_ts(day.year(), day.month(), day.day())?;
+                return Some((start, start + 86_399));
+            }
+        }
     }
     None
 }
@@ -492,6 +527,54 @@ mod tests {
         let plan = plan_query("How many days ago did I buy a smoker?", 1_700_000_000);
         assert!(!plan.aggregation);
         assert!(!plan.entities.is_empty());
+    }
+
+    /// 2026-08-21 is a Friday. Anchors below are verified against it.
+    const FRIDAY_TS: i64 = 1_787_270_400; // 2026-08-21T00:00:00Z
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: the anchor must parse or the test is meaningless"
+    )]
+    fn temporal_anchor_article_number_forms() {
+        // "a week ago" must anchor (the article counts as 1) — previously
+        // returned None and left the question unanchored.
+        let (start, end) = parse_temporal_anchor("Which book did I finish a week ago?", FRIDAY_TS)
+            .expect("a week ago must anchor");
+        let week = 7 * 86_400;
+        // Rule 3's window for n=1: [now-2u, now-u] — the week that ended
+        // one week before now.
+        assert_eq!(end - start, week, "window spans exactly one week");
+        assert_eq!(FRIDAY_TS - end, week, "window is the week ending 1 week before now");
+        assert!(end < FRIDAY_TS, "window lies strictly before now");
+        // "one week ago" (spelled numeral) matches the same shape.
+        assert!(parse_temporal_anchor("I went one week ago", FRIDAY_TS).is_some());
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "test invariant: the anchor and timestamp must parse"
+    )]
+    fn temporal_anchor_last_weekday() {
+        // Friday 2026-08-21: "last Saturday" = 2026-08-15 (6 days back).
+        let (start, end) =
+            parse_temporal_anchor("I received jewelry last Saturday from whom?", FRIDAY_TS)
+                .expect("last Saturday must anchor");
+        assert_eq!(end - start + 1, 86_400, "window is exactly one day");
+        let dt = chrono::DateTime::from_timestamp(start, 0).unwrap();
+        assert_eq!(dt.format("%Y-%m-%d").to_string(), "2026-08-15");
+        assert_eq!(dt.weekday().to_string(), "Sat");
+
+        // Said ON a Saturday: "last Saturday" means the PREVIOUS week's
+        // occurrence (7 days back), not today.
+        const SAT_TS: i64 = 1_786_752_000; // 2026-08-15T00:00:00Z (Sat)
+        let (start, _) =
+            parse_temporal_anchor("I saw her last Saturday", SAT_TS).expect("must anchor");
+        let dt = chrono::DateTime::from_timestamp(start, 0).unwrap();
+        assert_eq!(dt.format("%Y-%m-%d").to_string(), "2026-08-08");
     }
     use crate::store::CausalStore;
 
