@@ -118,7 +118,7 @@ Core capabilities (all shipped, all tested):
 | Benchmark | Result | Note |
 |---|---|---|
 | LoCoMo (1,986 q) | overall 64.2% (adopted prompt) · abstention 91.5% | 5 controlled runs; raw-QA best 65.0% |
-| LongMemEval (500 q) | overall 61.8% · knowledge-update 76.9% · **abstention 96.7%** | multi-session 32.3% is the known gap |
+| LongMemEval (500 q, 2026-08-22 full pipeline) | **overall 76.4% · multi-session 60.2% · temporal 69.9% · abstention 96.7% @ 11.5K tok/q** | vs 72.4% (8/20) at -32% token cost; mem0 official 94.4% @ 6.8K, ind. repro 73.8% — caliber gap, see docs/benchmarks/longmemeval.md |
 | **Compaction survival (k=5)** | text-only 44.5% vs text+causal **65.3%** | causal edges fully offset 5 compactions (+20.8pp) |
 | **Agent ablation (trap world)** | repeat-mistake 67% (no memory) → **33%** (with memory) | glm-4-plus, seed 42, both 6/6 solved; post-search hit 57% |
 

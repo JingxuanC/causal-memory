@@ -81,7 +81,7 @@ specialty and not where causal-memory adds value.
 | Benchmark | causal-memory | mem0 | Note |
 |---|---|---|---|
 | LoCoMo (strict judge) | 79.1% | 91.6% | mem0's home turf |
-| LongMemEval (distill v2) | 75.2% | 74.4% | Roughly tied |
+| LongMemEval-S (full pipeline, deepseek-chat) | **76.4%** @ 11.5K tok/q | 94.4% @ 6.8K tok/q (official) · 73.8% (ind. repro) | single-model stack vs platform stack; see docs/benchmarks/longmemeval.md |
 | Memora MPA | 67.4% | 71.8% | −4.4pp |
 | Compaction survival | 100% | 45% | External table = immune to compaction |
 | Agent repeat-mistake | 33% | 67% | −34pp on trap-world |

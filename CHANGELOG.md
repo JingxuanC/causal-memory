@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.9.0] - Unreleased
 
+### Benchmarks
+- **LongMemEval-S full-pipeline headline: 76.4% overall (382/500) at
+  11,524 avg ctx tokens** (run 20260821_161122, git 5064b90): +4.0pp over
+  the 8/20 run while cutting per-query context 32% (17,016 → 11,524;
+  answer-phase input 8.51M → 5.76M tokens across 500 questions).
+  multi-session 60.2% (+4.5), temporal-reasoning 69.9% (+7.5),
+  single-session-preference 80.0% (+13.3), abstention 96.7%, evidence
+  hit flat at 89.2%. All 48 verdict flips evidence-stable — the gain is
+  the dilution cut, not retrieval luck. Docs updated with the mem0
+  comparison (official 94.4% @ 6.8K tok/q on platform stack; independent
+  same-harness repro 73.8%; judge-caliber discount documented).
+
 ### Added
 - **`scripts/audit_fact_links.py`** — stdlib-only replication of the
   fact↔chunk linker policy (`entity_link_facts` / `link_fact_node` /
