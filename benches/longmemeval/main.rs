@@ -627,7 +627,13 @@ async fn distill_question(
 /// answerer. Session budget SESSION_BUDGET (was top-5/40 in the P8 harness
 /// experiment; the diagnosis showed evidence scattered over low-hit
 /// sessions gets cut by the top-5 cap).
-fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize, mode: &str) -> Result<Vec<CausalEntry>> {
+fn retrieve(
+    store: &CausalStore,
+    q: &LmeQuestion,
+    topk: usize,
+    mode: &str,
+    query_vec: Option<&[f32]>,
+) -> Result<Vec<CausalEntry>> {
     // Frozen baseline: plain BM25 top-k, no expansion — for same-codebase
     // comparisons against the multipass path.
     if mode == "baseline" {
@@ -635,7 +641,7 @@ fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize, mode: &str) -> Re
     }
     let now = parse_lme_datetime(&q.question_date).unwrap_or(SYNTH_BASE_TS);
     let plan = retrieval::plan_query(&q.question, now);
-    let merged = retrieval::retrieve_multi_pass(
+    let mut merged = retrieval::retrieve_multi_pass(
         store,
         Some(&q.question_id),
         &q.question,
@@ -643,6 +649,38 @@ fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize, mode: &str) -> Re
         topk,
     )?;
 
+    // Semantic seed layer (retrieval-scoring.md §2): cosine-rank the
+    // question's embedded edges (currently the distill layer) as a
+    // SUPPLEMENTARY pool, RRF-merged with the BM25 pool. Paraphrase
+    // recall ("jewelry" vs "necklace") is BM25's blind spot; episodes
+    // close it. No query vector (embedder off / call failed) or no
+    // embedded edges for this question → pure BM25, unchanged.
+    if let Some(qvec) = query_vec {
+        if let Ok(sem) = store.search_causal_semantic(qvec, Some(&q.question_id), topk) {
+            if !sem.is_empty() {
+                // RRF merge: BM25 pool rank vs semantic pool rank.
+                let bm25_keys: Vec<String> =
+                    merged.iter().map(|e| format!("bm25:{}", e.edge_id)).collect();
+                let sem_keys: Vec<String> = sem
+                    .iter()
+                    .map(|(e, _)| format!("sem:{}", e.edge_id))
+                    .collect();
+                let fused = rrf_fuse_two(&bm25_keys, &sem_keys);
+                let mut seen: HashSet<i64> = merged.iter().map(|e| e.edge_id).collect();
+                for key in &fused {
+                    if let Some((e, _)) = key
+                        .strip_prefix("sem:")
+                        .and_then(|id| id.parse::<i64>().ok())
+                        .and_then(|id| sem.iter().find(|(s, _)| s.edge_id == id))
+                    {
+                        if seen.insert(e.edge_id) {
+                            merged.push(e.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
     // Layered quota (retrieval-scoring.md §4): episodes are BM25-favored
     // paraphrases that crowd original turns out of top-k — cap them at
     // a third of the budget so primary evidence keeps its slots.
@@ -660,6 +698,23 @@ fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize, mode: &str) -> Re
 /// Session-expansion budget: how many full-session chunks may be injected
 /// into one answer prompt (design: ~80; the P8 harness used 40).
 const SESSION_BUDGET: usize = 80;
+
+/// RRF over two rank lists (same K=60 as the lib's rrf_fuse_many; local
+/// copy because the lib one is pub(crate)).
+fn rrf_fuse_two(a: &[String], b: &[String]) -> Vec<String> {
+    const K: f64 = 60.0;
+    let mut score: std::collections::HashMap<&str, f64> = std::collections::HashMap::new();
+    for (i, k) in a.iter().enumerate() {
+        *score.entry(k.as_str()).or_insert(0.0) += 1.0 / (K + i as f64 + 1.0);
+    }
+    for (i, k) in b.iter().enumerate() {
+        *score.entry(k.as_str()).or_insert(0.0) += 1.0 / (K + i as f64 + 1.0);
+    }
+    let mut ranked: Vec<(f64, &str)> =
+        score.into_iter().map(|(k, v)| (v, k)).collect();
+    ranked.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal));
+    ranked.into_iter().map(|(_, k)| k.to_string()).collect()
+}
 
 /// Inject every chunk of the sessions touched by `entries` as synthetic
 /// CausalEntry rows (negative edge ids, relation "session") so memory_lines
@@ -1349,7 +1404,36 @@ async fn answer_question(
     let now = parse_lme_datetime(&q.question_date).unwrap_or(SYNTH_BASE_TS);
     let plan = retrieval::plan_query(&q.question, now);
 
-    let mut final_entries = retrieve(store, q, topk, retrieval_mode).unwrap_or_default();
+    // Query embedding BEFORE the sync retrieve call (async context here;
+    // blocking inside retrieve would deadlock the multi-thread runtime —
+    // all 8 workers can enter block_in_place with nobody left to drive
+    // the HTTP future). None when no embedder is configured → the
+    // semantic layer silently turns off, pure BM25 unchanged.
+    //
+    // DEADLOCK GUARD: embed_shared holds its std::Mutex ACROSS the HTTP
+    // await (deliberate in embed.rs, serializing shared-embedder calls).
+    // With 8 buffered questions, 7 workers OS-block on that mutex while
+    // the lock holder waits for an IO wake that the starved runtime never
+    // delivers (measured: both proxy and no-proxy runs hang post-graph
+    // with every worker in pthread_mutex_wait; a direct Embedder probe
+    // completes in 0.33s). Serializing HERE via an async semaphore keeps
+    // the lock uncontended — exactly one caller inside at a time, no OS
+    // threads parked on the mutex, IO wakes flow freely.
+    let query_vec = {
+        static EMBED_GATE: std::sync::OnceLock<tokio::sync::Semaphore> =
+            std::sync::OnceLock::new();
+        let _permit = EMBED_GATE
+            .get_or_init(|| tokio::sync::Semaphore::new(1))
+            .acquire()
+            .await
+            .expect("semaphore never closes");
+        match causal_memory::embed::embed_shared(&q.question).await {
+            Some(Ok(v)) => Some(v),
+            _ => None,
+        }
+    };
+    let mut final_entries = retrieve(store, q, topk, retrieval_mode, query_vec.as_deref())
+        .unwrap_or_default();
     let mut seen_chunk: HashSet<String> = retrieved_chunk_ids(&final_entries).into_iter().collect();
     let retrieved_ids: Vec<String> = seen_chunk.iter().cloned().collect();
     let evidence_hit = retrieved_ids.iter().any(|r| evidence_ids.contains(r));
@@ -1948,13 +2032,13 @@ mod tests {
         ingest_question(&store, &q1).unwrap();
         ingest_question(&store, &q2).unwrap();
 
-        let res = retrieve(&store, &q1, 10, "multipass").unwrap();
+        let res = retrieve(&store, &q1, 10, "multipass", None).unwrap();
         assert!(!res.is_empty());
         let ids = retrieved_chunk_ids(&res);
         assert!(ids.iter().all(|id| id.starts_with("q1::")));
         assert!(ids.iter().any(|id| id == "q1::q1_s2::1"));
 
-        let res2 = retrieve(&store, &q2, 10, "multipass").unwrap();
+        let res2 = retrieve(&store, &q2, 10, "multipass", None).unwrap();
         assert!(!res2.is_empty());
         assert!(retrieved_chunk_ids(&res2)
             .iter()
@@ -1966,7 +2050,7 @@ mod tests {
         let q = tiny_question("q1", "single-session-user");
         let store = CausalStore::open_in_memory().unwrap();
         let (_, evidence) = ingest_question(&store, &q).unwrap();
-        let res = retrieve(&store, &q, 10, "multipass").unwrap();
+        let res = retrieve(&store, &q, 10, "multipass", None).unwrap();
         let ids = retrieved_chunk_ids(&res);
         assert!(ids.iter().any(|r| evidence.contains(r)));
     }
