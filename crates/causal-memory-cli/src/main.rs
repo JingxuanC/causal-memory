@@ -40,6 +40,13 @@ fn main() -> anyhow::Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
 
+    // help | --help | -h: without this, unrecognized args fall through to the
+    // MCP stdio server and exit with a confusing handshake error.
+    if args.len() >= 2 && matches!(args[1].as_str(), "help" | "--help" | "-h") {
+        print_help();
+        return Ok(());
+    }
+
     // Subcommand: extract <session-dir>
     if args.len() >= 2 && args[1] == "extract" {
         return run_extract(&args[2..]);
@@ -154,6 +161,45 @@ fn main() -> anyhow::Result<()> {
     }
 
     run_mcp_server()
+}
+
+fn print_help() {
+    println!(
+        "causal-memory — CLI and MCP server\n\
+         \n\
+         Usage: causal-memory [COMMAND] [ARGS]\n\
+         \n\
+         Server modes (default: MCP over stdio):\n\
+         \x20 (no args)              MCP server via stdio\n\
+         \x20 http [--port N]       MCP server over HTTP\n\
+         \n\
+         Extraction & maintenance:\n\
+         \x20 extract <session-dir>   one-shot extraction from session logs\n\
+         \x20 judge <session-dir>    extract + LLM judge\n\
+         \x20 reasoning <session-dir> extract reasoning-level decisions via LLM\n\
+         \x20 distill <session.json|dir> [--dry-run]  LLM distill into all memory layers\n\
+         \x20 link                   connect flat decisions into multi-hop chains\n\
+         \x20 sleep [--db P] [--dry-run]   offline consolidation cycle\n\
+         \x20 restore <edge_id> [--db P]   roll back a supersession\n\
+         \x20 novelty <decision> <actual> [--mode entropy|prediction_gap|hybrid]\n\
+         \x20 migrate [--db P]       schema migration check\n\
+         \x20 embed [--db P] [--limit N]   backfill edge embeddings\n\
+         \x20 polarity [--db P] [--limit N]  backfill outcome polarity\n\
+         \x20 resolve-updates        LLM update-resolver for falsified lessons\n\
+         \x20 refute                 graph-structural refutation on all edges\n\
+         \n\
+         Share & export:\n\
+         \x20 export <file.jsonl>    share causal memory across agents\n\
+         \x20 import <file.jsonl>    import shared causal memory\n\
+         \x20 wiki [--out dir] [--format obsidian|html]  export as vault/HTML graph\n\
+         \n\
+         Benchmarks:\n\
+         \x20 bench-compaction       compaction-degradation bench\n\
+         \x20 bench-agent            ablation with/without causal memory\n\
+         \x20 bench-tokens           token-efficiency benchmark\n\
+         \n\
+         DB: $CAUSAL_MEMORY_DB, default ~/.local/share/causal-memory/causal.db"
+    );
 }
 
 /// LLM-distill session file(s) into all memory layers (unified-memory-design

@@ -16,8 +16,9 @@ else
 CARGO := cargo
 endif
 
-.PHONY: all build release test test-all check fmt fmt-check lint clippy \
-        bench run-cli py-dev py-build py-test clean help
+.PHONY: all build release install uninstall test test-all check fmt fmt-check lint clippy \
+        bench bench-locomo bench-longmemeval bench-memora bench-memory \
+        bench-causal-eval run-cli py-dev py-build py-test clean help
 
 all: build ## Default: debug build of the Rust crates
 
@@ -26,6 +27,20 @@ build: ## Debug build (default workspace members)
 
 release: ## Release build (default workspace members)
 	$(CARGO) build --release
+
+# Install the release binaries onto PATH (default ~/.local/bin, which is on
+# PATH in this shell; override with `make install PREFIX=/usr/local`).
+PREFIX ?= $(HOME)/.local
+BINS ?= causal-memory
+
+install: release ## Release build, then copy BINS into $(PREFIX)/bin (on PATH)
+	@mkdir -p $(PREFIX)/bin
+	for b in $(BINS); do \
+		cp target/release/$$b $(PREFIX)/bin/$$b && echo "installed $(PREFIX)/bin/$$b"; \
+	done
+
+uninstall: ## Remove BINS from $(PREFIX)/bin
+	for b in $(BINS); do rm -f $(PREFIX)/bin/$$b && echo "removed $(PREFIX)/bin/$$b"; done
 
 test: ## Run tests for the whole workspace (dev linking incl. py crate)
 	$(CARGO) test --workspace
@@ -46,8 +61,33 @@ lint: clippy ## Alias for clippy
 clippy: ## Run clippy with workspace lints
 	$(CARGO) clippy --workspace --all-targets
 
-bench: ## Run benchmarks
-	$(CARGO) bench
+# The repo has no #[bench]/criterion targets — `cargo bench` would run
+# nothing. Benchmarks are harness binaries (declared as [[bin]] in
+# crates/causal-memory-cli/Cargo.toml pointing at benches/**/main.rs).
+# Only the retrieval micro-benchmark is self-contained; the eval harnesses
+# need an LLM key (DEEPSEEK_API_KEY + LOCOMO_LLM_API/LOCOMO_LLM_MODEL) and
+# their datasets under benches/<name>/data.
+# DB defaults to the standard causal-memory data location (the repo-root
+# causal.db is empty and only useful with DB=... pointing elsewhere).
+DB ?= $(HOME)/.local/share/causal-memory/causal.db
+
+bench: ## Retrieval micro-benchmark vs vector/keyword on DB=$(DB)
+	$(CARGO) run --release -p causal-memory-cli --bin causal-memory-bench -- $(DB)
+
+bench-locomo: ## LoCoMo eval harness (needs LLM key; pass ARGS="...")
+	$(CARGO) run --release -p causal-memory-cli --bin causal-memory-locomo -- $(ARGS)
+
+bench-longmemeval: ## LongMemEval harness (needs LLM key; pass ARGS="...")
+	$(CARGO) run --release -p causal-memory-cli --bin causal-memory-longmemeval -- $(ARGS)
+
+bench-memora: ## Memora harness (needs LLM key; pass ARGS="...")
+	$(CARGO) run --release -p causal-memory-cli --bin causal-memory-memora -- $(ARGS)
+
+bench-memory: ## Memory harness (needs LLM key; pass ARGS="...")
+	$(CARGO) run --release -p causal-memory-cli --bin causal-memory-bench-memory -- $(ARGS)
+
+bench-causal-eval: ## Causal-eval harness (needs LLM key; pass ARGS="...")
+	$(CARGO) run --release -p causal-memory-cli --bin causal-memory-causal-eval -- $(ARGS)
 
 run-cli: build ## Run the CLI binary (pass args via ARGS="...")
 	$(CARGO) run -p causal-memory-cli -- $(ARGS)
