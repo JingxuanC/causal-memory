@@ -374,8 +374,7 @@ pub fn retrieve_multi_pass(
     query: &str,
     plan: &QueryPlan,
     per_query_cap: usize,
-) -> Result<Vec<CausalEntry>> {
-    let base = store.search_causal_bm25(task_tag, query, per_query_cap)?;
+) -> Result<Vec<CausalEntry>> {    let base = store.search_causal_bm25(task_tag, query, per_query_cap)?;
     let mut seen: HashSet<i64> = HashSet::new();
     let mut merged: Vec<CausalEntry> = Vec::new();
     for e in base {
@@ -471,6 +470,34 @@ pub fn expand_session_chunks(
     Ok(out)
 }
 
+/// Layered quota (retrieval-scoring.md §4): distill episodes are compact
+/// paraphrases of the original turns. BM25's length normalization ranks a
+/// 30-token summary above the 176-394-token turn it summarizes (same
+/// term hits, shorter doc), and the summary's phrasing ("acquired...
+/// last month") tracks the question's phrasing more closely than the
+/// conversation's ("got...") — so episodes crowd original evidence out
+/// of top-k and dilute the prompt, while the answer's full context sits
+/// in the turn. Cap episodes at `max_episodes` of the merged pool;
+/// originals keep their rank order. Entries arrive rank-ordered, so the
+/// FIRST `max_episodes` episodes (highest-ranked) survive.
+pub fn apply_episode_quota(entries: Vec<CausalEntry>, max_episodes: usize) -> Vec<CausalEntry> {
+    if max_episodes == usize::MAX {
+        return entries;
+    }
+    let mut kept: Vec<CausalEntry> = Vec::with_capacity(entries.len());
+    let mut episodes = 0usize;
+    for e in entries {
+        if e.discovered_by == "distill" {
+            if episodes >= max_episodes {
+                continue;
+            }
+            episodes += 1;
+        }
+        kept.push(e);
+    }
+    kept
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,6 +524,64 @@ mod tests {
         assert!(looks_aggregation("How much did I spend on groceries?"));
         assert!(looks_aggregation("list all the concerts I attended"));
         assert!(looks_aggregation("What's the total number of plants?"));
+    }
+
+    #[test]
+    fn episode_quota_caps_paraphrases_keeps_original_order() {
+        let entry = |id: i64, by: &str| CausalEntry {
+            edge_id: id,
+            decision_id: format!("d{id}"),
+            decision_text: format!("text {id}"),
+            outcome_id: format!("o{id}"),
+            outcome_text: format!("out {id}"),
+            relation: "caused".into(),
+            confidence: 0.8,
+            task_tag: None,
+            event_time: 0,
+            valid_to: None,
+            access_count: 0,
+            last_accessed_at: None,
+            discovered_by: by.into(),
+            discovered_at: 0,
+            outcome_polarity: None,
+            superseded_by: None,
+        };
+        // Rank-ordered pool: 5 episodes above 5 originals (the §4 shape —
+        // BM25 length normalization floats the summaries).
+        let pool: Vec<CausalEntry> = (0..5)
+            .map(|i| entry(i, "distill"))
+            .chain((5..10).map(|i| entry(i, "temporal")))
+            .collect();
+
+        let capped = apply_episode_quota(pool, 3);
+        let episodes = capped.iter().filter(|e| e.discovered_by == "distill").count();
+        let originals = capped.iter().filter(|e| e.discovered_by == "temporal").count();
+        assert_eq!(episodes, 3, "episodes capped at the quota");
+        assert_eq!(originals, 5, "originals never dropped");
+        // Highest-ranked episodes survive (first 3 of 5), originals keep order.
+        assert!(capped.iter().take(3).all(|e| e.discovered_by == "distill"));
+        assert_eq!(
+            capped
+                .iter()
+                .filter(|e| e.discovered_by == "temporal")
+                .map(|e| e.edge_id)
+                .collect::<Vec<_>>(),
+            vec![5, 6, 7, 8, 9]
+        );
+
+        // All-original pool is untouched.
+        let originals_only: Vec<CausalEntry> = (0..4).map(|i| entry(i, "temporal")).collect();
+        let n = apply_episode_quota(originals_only, 3).len();
+        assert_eq!(n, 4);
+        // Quota of 0 drops every episode (pure-original mode).
+        assert_eq!(
+            apply_episode_quota(
+                vec![entry(0, "distill"), entry(1, "temporal")],
+                0
+            )
+            .len(),
+            1
+        );
     }
 
     #[test]

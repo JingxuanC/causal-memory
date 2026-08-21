@@ -643,6 +643,11 @@ fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize, mode: &str) -> Re
         topk,
     )?;
 
+    // Layered quota (retrieval-scoring.md §4): episodes are BM25-favored
+    // paraphrases that crowd original turns out of top-k — cap them at
+    // a third of the budget so primary evidence keeps its slots.
+    let merged = retrieval::apply_episode_quota(merged, topk / 3);
+
     // Full-coverage session expansion for aggregation shapes only (the P8
     // guard, now inferred from the question text instead of the dataset's
     // type label): full-session turns hurt precise/date questions.
@@ -792,16 +797,27 @@ fn retrieved_chunk_ids(entries: &[CausalEntry]) -> Vec<String> {
 fn memory_lines(entries: &[CausalEntry]) -> String {
     let mut seen = HashSet::new();
     let mut lines = Vec::new();
+    let mut episode_lines = Vec::new();
     for e in entries {
+        // Presentation order (retrieval-scoring.md §4): original turns
+        // carry the full evidence; distill episodes are paraphrases —
+        // render them AFTER the originals so the model meets primary
+        // evidence first and the compact summaries serve as a tail index.
+        let sink = if e.discovered_by == "distill" {
+            &mut episode_lines
+        } else {
+            &mut lines
+        };
         for (id, text) in [
             (&e.decision_id, &e.decision_text),
             (&e.outcome_id, &e.outcome_text),
         ] {
             if seen.insert(id.clone()) {
-                lines.push(format!("- {text}"));
+                sink.push(format!("- {text}"));
             }
         }
     }
+    lines.extend(episode_lines);
     lines.join("\n")
 }
 
