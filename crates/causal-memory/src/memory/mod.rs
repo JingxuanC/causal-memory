@@ -116,6 +116,7 @@ impl Memory {
                     replay_count: 0,
                     last_activated: 0,
                     task_tag,
+                    scope: None,
                 };
                 let from = graph.append_node(node(
                     &entry.decision_id,
@@ -155,6 +156,7 @@ impl Memory {
                     replay_count: 0,
                     last_activated: 0,
                     task_tag: None,
+                    scope: Some(scope.to_string()),
                 });
                 let fact_idx = graph.append_node(NodeData {
                     id: format!("fact:{fact_id}"),
@@ -164,6 +166,7 @@ impl Memory {
                     replay_count: 0,
                     last_activated: 0,
                     task_tag: Some(key.to_string()),
+                    scope: Some(scope.to_string()),
                 });
                 graph.add_patch_edge(scope_idx, fact_idx, Relation::Fact, confidence as f32);
                 graph.link_fact_node(fact_idx);

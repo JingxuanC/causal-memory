@@ -13,6 +13,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("caching".into()),
+                            scope: None,
             },
             NodeData {
                 id: "o1".into(),
@@ -22,6 +23,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("caching".into()),
+                            scope: None,
             },
             NodeData {
                 id: "d2".into(),
@@ -31,6 +33,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("concurrency".into()),
+                            scope: None,
             },
             NodeData {
                 id: "o2".into(),
@@ -40,6 +43,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("concurrency".into()),
+                            scope: None,
             },
             NodeData {
                 id: "d3".into(),
@@ -49,6 +53,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("concurrency".into()),
+                            scope: None,
             },
             NodeData {
                 id: "o3".into(),
@@ -58,6 +63,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("concurrency".into()),
+                            scope: None,
             },
         ];
         let edges = vec![
@@ -207,6 +213,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "b".into(),
@@ -216,6 +223,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "c".into(),
@@ -225,6 +233,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "w1".into(),
@@ -234,6 +243,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "w2".into(),
@@ -243,6 +253,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             // Padding nodes to reduce probability of w1 being a replay seed
             NodeData {
@@ -253,6 +264,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "p2".into(),
@@ -262,6 +274,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "p3".into(),
@@ -271,6 +284,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "p4".into(),
@@ -280,6 +294,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "p5".into(),
@@ -289,6 +304,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
         ];
         let _ = &mut nodes; // suppress unused mut warning
@@ -350,6 +366,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "b".into(),
@@ -359,6 +376,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
         ];
         let edges = vec![EdgeData {
@@ -438,6 +456,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "b".into(),
@@ -447,6 +466,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "c".into(),
@@ -456,6 +476,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "d".into(),
@@ -465,6 +486,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
         ];
         let edges = vec![
@@ -522,6 +544,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "b".into(),
@@ -531,6 +554,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "c".into(),
@@ -540,6 +564,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "d".into(),
@@ -549,6 +574,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
         ];
         // Input order: d→c first (valid), then a→b (invalid).
@@ -661,6 +687,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("test".into()),
+                            scope: None,
             })
             .collect();
         let edges = vec![
@@ -746,12 +773,14 @@ mod tests {
                 // recently activated → dormant=false
                 last_activated: chrono::Utc::now().timestamp(),
                 task_tag: Some("test".into()),
+                            scope: None,
             },
             NodeData {
                 id: "o1".into(), text: "weak outcome".into(),
                 event_time: 1001, q_value: 0.5, replay_count: 0,
                 last_activated: chrono::Utc::now().timestamp(),
                 task_tag: Some("test".into()),
+                            scope: None,
             },
         ];
         let edges = vec![EdgeData {
@@ -798,6 +827,7 @@ mod tests {
                 replay_count: 2,
                 last_activated: 100,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "crash".into(),
@@ -807,6 +837,7 @@ mod tests {
                 replay_count: 1,
                 last_activated: 100,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "safe".into(),
@@ -816,6 +847,7 @@ mod tests {
                 replay_count: 3,
                 last_activated: 100,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "rollback".into(),
@@ -825,6 +857,7 @@ mod tests {
                 replay_count: 2,
                 last_activated: 100,
                 task_tag: None,
+                            scope: None,
             },
         ];
         let edges = vec![
@@ -1017,6 +1050,7 @@ mod tests {
             replay_count: 0,
             last_activated: 0,
             task_tag: None,
+            scope: None,
         }];
         let graph = CausalGraph::build(&nodes, &[]);
         let mut graph = graph;
@@ -1070,6 +1104,66 @@ mod tests {
             )
             .expect("record fact");
         store
+    }
+
+    #[test]
+    fn test_entity_link_scope_isolation() {
+        // Phase A hardening: a fact with a colon-namespaced scope
+        // ("lme:{qid}") links ONLY to chunks whose task_tag matches the
+        // scope suffix - 500-question corpora share one store, and
+        // cross-question links would pollute isolation and explode the
+        // graph. Canonical scopes (user/session/agent) keep the all-chunk
+        // behavior for single-agent stores.
+        let node = |id: &str, text: &str, tag: Option<&str>, scope: Option<&str>| NodeData {
+            id: id.into(),
+            text: text.into(),
+            event_time: 0,
+            q_value: 0.5,
+            replay_count: 0,
+            last_activated: 0,
+            task_tag: tag.map(str::to_string),
+            scope: scope.map(str::to_string),
+        };
+        // fact in scope lme:q1 shares tokens with d1 (task q1) AND d2 (q2).
+        let nodes = vec![
+            node("fact:1", "migrated build tooling to TypeScript for scripts", None, Some("lme:q1")),
+            node("d1", "rewrote build scripts using TypeScript", Some("q1"), None),
+            node("d2", "switched project to TypeScript", Some("q2"), None),
+        ];
+        let edges = crate::hippocampus::entity_link_facts(&nodes, &[0]);
+        let linked: Vec<&str> = edges.iter().map(|e| e.to_id.as_str()).collect();
+        assert!(
+            linked.iter().any(|t| *t == "d1"),
+            "in-scope chunk must link: {linked:?}"
+        );
+        assert!(
+            !linked.iter().any(|t| *t == "d2"),
+            "cross-scope chunk must NOT link (lme:q1 vs task q2): {linked:?}"
+        );
+
+        // Canonical scope: links to all chunks (single-agent store).
+        let nodes = vec![
+            node("fact:2", "migrated build tooling to TypeScript for scripts", None, Some("user")),
+            node("d3", "rewrote build scripts using TypeScript", Some("dev"), None),
+            node("d4", "fixed build scripts for TypeScript builds", Some("ops"), None),
+        ];
+        let edges = crate::hippocampus::entity_link_facts(&nodes, &[0]);
+        let linked: Vec<&str> = edges.iter().map(|e| e.to_id.as_str()).collect();
+        assert!(
+            linked.iter().any(|t| *t == "d3") && linked.iter().any(|t| *t == "d4"),
+            "canonical scope must link across task_tags: {linked:?}"
+        );
+
+        // Link stopwords: a fact sharing only generic tokens must not link.
+        let nodes = vec![
+            node("fact:3", "user project code issue", None, Some("user")),
+            node("d5", "the user fixed a project code issue", Some("dev"), None),
+        ];
+        let edges = crate::hippocampus::entity_link_facts(&nodes, &[0]);
+        assert!(
+            edges.is_empty(),
+            "generic-only tokens must not drive a link: {edges:?}"
+        );
     }
 
     #[test]
@@ -1188,6 +1282,7 @@ mod tests {
             replay_count: 0,
             last_activated: 0,
             task_tag: None,
+            scope: None,
         };
         let nodes = vec![
             node("d1", "configured zsh zsh plugins"),
@@ -1223,6 +1318,7 @@ mod tests {
             replay_count: 0,
             last_activated: 0,
             task_tag: None,
+            scope: None,
         }
     }
 

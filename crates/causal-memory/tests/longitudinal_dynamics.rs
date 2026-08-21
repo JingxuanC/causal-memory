@@ -22,6 +22,7 @@ fn mk(id: &str, text: &str) -> NodeData {
         replay_count: 0,
         last_activated: 0,
         task_tag: None,
+        scope: None,
     }
 }
 
@@ -458,6 +459,7 @@ fn novelty_entropy_triggers_consolidation_correctly() {
             replay_count: (i % 64) as u16, // diverse: 0,1,2,...,63,0,1,...
             last_activated: 0,
             task_tag: None,
+            scope: None,
         });
     }
     let graph_diverse = CausalGraph::build(&nodes_diverse, &[]);

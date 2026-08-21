@@ -1390,6 +1390,7 @@ impl CausalGraph {
                     replay_count: 0,
                     last_activated: 0,
                     task_tag: None,
+                    scope: None,
                 });
             }
 
@@ -1472,6 +1473,7 @@ impl CausalGraph {
                         replay_count: 0,
                         last_activated: 0,
                         task_tag: None,
+                        scope: Some(scope.clone()),
                     });
                 }
                 fact_indices.push(nodes.len());
@@ -1484,6 +1486,7 @@ impl CausalGraph {
                     replay_count: 0,
                     last_activated: 0,
                     task_tag: Some(key.clone()),
+                    scope: Some(scope.clone()),
                 });
                 edges.push(EdgeData {
                     from_id: scope_node_id,
@@ -1575,8 +1578,34 @@ impl CausalGraph {
 /// token→chunk index keeps this O(total tokens) instead of
 /// O(facts × chunks).
 ///
+/// Scope isolation (Phase A hardening, 2026-08-21): a fact with a
+/// colon-namespaced scope ("lme:{qid}", "tenant:acme") links ONLY to
+/// chunks whose task_tag matches the scope suffix — 500-question corpora
+/// share one store, and cross-question links would both pollute the
+/// isolation boundary and explode the graph (48万 nodes, up to 144万
+/// spurious edges). Canonical scopes (user/session/agent, the
+/// single-agent store) keep the original all-chunk behavior so real
+/// memory stays connected. Link tokens that are too generic to be
+/// discriminative are skipped (retrieval stopwords are separate).
+///
 /// Pure function over node data — unit-testable without a store.
 fn entity_link_facts(nodes: &[NodeData], fact_indices: &[usize]) -> Vec<EdgeData> {
+    // Tokens too generic to drive a fact↔chunk link (a fact sharing only
+    // "user"+"project" with a chunk is not a semantic connection).
+    const LINK_STOPWORDS: &[&str] = &[
+        "user", "project", "code", "build", "using", "used", "want", "like",
+        "get", "got", "make", "made", "need", "way", "work", "worked",
+        "thing", "stuff", "issue", "problem", "fix", "fixed", "use", "went",
+    ];
+    // Colon-namespaced fact scope → strict chunk-task_tag isolation.
+    fn scope_matches(fact_scope: Option<&str>, chunk_tag: Option<&str>) -> bool {
+        match fact_scope {
+            Some(s) if s.contains(':') => chunk_tag
+                .map(|t| t == s.rsplit(':').next().unwrap_or(s))
+                .unwrap_or(false),
+            _ => true, // canonical scope / no scope: single-agent store
+        }
+    }
     // Inverted token → chunk index. Posting lists are deduped at build
     // time (a chunk whose text repeats a token appears once per token), so
     // the overlap count below is the number of DISTINCT shared tokens —
@@ -1596,16 +1625,26 @@ fn entity_link_facts(nodes: &[NodeData], fact_indices: &[usize]) -> Vec<EdgeData
 
     let mut edges = Vec::new();
     for &fi in fact_indices {
-        let fact_id = nodes[fi].id.clone();
+        let fact = &nodes[fi];
+        let fact_id = fact.id.clone();
         let fact_tokens: std::collections::HashSet<String> =
-            crate::patterns::tokenize(&nodes[fi].text).into_iter().collect();
+            crate::patterns::tokenize(&fact.text)
+                .into_iter()
+                .filter(|t| !LINK_STOPWORDS.contains(&t.as_str()))
+                .collect();
+        if fact_tokens.is_empty() {
+            continue;
+        }
 
-        // Distinct-shared-token count per chunk (chunk idx → overlap).
+        // Distinct-shared-token count per in-scope chunk (idx → overlap).
         let mut overlap: std::collections::HashMap<usize, usize> =
             std::collections::HashMap::new();
         for tok in &fact_tokens {
             if let Some(chunks) = token_to_chunks.get(tok) {
                 for &ci in chunks {
+                    if !scope_matches(fact.scope.as_deref(), nodes[ci].task_tag.as_deref()) {
+                        continue;
+                    }
                     *overlap.entry(ci).or_insert(0) += 1;
                 }
             }
