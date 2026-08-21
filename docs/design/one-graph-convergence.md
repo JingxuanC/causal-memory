@@ -32,8 +32,9 @@ SQLite（真相源, 压缩免疫 P5）               内存 CausalGraph（查询
 ### Phase A — fact 入图（逻辑一等公民）✅ shipped 2026-08-20
 
 > 落地说明：节点装载与 `Fact=0.8` 传播系数此前已随 P1 存在；本次补齐的是**实体链接**与
-> **record_fact 标脏**。链接为确定性 token 重叠（`patterns::tokenize`，交集 ≥2 才建边，
-> 双向、每 fact 上限 8 条、倒排索引 O(total tokens)），权重 `0.3+0.1·overlap`（cap 0.8）。
+> **record_fact 标脏**。链接为确定性 token 重叠（`patterns::tokenize`，交集 ≥3 distinct
+> 非停用词才建边 + df≤20 过滤高频泛词（2026-08-26 精度修正）；双向、每 fact 上限 8 条、
+> 倒排索引 O(total tokens)），权重 `0.3+0.1·overlap`（cap 0.8）。
 > 偏差：key→value 自链未做——fact 节点文本本身即 `{key}: {value}`，链接直接作用于全文。
 > 验证：4 个新单测（扩散同时含事实与因果链节点 / fact 种子到达因果链 / 单 token 不建边 /
 > record_fact 标脏可见性），workspace 347/347，clippy 零新增。
@@ -146,7 +147,7 @@ Phase A（fact 入图）→ Phase B（统一引擎）→ Phase C（增量生命�
 
 | 风险 | 护栏 |
 |---|---|
-| fact 实体链接假阳性污染扩散 | 阈值保守 + 只建高置信边；Phase A 可先只连 token 交集 ≥2 的 |
+| fact 实体链接假阳性污染扩散 | 阈值保守 + 只建高置信边：≥3 distinct 非停用词 + df≤20 过滤（实测精度 17%→33% 严格 / 29%→75% 宽松，链接 9,764→3,116） |
 | 图变大影响懒重建延迟 | 全量重建本来就是 O(V+E)；增量修补（Phase C）进一步摊薄 |
 | search_memory 行为漂移 | Phase B 保留 RRF fallback + 20 条人工对比 + LongMemEval 回归 |
 | 事实取代语义被误伤 | 软取代（superseded_by 标注）不隐藏，检索可见 + 版本标注 |

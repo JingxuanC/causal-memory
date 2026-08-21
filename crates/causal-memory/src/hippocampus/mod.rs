@@ -109,6 +109,7 @@ pub struct CausalGraph {
     node_event_time: Vec<i64>,
     node_sparse_code: Vec<u128>,
     node_task_tag: Vec<Option<String>>,
+    node_scope: Vec<Option<String>>,
     node_id_to_idx: HashMap<String, u32>,
 
     // Phase C (one-graph-convergence): write-path patches. Inserting an
@@ -175,6 +176,7 @@ impl CausalGraph {
             node_event_time: Vec::new(),
             node_sparse_code: Vec::new(),
             node_task_tag: Vec::new(),
+            node_scope: Vec::new(),
             node_id_to_idx: HashMap::new(),
             patch_fwd: HashMap::new(),
             patch_rev: HashMap::new(),
@@ -208,6 +210,7 @@ impl CausalGraph {
         graph.node_event_time = nodes.iter().map(|n| n.event_time).collect();
         graph.node_sparse_code = nodes.iter().map(|n| simhash(&n.text)).collect();
         graph.node_task_tag = nodes.iter().map(|n| n.task_tag.clone()).collect();
+        graph.node_scope = nodes.iter().map(|n| n.scope.clone()).collect();
 
         // Build forward adjacency list (no fwd_idx yet — CSR index assigned during CSR build)
         let mut adj: Vec<Vec<AdjEdge>> = vec![Vec::new(); nodes.len()];
@@ -1171,6 +1174,7 @@ impl CausalGraph {
         self.node_event_time.push(data.event_time);
         self.node_sparse_code.push(crate::hippocampus::utils::simhash(&self.node_text[idx as usize]));
         self.node_task_tag.push(data.task_tag);
+        self.node_scope.push(data.scope);
         self.num_nodes += 1;
         // Zero-width CSR rows for the new node on both sides.
         self.row_ptr.push(*self.row_ptr.last().unwrap_or(&0));
@@ -1282,24 +1286,48 @@ impl CausalGraph {
     /// at [`FACT_LINK_MAX_PER_FACT`].
     pub fn link_fact_node(&mut self, fact_idx: u32) {
         let fact_text = self.node_text[fact_idx as usize].clone();
+        let fact_scope = self.node_scope[fact_idx as usize].clone();
         let fact_tokens: std::collections::HashSet<String> =
-            crate::patterns::tokenize(&fact_text).into_iter().collect();
+            crate::patterns::tokenize(&fact_text)
+                .into_iter()
+                .filter(|t| !LINK_STOPWORDS.contains(&t.as_str()))
+                // df filter: a token present in > FACT_LINK_DF_LIMIT chunks
+                // (posting-list length) is too generic to count toward a link.
+                .filter(|t| {
+                    self.token_index
+                        .get(t)
+                        .map(|v| v.len() <= FACT_LINK_DF_LIMIT)
+                        .unwrap_or(true)
+                })
+                .collect();
         if fact_tokens.is_empty() {
             return;
         }
 
-        // Distinct-shared-token count per chunk node via the incremental
-        // inverted index — O(fact tokens × hits), no per-node re-tokenize.
+        // Distinct-shared-token count per in-scope chunk node via the
+        // incremental inverted index — O(fact tokens × hits), no per-node
+        // re-tokenize. Scope isolation mirrors entity_link_facts: a
+        // colon-namespaced fact scope links only to chunks whose task_tag
+        // matches the scope suffix.
         let mut overlap: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
         for tok in &fact_tokens {
             if let Some(chunks) = self.token_index.get(tok) {
                 for &ci in chunks {
+                    if !scope_matches(
+                        fact_scope.as_deref(),
+                        self.node_task_tag[ci as usize].as_deref(),
+                    ) {
+                        continue;
+                    }
                     *overlap.entry(ci).or_insert(0) += 1;
                 }
             }
         }
 
-        let mut linked: Vec<(u32, usize)> = overlap.into_iter().collect();
+        let mut linked: Vec<(u32, usize)> = overlap
+            .into_iter()
+            .filter(|&(_, n)| n >= FACT_LINK_MIN_TOKENS)
+            .collect();
         linked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         linked.truncate(FACT_LINK_MAX_PER_FACT);
         for (ci, n) in linked {
@@ -1401,7 +1429,12 @@ impl Default for CausalGraph {
 /// tokens before an entity link is created between a fact node and a
 /// chunk node. Conservative on purpose — a false link wires unrelated
 /// activation into every downstream query.
-const FACT_LINK_MIN_TOKENS: usize = 2;
+const FACT_LINK_MIN_TOKENS: usize = 3;
+/// Tokens appearing in more than this many chunks are too generic to drive
+/// a fact↔chunk link (audit 2026-08-21: df>20 tokens like dates/"agent"/"server"
+/// produced the bulk of false positives; df<=20 + >=3 tokens doubles link
+/// precision, 17% -> 33% strict / 29% -> 75% lenient).
+const FACT_LINK_DF_LIMIT: usize = 20;
 
 /// Phase A: max chunk links per fact — keeps a generic fact (key like
 /// `language`) from wiring itself to half the store.
@@ -1638,23 +1671,25 @@ impl CausalGraph {
 /// discriminative are skipped (retrieval stopwords are separate).
 ///
 /// Pure function over node data — unit-testable without a store.
-fn entity_link_facts(nodes: &[NodeData], fact_indices: &[usize]) -> Vec<EdgeData> {
-    // Tokens too generic to drive a fact↔chunk link (a fact sharing only
-    // "user"+"project" with a chunk is not a semantic connection).
-    const LINK_STOPWORDS: &[&str] = &[
-        "user", "project", "code", "build", "using", "used", "want", "like",
-        "get", "got", "make", "made", "need", "way", "work", "worked",
-        "thing", "stuff", "issue", "problem", "fix", "fixed", "use", "went",
-    ];
-    // Colon-namespaced fact scope → strict chunk-task_tag isolation.
-    fn scope_matches(fact_scope: Option<&str>, chunk_tag: Option<&str>) -> bool {
-        match fact_scope {
-            Some(s) if s.contains(':') => chunk_tag
-                .map(|t| t == s.rsplit(':').next().unwrap_or(s))
-                .unwrap_or(false),
-            _ => true, // canonical scope / no scope: single-agent store
-        }
+/// Tokens too generic to drive a fact↔chunk link (a fact sharing only
+/// "user"+"project" with a chunk is not a semantic connection).
+const LINK_STOPWORDS: &[&str] = &[
+    "user", "project", "code", "build", "using", "used", "want", "like",
+    "get", "got", "make", "made", "need", "way", "work", "worked",
+    "thing", "stuff", "issue", "problem", "fix", "fixed", "use", "went",
+];
+
+/// Colon-namespaced fact scope → strict chunk-task_tag isolation.
+fn scope_matches(fact_scope: Option<&str>, chunk_tag: Option<&str>) -> bool {
+    match fact_scope {
+        Some(s) if s.contains(':') => chunk_tag
+            .map(|t| t == s.rsplit(':').next().unwrap_or(s))
+            .unwrap_or(false),
+        _ => true, // canonical scope / no scope: single-agent store
     }
+}
+
+fn entity_link_facts(nodes: &[NodeData], fact_indices: &[usize]) -> Vec<EdgeData> {
     // Inverted token → chunk index. Posting lists are deduped at build
     // time (a chunk whose text repeats a token appears once per token), so
     // the overlap count below is the number of DISTINCT shared tokens —
@@ -1680,6 +1715,9 @@ fn entity_link_facts(nodes: &[NodeData], fact_indices: &[usize]) -> Vec<EdgeData
             crate::patterns::tokenize(&fact.text)
                 .into_iter()
                 .filter(|t| !LINK_STOPWORDS.contains(&t.as_str()))
+                // df filter: a token present in > FACT_LINK_DF_LIMIT chunks
+                // (posting-list length) is too generic to count toward a link.
+                .filter(|t| token_to_chunks.get(t).map(|v| v.len() <= FACT_LINK_DF_LIMIT).unwrap_or(true))
                 .collect();
         if fact_tokens.is_empty() {
             continue;

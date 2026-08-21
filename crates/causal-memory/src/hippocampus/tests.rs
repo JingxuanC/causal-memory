@@ -1075,8 +1075,9 @@ mod tests {
 
     // ─── Phase A: fact entity linking (one-graph-convergence) ────────────
 
-    /// Store fixture: one causal edge plus one fact sharing exactly two
-    /// tokens ({module, typescript}) — enough for an entity link.
+    /// Store fixture: one causal edge plus one fact sharing three
+    /// distinct non-stopword tokens ({module, typescript, rewrites}) —
+    /// enough for an entity link.
     #[allow(
         clippy::expect_used,
         reason = "test fixture: panicking on setup failure is the desired behavior"
@@ -1085,7 +1086,7 @@ mod tests {
         let store = crate::store::CausalStore::open_in_memory().expect("in-memory store");
         store
             .record_decision_at(
-                "rewrote module in TypeScript",
+                "rewrote module in TypeScript and planned rewrites",
                 "compile errors dropped",
                 "caused",
                 Some("rust"),
@@ -1127,7 +1128,7 @@ mod tests {
         // fact in scope lme:q1 shares tokens with d1 (task q1) AND d2 (q2).
         let nodes = vec![
             node("fact:1", "migrated build tooling to TypeScript for scripts", None, Some("lme:q1")),
-            node("d1", "rewrote build scripts using TypeScript", Some("q1"), None),
+            node("d1", "rewrote build scripts using TypeScript tooling", Some("q1"), None),
             node("d2", "switched project to TypeScript", Some("q2"), None),
         ];
         let edges = crate::hippocampus::entity_link_facts(&nodes, &[0]);
@@ -1144,8 +1145,8 @@ mod tests {
         // Canonical scope: links to all chunks (single-agent store).
         let nodes = vec![
             node("fact:2", "migrated build tooling to TypeScript for scripts", None, Some("user")),
-            node("d3", "rewrote build scripts using TypeScript", Some("dev"), None),
-            node("d4", "fixed build scripts for TypeScript builds", Some("ops"), None),
+            node("d3", "rewrote build scripts using TypeScript tooling", Some("dev"), None),
+            node("d4", "fixed build scripts for TypeScript tooling", Some("ops"), None),
         ];
         let edges = crate::hippocampus::entity_link_facts(&nodes, &[0]);
         let linked: Vec<&str> = edges.iter().map(|e| e.to_id.as_str()).collect();
@@ -1211,10 +1212,11 @@ mod tests {
         clippy::expect_used,
         reason = "test invariant: store/graph construction must succeed or the test is meaningless"
     )]
-    fn test_fact_entity_link_requires_two_shared_tokens() {
+    fn test_fact_entity_link_requires_min_shared_tokens() {
         let store = crate::store::CausalStore::open_in_memory().expect("in-memory store");
         // Only ONE shared token per pair ({zsh}, {shell}) — below the
-        // conservative threshold, no link may be created.
+        // conservative ≥3 distinct non-stopword threshold, no link may be
+        // created.
         store
             .record_decision_at(
                 "configured zsh plugins",
@@ -1273,7 +1275,7 @@ mod tests {
     fn test_entity_link_counts_distinct_tokens_only() {
         // The chunk text REPEATS "zsh" — without posting-list dedup a
         // single distinct shared token would count as overlap 2 and
-        // wrongly link below the documented "≥ 2 distinct tokens" bar.
+        // wrongly link below the documented "≥ 3 distinct tokens" bar.
         let node = |id: &str, text: &str| NodeData {
             id: id.into(),
             text: text.into(),
@@ -1296,14 +1298,14 @@ mod tests {
 
         // Control: a second distinct shared token does link, bidirectionally.
         let nodes = vec![
-            node("d1", "configured zsh zsh plugins for setup"),
+            node("d1", "configured zsh zsh plugins for setup completion"),
             node("fact:1", "shell: zsh completion setup"),
         ];
         let edges = crate::hippocampus::entity_link_facts(&nodes, &[1]);
         assert_eq!(
             edges.len(),
             2,
-            "two distinct tokens (zsh, setup) link both ways"
+            "three distinct tokens (zsh, setup, completion) link both ways"
         );
     }
 
@@ -1479,12 +1481,12 @@ mod tests {
     )]
     fn test_link_fact_node_uses_token_index_and_survives_rebuild() {
         // Same thresholds as entity_link_facts, driven through the
-        // incremental index path: two shared tokens link, one doesn't —
+        // incremental index path: three shared tokens link, fewer don't —
         // and identical behavior whether the graph was built from scratch
         // (index populated by build) or grown by appends.
         let mut graph = CausalGraph::build(
             &[
-                node("d1", "configured zsh plugins for setup"),
+                node("d1", "configured zsh plugins for setup completion"),
                 node("d2", "unrelated work on the database"),
             ],
             &[],
@@ -1492,7 +1494,7 @@ mod tests {
         let f1 = graph.append_node(node("fact:1", "shell: zsh completion setup"));
         graph.link_fact_node(f1);
         let fwd = graph.patch_fwd.get(&f1).expect("fact has links");
-        assert_eq!(fwd.len(), 1, "two shared tokens (zsh, setup) → one chunk: {fwd:?}");
+        assert_eq!(fwd.len(), 1, "three shared tokens (zsh, setup, completion) → one chunk: {fwd:?}");
         assert_eq!(fwd[0].other, 0, "links to d1, not the unrelated d2");
     }
     #[test]
@@ -1528,9 +1530,9 @@ mod tests {
         // (component structure stays per-question; spreading from q1 must
         // never surface q2 content).
         let store = CausalStore::open_in_memory().unwrap();
-        store.record_decision("used redis for caching", "caching worked", "caused", Some("q1"), 0.8, "rule").unwrap();
+        store.record_decision("used redis for caching data", "caching worked", "caused", Some("q1"), 0.8, "rule").unwrap();
         store.record_decision("used channels in go", "race fixed", "caused", Some("q2"), 0.8, "rule").unwrap();
-        store.record_fact("preference", "prefers redis caching", "lme:q1", "eval", 0.9).unwrap();
+        store.record_fact("preference", "prefers redis caching data", "lme:q1", "eval", 0.9).unwrap();
         store.record_fact("preference", "prefers channels in go code", "lme:q2", "eval", 0.9).unwrap();
 
         let mut graph = CausalGraph::from_store(&store).unwrap();

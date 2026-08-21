@@ -50,6 +50,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   archived as `benches/causal_eval/results_phaseCD_20260820.jsonl`.
 
 ### Fixed
+- **Fact↔chunk link precision (entity-link false positives)**: the
+  rebuild-time (`entity_link_facts`) and incremental (`link_fact_node`)
+  linkers now share one policy — ≥3 **distinct non-stopword** shared
+  tokens plus a df filter (tokens present in >20 chunks don't count),
+  replacing the ≥2-token bar; `link_fact_node` also gained the stopword,
+  df, and scope-isolation filters it previously lacked (write-path and
+  rebuild now agree). Real-DB audit: sampled link precision 17%→33%
+  (strict) / 29%→75% (lenient); fact links 9,764→3,116 (−68%, ~2.2/fact);
+  graph 21,151→7,857 valid edges, 17→29 components (isolation restored).
 - **Date-math questions misrouted into the aggregation pipeline**
   (retrieval quality): `looks_aggregation`'s "how many" phrase matched
   "How many days ago did I buy a smoker?" — a date-ARITHMETIC question
