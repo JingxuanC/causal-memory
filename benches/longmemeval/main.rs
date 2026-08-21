@@ -736,6 +736,12 @@ fn hippocampus_boost(
     // so the FULL question sentence matches no node text and the spread
     // would be empty. Entity words (e.g. "rollercoasters") hit chunk texts.
     let entities = retrieval::extract_entities(&q.question);
+    // Injection budget: cap total [spreading] lines per question. The
+    // dose-response ablation (multi-session 133q) peaked at ~106 lines/q
+    // (+5 vs baseline): counting questions need the associative tail's
+    // cross-session evidence; 20 lines/q cut it (+2) and 250 unscoped
+    // inverted to -3. 100 balances coverage vs dilution.
+    let mut budget: usize = 100;
     for ent in entities.iter().take(5) {
         if ent.chars().count() < 3 {
             continue;
@@ -757,6 +763,10 @@ fn hippocampus_boost(
             if seen.iter().any(|e| e.contains(&snippet)) {
                 continue;
             }
+            if budget == 0 {
+                continue;
+            }
+            budget -= 1;
             seen.insert(snippet.to_lowercase());
             extra.push(format!("- [spreading] {}", r.text));
         }

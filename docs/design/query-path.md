@@ -95,9 +95,17 @@ RRF 融合    ：RRF_K=60，layer-prefixed key（fact:{id} / causal:{edge_id} / 
 
 - **图可能落后于 store**（崩溃/未重建）：`ensure_fresh_for` 在 seed-miss 时立即重建，
   保证图引擎服务的结果不弱于 store 直查；懒重建是最终兜底。
-- **bench 检索默认不用图**：`benches/longmemeval/main.rs` 的 hippocampus_boost 是 env-gated
-  （默认关）——实体链接/图对 LongMemEval 分数的贡献**还没有被基准直接度量**，
-  现有 0.9.0 的 A/B 数字是在纯 store 路径上测的。
+- **图 boost 消融已度量（2026-08-21，multi-session 133 题 × deepseek-chat × v2）**：
+  env-gated 的 hippocampus_boost 修好三处死代码后（!with_facts 提前返回吞掉 boost 块 /
+  整句播种永远空 / 去重条件 snippet.contains(e) 滤掉一切），剂量-响应曲线为：
+  基线 0 行 42.9% → 20 行 44.4% → **106 行/题 46.6%（+3.8pp，峰值）** → 250 行未隔离 40.6%。
+  两个决定性变量：**scope 隔离**（Some(&q.question_id) 一行让 -3 翻到 +5，与 da15204
+  的链接侧隔离同一原则）和**证据覆盖 vs 稀释的平衡**（计数题需要关联尾部的跨 session 证据，
+  不是越少越干净）。剩余噪音的根因在图结构而非传播算法：raw ingest 图的 120,527 条边
+  全是 temporal 轮次链（对话转写顺序，0 个 fact 节点）——在其上扩散 ≈ 顺读对话，
+  与 BM25 检索高度冗余。真正的语义边（fact 节点 + entity_link_facts + 蒸馏边）只在
+  distill 模式存在（历史 8/4 全量：raw 63.6% vs distill 71.2%，+7.6pp 来自事实层 prompt，
+  未叠加图 boost）。
 - **实测基线**（2026-08-26，真实库）：图 1832 节点 / 7857 有效边 / 29 分量 / 最大 1777；
   统一引擎 seed 上限 16，扩散单次 O(种子 × 度 × 跳数)，物化 2~3 次点查。
 
