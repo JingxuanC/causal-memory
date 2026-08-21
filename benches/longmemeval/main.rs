@@ -730,14 +730,30 @@ fn hippocampus_boost(
     };
     // Clone for read-only activation (avoids Hebbian side effects + lifetime).
     let mut g = graph.clone();
-    let results = g.spreading_activation_opts(&q.question, None, false, false);
     let mut extra = Vec::new();
-    for r in results.iter().take(20) {
-        let snippet = if r.text.len() > 50 { &r.text[..50] } else { &r.text };
-        if !existing_texts
-            .iter()
-            .any(|e| e.contains(snippet) || snippet.contains(e.as_str()))
-        {
+    let mut seen = existing_texts.clone();
+    // Seed with extracted entities: find_seeds does substring matching,
+    // so the FULL question sentence matches no node text and the spread
+    // would be empty. Entity words (e.g. "rollercoasters") hit chunk texts.
+    let entities = retrieval::extract_entities(&q.question);
+    for ent in entities.iter().take(5) {
+        if ent.chars().count() < 3 {
+            continue;
+        }
+        let results = g.spreading_activation_opts(ent, None, false, false);
+        // take(50): seeds themselves rank highest, so the first few are
+        // already in retrieval; the associative tail is further down.
+        for r in results.iter().take(50) {
+            // Char-safe 50-char prefix: byte slicing panics on multi-byte
+            // chars (chunk texts contain emoji, CJK, ...).
+            let snippet: String = r.text.chars().take(50).collect();
+            // Dedup ONLY on a shared long prefix with an existing line: the
+            // old `snippet.contains(e)` dropped everything because short
+            // memory lines (e.g. "- user: hi") are substrings of any hit.
+            if seen.iter().any(|e| e.contains(&snippet)) {
+                continue;
+            }
+            seen.insert(snippet.to_lowercase());
             extra.push(format!("- [spreading] {}", r.text));
         }
     }
@@ -1425,8 +1441,28 @@ fn render_memories(
     aggregation: bool,
     topk: usize,
 ) -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    // Hippocampus spreading activation - associative hits BM25 missed. Its
+    // value is in the agent ablation bench; guarded by env. Runs BEFORE the
+    // with_facts branch so the ablation is exercisable in raw mode too
+    // (previously gated behind distill-only fact rendering, i.e. dead code
+    // under --ingest raw).
+    if std::env::var("CAUSAL_MEMORY_HIPPOCAMPUS_BENCH").is_ok() {
+        let existing: HashSet<String> = memory_lines(entries)
+            .lines()
+            .map(|l| l.trim_start_matches("- ").to_lowercase())
+            .collect();
+        let hippo_extra = hippocampus_boost(graph.as_ref(), q, &existing);
+        if !hippo_extra.is_empty() {
+            lines.push("[associative memory]".to_string());
+            lines.extend(hippo_extra);
+        }
+    }
+
     if !with_facts {
-        return memory_lines(entries);
+        lines.push(memory_lines(entries));
+        return lines.join("\n");
     }
     let fact_scope = format!("lme:{}", q.question_id);
     // Aggregation shapes need ALL matching facts, not top-k: counting asks
@@ -1457,20 +1493,6 @@ fn render_memories(
     let causal = memory_lines(entries);
     if !causal.is_empty() {
         lines.push(causal);
-    }
-
-    // Hippocampus spreading activation — associative hits BM25 missed. Its
-    // value is in the agent ablation bench; kept wired but guarded by env.
-    if std::env::var("CAUSAL_MEMORY_HIPPOCAMPUS_BENCH").is_ok() {
-        let existing: HashSet<String> = lines
-            .iter()
-            .map(|l| l.trim_start_matches("- ").to_lowercase())
-            .collect();
-        let hippo_extra = hippocampus_boost(graph.as_ref(), q, &existing);
-        if !hippo_extra.is_empty() {
-            lines.push("[associative memory]".to_string());
-            lines.extend(hippo_extra);
-        }
     }
     lines.join("\n")
 }
