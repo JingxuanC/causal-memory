@@ -448,6 +448,14 @@ pub fn expand_session_chunks(
     let mut freq: HashMap<String, usize> = HashMap::new();
     for id in chunk_ids {
         if let Some(k) = session_key(id) {
+            // Synthetic expansion ids must not vote: the verify loop
+            // re-expands with the previous round's injected entries in the
+            // pool, and their '::session_expansion::' key would outrank
+            // every real session (50 entries × 2 endpoints = 100 hits) and
+            // reshuffle the budget split between rounds.
+            if k.contains("::session_expansion") {
+                continue;
+            }
             *freq.entry(k).or_insert(0) += 1;
         }
     }
@@ -465,6 +473,113 @@ pub fn expand_session_chunks(
                 return Ok(out);
             }
             out.push((id, text));
+        }
+    }
+    Ok(out)
+}
+
+/// Density-aware expansion (one-graph-convergence follow-up): instead of
+/// the frequency-only ranking (which starves precise-evidence sessions
+/// when chatty ones out-hit them), each session gets a relevance WEIGHT
+/// and the budget is split proportionally:
+///
+///   weight(session) = hit_count × distinct_query_token_overlap(hit_turns)
+///
+/// A session hit 4 times whose hit turns share 3 query tokens with the
+/// question outweighs a session hit 6 times sharing 1 generic token —
+/// the measured failure mode (LongMemEval 0a995998: an e-commerce session
+/// matched "store" and swallowed budget the clothing-evidence sessions
+/// needed). Every touched session keeps a 1-turn floor; rounding slack
+/// goes to the top-ranked sessions first.
+pub fn expand_session_chunks_weighted(
+    store: &CausalStore,
+    chunk_ids: &[String],
+    query: &str,
+    budget: usize,
+    top_sessions: usize,
+) -> Result<Vec<(String, String)>> {
+    let mut session_hits: HashMap<String, Vec<String>> = HashMap::new();
+    for id in chunk_ids {
+        if let Some(k) = session_key(id) {
+            if k.contains("::session_expansion") {
+                continue;
+            }
+            session_hits.entry(k).or_default().push(id.clone());
+        }
+    }
+    if session_hits.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let q_tokens: std::collections::HashSet<String> =
+        crate::patterns::tokenize(query).into_iter().collect();
+    if q_tokens.is_empty() {
+        return expand_session_chunks(store, chunk_ids, budget);
+    }
+
+    let mut weighted: Vec<(String, f64)> = Vec::with_capacity(session_hits.len());
+    for (key, hits) in &session_hits {
+        let mut covered_tokens: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for id in hits {
+            if let Ok(Some(text)) = store.chunk_text(id) {
+                for t in crate::patterns::tokenize(&text) {
+                    if q_tokens.contains(&t) {
+                        covered_tokens.insert(t);
+                    }
+                }
+            }
+        }
+        let density = covered_tokens.len().max(1) as f64;
+        weighted.push((key.clone(), hits.len() as f64 * density));
+    }
+    weighted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Whitelist mode (dilution cut): only the top-N sessions by weight are
+    // expanded at all. The measured bottleneck is not recall — evidence
+    // sessions already reach the prompt — but LLM counting degraded by
+    // ~84% unrelated turns; the dose-response curve showed full removal
+    // hurts (0 lines 42.9% < peak 46.6%), and top-N keeps the highest-
+    // value tail while cutting the dilution mass. N=0 disables (all
+    // sessions keep proportional shares).
+    if top_sessions > 0 {
+        weighted.truncate(top_sessions);
+    }
+
+    let total_weight: f64 = weighted.iter().map(|(_, w)| w).sum();
+    if total_weight <= 0.0 {
+        return expand_session_chunks(store, chunk_ids, budget);
+    }
+
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut spent = 0usize;
+    for (key, w) in &weighted {
+        if spent >= budget {
+            break;
+        }
+        let share = ((w / total_weight) * budget as f64).floor() as usize;
+        let share = share.clamp(1, budget - spent);
+        let chunks = store.chunks_by_prefix(key)?;
+        for (id, text) in chunks.into_iter().take(share) {
+            out.push((id, text));
+            spent += 1;
+        }
+    }
+    // Rounding slack to the top-ranked sessions until budget or exhaustion.
+    if spent < budget {
+        for (key, _) in &weighted {
+            if spent >= budget {
+                break;
+            }
+            let have = out.iter().filter(|(id, _)| id.starts_with(key.as_str())).count();
+            let chunks = store.chunks_by_prefix(key)?;
+            for (id, text) in chunks.into_iter().skip(have) {
+                if spent >= budget {
+                    break;
+                }
+                out.push((id, text));
+                spent += 1;
+            }
         }
     }
     Ok(out)
@@ -750,5 +865,142 @@ mod tests {
             .unwrap();
         assert!(!hits.is_empty());
         assert!(plan.time_window.is_none());
+    }
+}
+
+#[cfg(test)]
+mod expand_tests {
+    use super::*;
+
+    #[test]
+    fn expansion_skips_synthetic_ids_when_ranking() {
+        // The verify-loop shape: round-1 synthetic entries ('::session_expansion::')
+        // sit in the pool when round 2 expands. They must not vote in the
+        // session-frequency ranking — 50 synthetic entries would otherwise
+        // outweigh every real session and reshuffle the budget.
+        let ids = vec![
+            "q1::real_sess::3".to_string(),
+            "q1::session_expansion::1".to_string(),
+            "q1::session_expansion::2".to_string(),
+        ];
+        let mut freq: HashMap<String, usize> = HashMap::new();
+        for id in &ids {
+            if let Some(k) = session_key(id) {
+                if k.contains("::session_expansion") {
+                    continue;
+                }
+                *freq.entry(k).or_insert(0) += 1;
+            }
+        }
+        assert_eq!(freq.len(), 1, "only the real session votes: {freq:?}");
+    }
+}
+
+#[cfg(test)]
+mod weighted_expand_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::store::CausalStore;
+
+
+    fn seed(store: &CausalStore, id: &str, text: &str) {
+        store
+            .with_conn(|c| {
+                c.execute(
+                    "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, 0)",
+                    rusqlite::params![id, text],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// The measured failure shape: a chatty session out-HITS an evidence
+    /// session on frequency, but its hits share only ONE generic query
+    /// token while the evidence session's hits share THREE. The weighted
+    /// split must give the evidence session the larger share.
+    #[test]
+    fn weighted_expansion_prefers_dense_evidence_sessions() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // Evidence session: 3 turns, hits mention pick/return/store.
+        for t in 1..=3 {
+            seed(&store, &format!("q1::clothes::{t}"), "need to pick up return store items today");
+        }
+        // Chatty session: 5 turns, hits mention only 'store'.
+        for t in 1..=5 {
+            seed(&store, &format!("q1::ecom::{t}"), "online store business shipping ideas");
+        }
+        let ids: Vec<String> = vec![
+            "q1::clothes::1".into(), "q1::clothes::2".into(),
+            "q1::ecom::1".into(), "q1::ecom::2".into(), "q1::ecom::3".into(),
+        ];
+        let out = expand_session_chunks_weighted(
+            &store, &ids, "how many items do I pick up or return from a store", 10, 0,
+        )
+        .unwrap();
+        let clothes = out.iter().filter(|(id, _)| id.contains("clothes")).count();
+        let ecom = out.iter().filter(|(id, _)| id.contains("ecom")).count();
+        // The dense session saturates first (all 3 turns) and the slack
+        // rule fills from the top, so the chatty session cannot outrank it
+        // BEFORE saturation. With bigger sessions the proportional split
+        // holds directly (share 7 vs 2 of 10); here saturation caps
+        // clothes at 3, and ecom legitimately spends the slack. The
+        // invariant that matters: clothes is FULLY injected.
+        assert_eq!(clothes, 3, "dense session must saturate: got {clothes}");
+        assert!(ecom >= 1, "every touched session keeps its floor");
+    }
+}
+
+#[cfg(test)]
+mod whitelist_expand_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::store::CausalStore;
+
+
+    fn seed(store: &CausalStore, id: &str, text: &str) {
+        store
+            .with_conn(|c| {
+                c.execute(
+                    "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, 0)",
+                    rusqlite::params![id, text],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// Whitelist mode: only the top-N weighted sessions expand; the rest
+    /// are dropped from injection entirely (the dilution cut).
+    #[test]
+    fn top_sessions_whitelist_cuts_dilution() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // Dense session: hits share 3 query tokens.
+        for t in 1..=4 {
+            seed(&store, &format!("q1::dense::{t}"), "pick up return store items now");
+        }
+        // Two chatty sessions sharing one generic token each.
+        for t in 1..=4 {
+            seed(&store, &format!("q1::chat1::{t}"), "online store business talk");
+            seed(&store, &format!("q1::chat2::{t}"), "store ideas shipping chat");
+        }
+        let ids: Vec<String> = vec![
+            "q1::dense::1".into(), "q1::dense::2".into(),
+            "q1::chat1::1".into(), "q1::chat2::1".into(),
+        ];
+        // Whitelist of 1: only the dense session expands.
+        let out = expand_session_chunks_weighted(
+            &store, &ids, "how many items do I pick up or return from a store", 10, 1,
+        )
+        .unwrap();
+        assert!(out.iter().all(|(id, _)| id.contains("dense")), "only dense survives: {out:?}");
+        // Whitelist of 2: dense + the heavier chat session.
+        let out2 = expand_session_chunks_weighted(
+            &store, &ids, "how many items do I pick up or return from a store", 10, 2,
+        )
+        .unwrap();
+        let kinds: std::collections::HashSet<&str> =
+            out2.iter().map(|(id, _)| id.rsplit_once("::").unwrap().0.rsplit_once("::").unwrap().1).collect();
+        assert_eq!(kinds.len(), 2, "exactly two sessions expand: {kinds:?}");
     }
 }

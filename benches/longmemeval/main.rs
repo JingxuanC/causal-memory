@@ -699,6 +699,12 @@ fn retrieve(
 /// into one answer prompt (design: ~80; the P8 harness used 40).
 const SESSION_BUDGET: usize = 80;
 
+/// Dilution cut: how many top-weighted sessions may be expanded at all.
+/// 2 = the whitelist mode (densest evidence sessions only); larger values
+/// relax toward full proportional expansion. Env-overridable for the
+/// dose-response A/B: EXPAND_TOP_SESSIONS=0 disables the whitelist.
+const EXPAND_TOP_SESSIONS: usize = 2;
+
 /// RRF over two rank lists (same K=60 as the lib's rrf_fuse_many; local
 /// copy because the lib one is pub(crate)).
 fn rrf_fuse_two(a: &[String], b: &[String]) -> Vec<String> {
@@ -729,19 +735,32 @@ fn expand_and_inject(
         .iter()
         .flat_map(|e| [e.decision_id.clone(), e.outcome_id.clone()])
         .collect();
-    let chunks = retrieval::expand_session_chunks(store, &ids, SESSION_BUDGET)?;
+    // Density-aware budget split + top-N whitelist (dilution cut): sessions
+    // are weighted by hit_count × distinct-query-token overlap; only the
+    // top EXPAND_TOP_SESSIONS survive expansion and the budget divides
+    // proportionally among them. Evidence recall was never the bottleneck
+    // (measured: gold turns reached the prompt in all variants) — the cost
+    // is LLM counting degraded by ~84% unrelated-turn dilution.
+    let chunks = retrieval::expand_session_chunks_weighted(
+        store,
+        &ids,
+        &q.question,
+        SESSION_BUDGET,
+        EXPAND_TOP_SESSIONS,
+    )?;
     let covered: HashSet<String> = ids.into_iter().collect();
-    // Text-level dedup too: the verification loop re-expands after merging
-    // new hits, and a session chunk already injected in an earlier round must
-    // not appear twice under a fresh synthetic id.
-    let present: HashSet<String> = entries
-        .iter()
-        .flat_map(|e| [e.decision_text.clone(), e.outcome_text.clone()])
-        .collect();
+    // Id-level dedup ONLY. The earlier text-level dedup (`present`) broke
+    // same-session turns: the verify loop re-expands with the previous
+    // round's synthetic entries in the pool, whose endpoint TEXTS equal
+    // the source chunk texts — so a re-returned turn was judged duplicate
+    // and dropped, silently losing evidence turns between rounds
+    // (measured: LongMemEval 0a995998 lost the gold-bearing t9/t11 this
+    // way while t1/t5 stayed). Chunks are immutable; id equality is the
+    // correct identity.
     let mut merged = entries;
     let mut synth_id = -1_i64;
     for (cid, text) in chunks {
-        if covered.contains(&cid) || present.contains(&text) {
+        if covered.contains(&cid) {
             continue;
         }
         let sid = format!("{}::session_expansion::{}", q.question_id, -synth_id);

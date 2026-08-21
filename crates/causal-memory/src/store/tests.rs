@@ -2864,3 +2864,29 @@ fn test_search_causal_bm25_oversized_index_candidates_fall_back() {
         "task_tag filter still applies on the fallback path"
     );
 }
+
+// ─── Session expansion ordering: numeric, not lexicographic ───────────
+
+#[test]
+#[allow(clippy::unwrap_used, reason = "test invariant: panicking on failure is desired")]
+fn test_chunks_by_prefix_orders_turns_numerically() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Lexicographic would give 1,10,11,2; numeric must give 1,2,10,11.
+    for (i, turn) in [2, 11, 1, 10].into_iter().enumerate() {
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![format!("q1::s1::{turn}"), format!("text {turn}"), i as i64],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+    let rows = store.chunks_by_prefix("q1::s1::").unwrap();
+    let turns: Vec<String> = rows
+        .iter()
+        .map(|(id, _)| id.rsplit("::").next().unwrap().to_string())
+        .collect();
+    assert_eq!(turns, vec!["1", "2", "10", "11"], "turns must be numeric order");
+}
