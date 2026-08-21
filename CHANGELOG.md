@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.0] - Unreleased
 
 ### Added
+- **`scripts/audit_fact_links.py`** — stdlib-only replication of the
+  fact↔chunk linker policy (`entity_link_facts` / `link_fact_node` /
+  `component_stats`): exact tokenizer, LINK_STOPWORDS, df filter,
+  scope isolation, and top-8 truncation order. Reproduces the real-DB
+  numbers (3,117 links / 7,857 edges / 29 components at ≥3+df≤20 vs
+  9,764 / 21,151 / 17 pre-fix) and dumps random links for manual
+  precision re-sampling (`--sample N`).
 - **Phase C — incremental graph lifecycle (write-path patches)**
   (one-graph-convergence): `CausalGraph` gains live-patch APIs —
   `append_node` (O(1) SoA append), `add_patch_edge` (per-node overlay
