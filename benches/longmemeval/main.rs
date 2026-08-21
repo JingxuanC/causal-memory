@@ -117,6 +117,7 @@ Read EVERY memory from first to last. Important details are scattered across the
 - Report what someone actually DID, not what was offered.
 
 ## Step 4: TEMPORAL GROUNDING
+- Memory lines are prefixed with [session_N YYYY/MM/DD (Weekday) HH:MM]; the bracketed date IS the date that memory happened - use it for relative-time calculations (weeks/months ago), even if the memory text has no other date.
 - Resolve relative time expressions against the date attached to each memory and the question's current date. Answer with ABSOLUTE dates.
 - For "how long" questions, find explicit start/end dates and compute.
 
@@ -1174,6 +1175,8 @@ struct ResultRow {
     /// prompt + memories) and estimated answer tokens produced.
     ctx_tokens: usize,
     ans_tokens: usize,
+    /// (debug) The rendered memories block actually sent to the answer LLM.
+    memories: String,
 }
 
 #[derive(Serialize)]
@@ -1330,6 +1333,7 @@ async fn answer_question(
                 evidence_hit,
                 ctx_tokens: 0,
                 ans_tokens: 0,
+                memories: String::new(),
             }
         }
     };
@@ -1406,6 +1410,7 @@ async fn answer_question(
         evidence_hit,
         ctx_tokens,
         ans_tokens,
+        memories: final_memories,
     }
 }
 
