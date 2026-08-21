@@ -740,7 +740,11 @@ fn hippocampus_boost(
         if ent.chars().count() < 3 {
             continue;
         }
-        let results = g.spreading_activation_opts(ent, None, false, false);
+        // Scope the seeds to THIS question's haystack: the graph is the
+        // shared 500-question store; without the tag, entity words hit
+        // other questions' chunks (246/250 spreading lines were cross-
+        // question noise in the b3c15d39 autopsy).
+        let results = g.spreading_activation_opts(ent, Some(&q.question_id), false, false);
         // take(50): seeds themselves rank highest, so the first few are
         // already in retrieval; the associative tail is further down.
         for r in results.iter().take(50) {
