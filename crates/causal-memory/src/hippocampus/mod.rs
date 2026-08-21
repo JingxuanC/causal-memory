@@ -1072,6 +1072,55 @@ impl CausalGraph {
         self.threshold
     }
 
+    /// Connectivity statistics over VALID edges (undirected BFS over the
+    /// CSR). Returns (component_count, largest_component_size,
+    /// isolated_node_count, valid_edge_count). A component is a weakly
+    /// connected set of nodes via valid edges. Used to quantify
+    /// one-graph convergence (facts linking isolated causal pairs into
+    /// clusters) and to catch cross-scope link explosions at benchmark
+    /// scale.
+    pub fn component_stats(&self) -> (usize, usize, usize, usize) {
+        let mut visited = vec![false; self.num_nodes];
+        let mut comps: Vec<usize> = Vec::new();
+        let valid_edges = self.edge_valid.iter().filter(|v| **v).count();
+        for start in 0..self.num_nodes {
+            if visited[start] {
+                continue;
+            }
+            let mut stack = vec![start];
+            visited[start] = true;
+            let mut size = 0usize;
+            while let Some(n) = stack.pop() {
+                size += 1;
+                for e in self.row_ptr[n] as usize..self.row_ptr[n + 1] as usize {
+                    if !self.edge_valid[e] {
+                        continue;
+                    }
+                    let t = self.col_idx[e] as usize;
+                    if !visited[t] {
+                        visited[t] = true;
+                        stack.push(t);
+                    }
+                }
+                for e in self.row_ptr_rev[n] as usize..self.row_ptr_rev[n + 1] as usize {
+                    let fwd = self.rev_to_fwd_idx[e] as usize;
+                    if !self.edge_valid[fwd] {
+                        continue;
+                    }
+                    let t = self.col_idx_rev[e] as usize;
+                    if !visited[t] {
+                        visited[t] = true;
+                        stack.push(t);
+                    }
+                }
+            }
+            comps.push(size);
+        }
+        let max = comps.iter().copied().max().unwrap_or(0);
+        let isolated = comps.iter().filter(|&&c| c == 1).count();
+        (comps.len(), max, isolated, valid_edges)
+    }
+
     pub fn num_nodes(&self) -> usize {
         self.num_nodes
     }

@@ -1495,4 +1495,82 @@ mod tests {
         assert_eq!(fwd.len(), 1, "two shared tokens (zsh, setup) → one chunk: {fwd:?}");
         assert_eq!(fwd[0].other, 0, "links to d1, not the unrelated d2");
     }
+    #[test]
+    fn test_component_stats_basic() {
+        // d1->o1, d2->o2 (two isolated pairs) + d3->o3->d4 chain.
+        let nodes = vec![
+            NodeData { id: "d1".into(), text: "a b".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+            NodeData { id: "o1".into(), text: "c d".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+            NodeData { id: "d2".into(), text: "e f".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+            NodeData { id: "o2".into(), text: "g h".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+            NodeData { id: "d3".into(), text: "i j".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+            NodeData { id: "o3".into(), text: "k l".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+            NodeData { id: "d4".into(), text: "m n".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+        ];
+        let edges = vec![
+            EdgeData { from_id: "d1".into(), to_id: "o1".into(), relation: Relation::Caused, weight: 1.0, valid: true },
+            EdgeData { from_id: "d2".into(), to_id: "o2".into(), relation: Relation::Caused, weight: 1.0, valid: true },
+            EdgeData { from_id: "d3".into(), to_id: "o3".into(), relation: Relation::Caused, weight: 1.0, valid: true },
+            EdgeData { from_id: "o3".into(), to_id: "d4".into(), relation: Relation::Caused, weight: 1.0, valid: true },
+        ];
+        let graph = CausalGraph::build(&nodes, &edges);
+        let (comps, max, isolated, v_edges) = graph.component_stats();
+        assert_eq!(comps, 3, "two pairs + one 3-node chain");
+        assert_eq!(max, 3, "chain is the largest component");
+        assert_eq!(isolated, 0);
+        assert_eq!(v_edges, 4);
+    }
+
+        #[test]
+    fn test_benchmark_scale_scope_isolation_components() {
+        // Miniature 500-question scenario: two questions share one store.
+        // Facts scoped lme:q1 / lme:q2 must link WITHIN their question only
+        // (component structure stays per-question; spreading from q1 must
+        // never surface q2 content).
+        let store = CausalStore::open_in_memory().unwrap();
+        store.record_decision("used redis for caching", "caching worked", "caused", Some("q1"), 0.8, "rule").unwrap();
+        store.record_decision("used channels in go", "race fixed", "caused", Some("q2"), 0.8, "rule").unwrap();
+        store.record_fact("preference", "prefers redis caching", "lme:q1", "eval", 0.9).unwrap();
+        store.record_fact("preference", "prefers channels in go code", "lme:q2", "eval", 0.9).unwrap();
+
+        let mut graph = CausalGraph::from_store(&store).unwrap();
+        // Both questions must be separate weakly-connected components.
+        let (comps, _max, _iso, _ve) = graph.component_stats();
+        assert!(comps >= 2, "two questions must stay separate components: {comps}");
+
+        // Behavioral isolation: seeding q1 content must surface q1's linked
+        // fact and NEVER q2's fact or chunk.
+        let results = graph.spreading_activation("used redis for caching", None, false);
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("prefers redis caching")),
+            "q1 fact must be linked in: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("channels") || t.contains("race fixed")),
+            "cross-question leakage: {texts:?}"
+        );
+    }
+#[test]
+    #[ignore = "real-DB probe: needs ~/.local/share/causal-memory/causal.db (run explicitly)"]
+    fn probe_real_db_connectivity() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let path = std::env::var("CAUSAL_MEMORY_DB").unwrap_or_else(|_| {
+            format!("{home}/.local/share/causal-memory/causal.db")
+        });
+        if !std::path::Path::new(&path).exists() {
+            eprintln!("probe: no real DB at {path}");
+            return;
+        }
+        let store = CausalStore::open(&path).unwrap();
+        let graph = CausalGraph::from_store(&store).unwrap();
+        let (comps, max, isolated, edges) = graph.component_stats();
+        eprintln!(
+            "REAL DB: {} nodes, {} valid edges, {} components, largest {}, isolated {}",
+            graph.num_nodes(), edges, comps, max, isolated
+        );
+        eprintln!("(baseline pre-Phase-A: 431 chunks / 225 edges / 207 components / largest 10)");
+        assert!(max >= 10, "facts must have merged at least some pairs");
+    }
+
 }
