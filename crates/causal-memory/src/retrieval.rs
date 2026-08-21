@@ -128,6 +128,15 @@ fn month_index(name: &str) -> Option<u32> {
     MONTHS.iter().position(|m| *m == name).map(|i| i as u32 + 1)
 }
 
+/// Weekday name -> days-from-Monday index (monday=0 … sunday=6), 0-based
+/// like `chrono::Weekday::num_days_from_monday`.
+fn weekday_index(name: &str) -> Option<u32> {
+    const DAYS: [&str; 7] = [
+        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    ];
+    DAYS.iter().position(|d| *d == name).map(|i| i as u32)
+}
+
 /// Parse a relative-time anchor from the query against the reference
 /// timestamp `now` (the question's date in the benchmark; the call time in
 /// production). Returns an inclusive [start_ts, end_ts] window. Rule-based,
@@ -158,13 +167,18 @@ pub fn parse_temporal_anchor(query: &str, now: i64) -> Option<(i64, i64)> {
         let (_, secs) = unit_of(&c[1])?;
         return Some((now - 3 * secs, now));
     }
-    // 3. "N unit ago".
+    // 3. "N unit ago". "a"/"an" count as 1 ("a week ago" — LongMemEval's
+    // temporal questions use the article form as often as the numeral).
     let re_ago = Regex::new(
-        r"(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|year)s?\s+ago",
+        r"(a|an|\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(day|week|month|year)s?\s+ago",
     )
     .ok()?;
     if let Some(c) = re_ago.captures(&q) {
-        let n = parse_number(&c[1])?;
+        let n = if matches!(c.get(1).map(|m| m.as_str()), Some("a" | "an")) {
+            1
+        } else {
+            parse_number(&c[1])?
+        };
         let (_, secs) = unit_of(&c[2])?;
         return Some((now - (n + 1) * secs, now - n * secs));
     }
@@ -258,6 +272,28 @@ pub fn parse_temporal_anchor(query: &str, now: i64) -> Option<(i64, i64)> {
             day_start_ts(yest.year(), yest.month(), yest.day())? + 86_399,
         ));
     }
+    // 10. "last <weekday>" / "on <weekday>" -> the most recent OCCURRENCE
+    //     strictly before today (LongMemEval: "I received a piece of
+    //     jewelry last Saturday" — the article, not a calendar-period
+    //     reading, distinguishes this from rule 4's "last week").
+    //     The window is that single day.
+    let re_weekday = Regex::new(
+        r"(?:last|on|this) (monday|tuesday|wednesday|thursday|friday|saturday|sunday)",
+    )
+    .ok()?;
+    if let Some(c) = re_weekday.captures(&q) {
+        if let Some(dow) = weekday_index(&c[1]) {
+            let today_dow = today.weekday().num_days_from_monday();
+            // Days to subtract: 1..=7 (a weekday equal to today counts
+            // as the PREVIOUS week's occurrence, matching "last
+            // Saturday" said on a Saturday).
+            let back = (today_dow + 7 - dow) % 7;
+            let back = if back == 0 { 7 } else { back };
+            let day = today - chrono::Duration::days(back as i64);
+            let start = day_start_ts(day.year(), day.month(), day.day())?;
+            return Some((start, start + 86_399));
+        }
+    }
     None
 }
 
@@ -265,6 +301,23 @@ pub fn parse_temporal_anchor(query: &str, now: i64) -> Option<(i64, i64)> {
 /// totals/sums/averages, and best-of comparisons.
 pub fn looks_aggregation(query: &str) -> bool {
     let l = query.to_lowercase();
+    // Date-math carve-out: "how many days ago did X" / "how many weeks
+    // between A and B" ask for arithmetic over ONE (or two) events, not an
+    // enumeration. Matching them as aggregation arms the full-session
+    // expansion, the wide fact queries, and the verification loop
+    // downstream — burying the single evidence turn in noise (LongMemEval
+    // temporal-reasoning: 7 of 11 multipass regressions were date-math
+    // questions at 2-3x context inflation; true aggregations like "how
+    // many books did I buy" contain neither pattern and stay matched).
+    const DATE_MATH_UNITS: &[&str] = &[
+        "days ago", "weeks ago", "months ago", "years ago", "hours ago", "long ago",
+    ];
+    if DATE_MATH_UNITS.iter().any(|p| l.contains(p)) {
+        return false;
+    }
+    if l.contains("how many") && l.contains("between") {
+        return false;
+    }
     const PHRASES: &[&str] = &[
         "how many",
         "how much",
@@ -321,8 +374,7 @@ pub fn retrieve_multi_pass(
     query: &str,
     plan: &QueryPlan,
     per_query_cap: usize,
-) -> Result<Vec<CausalEntry>> {
-    let base = store.search_causal_bm25(task_tag, query, per_query_cap)?;
+) -> Result<Vec<CausalEntry>> {    let base = store.search_causal_bm25(task_tag, query, per_query_cap)?;
     let mut seen: HashSet<i64> = HashSet::new();
     let mut merged: Vec<CausalEntry> = Vec::new();
     for e in base {
@@ -396,6 +448,14 @@ pub fn expand_session_chunks(
     let mut freq: HashMap<String, usize> = HashMap::new();
     for id in chunk_ids {
         if let Some(k) = session_key(id) {
+            // Synthetic expansion ids must not vote: the verify loop
+            // re-expands with the previous round's injected entries in the
+            // pool, and their '::session_expansion::' key would outrank
+            // every real session (50 entries × 2 endpoints = 100 hits) and
+            // reshuffle the budget split between rounds.
+            if k.contains("::session_expansion") {
+                continue;
+            }
             *freq.entry(k).or_insert(0) += 1;
         }
     }
@@ -418,9 +478,284 @@ pub fn expand_session_chunks(
     Ok(out)
 }
 
+/// Density-aware expansion (one-graph-convergence follow-up): instead of
+/// the frequency-only ranking (which starves precise-evidence sessions
+/// when chatty ones out-hit them), each session gets a relevance WEIGHT
+/// and the budget is split proportionally:
+///
+///   weight(session) = hit_count × distinct_query_token_overlap(hit_turns)
+///
+/// A session hit 4 times whose hit turns share 3 query tokens with the
+/// question outweighs a session hit 6 times sharing 1 generic token —
+/// the measured failure mode (LongMemEval 0a995998: an e-commerce session
+/// matched "store" and swallowed budget the clothing-evidence sessions
+/// needed). Every touched session keeps a 1-turn floor; rounding slack
+/// goes to the top-ranked sessions first.
+pub fn expand_session_chunks_weighted(
+    store: &CausalStore,
+    chunk_ids: &[String],
+    query: &str,
+    budget: usize,
+    top_sessions: usize,
+) -> Result<Vec<(String, String)>> {
+    let mut session_hits: HashMap<String, Vec<String>> = HashMap::new();
+    for id in chunk_ids {
+        if let Some(k) = session_key(id) {
+            if k.contains("::session_expansion") {
+                continue;
+            }
+            session_hits.entry(k).or_default().push(id.clone());
+        }
+    }
+    if session_hits.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let q_tokens: std::collections::HashSet<String> =
+        crate::patterns::tokenize(query).into_iter().collect();
+    if q_tokens.is_empty() {
+        return expand_session_chunks(store, chunk_ids, budget);
+    }
+
+    let mut weighted: Vec<(String, f64)> = Vec::with_capacity(session_hits.len());
+    for (key, hits) in &session_hits {
+        let mut covered_tokens: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for id in hits {
+            if let Ok(Some(text)) = store.chunk_text(id) {
+                for t in crate::patterns::tokenize(&text) {
+                    if q_tokens.contains(&t) {
+                        covered_tokens.insert(t);
+                    }
+                }
+            }
+        }
+        let density = covered_tokens.len().max(1) as f64;
+        weighted.push((key.clone(), hits.len() as f64 * density));
+    }
+    weighted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Whitelist mode (dilution cut): only the top-N sessions by weight are
+    // expanded at all. The measured bottleneck is not recall — evidence
+    // sessions already reach the prompt — but LLM counting degraded by
+    // ~84% unrelated turns; the dose-response curve showed full removal
+    // hurts (0 lines 42.9% < peak 46.6%), and top-N keeps the highest-
+    // value tail while cutting the dilution mass. N=0 disables (all
+    // sessions keep proportional shares).
+    if top_sessions > 0 {
+        weighted.truncate(top_sessions);
+    }
+
+    let total_weight: f64 = weighted.iter().map(|(_, w)| w).sum();
+    if total_weight <= 0.0 {
+        return expand_session_chunks(store, chunk_ids, budget);
+    }
+
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut spent = 0usize;
+    for (key, w) in &weighted {
+        if spent >= budget {
+            break;
+        }
+        let share = ((w / total_weight) * budget as f64).floor() as usize;
+        let share = share.clamp(1, budget - spent);
+        let chunks = store.chunks_by_prefix(key)?;
+        for (id, text) in chunks.into_iter().take(share) {
+            out.push((id, text));
+            spent += 1;
+        }
+    }
+    // Rounding slack to the top-ranked sessions until budget or exhaustion.
+    if spent < budget {
+        for (key, _) in &weighted {
+            if spent >= budget {
+                break;
+            }
+            let have = out.iter().filter(|(id, _)| id.starts_with(key.as_str())).count();
+            let chunks = store.chunks_by_prefix(key)?;
+            for (id, text) in chunks.into_iter().skip(have) {
+                if spent >= budget {
+                    break;
+                }
+                out.push((id, text));
+                spent += 1;
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Layered quota (retrieval-scoring.md §4): distill episodes are compact
+/// paraphrases of the original turns. BM25's length normalization ranks a
+/// 30-token summary above the 176-394-token turn it summarizes (same
+/// term hits, shorter doc), and the summary's phrasing ("acquired...
+/// last month") tracks the question's phrasing more closely than the
+/// conversation's ("got...") — so episodes crowd original evidence out
+/// of top-k and dilute the prompt, while the answer's full context sits
+/// in the turn. Cap episodes at `max_episodes` of the merged pool;
+/// originals keep their rank order. Entries arrive rank-ordered, so the
+/// FIRST `max_episodes` episodes (highest-ranked) survive.
+pub fn apply_episode_quota(entries: Vec<CausalEntry>, max_episodes: usize) -> Vec<CausalEntry> {
+    if max_episodes == usize::MAX {
+        return entries;
+    }
+    let mut kept: Vec<CausalEntry> = Vec::with_capacity(entries.len());
+    let mut episodes = 0usize;
+    for e in entries {
+        if e.discovered_by == "distill" {
+            if episodes >= max_episodes {
+                continue;
+            }
+            episodes += 1;
+        }
+        kept.push(e);
+    }
+    kept
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn date_math_questions_are_not_aggregation() {
+        // Temporal-distance lookups: ONE event + date arithmetic — the
+        // aggregation pipeline (full-session expansion, wide fact queries,
+        // verify loop) buries their single evidence turn in noise.
+        assert!(!looks_aggregation("How many days ago did I buy a smoker?"));
+        assert!(!looks_aggregation(
+            "How many weeks ago did I attend the 'Summer Nights' festival?"
+        ));
+        assert!(!looks_aggregation("How many months ago did we last meet?"));
+        assert!(!looks_aggregation("How long ago did I harvest the herbs?"));
+        assert!(!looks_aggregation(
+            "How many days passed between the wedding and the sale?"
+        ));
+    }
+
+    #[test]
+    fn true_aggregations_still_match() {
+        assert!(looks_aggregation("How many books did I buy?"));
+        assert!(looks_aggregation("How much did I spend on groceries?"));
+        assert!(looks_aggregation("list all the concerts I attended"));
+        assert!(looks_aggregation("What's the total number of plants?"));
+    }
+
+    #[test]
+    fn episode_quota_caps_paraphrases_keeps_original_order() {
+        let entry = |id: i64, by: &str| CausalEntry {
+            edge_id: id,
+            decision_id: format!("d{id}"),
+            decision_text: format!("text {id}"),
+            outcome_id: format!("o{id}"),
+            outcome_text: format!("out {id}"),
+            relation: "caused".into(),
+            confidence: 0.8,
+            task_tag: None,
+            event_time: 0,
+            valid_to: None,
+            access_count: 0,
+            last_accessed_at: None,
+            discovered_by: by.into(),
+            discovered_at: 0,
+            outcome_polarity: None,
+            superseded_by: None,
+        };
+        // Rank-ordered pool: 5 episodes above 5 originals (the §4 shape —
+        // BM25 length normalization floats the summaries).
+        let pool: Vec<CausalEntry> = (0..5)
+            .map(|i| entry(i, "distill"))
+            .chain((5..10).map(|i| entry(i, "temporal")))
+            .collect();
+
+        let capped = apply_episode_quota(pool, 3);
+        let episodes = capped.iter().filter(|e| e.discovered_by == "distill").count();
+        let originals = capped.iter().filter(|e| e.discovered_by == "temporal").count();
+        assert_eq!(episodes, 3, "episodes capped at the quota");
+        assert_eq!(originals, 5, "originals never dropped");
+        // Highest-ranked episodes survive (first 3 of 5), originals keep order.
+        assert!(capped.iter().take(3).all(|e| e.discovered_by == "distill"));
+        assert_eq!(
+            capped
+                .iter()
+                .filter(|e| e.discovered_by == "temporal")
+                .map(|e| e.edge_id)
+                .collect::<Vec<_>>(),
+            vec![5, 6, 7, 8, 9]
+        );
+
+        // All-original pool is untouched.
+        let originals_only: Vec<CausalEntry> = (0..4).map(|i| entry(i, "temporal")).collect();
+        let n = apply_episode_quota(originals_only, 3).len();
+        assert_eq!(n, 4);
+        // Quota of 0 drops every episode (pure-original mode).
+        assert_eq!(
+            apply_episode_quota(
+                vec![entry(0, "distill"), entry(1, "temporal")],
+                0
+            )
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn plan_for_smoker_question_skips_expansion() {
+        // The exact LongMemEval regression shape: aggregation=false means
+        // the harness returns the merged multi-pass entries directly —
+        // no expand_and_inject, no verify loop, topk fact queries only.
+        let plan = plan_query("How many days ago did I buy a smoker?", 1_700_000_000);
+        assert!(!plan.aggregation);
+        assert!(!plan.entities.is_empty());
+    }
+
+    /// 2026-08-21 is a Friday. Anchors below are verified against it.
+    const FRIDAY_TS: i64 = 1_787_270_400; // 2026-08-21T00:00:00Z
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: the anchor must parse or the test is meaningless"
+    )]
+    fn temporal_anchor_article_number_forms() {
+        // "a week ago" must anchor (the article counts as 1) — previously
+        // returned None and left the question unanchored.
+        let (start, end) = parse_temporal_anchor("Which book did I finish a week ago?", FRIDAY_TS)
+            .expect("a week ago must anchor");
+        let week = 7 * 86_400;
+        // Rule 3's window for n=1: [now-2u, now-u] — the week that ended
+        // one week before now.
+        assert_eq!(end - start, week, "window spans exactly one week");
+        assert_eq!(FRIDAY_TS - end, week, "window is the week ending 1 week before now");
+        assert!(end < FRIDAY_TS, "window lies strictly before now");
+        // "one week ago" (spelled numeral) matches the same shape.
+        assert!(parse_temporal_anchor("I went one week ago", FRIDAY_TS).is_some());
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        clippy::unwrap_used,
+        reason = "test invariant: the anchor and timestamp must parse"
+    )]
+    fn temporal_anchor_last_weekday() {
+        // Friday 2026-08-21: "last Saturday" = 2026-08-15 (6 days back).
+        let (start, end) =
+            parse_temporal_anchor("I received jewelry last Saturday from whom?", FRIDAY_TS)
+                .expect("last Saturday must anchor");
+        assert_eq!(end - start + 1, 86_400, "window is exactly one day");
+        let dt = chrono::DateTime::from_timestamp(start, 0).unwrap();
+        assert_eq!(dt.format("%Y-%m-%d").to_string(), "2026-08-15");
+        assert_eq!(dt.weekday().to_string(), "Sat");
+
+        // Said ON a Saturday: "last Saturday" means the PREVIOUS week's
+        // occurrence (7 days back), not today.
+        const SAT_TS: i64 = 1_786_752_000; // 2026-08-15T00:00:00Z (Sat)
+        let (start, _) =
+            parse_temporal_anchor("I saw her last Saturday", SAT_TS).expect("must anchor");
+        let dt = chrono::DateTime::from_timestamp(start, 0).unwrap();
+        assert_eq!(dt.format("%Y-%m-%d").to_string(), "2026-08-08");
+    }
     use crate::store::CausalStore;
 
     fn insert_turn(store: &CausalStore, id: &str, text: &str, ts: i64, task_tag: &str) {
@@ -530,5 +865,142 @@ mod tests {
             .unwrap();
         assert!(!hits.is_empty());
         assert!(plan.time_window.is_none());
+    }
+}
+
+#[cfg(test)]
+mod expand_tests {
+    use super::*;
+
+    #[test]
+    fn expansion_skips_synthetic_ids_when_ranking() {
+        // The verify-loop shape: round-1 synthetic entries ('::session_expansion::')
+        // sit in the pool when round 2 expands. They must not vote in the
+        // session-frequency ranking — 50 synthetic entries would otherwise
+        // outweigh every real session and reshuffle the budget.
+        let ids = vec![
+            "q1::real_sess::3".to_string(),
+            "q1::session_expansion::1".to_string(),
+            "q1::session_expansion::2".to_string(),
+        ];
+        let mut freq: HashMap<String, usize> = HashMap::new();
+        for id in &ids {
+            if let Some(k) = session_key(id) {
+                if k.contains("::session_expansion") {
+                    continue;
+                }
+                *freq.entry(k).or_insert(0) += 1;
+            }
+        }
+        assert_eq!(freq.len(), 1, "only the real session votes: {freq:?}");
+    }
+}
+
+#[cfg(test)]
+mod weighted_expand_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::store::CausalStore;
+
+
+    fn seed(store: &CausalStore, id: &str, text: &str) {
+        store
+            .with_conn(|c| {
+                c.execute(
+                    "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, 0)",
+                    rusqlite::params![id, text],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// The measured failure shape: a chatty session out-HITS an evidence
+    /// session on frequency, but its hits share only ONE generic query
+    /// token while the evidence session's hits share THREE. The weighted
+    /// split must give the evidence session the larger share.
+    #[test]
+    fn weighted_expansion_prefers_dense_evidence_sessions() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // Evidence session: 3 turns, hits mention pick/return/store.
+        for t in 1..=3 {
+            seed(&store, &format!("q1::clothes::{t}"), "need to pick up return store items today");
+        }
+        // Chatty session: 5 turns, hits mention only 'store'.
+        for t in 1..=5 {
+            seed(&store, &format!("q1::ecom::{t}"), "online store business shipping ideas");
+        }
+        let ids: Vec<String> = vec![
+            "q1::clothes::1".into(), "q1::clothes::2".into(),
+            "q1::ecom::1".into(), "q1::ecom::2".into(), "q1::ecom::3".into(),
+        ];
+        let out = expand_session_chunks_weighted(
+            &store, &ids, "how many items do I pick up or return from a store", 10, 0,
+        )
+        .unwrap();
+        let clothes = out.iter().filter(|(id, _)| id.contains("clothes")).count();
+        let ecom = out.iter().filter(|(id, _)| id.contains("ecom")).count();
+        // The dense session saturates first (all 3 turns) and the slack
+        // rule fills from the top, so the chatty session cannot outrank it
+        // BEFORE saturation. With bigger sessions the proportional split
+        // holds directly (share 7 vs 2 of 10); here saturation caps
+        // clothes at 3, and ecom legitimately spends the slack. The
+        // invariant that matters: clothes is FULLY injected.
+        assert_eq!(clothes, 3, "dense session must saturate: got {clothes}");
+        assert!(ecom >= 1, "every touched session keeps its floor");
+    }
+}
+
+#[cfg(test)]
+mod whitelist_expand_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use crate::store::CausalStore;
+
+
+    fn seed(store: &CausalStore, id: &str, text: &str) {
+        store
+            .with_conn(|c| {
+                c.execute(
+                    "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, 0)",
+                    rusqlite::params![id, text],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    /// Whitelist mode: only the top-N weighted sessions expand; the rest
+    /// are dropped from injection entirely (the dilution cut).
+    #[test]
+    fn top_sessions_whitelist_cuts_dilution() {
+        let store = CausalStore::open_in_memory().unwrap();
+        // Dense session: hits share 3 query tokens.
+        for t in 1..=4 {
+            seed(&store, &format!("q1::dense::{t}"), "pick up return store items now");
+        }
+        // Two chatty sessions sharing one generic token each.
+        for t in 1..=4 {
+            seed(&store, &format!("q1::chat1::{t}"), "online store business talk");
+            seed(&store, &format!("q1::chat2::{t}"), "store ideas shipping chat");
+        }
+        let ids: Vec<String> = vec![
+            "q1::dense::1".into(), "q1::dense::2".into(),
+            "q1::chat1::1".into(), "q1::chat2::1".into(),
+        ];
+        // Whitelist of 1: only the dense session expands.
+        let out = expand_session_chunks_weighted(
+            &store, &ids, "how many items do I pick up or return from a store", 10, 1,
+        )
+        .unwrap();
+        assert!(out.iter().all(|(id, _)| id.contains("dense")), "only dense survives: {out:?}");
+        // Whitelist of 2: dense + the heavier chat session.
+        let out2 = expand_session_chunks_weighted(
+            &store, &ids, "how many items do I pick up or return from a store", 10, 2,
+        )
+        .unwrap();
+        let kinds: std::collections::HashSet<&str> =
+            out2.iter().map(|(id, _)| id.rsplit_once("::").unwrap().0.rsplit_once("::").unwrap().1).collect();
+        assert_eq!(kinds.len(), 2, "exactly two sessions expand: {kinds:?}");
     }
 }

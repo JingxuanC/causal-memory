@@ -408,4 +408,236 @@ mod tests {
         let out = memory.reconstruct_lesson_inner("totally unknown topic", 20, 0, None);
         assert!(out.contains("📭 No recorded causal context"), "{out}");
     }
+
+    // ─── AMC backend: raw write path + structured retrieval core ──────────
+
+    #[test]
+    fn test_remember_raw_turns_writes_searchable_pool() {
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let turns = vec![
+            ("alice".to_string(), "we moved the build to bazel".to_string()),
+            ("bob".to_string(), "bazel cut our build time in half".to_string()),
+        ];
+        let written = memory.remember_raw_turns(&turns, "s7");
+        assert_eq!(written, 2);
+        let (hits, _mode) = memory.search_memory_entries("bazel build", None, None, 5);
+        assert!(!hits.is_empty(), "raw turns must be retrievable");
+        let all: String = hits.iter().map(|h| h.content.as_str()).collect();
+        assert!(all.contains("bazel"), "hit content: {all}");
+        // Layer-namespaced keys, ranked, fused score present.
+        assert!(hits[0].key.starts_with("causal:") || hits[0].key.starts_with("fact:"));
+        assert_eq!(hits[0].rank, 1);
+        assert!(hits[0].score > 0.0);
+    }
+
+    #[test]
+    fn test_search_memory_entries_matches_text_tool_layers() {
+        let memory = counterfactual_memory();
+        // Same query through both presentations: the structured core must
+        // surface the same memories the text tool reports.
+        let text = memory.search_memory("redis mutex", None, None, Some(10));
+        let (hits, _mode) = memory.search_memory_entries("redis mutex", None, None, 10);
+        assert!(!hits.is_empty(), "seeded edges must surface");
+        assert!(text.contains("redis"), "text tool: {text}");
+        // Every structured hit's decision text appears in the text output.
+        for h in &hits {
+            let needle = h.content.split('"').nth(1).unwrap_or_default();
+            if !needle.is_empty() && h.key.starts_with("causal:") {
+                assert!(
+                    text.contains(&needle[..needle.len().min(20)]),
+                    "text tool missing {} from {}",
+                    needle,
+                    h.key
+                );
+            }
+        }
+    }
+
+    // ─── Phase A: record_fact marks the graph dirty ──────────────────────
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: memory construction must succeed or the test is meaningless"
+    )]
+    fn test_record_fact_marks_graph_dirty_for_rebuild() {
+        let memory = Memory::open_in_memory().expect("memory");
+        // 1 causal write + 5 fact writes ≥ GRAPH_REBUILD_WRITES (5): the
+        // next hippocampus query must rebuild and see the fresh facts.
+        memory.record_decision("cfg", "zsh plugins load", "caused", "shell", None);
+        for i in 0..5 {
+            memory.record_fact(
+                &format!("pref_{i}"),
+                &format!("user prefers zsh setup variant {i}"),
+                Some("user"),
+                None,
+                None,
+            );
+        }
+        let out = memory.search_causal(None, Some("prefers zsh setup"), Some(5), None, None);
+        assert!(
+            out.starts_with("[hippocampus"),
+            "fresh fact must be reachable via the graph path, got: {out}"
+        );
+        assert!(
+            out.contains("user prefers zsh setup"),
+            "fact text must appear in the activation results: {out}"
+        );
+    }
+
+    // ─── Phase B: search_memory served by the unified spread engine ─────
+
+    /// The exact staleness the MCP e2e caught: 4 writes < the lazy rebuild
+    /// threshold, so the graph still predates the facts — the engine must
+    /// detect the seed miss and rebuild, never serve a stale graph.
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: memory construction must succeed or the test is meaningless"
+    )]
+    fn test_unified_engine_rebuilds_on_stale_seed_miss() {
+        let memory = Memory::open_in_memory().expect("memory");
+        // Startup graph is EMPTY; these 4 writes stay under the lazy
+        // threshold (5), no rebuild fires before the query.
+        memory.record_decision(
+            "used global lock for cache",
+            "deadlock error under load",
+            "caused",
+            "locking",
+            None,
+        );
+        memory.record_decision("ran backup migration", "backup completed", "caused", "backup", None);
+        memory.record_fact("tech_stack", "Redis 7.2", Some("user"), None, None);
+        memory.record_fact("tech_stack", "Redis 8.0", Some("user"), None, Some(true));
+
+        let (hits, mode) = memory.search_memory_entries("redis cache", None, None, 10);
+        assert_eq!(mode, "spread", "engine must serve, got: {hits:?}");
+        assert!(
+            hits.iter().any(|h| h.key.starts_with("fact:")
+                && h.content.contains("Redis 8.0")),
+            "fresh fact must surface despite the stale graph: {hits:?}"
+        );
+        assert!(
+            !hits.iter().any(|h| h.content.contains("Redis 7.2")),
+            "retired fact must not surface: {hits:?}"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: memory construction must succeed or the test is meaningless"
+    )]
+    fn test_search_memory_uses_unified_spread_engine() {
+        let memory = Memory::open_in_memory().expect("memory");
+        memory.record_decision(
+            "rewrote module in TypeScript",
+            "compile errors dropped",
+            "caused",
+            "rust",
+            None,
+        );
+        memory.record_fact(
+            "editor_preference",
+            "user prefers TypeScript for module rewrites",
+            Some("user"),
+            None,
+            None,
+        );
+        // 2 real writes < GRAPH_REBUILD_WRITES(5): pad with 3 more writes
+        // so the lazy rebuild fires and the engine sees fresh nodes.
+        for i in 0..3 {
+            memory.record_fact(
+                &format!("pad_{i}"),
+                &format!("padding entry {i}"),
+                Some("user"),
+                None,
+                None,
+            );
+        }
+
+        // Structured core: one spread, typed hits, "spread" mode.
+        let (hits, mode) = memory.search_memory_entries("TypeScript module", None, None, 10);
+        assert_eq!(mode, "spread", "unified engine must serve this query");
+        assert!(
+            hits.iter().any(|h| h.key.starts_with("fact:")),
+            "fact hits: {hits:?}"
+        );
+        assert!(
+            hits.iter().any(|h| h.key.starts_with("causal:")),
+            "causal hits: {hits:?}"
+        );
+
+        // Text tool: same engine, grouped display.
+        let text = memory.search_memory("TypeScript module", None, None, None);
+        assert!(text.starts_with("[unified/spread]"), "{text}");
+        assert!(text.contains("editor_preference"), "{text}");
+        assert!(text.contains("Causal lessons"), "{text}");
+    }
+
+    // ─── Phase C: write-path patches — instant visibility + differential ──
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: temp file and memory construction must succeed"
+    )]
+    fn test_write_then_query_patched_equals_rebuilt() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("phase_c.db");
+
+        // Instance 1: write, then query IMMEDIATELY (2 writes < the lazy
+        // threshold of 5, well inside the 30s window → no rebuild may have
+        // run; the visibility must come from the write-path patch).
+        let m1 = Memory::open(&db).expect("memory 1");
+        m1.record_decision(
+            "rewrote module in TypeScript",
+            "compile errors dropped",
+            "caused",
+            "rust",
+            None,
+        );
+        m1.record_fact(
+            "editor_preference",
+            "user prefers TypeScript for module rewrites",
+            Some("user"),
+            None,
+            None,
+        );
+        let writes_before = m1.graph_writes.load(Ordering::Relaxed);
+
+        let (hits1, mode) = m1.search_memory_entries("TypeScript module", None, None, 10);
+        assert_eq!(mode, "spread");
+        assert!(
+            hits1.iter().any(|h| h.key.starts_with("fact:")),
+            "patched fact must surface instantly: {hits1:?}"
+        );
+        assert!(
+            hits1.iter().any(|h| h.key.starts_with("causal:")),
+            "patched edge must surface instantly: {hits1:?}"
+        );
+        // No rebuild consumed the dirty counter: the 2 writes are still
+        // pending (below threshold), so visibility came from patches.
+        assert_eq!(
+            m1.graph_writes.load(Ordering::Relaxed),
+            writes_before,
+            "no lazy rebuild may have fired (writes pending: {})",
+            writes_before
+        );
+
+        // Differential: a SECOND instance on the same file does a full
+        // from_store at startup — its results must match the patched view.
+        let m2 = Memory::open(&db).expect("memory 2");
+        let (hits2, _) = m2.search_memory_entries("TypeScript module", None, None, 10);
+        let keys1: std::collections::HashSet<String> =
+            hits1.iter().map(|h| h.key.clone()).collect();
+        let keys2: std::collections::HashSet<String> =
+            hits2.iter().map(|h| h.key.clone()).collect();
+        assert_eq!(
+            keys1, keys2,
+            "patched state must equal fully-rebuilt state (differential assertion)"
+        );
+    }
 }

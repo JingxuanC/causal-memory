@@ -292,4 +292,49 @@ impl CausalStore {
         Ok(ranked)
     }
 
+    /// Phase B (one-graph-convergence): valid edges with an endpoint in
+    /// `chunk_ids` — materializes the display rows for chunk nodes the
+    /// spreading-activation engine lit up. Ordered by confidence (edge id
+    /// as tiebreaker); `task_tag` narrows like the single-layer searches.
+    pub fn edges_touching_chunks(
+        &self,
+        chunk_ids: &[String],
+        task_tag: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<crate::store::CausalEntry>> {
+        if chunk_ids.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.acquire()?;
+
+        let chunk_ph = vec!["?"; chunk_ids.len()].join(",");
+        let mut sql = format!(
+            "SELECT {ENTRY_COLUMNS}
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             JOIN chunks ct ON ct.id = ce.to_id
+             WHERE ce.valid_to IS NULL
+               AND (ce.from_id IN ({chunk_ph}) OR ce.to_id IN ({chunk_ph}))"
+        );
+        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = chunk_ids
+            .iter()
+            .chain(chunk_ids.iter())
+            .map(|c| Box::new(c.clone()) as Box<dyn rusqlite::ToSql>)
+            .collect();
+        if let Some(tag) = task_tag {
+            sql.push_str(" AND ce.task_tag = ?");
+            binds.push(Box::new(tag.to_string()));
+        }
+        sql.push_str(" ORDER BY ce.confidence DESC, ce.id LIMIT ?");
+        binds.push(Box::new(limit as i64));
+
+        let mut stmt = conn.prepare(&sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), entry_from_row)?;
+        let entries = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))?;
+        self.record_access(entries.iter().map(|e| e.edge_id))?;
+        Ok(entries)
+    }
 }

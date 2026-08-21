@@ -37,3 +37,5 @@ graph-*.html
 
 # Python bindings local dev environment
 .venv/
+benches/longmemeval/db/*.db-shm
+benches/longmemeval/db/*.db-wal

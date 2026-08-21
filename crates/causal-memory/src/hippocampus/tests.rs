@@ -13,6 +13,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("caching".into()),
+                            scope: None,
             },
             NodeData {
                 id: "o1".into(),
@@ -22,6 +23,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("caching".into()),
+                            scope: None,
             },
             NodeData {
                 id: "d2".into(),
@@ -31,6 +33,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("concurrency".into()),
+                            scope: None,
             },
             NodeData {
                 id: "o2".into(),
@@ -40,6 +43,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("concurrency".into()),
+                            scope: None,
             },
             NodeData {
                 id: "d3".into(),
@@ -49,6 +53,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("concurrency".into()),
+                            scope: None,
             },
             NodeData {
                 id: "o3".into(),
@@ -58,6 +63,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("concurrency".into()),
+                            scope: None,
             },
         ];
         let edges = vec![
@@ -207,6 +213,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "b".into(),
@@ -216,6 +223,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "c".into(),
@@ -225,6 +233,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "w1".into(),
@@ -234,6 +243,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "w2".into(),
@@ -243,6 +253,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             // Padding nodes to reduce probability of w1 being a replay seed
             NodeData {
@@ -253,6 +264,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "p2".into(),
@@ -262,6 +274,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "p3".into(),
@@ -271,6 +284,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "p4".into(),
@@ -280,6 +294,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "p5".into(),
@@ -289,6 +304,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
         ];
         let _ = &mut nodes; // suppress unused mut warning
@@ -350,6 +366,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "b".into(),
@@ -359,6 +376,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
         ];
         let edges = vec![EdgeData {
@@ -438,6 +456,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "b".into(),
@@ -447,6 +466,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "c".into(),
@@ -456,6 +476,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "d".into(),
@@ -465,6 +486,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
         ];
         let edges = vec![
@@ -522,6 +544,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "b".into(),
@@ -531,6 +554,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "c".into(),
@@ -540,6 +564,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "d".into(),
@@ -549,6 +574,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                            scope: None,
             },
         ];
         // Input order: d→c first (valid), then a→b (invalid).
@@ -661,6 +687,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("test".into()),
+                            scope: None,
             })
             .collect();
         let edges = vec![
@@ -746,12 +773,14 @@ mod tests {
                 // recently activated → dormant=false
                 last_activated: chrono::Utc::now().timestamp(),
                 task_tag: Some("test".into()),
+                            scope: None,
             },
             NodeData {
                 id: "o1".into(), text: "weak outcome".into(),
                 event_time: 1001, q_value: 0.5, replay_count: 0,
                 last_activated: chrono::Utc::now().timestamp(),
                 task_tag: Some("test".into()),
+                            scope: None,
             },
         ];
         let edges = vec![EdgeData {
@@ -798,6 +827,7 @@ mod tests {
                 replay_count: 2,
                 last_activated: 100,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "crash".into(),
@@ -807,6 +837,7 @@ mod tests {
                 replay_count: 1,
                 last_activated: 100,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "safe".into(),
@@ -816,6 +847,7 @@ mod tests {
                 replay_count: 3,
                 last_activated: 100,
                 task_tag: None,
+                            scope: None,
             },
             NodeData {
                 id: "rollback".into(),
@@ -825,6 +857,7 @@ mod tests {
                 replay_count: 2,
                 last_activated: 100,
                 task_tag: None,
+                            scope: None,
             },
         ];
         let edges = vec![
@@ -1017,6 +1050,7 @@ mod tests {
             replay_count: 0,
             last_activated: 0,
             task_tag: None,
+            scope: None,
         }];
         let graph = CausalGraph::build(&nodes, &[]);
         let mut graph = graph;
@@ -1038,4 +1072,507 @@ mod tests {
         assert_eq!(calls, 0, "confident entropy verdict must skip the LLM");
         assert!(!rep.should_record, "outcome matched the graph prediction");
     }
+
+    // ─── Phase A: fact entity linking (one-graph-convergence) ────────────
+
+    /// Store fixture: one causal edge plus one fact sharing three
+    /// distinct non-stopword tokens ({module, typescript, rewrites}) —
+    /// enough for an entity link.
+    #[allow(
+        clippy::expect_used,
+        reason = "test fixture: panicking on setup failure is the desired behavior"
+    )]
+    fn linked_store() -> crate::store::CausalStore {
+        let store = crate::store::CausalStore::open_in_memory().expect("in-memory store");
+        store
+            .record_decision_at(
+                "rewrote module in TypeScript and planned rewrites",
+                "compile errors dropped",
+                "caused",
+                Some("rust"),
+                0.8,
+                "llm_inferred",
+                1_700_000_000,
+            )
+            .expect("record decision");
+        store
+            .record_fact(
+                "editor_preference",
+                "user prefers TypeScript for module rewrites",
+                "user",
+                "agent",
+                0.8,
+            )
+            .expect("record fact");
+        store
+    }
+
+    #[test]
+    fn test_entity_link_scope_isolation() {
+        // Phase A hardening: a fact with a colon-namespaced scope
+        // ("lme:{qid}") links ONLY to chunks whose task_tag matches the
+        // scope suffix - 500-question corpora share one store, and
+        // cross-question links would pollute isolation and explode the
+        // graph. Canonical scopes (user/session/agent) keep the all-chunk
+        // behavior for single-agent stores.
+        let node = |id: &str, text: &str, tag: Option<&str>, scope: Option<&str>| NodeData {
+            id: id.into(),
+            text: text.into(),
+            event_time: 0,
+            q_value: 0.5,
+            replay_count: 0,
+            last_activated: 0,
+            task_tag: tag.map(str::to_string),
+            scope: scope.map(str::to_string),
+        };
+        // fact in scope lme:q1 shares tokens with d1 (task q1) AND d2 (q2).
+        let nodes = vec![
+            node("fact:1", "migrated build tooling to TypeScript for scripts", None, Some("lme:q1")),
+            node("d1", "rewrote build scripts using TypeScript tooling", Some("q1"), None),
+            node("d2", "switched project to TypeScript", Some("q2"), None),
+        ];
+        let edges = crate::hippocampus::entity_link_facts(&nodes, &[0]);
+        let linked: Vec<&str> = edges.iter().map(|e| e.to_id.as_str()).collect();
+        assert!(
+            linked.iter().any(|t| *t == "d1"),
+            "in-scope chunk must link: {linked:?}"
+        );
+        assert!(
+            !linked.iter().any(|t| *t == "d2"),
+            "cross-scope chunk must NOT link (lme:q1 vs task q2): {linked:?}"
+        );
+
+        // Canonical scope: links to all chunks (single-agent store).
+        let nodes = vec![
+            node("fact:2", "migrated build tooling to TypeScript for scripts", None, Some("user")),
+            node("d3", "rewrote build scripts using TypeScript tooling", Some("dev"), None),
+            node("d4", "fixed build scripts for TypeScript tooling", Some("ops"), None),
+        ];
+        let edges = crate::hippocampus::entity_link_facts(&nodes, &[0]);
+        let linked: Vec<&str> = edges.iter().map(|e| e.to_id.as_str()).collect();
+        assert!(
+            linked.iter().any(|t| *t == "d3") && linked.iter().any(|t| *t == "d4"),
+            "canonical scope must link across task_tags: {linked:?}"
+        );
+
+        // Link stopwords: a fact sharing only generic tokens must not link.
+        let nodes = vec![
+            node("fact:3", "user project code issue", None, Some("user")),
+            node("d5", "the user fixed a project code issue", Some("dev"), None),
+        ];
+        let edges = crate::hippocampus::entity_link_facts(&nodes, &[0]);
+        assert!(
+            edges.is_empty(),
+            "generic-only tokens must not drive a link: {edges:?}"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: graph construction must succeed or the test is meaningless"
+    )]
+    fn test_fact_entity_link_spread_includes_fact_and_causal_chain() {
+        let mut graph = CausalGraph::from_store(&linked_store()).expect("graph from store");
+        let results = graph.spreading_activation("TypeScript", None, false);
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("editor_preference")),
+            "fact node must surface via entity link: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("rewrote module in TypeScript")),
+            "causal decision must surface: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("compile errors dropped")),
+            "outcome must surface via the caused edge: {texts:?}"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: graph construction must succeed or the test is meaningless"
+    )]
+    fn test_fact_seed_spreads_to_causal_chain() {
+        // "prefers" appears ONLY in the fact — seeding there proves the
+        // fact→chunk direction: a fact seed reaches causal lessons.
+        let mut graph = CausalGraph::from_store(&linked_store()).expect("graph from store");
+        let results = graph.spreading_activation("prefers", None, false);
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("rewrote module in TypeScript")),
+            "fact seed must reach the causal decision node: {texts:?}"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: store/graph construction must succeed or the test is meaningless"
+    )]
+    fn test_fact_entity_link_requires_min_shared_tokens() {
+        let store = crate::store::CausalStore::open_in_memory().expect("in-memory store");
+        // Only ONE shared token per pair ({zsh}, {shell}) — below the
+        // conservative ≥3 distinct non-stopword threshold, no link may be
+        // created.
+        store
+            .record_decision_at(
+                "configured zsh plugins",
+                "shell startup faster",
+                "caused",
+                Some("shell"),
+                0.8,
+                "llm_inferred",
+                1_700_000_000,
+            )
+            .expect("record decision");
+        store
+            .record_fact("shell", "zsh completion setup", "user", "agent", 0.8)
+            .expect("record fact");
+
+        let mut graph = CausalGraph::from_store(&store).expect("graph from store");
+        let results = graph.spreading_activation("completion", None, false);
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("zsh completion setup")),
+            "the seeded fact itself must surface: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("zsh plugins")),
+            "single-token overlap must NOT create a link: {texts:?}"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: graph construction must succeed or the test is meaningless"
+    )]
+    fn test_spreading_activation_seeded_by_fact_id_only() {
+        // The query text matches NOTHING in the graph (substring seeds are
+        // empty); the only seed is the store-resolved fact node id. Proves
+        // the Phase B seeded entry point: store-side BM25/semantic seeds
+        // drive the spread, not substring luck.
+        let mut graph = CausalGraph::from_store(&linked_store()).expect("graph from store");
+        let results = graph.spreading_activation_seeded(
+            "zzz-nomatch",
+            &["fact:1".to_string()],
+            None,
+            true,
+        );
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("rewrote module in TypeScript")),
+            "fact-id seed must reach the causal chain via the Phase A link: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn test_entity_link_counts_distinct_tokens_only() {
+        // The chunk text REPEATS "zsh" — without posting-list dedup a
+        // single distinct shared token would count as overlap 2 and
+        // wrongly link below the documented "≥ 3 distinct tokens" bar.
+        let node = |id: &str, text: &str| NodeData {
+            id: id.into(),
+            text: text.into(),
+            event_time: 0,
+            q_value: 0.5,
+            replay_count: 0,
+            last_activated: 0,
+            task_tag: None,
+            scope: None,
+        };
+        let nodes = vec![
+            node("d1", "configured zsh zsh plugins"),
+            node("fact:1", "shell: zsh completion setup"),
+        ];
+        let edges = crate::hippocampus::entity_link_facts(&nodes, &[1]);
+        assert!(
+            edges.is_empty(),
+            "one distinct shared token must not link, even repeated: {edges:?}"
+        );
+
+        // Control: a second distinct shared token does link, bidirectionally.
+        let nodes = vec![
+            node("d1", "configured zsh zsh plugins for setup completion"),
+            node("fact:1", "shell: zsh completion setup"),
+        ];
+        let edges = crate::hippocampus::entity_link_facts(&nodes, &[1]);
+        assert_eq!(
+            edges.len(),
+            2,
+            "three distinct tokens (zsh, setup, completion) link both ways"
+        );
+    }
+
+    // ─── Phase C: write-path graph patches (one-graph-convergence) ───────
+
+    fn node(id: &str, text: &str) -> NodeData {
+        NodeData {
+            id: id.into(),
+            text: text.into(),
+            event_time: 0,
+            q_value: 0.5,
+            replay_count: 0,
+            last_activated: 0,
+            task_tag: None,
+            scope: None,
+        }
+    }
+
+    #[test]
+    fn test_patch_edge_spreads_without_rebuild() {
+        // Base graph: one edge d0 → o0. Then a write-path patch appends
+        // d1/o1 and the edge d0 → d1 (chunk reuse: d0 is an EXISTING node,
+        // the hard case for CSR). The patched edge must spread both ways.
+        let mut graph = CausalGraph::build(
+            &[node("d0", "used global lock"), node("o0", "deadlock error")],
+            &[EdgeData {
+                from_id: "d0".into(),
+                to_id: "o0".into(),
+                relation: Relation::Caused,
+                weight: 0.9,
+                valid: true,
+            }],
+        );
+        let d0 = graph.append_node(node("d0", "used global lock"));
+        let d1 = graph.append_node(node("d1", "replaced with sharded locks"));
+        graph.add_patch_edge(d0, d1, Relation::Caused, 0.8);
+
+        // Forward: seed at d0's text reaches the PATCHED target d1.
+        let fwd = graph.spreading_activation("global lock", None, false);
+        let texts: Vec<&str> = fwd.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("sharded locks")),
+            "patched edge must spread forward: {texts:?}"
+        );
+
+        // Reverse: seed at d1 reaches the EXISTING d0 through the patch.
+        let rev = graph.spreading_activation("sharded", None, true);
+        let texts: Vec<&str> = rev.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("global lock")),
+            "patched edge must spread reverse: {texts:?}"
+        );
+
+        // Differential: a full build with the same nodes+edges reaches the
+        // same set (patch state == rebuilt state).
+        let mut rebuilt = CausalGraph::build(
+            &[
+                node("d0", "used global lock"),
+                node("o0", "deadlock error"),
+                node("d1", "replaced with sharded locks"),
+            ],
+            &[
+                EdgeData {
+                    from_id: "d0".into(),
+                    to_id: "o0".into(),
+                    relation: Relation::Caused,
+                    weight: 0.9,
+                    valid: true,
+                },
+                EdgeData {
+                    from_id: "d0".into(),
+                    to_id: "d1".into(),
+                    relation: Relation::Caused,
+                    weight: 0.8,
+                    valid: true,
+                },
+            ],
+        );
+        let rb = rebuilt.spreading_activation("global lock", None, false);
+        let rb_texts: Vec<&str> = rb.iter().map(|r| r.text.as_str()).collect();
+        let patched: std::collections::HashSet<&str> =
+            fwd.iter().map(|r| r.text.as_str()).collect();
+        for t in rb_texts {
+            assert!(patched.contains(t), "rebuilt hit {t:?} missing from patched");
+        }
+    }
+
+    #[test]
+    fn test_retire_node_never_seeds_or_surfaces() {
+        let mut graph = CausalGraph::build(
+            &[node("fact:1", "db: redis 7.2"), node("d1", "deployed redis")],
+            &[],
+        );
+        // Suppose the fact was already linked and then replaced: retire it.
+        assert!(graph.retire_node("fact:1"));
+        let results = graph.spreading_activation("redis 7.2", None, false);
+        assert!(
+            results.is_empty() || !results.iter().any(|r| r.text.contains("7.2")),
+            "retired fact must not surface: {results:?}"
+        );
+        // Re-appending the same id revives it (store-side revive path).
+        let idx = graph.append_node(node("fact:1", "db: redis 7.2"));
+        let d2 = graph.append_node(node("d2", "upgraded redis"));
+        graph.add_patch_edge(idx, d2, Relation::Fact, 0.5);
+        let results = graph.spreading_activation("redis 7.2", None, false);
+        assert!(
+            results.iter().any(|r| r.text.contains("7.2")),
+            "revived fact must surface again: {results:?}"
+        );
+    }
+
+    #[test]
+    fn test_invalidate_edges_between_stops_spread() {
+        let mut graph = CausalGraph::build(
+            &[node("d1", "skipped backup"), node("o1", "data loss")],
+            &[EdgeData {
+                from_id: "d1".into(),
+                to_id: "o1".into(),
+                relation: Relation::Caused,
+                weight: 0.9,
+                valid: true,
+            }],
+        );
+        assert_eq!(graph.invalidate_edges_between("d1", "o1"), 1);
+        let results = graph.spreading_activation("skipped backup", None, false);
+        assert!(
+            !results.iter().any(|r| r.text.contains("data loss")),
+            "invalidated edge must not spread: {results:?}"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: overlay entries must exist or the test is meaningless"
+    )]
+    fn test_add_patch_edge_idempotent_on_rewrite() {
+        // An idempotent re-record (same chunk ids) must UPDATE the overlay
+        // edge, not stack a duplicate — repeated writes must not inflate
+        // activation or grow the overlay unboundedly.
+        let mut graph = CausalGraph::build(&[node("d1", "alpha"), node("o1", "beta")], &[]);
+        let d1 = graph.append_node(node("d1", "alpha"));
+        let o1 = graph.append_node(node("o1", "beta"));
+        graph.add_patch_edge(d1, o1, Relation::Caused, 0.8);
+        graph.add_patch_edge(d1, o1, Relation::Caused, 0.9);
+        graph.add_patch_edge(d1, o1, Relation::Caused, 0.9);
+
+        let fwd = graph.patch_fwd.get(&d1).expect("overlay fwd entry");
+        assert_eq!(fwd.len(), 1, "no duplicate overlay edges: {fwd:?}");
+        let rev = graph.patch_rev.get(&o1).expect("overlay rev entry");
+        assert_eq!(rev.len(), 1, "no duplicate overlay edges: {rev:?}");
+        assert_eq!(fwd[0].value, 0.9 * Relation::Caused.spread_coeff());
+
+        // And the activation reflects ONE edge, not three (0.8 seed ×
+        // 0.9 value × 0.7 decay ≈ 0.5 → above the 0.1 threshold once; a
+        // triple-stacked edge would clamp at 1.0).
+        let results = graph.spreading_activation("alpha", None, false);
+        let o1_act = results
+            .iter()
+            .find(|r| r.text.contains("beta"))
+            .map(|r| r.activation)
+            .expect("beta activated");
+        assert!(
+            (o1_act - 0.75 * 0.9 * 0.7).abs() < 1e-4,
+            "activation must reflect one edge (got {o1_act})"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: overlay entries must exist or the test is meaningless"
+    )]
+    fn test_link_fact_node_uses_token_index_and_survives_rebuild() {
+        // Same thresholds as entity_link_facts, driven through the
+        // incremental index path: three shared tokens link, fewer don't —
+        // and identical behavior whether the graph was built from scratch
+        // (index populated by build) or grown by appends.
+        let mut graph = CausalGraph::build(
+            &[
+                node("d1", "configured zsh plugins for setup completion"),
+                node("d2", "unrelated work on the database"),
+            ],
+            &[],
+        );
+        let f1 = graph.append_node(node("fact:1", "shell: zsh completion setup"));
+        graph.link_fact_node(f1);
+        let fwd = graph.patch_fwd.get(&f1).expect("fact has links");
+        assert_eq!(fwd.len(), 1, "three shared tokens (zsh, setup, completion) → one chunk: {fwd:?}");
+        assert_eq!(fwd[0].other, 0, "links to d1, not the unrelated d2");
+    }
+    #[test]
+    fn test_component_stats_basic() {
+        // d1->o1, d2->o2 (two isolated pairs) + d3->o3->d4 chain.
+        let nodes = vec![
+            NodeData { id: "d1".into(), text: "a b".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+            NodeData { id: "o1".into(), text: "c d".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+            NodeData { id: "d2".into(), text: "e f".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+            NodeData { id: "o2".into(), text: "g h".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+            NodeData { id: "d3".into(), text: "i j".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+            NodeData { id: "o3".into(), text: "k l".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+            NodeData { id: "d4".into(), text: "m n".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+        ];
+        let edges = vec![
+            EdgeData { from_id: "d1".into(), to_id: "o1".into(), relation: Relation::Caused, weight: 1.0, valid: true },
+            EdgeData { from_id: "d2".into(), to_id: "o2".into(), relation: Relation::Caused, weight: 1.0, valid: true },
+            EdgeData { from_id: "d3".into(), to_id: "o3".into(), relation: Relation::Caused, weight: 1.0, valid: true },
+            EdgeData { from_id: "o3".into(), to_id: "d4".into(), relation: Relation::Caused, weight: 1.0, valid: true },
+        ];
+        let graph = CausalGraph::build(&nodes, &edges);
+        let (comps, max, isolated, v_edges) = graph.component_stats();
+        assert_eq!(comps, 3, "two pairs + one 3-node chain");
+        assert_eq!(max, 3, "chain is the largest component");
+        assert_eq!(isolated, 0);
+        assert_eq!(v_edges, 4);
+    }
+
+        #[test]
+    fn test_benchmark_scale_scope_isolation_components() {
+        // Miniature 500-question scenario: two questions share one store.
+        // Facts scoped lme:q1 / lme:q2 must link WITHIN their question only
+        // (component structure stays per-question; spreading from q1 must
+        // never surface q2 content).
+        let store = CausalStore::open_in_memory().unwrap();
+        store.record_decision("used redis for caching data", "caching worked", "caused", Some("q1"), 0.8, "rule").unwrap();
+        store.record_decision("used channels in go", "race fixed", "caused", Some("q2"), 0.8, "rule").unwrap();
+        store.record_fact("preference", "prefers redis caching data", "lme:q1", "eval", 0.9).unwrap();
+        store.record_fact("preference", "prefers channels in go code", "lme:q2", "eval", 0.9).unwrap();
+
+        let mut graph = CausalGraph::from_store(&store).unwrap();
+        // Both questions must be separate weakly-connected components.
+        let (comps, _max, _iso, _ve) = graph.component_stats();
+        assert!(comps >= 2, "two questions must stay separate components: {comps}");
+
+        // Behavioral isolation: seeding q1 content must surface q1's linked
+        // fact and NEVER q2's fact or chunk.
+        let results = graph.spreading_activation("used redis for caching", None, false);
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("prefers redis caching")),
+            "q1 fact must be linked in: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("channels") || t.contains("race fixed")),
+            "cross-question leakage: {texts:?}"
+        );
+    }
+#[test]
+    #[ignore = "real-DB probe: needs ~/.local/share/causal-memory/causal.db (run explicitly)"]
+    fn probe_real_db_connectivity() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let path = std::env::var("CAUSAL_MEMORY_DB").unwrap_or_else(|_| {
+            format!("{home}/.local/share/causal-memory/causal.db")
+        });
+        if !std::path::Path::new(&path).exists() {
+            eprintln!("probe: no real DB at {path}");
+            return;
+        }
+        let store = CausalStore::open(&path).unwrap();
+        let graph = CausalGraph::from_store(&store).unwrap();
+        let (comps, max, isolated, edges) = graph.component_stats();
+        eprintln!(
+            "REAL DB: {} nodes, {} valid edges, {} components, largest {}, isolated {}",
+            graph.num_nodes(), edges, comps, max, isolated
+        );
+        eprintln!("(baseline pre-Phase-A: 431 chunks / 225 edges / 207 components / largest 10)");
+        assert!(max >= 10, "facts must have merged at least some pairs");
+    }
+
 }

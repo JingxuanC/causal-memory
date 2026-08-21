@@ -7,7 +7,203 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.9.0] - Unreleased
 
+### Benchmarks
+- **LongMemEval-S full-pipeline headline: 76.4% overall (382/500) at
+  11,524 avg ctx tokens** (run 20260821_161122, git 5064b90): +4.0pp over
+  the 8/20 run while cutting per-query context 32% (17,016 → 11,524;
+  answer-phase input 8.51M → 5.76M tokens across 500 questions).
+  multi-session 60.2% (+4.5), temporal-reasoning 69.9% (+7.5),
+  single-session-preference 80.0% (+13.3), abstention 96.7%, evidence
+  hit flat at 89.2%. All 48 verdict flips evidence-stable — the gain is
+  the dilution cut, not retrieval luck. Docs updated with the mem0
+  comparison (official 94.4% @ 6.8K tok/q on platform stack; independent
+  same-harness repro 73.8%; judge-caliber discount documented).
+
 ### Added
+- **`scripts/audit_fact_links.py`** — stdlib-only replication of the
+  fact↔chunk linker policy (`entity_link_facts` / `link_fact_node` /
+  `component_stats`): exact tokenizer, LINK_STOPWORDS, df filter,
+  scope isolation, and top-8 truncation order. Reproduces the real-DB
+  numbers (3,117 links / 7,857 edges / 29 components at ≥3+df≤20 vs
+  9,764 / 21,151 / 17 pre-fix) and dumps random links for manual
+  precision re-sampling (`--sample N`).
+- **Phase C — incremental graph lifecycle (write-path patches)**
+  (one-graph-convergence): `CausalGraph` gains live-patch APIs —
+  `append_node` (O(1) SoA append), `add_patch_edge` (per-node overlay
+  maps; a CSR middle insert is O(E) and shifts every stored edge index,
+  so patches ride alongside the CSR segments in both spread directions),
+  `invalidate_edges_between` (O(deg) validity flip), and
+  `retire_node`/revive (superseded fact nodes neither seed nor surface
+  until the next rebuild drops them). `record_decision` /
+  `record_fact` (including replace, which retires the superseded nodes)
+  and `invalidate_decision` patch the live graph, so new memories are
+  visible to the very next query — verified by a dirty-counter assertion
+  (no lazy rebuild fired) and a differential assertion (patched results
+  == fully-rebuilt results across two instances on the same store). The
+  lazy 5-writes/30s full rebuild stays as the drift bound; Phase B's
+  seed-miss rebuild now rarely triggers.
+- **Phase D — one consolidation loop over all types**
+  (one-graph-convergence):
+  - Fact half-life: stage 3 `downscale_facts` decays `agent_facts.confidence`
+    by age from `updated_at` on the slowest tier (user_feedback, 90d —
+    facts are high-trust "what is" knowledge); below `gc_threshold` facts
+    retire. Report gains `facts_decayed` / `facts_gc` (dry-run counts too).
+  - Fact supersession lineage (schema v12): `agent_facts.superseded_by`
+    — `record_fact_replacing` retires AND records which fact replaced
+    which in one write; revive clears it. The id powers the graph's
+    write-path retire. Full soft-supersession display deferred to its own
+    eval A/B (the current knowledge-update contract — new value replaces,
+    old exits retrieval — is pinned by the MCP e2e).
+  - REM/meta mining input includes facts: the pattern miner's input is a
+    unified `MineItem` list — valid facts participate first-class
+    (`fact:{id}`, stratum = scope), `similar_to` only (no outcome
+    semantics), and the mined meta edges wire fact nodes into the causal
+    content graph (+0.6 Meta spread). Fact-free stores (CausalEval) mine
+    identically.
+- **CausalEval 140-question regression (post Phase C+D)**: overall
+  111/140 = 79.3% vs the 8/19 detect baseline 117/140 = 83.6%. The delta
+  is judge noise, not retrieval: `evidence_hit` is statistically flat
+  (122 vs 125; only 2 lost / 1 gained), and 16 of the 20 verdict flips
+  had evidence retrieved in BOTH runs. Both lost-evidence questions are
+  C16 (the cross-domain category that swings 7-9/20 run to run). Results
+  archived as `benches/causal_eval/results_phaseCD_20260820.jsonl`.
+
+### Fixed
+- **Fact↔chunk link precision (entity-link false positives)**: the
+  rebuild-time (`entity_link_facts`) and incremental (`link_fact_node`)
+  linkers now share one policy — ≥3 **distinct non-stopword** shared
+  tokens plus a df filter (tokens present in >20 chunks don't count),
+  replacing the ≥2-token bar; `link_fact_node` also gained the stopword,
+  df, and scope-isolation filters it previously lacked (write-path and
+  rebuild now agree). Real-DB audit: sampled link precision 17%→33%
+  (strict) / 29%→75% (lenient); fact links 9,764→3,116 (−68%, ~2.2/fact);
+  graph 21,151→7,857 valid edges, 17→29 components (isolation restored).
+- **Date-math questions misrouted into the aggregation pipeline**
+  (retrieval quality): `looks_aggregation`'s "how many" phrase matched
+  "How many days ago did I buy a smoker?" — a date-ARITHMETIC question
+  over ONE event, not an enumeration — arming the full-session expansion
+  (≤80 injected chunks), the 500-fact wide queries, and the verification
+  loop. Gold needs exactly one turn; the result was 2-3x context
+  inflation with ~64% noise tokens and answer dilution (LongMemEval
+  temporal-reasoning lost 11 questions under the multipass pipeline; 7
+  were date-math). The carve-out excludes "days/weeks/months/years/hours/
+  long ago" and "how many ... between"; true aggregations ("How many
+  books did I buy?") contain neither pattern and are unaffected.
+  A/B on the 133 temporal questions: date-math subset 65%→74% (+9pp)
+  with ctx median 23,988→9,914 tokens (-59%); non-date control flat
+  (53/87→51/87); zero evidence flips — a pure noise-reduction gain.
+  Context: the 8/9 baseline predated the multipass pipeline (Step A,
+  8/19), so the first full-500 multipass run conflated this with the
+  Phase A-D changes — source-level tracing showed entity links never
+  participate in bench retrieval (hippocampus_boost is env-gated).
+- **BM25 index candidates could exceed SQLite's host-variable limit**
+  (pre-existing v10 bug, surfaced by LongMemEval's 246k-chunk shared
+  store): `search_causal_bm25` / `search_facts_bm25` resolve candidate
+  chunk ids from the persistent inverted index WITHOUT a task_tag
+  filter (the tag applies to causal_edges below), so a few common tokens
+  matched 98k+ chunk ids — the `IN (...)` list blew past SQLite's
+  999-variable floor, the statement failed to prepare, and callers
+  silently degraded to empty results. Both paths now cap index
+  candidates at 900 and fall back to the task_tag-bounded full scan (the
+  pre-index behavior) for oversized sets; regression test at 950 edges.
+  First caught as LongMemEval 29.2% (empty retrieval) vs the 73.2%
+  baseline.
+- **Phase C+D review fixes** (3 regressions + 1 config):
+  - Idempotent fact re-records no longer stack duplicate overlay edges —
+    `add_patch_edge` upserts by (from, to): a repeat write updates the
+    weight instead of adding a copy, so activation is never inflated and
+    the overlay never grows unboundedly (regression test pins the
+    one-edge activation value).
+  - `link_fact_node` uses an incremental token→chunk inverted index
+    (maintained by `append_node`, rebuilt by `build`) instead of
+    re-tokenizing every graph node per fact write — write-path linking is
+    now O(fact tokens × hits), the same shape as the rebuild-time linker,
+    instead of O(V) tokenizes per write.
+  - Fact participants no longer enter the stratified-replication pool:
+    a fact's scope leaked into the strata set, clearing `confounded` for
+    single-domain decision pairs (strata len ≥ 2 without any actual
+    cross-task replication). Only causal endpoints pool; facts still mine
+    `similar_to` as endpoints (regression test pins confounded=true
+    despite a matching fact).
+  - `half_life_fact_hours` (default 2160) replaces the hardcoded reuse of
+    the user_feedback tier — facts have their own tunable decay knob.
+- **Phase A entity-link overlap counted repeated tokens**: a chunk whose
+  text repeated a word contributed the same token twice to the overlap
+  count, letting a single distinct shared token fake "≥ 2 distinct
+  tokens" and link below the documented threshold. Posting lists are now
+  deduped at index-build time; regression test included (pure-function
+  test, no store needed — the linker is extracted as
+  `entity_link_facts`).
+- **`MemoryHit.score` dual semantics**: the spread path returned
+  `1/rank` while the RRF fallback returned `1/(60+rank)`. Both paths now
+  use the RRF formula, so the field has one meaning across modes.
+
+### Changed
+- **Phase B review refactor (net −193 lines)**: `search_memory` /
+  `search_memory_entries` converge on one shared presentation — both
+  retrieval paths (spread engine, dual-pool RRF) produce the same
+  `RankedHits` shape and share D4 routing + grouped rendering
+  (`render_unified`) and hit materialization (`hits_from_ranked`). The
+  unified engine moved to its own module (`memory/unified.rs`) with
+  seeding (`unified_seed_ids`), freshness (`ensure_fresh_for`), typed
+  split (`split_typed`) and edge ranking (`rank_edges_by_activation`) as
+  named steps. `search_memory_entries` now joins hop-expansion edges in
+  the RRF fusion like the text tool already did (they were computed but
+  silently discarded before). `bm25_seed_ids` builds its scope filter
+  conditionally, matching the module's SQL convention.
+
+### Added
+- **Phase B — unified retrieval engine (one engine)**
+  (one-graph-convergence): `search_memory` / `search_memory_entries` are now
+  served by a single spreading-activation run over the whole typed graph.
+  Seeding is store-side and type-unified (`bm25_seed_ids`: the persistent
+  BM25 index over BOTH `fact:{id}` and chunk namespaces, ranked by distinct
+  token overlap, scope-filtered — plus semantic seeds when an embedder is
+  configured); the graph's substring matches union in
+  (`spreading_activation_seeded`, built on the extracted
+  `spread_and_collect` core). Results split back into typed display rows —
+  facts in activation order (`facts_by_ids`), causal edges ranked by their
+  strongest activated endpoint (`edges_touching_chunks`). The dual-pool RRF
+  path stays as fallback and A/B regression control; D4 intent routing and
+  the grouped fact/causal display are unchanged. **Freshness (Phase C
+  preview)**: a store-resolved seed that maps to no graph node proves the
+  graph predates the write (the lazy 5-writes/30s rebuild hasn't fired) —
+  the engine rebuilds once instead of silently dropping the seed, so it is
+  never weaker than the store-direct path it replaces (caught by the MCP
+  e2e: a fresh fact under the lazy threshold must still surface). Output
+  tag `[unified/spread]` / mode `"spread"`.
+- **Phase A — fact entity linking into the causal graph**
+  (one-graph-convergence): `from_store` now deterministically links each
+  `agent_facts` node to chunk nodes sharing ≥ 2 distinct tokens
+  (`patterns::tokenize`, ASCII words + CJK bigrams; no LLM). Edges are
+  bidirectional `Fact` edges (weight `0.3 + 0.1·overlap`, cap 0.8), so
+  fact seeds reach causal chains and causal seeds surface facts —
+  previously facts formed isolated scope-hub islands and spreading
+  activation could never cross between the two memory layers. An
+  inverted token→chunk index keeps linking O(total tokens); a per-fact
+  cap (8) keeps generic keys from wiring to half the store.
+  `record_fact` now marks the graph dirty (same lazy-rebuild contract as
+  `record_decision`/`remember`). Deviation from the plan: the key→value
+  self-link is skipped — the fact node text already carries
+  `{key}: {value}` and linking runs on it.
+- **AMC server on the production pipeline (single-track)**: the Agent
+  Memory Challenge server is now a thin HTTP frontend over the shared
+  `Memory` facade — `/add` → `remember`, `/search` →
+  `search_memory_entries` — the same pipeline as MCP stdio/HTTP and the
+  Python bindings. The private AmcStore/lexical scoring/private RRF
+  (~400 lines) is deleted; per-user_id store isolation is physical (one
+  db per user). `--write-mode distill|raw` controls the write-time
+  strategy: full distillation (default; honest degrade to raw with a
+  warning when no LLM env) vs pre-gatekeeping raw turns — both modes
+  share the same BM25 + semantic + entity retrieval stack, so an A/B
+  rerun of the leaderboard isolates the value of write-time
+  distillation.
+- **`search_memory_entries` + `MemoryHit`** (facade): the structured core
+  of `search_memory` — both layers, per-layer semantic/BM25 fallthrough,
+  hop expansion, RRF fusion, top-k — returning machine-readable hits
+  for non-LLM frontends; the text tool wraps it unchanged.
+- **`remember_raw_turns`** (facade): raw conversation turns into the
+  retrieval pool with adjacent temporal edges (no write-time LLM).
 - **`resolve_updates` MCP tool (15th)**: the C7 knowledge-update pass
   (candidate scan + LLM judge, the same pipeline sleep runs as stage 1.7)
   is now callable by agents — preview by default, `apply=true` writes.

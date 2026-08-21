@@ -9,7 +9,7 @@
 //! MCP tools produce — agent frameworks consume these directly as tool
 //! outputs.
 
-use crate::hippocampus::CausalGraph;
+use crate::hippocampus::{CausalGraph, NodeData, Relation};
 use crate::store::CausalStore;
 use anyhow::Result;
 use std::path::Path;
@@ -37,6 +37,7 @@ pub(crate) const RRF_K: f64 = 60.0;
 
 pub mod format;
 pub mod ops;
+mod unified;
 pub mod output;
 
 #[cfg(test)]
@@ -98,6 +99,103 @@ impl Memory {
         self.graph_writes.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Phase C (one-graph-convergence): patch a freshly recorded causal
+    /// edge into the live graph — append the endpoint nodes (no-op on
+    /// chunk reuse), add the edge as an overlay patch. The new lesson is
+    /// visible to the very next query without waiting for the lazy
+    /// rebuild; `mark_graph_dirty` still runs so the periodic full rebuild
+    /// bounds drift.
+    fn patch_graph_new_edge(&self, entry: &crate::store::CausalEntry) {
+        if let Ok(mut guard) = self.graph.lock() {
+            if let Some(graph) = guard.as_mut() {
+                let node = |id: &str, text: &str, task_tag: Option<String>| NodeData {
+                    id: id.to_string(),
+                    text: text.to_string(),
+                    event_time: entry.event_time,
+                    q_value: 0.5,
+                    replay_count: 0,
+                    last_activated: 0,
+                    task_tag,
+                    scope: None,
+                };
+                let from = graph.append_node(node(
+                    &entry.decision_id,
+                    &entry.decision_text,
+                    entry.task_tag.clone(),
+                ));
+                let to = graph.append_node(node(&entry.outcome_id, &entry.outcome_text, None));
+                graph.add_patch_edge(
+                    from,
+                    to,
+                    Relation::from_str_lossy(&entry.relation),
+                    entry.confidence as f32,
+                );
+            }
+        }
+    }
+
+    /// Phase C: patch a freshly recorded fact into the live graph —
+    /// scope hub + fact node + scope→fact edge, then entity-link the fact
+    /// against the chunk nodes (same thresholds as the rebuild-time
+    /// linker).
+    fn patch_graph_new_fact(
+        &self,
+        fact_id: i64,
+        key: &str,
+        value: &str,
+        scope: &str,
+        confidence: f64,
+    ) {
+        if let Ok(mut guard) = self.graph.lock() {
+            if let Some(graph) = guard.as_mut() {
+                let scope_idx = graph.append_node(NodeData {
+                    id: format!("scope:{scope}"),
+                    text: format!("[{scope} scope]"),
+                    event_time: 0,
+                    q_value: 0.5,
+                    replay_count: 0,
+                    last_activated: 0,
+                    task_tag: None,
+                    scope: Some(scope.to_string()),
+                });
+                let fact_idx = graph.append_node(NodeData {
+                    id: format!("fact:{fact_id}"),
+                    text: format!("{key}: {value}"),
+                    event_time: 0,
+                    q_value: confidence as f32,
+                    replay_count: 0,
+                    last_activated: 0,
+                    task_tag: Some(key.to_string()),
+                    scope: Some(scope.to_string()),
+                });
+                graph.add_patch_edge(scope_idx, fact_idx, Relation::Fact, confidence as f32);
+                graph.link_fact_node(fact_idx);
+            }
+        }
+    }
+
+    /// Phase C: retire graph nodes for facts superseded by `new_fact_id`
+    /// (the store sets `superseded_by` on replace). Retired fact nodes
+    /// neither seed nor surface until the next full rebuild drops them.
+    fn patch_graph_retire_facts(&self, new_fact_id: i64) {
+        let superseded: Vec<i64> = self
+            .store
+            .with_conn(|conn| {
+                let mut stmt = conn.prepare("SELECT id FROM agent_facts WHERE superseded_by = ?1")?;
+                let rows = stmt.query_map(rusqlite::params![new_fact_id], |r| r.get(0))?;
+                let ids: std::result::Result<Vec<i64>, rusqlite::Error> = rows.collect();
+                Ok(ids?)
+            })
+            .unwrap_or_default();
+        if let Ok(mut guard) = self.graph.lock() {
+            if let Some(graph) = guard.as_mut() {
+                for id in superseded {
+                    graph.retire_node(&format!("fact:{id}"));
+                }
+            }
+        }
+    }
+
     /// Rebuild the graph when enough writes have accumulated or enough time
     /// passed. Called at the top of every hippocampus search.
     fn maybe_rebuild_graph(&self) {
@@ -108,16 +206,26 @@ impl Memory {
         let now = chrono::Utc::now().timestamp();
         let last = self.graph_last_rebuild.load(Ordering::Relaxed);
         if writes >= GRAPH_REBUILD_WRITES || now - last >= GRAPH_REBUILD_SECS {
-            if let Ok(g) = CausalGraph::from_store(&self.store) {
-                if let Ok(mut guard) = self.graph.lock() {
-                    *guard = Some(g);
-                }
-            }
-            self.graph_writes.store(0, Ordering::Relaxed);
-            self.graph_last_rebuild.store(now, Ordering::Relaxed);
-            // D1: flush buffered co-activation pairs alongside the rebuild.
-            self.flush_cooccurrences();
+            self.rebuild_graph_now();
         }
+    }
+
+    /// Phase B: rebuild the graph from the store unconditionally and reset
+    /// the lazy-rebuild bookkeeping. Same cost as the lazy trigger; called
+    /// when a query proves the graph is stale (a store-resolved seed maps
+    /// to no node) so the unified engine is never weaker than the store
+    /// paths it replaced.
+    fn rebuild_graph_now(&self) {
+        if let Ok(g) = CausalGraph::from_store(&self.store) {
+            if let Ok(mut guard) = self.graph.lock() {
+                *guard = Some(g);
+            }
+        }
+        self.graph_writes.store(0, Ordering::Relaxed);
+        self.graph_last_rebuild
+            .store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
+        // D1: flush buffered co-activation pairs alongside the rebuild.
+        self.flush_cooccurrences();
     }
 
     /// Record every unordered pair of co-activated chunks (D1). Retrieval

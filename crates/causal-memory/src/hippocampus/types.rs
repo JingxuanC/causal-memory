@@ -132,4 +132,9 @@ pub struct NodeData {
     pub replay_count: u16,
     pub last_activated: i64,
     pub task_tag: Option<String>,
+    /// Fact nodes only: the fact's scope ("user"/"session"/"agent" or a
+    /// colon-namespaced custom scope like "lme:{qid}" / "tenant:acme").
+    /// Phase A entity linking uses it to keep cross-scope links out
+    /// (benchmark/multi-tenant isolation); None on chunk/scope nodes.
+    pub scope: Option<String>,
 }

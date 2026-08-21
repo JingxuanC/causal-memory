@@ -28,7 +28,8 @@ impl CausalStore {
                  updated_at = excluded.updated_at,
                  confidence = excluded.confidence,
                  source = excluded.source,
-                 valid_to = NULL",
+                 valid_to = NULL,
+                 superseded_by = NULL",
             params![key, value, scope, source, confidence.clamp(0.0, 1.0), now],
         )?;
         let id = conn.query_row(
@@ -135,7 +136,8 @@ impl CausalStore {
                  updated_at = excluded.updated_at,
                  confidence = excluded.confidence,
                  source = excluded.source,
-                 valid_to = NULL",
+                 valid_to = NULL,
+                 superseded_by = NULL",
             params![key, value, scope, source, confidence.clamp(0.0, 1.0), now],
         )?;
         let id = conn.query_row(
@@ -144,10 +146,13 @@ impl CausalStore {
             |r| r.get(0),
         )?;
         Self::index_chunk(&conn, &format!("fact:{id}"), &format!("{key} {value}"))?;
+        // Phase D: retire + supersession lineage in one write — the old
+        // values exit retrieval (valid_to) AND record which fact replaced
+        // them (superseded_by), powering the graph's write-path retire.
         let retired = conn.execute(
-            "UPDATE agent_facts SET valid_to = ?1
+            "UPDATE agent_facts SET valid_to = ?1, superseded_by = ?5
              WHERE key = ?2 AND scope = ?3 AND value != ?4 AND valid_to IS NULL",
-            params![now, key, scope, value],
+            params![now, key, scope, value, id],
         )?;
         Ok((id, retired))
     }
@@ -229,12 +234,19 @@ impl CausalStore {
             .filter_map(|s| s.parse::<i64>().ok())
             .collect();
 
+        // Same index-size guard as search_causal_bm25: an oversized
+        // candidate set would exceed SQLite's host-variable limit in the
+        // `IN (...)` below — oversized sets skip the narrowing step and
+        // scan all valid facts instead (bounded by the fact table).
+        const MAX_INDEX_CANDIDATES: usize = 900;
+        let use_index = !fact_ids.is_empty() && fact_ids.len() <= MAX_INDEX_CANDIDATES;
+
         let mut sql = String::from(
             "SELECT id, key, value, scope, source, confidence, created_at, updated_at
              FROM agent_facts WHERE valid_to IS NULL",
         );
         let mut bind: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-        if !fact_ids.is_empty() {
+        if use_index {
             let ph = vec!["?"; fact_ids.len()].join(",");
             sql.push_str(&format!(" AND id IN ({ph})"));
             for fid in &fact_ids {
@@ -331,5 +343,31 @@ impl CausalStore {
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(limit);
         Ok(scored)
+    }
+
+    /// Phase B (one-graph-convergence): fetch valid facts by id set — the
+    /// display rows for fact nodes the spreading-activation engine lit up.
+    /// Order follows the input ids (activation order); missing/retired ids
+    /// drop out silently.
+    pub fn facts_by_ids(&self, ids: &[i64]) -> Result<Vec<super::AgentFact>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.acquire()?;
+        let ph = vec!["?"; ids.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT f.id, f.key, f.value, f.scope, f.source, f.confidence,
+                    f.created_at, f.updated_at
+             FROM agent_facts f
+             WHERE f.valid_to IS NULL AND f.id IN ({ph})"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(ids.iter()), super::fact_from_row)?;
+        let by_id: std::collections::HashMap<i64, super::AgentFact> = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))?
+            .into_iter()
+            .map(|f| (f.id, f))
+            .collect();
+        Ok(ids.iter().filter_map(|id| by_id.get(id).cloned()).collect())
     }
 }

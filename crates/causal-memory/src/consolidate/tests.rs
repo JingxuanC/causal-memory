@@ -956,3 +956,117 @@ fn test_supersession_annotate_live() {
     }
     assert_eq!(report.superseded_lessons, 1);
 }
+
+// ── Phase D: fact downscaling + supersession lineage ─────────────────
+
+/// Backdate a fact's updated_at so stage 3 sees it as `days` old.
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is the desired behavior"
+)]
+fn backdate_fact(store: &CausalStore, fact_id: i64, updated_at: i64) {
+    store
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_facts SET updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![updated_at, fact_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is the desired behavior"
+)]
+fn fact_state(store: &CausalStore, fact_id: i64) -> (f64, bool) {
+    store
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT confidence, valid_to IS NULL FROM agent_facts WHERE id = ?1",
+                rusqlite::params![fact_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .unwrap()
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is the desired behavior"
+)]
+fn test_fact_half_life_decay_and_gc() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // One old fact (400 days → well past the 90d half-life, below the GC
+    // threshold), one fresh fact (same-day → untouched).
+    let old = store
+        .record_fact("ci_tool", "jenkins", "user", "agent", 0.8)
+        .unwrap();
+    let fresh = store
+        .record_fact("os", "macos", "user", "agent", 0.9)
+        .unwrap();
+    backdate_fact(&store, old, NOW - 400 * DAY);
+
+    // Dry run: counted, not written.
+    let report = consolidate(&store, &default_config(), true, NOW).unwrap();
+    assert!(report.facts_decayed >= 1, "{:?}", report.facts_decayed);
+    assert_eq!(report.facts_gc, 1, "400d-old fact must be collected");
+    let (conf, valid) = fact_state(&store, old);
+    assert!(valid && (conf - 0.8).abs() < 1e-9, "dry run must not write");
+
+    // Real run: the old fact retires with decayed confidence, the fresh
+    // one keeps its confidence and stays valid.
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert_eq!(report.facts_gc, 1);
+    let (conf, valid) = fact_state(&store, old);
+    assert!(!valid, "old fact must retire");
+    assert!(conf < 0.2, "retired confidence must be below the threshold: {conf}");
+    let (conf, valid) = fact_state(&store, fresh);
+    assert!(valid, "fresh fact must stay valid");
+    assert!((conf - 0.9).abs() < 1e-9, "fresh fact must not decay: {conf}");
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is the desired behavior"
+)]
+fn test_fact_replace_records_supersession_lineage() {
+    let store = CausalStore::open_in_memory().unwrap();
+    let old = store
+        .record_fact("pm", "npm", "user", "agent", 0.8)
+        .unwrap();
+    let (new, retired) = store
+        .record_fact_replacing("pm", "pnpm", "user", "agent", 0.9)
+        .unwrap();
+    assert_eq!(retired, 1);
+
+    // The old row carries the lineage: retired AND pointing at its replacement.
+    let (valid, superseded_by): (bool, Option<i64>) = store
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT valid_to IS NULL, superseded_by FROM agent_facts WHERE id = ?1",
+                rusqlite::params![old],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert!(!valid, "old value must retire");
+    assert_eq!(superseded_by, Some(new), "lineage must point at the new fact");
+
+    // Revive (re-record the old value) clears the lineage.
+    store.record_fact("pm", "npm", "user", "agent", 0.8).unwrap();
+    let (valid, superseded_by): (bool, Option<i64>) = store
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT valid_to IS NULL, superseded_by FROM agent_facts WHERE id = ?1",
+                rusqlite::params![old],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert!(valid, "re-recorded fact revives");
+    assert_eq!(superseded_by, None, "revive clears the lineage");
+}

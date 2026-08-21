@@ -83,6 +83,7 @@ fn mk(id: &str, text: &str) -> NodeData {
         replay_count: 0,
         last_activated: 0,
         task_tag: None,
+        scope: None,
     }
 }
 

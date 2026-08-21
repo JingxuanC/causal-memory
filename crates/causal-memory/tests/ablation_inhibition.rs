@@ -40,6 +40,7 @@ fn make_graph(scenarios: &[Scenario]) -> CausalGraph {
             replay_count: 0,
             last_activated: 0,
             task_tag: None,
+            scope: None,
         });
 
         for (e_idx, (target_text, rel, weight)) in s.edges.iter().enumerate() {
@@ -52,6 +53,7 @@ fn make_graph(scenarios: &[Scenario]) -> CausalGraph {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                scope: None,
             });
             edges.push(EdgeData {
                 from_id: seed_id.clone(),

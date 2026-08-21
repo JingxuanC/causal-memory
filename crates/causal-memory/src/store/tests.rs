@@ -2764,3 +2764,129 @@ fn test_q_value_persists_and_reinforces() {
         .fold(0.0f32, f32::max);
     assert!(max_q > 0.5, "graph must load persisted Q values");
 }
+
+// ─── Phase B: unified seed resolver + typed materialization ──────────
+
+#[test]
+#[allow(clippy::unwrap_used, reason = "test invariant: panicking on failure is desired")]
+fn test_bm25_seed_ids_spans_both_namespaces_and_filters_scope() {
+    let store = CausalStore::open_in_memory().unwrap();
+    store
+        .record_decision_at(
+            "rewrote module in TypeScript",
+            "compile errors dropped",
+            "caused",
+            Some("rust"),
+            0.8,
+            "llm_inferred",
+            1_700_000_000,
+        )
+        .unwrap();
+    store
+        .record_fact(
+            "editor_preference",
+            "user prefers TypeScript for module rewrites",
+            "user",
+            "agent",
+            0.8,
+        )
+        .unwrap();
+
+    // No scope: both namespaces appear — this is the one resolver that
+    // deliberately ignores the fact/chunk split.
+    let seeds = store.bm25_seed_ids("TypeScript module", None, 10).unwrap();
+    assert!(
+        seeds.iter().any(|s| s.starts_with("fact:")),
+        "fact namespace must seed: {seeds:?}"
+    );
+    assert!(
+        seeds.iter().any(|s| !s.starts_with("fact:")),
+        "chunk namespace must seed: {seeds:?}"
+    );
+
+    // Scope filter drops the user-scope fact seed; chunk seeds survive.
+    let scoped = store.bm25_seed_ids("TypeScript module", Some("agent"), 10).unwrap();
+    assert!(
+        scoped.iter().all(|s| !s.starts_with("fact:")),
+        "mismatched scope must drop fact seeds: {scoped:?}"
+    );
+
+    // Materialization helpers for the unified engine.
+    let chunks: Vec<String> = seeds
+        .iter()
+        .filter(|s| !s.starts_with("fact:"))
+        .cloned()
+        .collect();
+    let edges = store.edges_touching_chunks(&chunks, None, 10).unwrap();
+    assert!(
+        edges.iter().any(|e| e.decision_text.contains("TypeScript")),
+        "{edges:?}"
+    );
+    let fact_ids: Vec<i64> = seeds
+        .iter()
+        .filter_map(|s| s.strip_prefix("fact:").and_then(|n| n.parse().ok()))
+        .collect();
+    let facts = store.facts_by_ids(&fact_ids).unwrap();
+    assert!(
+        facts.iter().any(|f| f.key == "editor_preference"),
+        "{facts:?}"
+    );
+}
+
+// ─── B2 index-size guard: oversized candidate sets fall back to scan ──
+
+#[test]
+#[allow(clippy::unwrap_used, reason = "test invariant: panicking on failure is desired")]
+fn test_search_causal_bm25_oversized_index_candidates_fall_back() {
+    // 950 edges (> MAX_INDEX_CANDIDATES 900) whose texts all share a
+    // common token: the inverted index returns 950 candidate chunk ids —
+    // an `IN (...)` list that size would exceed SQLite's host-variable
+    // limit on 999-variable builds. The guard must skip the narrowing
+    // step and answer from the task_tag-bounded full scan instead.
+    let store = CausalStore::open_in_memory().unwrap();
+    for i in 0..950 {
+        store
+            .record_decision_at(
+                &format!("shared token decision number {i}"),
+                &format!("shared token outcome number {i}"),
+                "caused",
+                Some("bigtag"),
+                0.8,
+                "rule",
+                1_700_000_000 + i as i64,
+            )
+            .unwrap();
+    }
+    let hits = store.search_causal_bm25(Some("bigtag"), "shared token", 5).unwrap();
+    assert!(!hits.is_empty(), "oversized candidates must fall back to the scan");
+    assert!(
+        hits.iter().all(|e| e.task_tag.as_deref() == Some("bigtag")),
+        "task_tag filter still applies on the fallback path"
+    );
+}
+
+// ─── Session expansion ordering: numeric, not lexicographic ───────────
+
+#[test]
+#[allow(clippy::unwrap_used, reason = "test invariant: panicking on failure is desired")]
+fn test_chunks_by_prefix_orders_turns_numerically() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Lexicographic would give 1,10,11,2; numeric must give 1,2,10,11.
+    for (i, turn) in [2, 11, 1, 10].into_iter().enumerate() {
+        store
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
+                    rusqlite::params![format!("q1::s1::{turn}"), format!("text {turn}"), i as i64],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+    let rows = store.chunks_by_prefix("q1::s1::").unwrap();
+    let turns: Vec<String> = rows
+        .iter()
+        .map(|(id, _)| id.rsplit("::").next().unwrap().to_string())
+        .collect();
+    assert_eq!(turns, vec!["1", "2", "10", "11"], "turns must be numeric order");
+}

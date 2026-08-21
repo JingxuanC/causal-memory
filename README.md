@@ -10,7 +10,7 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Status: v0.9.0](https://img.shields.io/badge/status-v0.9.0--alpha-orange.svg)](#status)
-[![Tests: 344](https://img.shields.io/badge/tests-344-brightgreen.svg)](#build--test)
+[![Tests: 368](https://img.shields.io/badge/tests-368-brightgreen.svg)](#build--test)
 [![Release: v0.9.0](https://img.shields.io/badge/release-v0.9.0-blue.svg)](https://github.com/JingxuanC/causal-memory/releases)
 
 ---
@@ -81,7 +81,7 @@ specialty and not where causal-memory adds value.
 | Benchmark | causal-memory | mem0 | Note |
 |---|---|---|---|
 | LoCoMo (strict judge) | 79.1% | 91.6% | mem0's home turf |
-| LongMemEval (distill v2) | 75.2% | 74.4% | Roughly tied |
+| LongMemEval-S (full pipeline, deepseek-chat) | **76.4%** @ 11.5K tok/q | 94.4% @ 6.8K tok/q (official) · 73.8% (ind. repro) | single-model stack vs platform stack; see docs/benchmarks/longmemeval.md |
 | Memora MPA | 67.4% | 71.8% | −4.4pp |
 | Compaction survival | 100% | 45% | External table = immune to compaction |
 | Agent repeat-mistake | 33% | 67% | −34pp on trap-world |
@@ -354,11 +354,14 @@ cargo clippy --workspace -- -D warnings # Lint
 ## Agent Memory Challenge (AMC/01)
 
 causal-memory enters the [Agent Memory Leaderboard](https://agentmemories.ai/competition/)
-first evaluation cycle via a standalone Add/Search integration server:
+first evaluation cycle via an Add/Search integration server — a thin HTTP
+frontend over the same `Memory` facade the MCP server runs (BM25 + semantic +
+entity retrieval, RRF-fused; one store per `user_id`):
 
 ```bash
 cargo build --release --bin causal-memory-amc
-./target/release/causal-memory-amc --db amc.db --port 8787
+./target/release/causal-memory-amc --db-dir amc_data --port 8787 --write-mode raw
+# --write-mode raw (no LLM, platform default) | distill (write-time LLM extraction)
 # POST /add (store memory, user_id-isolated) · POST /search (ordered evidence) · GET /health
 ```
 
@@ -415,7 +418,7 @@ What works (16/16 layers with end-to-end validation):
 - ✅ Multi-session multi-pass retrieval (LongMemEval multi-session 42.9% → 57.9%, same-codebase)
 - ✅ PyO3 Python bindings (crates/causal-memory-py)
 - ✅ DSH native plugin (dsh-plugin/) + architecture visualization (docs/architecture.html)
-- ✅ 344/344 tests passing + clippy clean
+- ✅ 368/368 tests passing + clippy clean
 
 What's not done yet:
 

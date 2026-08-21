@@ -9,6 +9,33 @@ use super::output::*;
 use super::{block_on, Memory, INTERVENTION_MIN_SIMILARITY, SEMANTIC_CONTRADICTION_MIN_SIMILARITY};
 use crate::store::{AgentFact, CausalEntry, ChainHop};
 
+/// One structured retrieval hit — the machine-readable form of
+/// `search_memory`'s output, so non-LLM frontends (the AMC leaderboard
+/// contract: `{id, content, score, created_at}`) consume the same fused
+/// result agents see as text. `score` is the RRF fused rank score; `rank`
+/// is the 1-based fused position.
+#[derive(Debug, Clone)]
+pub struct MemoryHit {
+    /// Layer-namespaced key: `fact:{id}` or `causal:{edge_id}`.
+    pub key: String,
+    /// Human-readable content of the underlying memory.
+    pub content: String,
+    /// RRF fused score (higher = more relevant).
+    pub score: f64,
+    /// 1-based position in the fused ranking.
+    pub rank: usize,
+    pub created_at: Option<i64>,
+}
+
+/// Ranked retrieval results shared by both search paths: (rank, item)
+/// pairs per layer (rank = fused position, or engine activation position
+/// on the spread path) plus the mode tag.
+type RankedHits = (
+    Vec<(usize, AgentFact)>,
+    Vec<(usize, CausalEntry)>,
+    &'static str,
+);
+
 impl Memory {
     /// `record_decision` — log a decision → outcome causal edge.
     pub fn record_decision(
@@ -44,6 +71,11 @@ impl Memory {
             Some(&polarity),
         ) {
             Ok((_dec_id, edge_id)) => {
+                // Phase C: patch the live graph so the new lesson is
+                // visible to the very next query (no rebuild wait).
+                if let Ok(Some(entry)) = self.store.get_edge(edge_id) {
+                    self.patch_graph_new_edge(&entry);
+                }
                 // Opportunistically embed the new edge so semantic search
                 // finds it. Silent on any failure — embedding must never
                 // block recording; the `causal-memory embed` CLI backfills
@@ -382,12 +414,26 @@ impl Memory {
             }
         };
 
+        // Phase C: patch the live graph (scope hub + fact node + entity
+        // links); on replace, retire the superseded fact nodes too — the
+        // old value stops seeding/surfacing immediately, not at the next
+        // lazy rebuild.
+        self.patch_graph_new_fact(fact_id, key, value, scope, confidence);
+        if retired > 0 {
+            self.patch_graph_retire_facts(fact_id);
+        }
+
         // Opportunistic embedding (silent on any failure — must never block
         // recording; a CLI backfill path can catch up later).
         let text = format!("{} {}", key.replace('_', " "), value);
         if let Some(Ok(vec)) = block_on(crate::embed::embed_shared(&text)) {
             let _ = self.store.put_fact_embedding(fact_id, "shared", &vec);
         }
+
+        // Phase A: fact changes now reach the graph — mark it dirty so the
+        // lazy rebuild picks the new fact node up (same contract as
+        // record_decision / remember).
+        self.mark_graph_dirty();
 
         let mut out = format!(
             "✅ Recorded fact: [{}] {} = \"{}\" (confidence: {:.2}, id: {})",
@@ -488,6 +534,71 @@ impl Memory {
         out
     }
 
+    /// `remember_raw_turns` — pre-gatekeeping write path: raw conversation
+    /// turns go straight into the retrieval pool (chunks) with adjacent-turn
+    /// temporal edges. No LLM, no distillation — this is what `remember`
+    /// does when no distiller is available, productized for backends (the
+    /// AMC server's `--write-mode raw`) that need write-time LLM calls off
+    /// the synchronous path. The full pipeline (`remember`) keeps
+    /// write-time gatekeeping: LLM extraction is the sole path into the
+    /// pool (0afb9f1) — choose deliberately.
+    ///
+    /// Returns the number of turns written.
+    pub fn remember_raw_turns(&self, turns: &[(String, String)], session: &str) -> usize {
+        let now = chrono::Utc::now().timestamp();
+        let mut written = 0usize;
+        for (idx, (speaker, text)) in turns.iter().enumerate() {
+            let chunk_id = format!("raw:{session}:{idx}");
+            let payload = format!("[{session}] {speaker}: {text}");
+            let ok = self
+                .store
+                .with_conn(|c| {
+                    use rusqlite::params;
+                    c.execute(
+                        "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
+                        params![&chunk_id, &payload, now],
+                    )?;
+                    if idx > 0 {
+                        let prev_id = format!("raw:{session}:{}", idx - 1);
+                        c.execute(
+                            "INSERT OR IGNORE INTO causal_edges
+                             (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
+                             VALUES (?1, ?2, 'no_effect', 0.4, 'temporal', ?3, ?3, NULL)",
+                            params![&prev_id, &chunk_id, now],
+                        )?;
+                    }
+                    Ok(())
+                })
+                .is_ok();
+            if ok {
+                written += 1;
+            }
+        }
+        written
+    }
+
+    /// Structured core of `search_memory`: both layers (facts + causal),
+    /// semantic/BM25 per-layer fallthrough, hop expansion, RRF fusion and
+    /// top-`limit` truncation. The text tool and the AMC server both wrap
+    /// this — one retrieval pipeline, two presentations. Display-only
+    /// concerns (D4 intent routing) stay in the text wrapper. See
+    /// [`MemoryHit`] for the hit shape.
+    pub fn search_memory_entries(
+        &self,
+        query: &str,
+        task_tag: Option<&str>,
+        scope: Option<&str>,
+        limit: usize,
+    ) -> (Vec<MemoryHit>, &'static str) {
+        // Phase B: unified engine first — one seeding pass over ALL node
+        // types, one spreading-activation run, typed hits. The dual-pool
+        // RRF path is the fallback (and the regression control for A/B
+        // comparison). Both paths produce the same ranked-pair shape, so
+        // hit materialization is shared.
+        let (facts, causal, mode) = self.ranked_hits(query, task_tag, scope, limit);
+        (hits_from_ranked(&facts, &causal), mode)
+    }
+
     /// `search_memory` — unified retrieval: facts + causal lessons fused by
     /// Reciprocal Rank Fusion (RRF) in one call.
     pub fn search_memory(
@@ -503,6 +614,56 @@ impl Memory {
                 return format!("❌ Invalid scope '{s}' — use one of: user, session, agent");
             }
         }
+
+        // Phase B: unified engine first; the dual-pool RRF path stays as
+        // the fallback and the regression control for A/B comparison.
+        // Both produce the same ranked-pair shape, so D4 routing and the
+        // grouped display are shared.
+        let (facts, causal, mode) = self.ranked_hits(query, task_tag, scope, limit);
+        render_unified(query, &facts, &causal, mode)
+    }
+
+    /// One retrieval story, two presentations: the unified spread engine
+    /// when it can serve the query, the dual-pool RRF path otherwise.
+    /// Returns facts and causal entries as (rank, item) pairs — facts in
+    /// activation/fused order, causal likewise — plus the mode tag.
+    fn ranked_hits(
+        &self,
+        query: &str,
+        task_tag: Option<&str>,
+        scope: Option<&str>,
+        limit: usize,
+    ) -> RankedHits {
+        if let Some(spread) = self.unified_spread_hits(query, task_tag, scope, limit) {
+            let base = spread.facts.len();
+            let facts: Vec<(usize, AgentFact)> = spread
+                .facts
+                .into_iter()
+                .enumerate()
+                .map(|(i, f)| (i + 1, f))
+                .collect();
+            let causal: Vec<(usize, CausalEntry)> = spread
+                .causal
+                .into_iter()
+                .enumerate()
+                .map(|(i, e)| (base + i + 1, e))
+                .collect();
+            return (facts, causal, "spread");
+        }
+        self.dual_pool_fused(query, task_tag, scope, limit)
+    }
+
+    /// The dual-pool RRF fallback: per-layer retrieval (semantic → BM25
+    /// fallthrough per layer), A2 hop expansion, RRF fusion, fused
+    /// top-`limit` as ranked pairs — facts and causal entries each carry
+    /// their fused rank.
+    fn dual_pool_fused(
+        &self,
+        query: &str,
+        task_tag: Option<&str>,
+        scope: Option<&str>,
+        limit: usize,
+    ) -> RankedHits {
         // Pull more than needed per layer so the fusion has real candidates.
         let per_layer = limit.saturating_mul(2).max(10);
 
@@ -512,15 +673,6 @@ impl Memory {
         // semantic result (e.g. records stored without embeddings) degrades
         // that layer to BM25 instead of silently missing hits.
         let query_vec = block_on(crate::embed::embed_shared(query)).and_then(|r| r.ok());
-
-        // D4: query routing — when the intent is clear, prefer the dominant
-        // layer in the DISPLAY (retrieval still fuses, so a wrong guess never
-        // hides the other layer's hits; an empty dominant layer falls back to
-        // showing everything).
-        let intent = crate::query_router::classify_query(query);
-        let dominant_is_causal = matches!(intent, crate::query_router::QueryIntent::Causal)
-            || matches!(intent, crate::query_router::QueryIntent::Chain);
-        let dominant_is_fact = matches!(intent, crate::query_router::QueryIntent::Fact);
 
         let mut used_semantic = false;
         let facts: Vec<AgentFact> = match &query_vec {
@@ -568,9 +720,7 @@ impl Memory {
         let mode = if used_semantic { "semantic" } else { "bm25" };
 
         if facts.is_empty() && causal.is_empty() {
-            return format!(
-                "[unified/{mode}] 📭 No memories found matching your query in any layer."
-            );
+            return (Vec::new(), Vec::new(), mode);
         }
 
         // A2: hop expansion from the causal seeds — 1-hop adjacency + 2-hop
@@ -610,71 +760,23 @@ impl Memory {
             .map(|(i, (k, _))| (k.as_str(), i + 1))
             .collect();
 
-        // Keep only items inside the fused top-`limit`, then group by layer
-        // for display (each item annotated with its fused rank).
+        // Keep only items inside the fused top-`limit`, as ranked pairs.
         let keep = |key: &str| rank_of.get(key).is_some_and(|r| *r <= limit);
-        let facts_kept: Vec<&AgentFact> = facts
-            .iter()
+        let facts_kept: Vec<(usize, AgentFact)> = facts
+            .into_iter()
             .filter(|f| keep(&format!("fact:{}", f.id)))
+            .map(|f| (rank_of[format!("fact:{}", f.id).as_str()], f))
             .collect();
-        // Materialize from the merged causal pool (primary + hop neighbors),
-        // displayed in fused-rank order.
-        let mut causal_kept: Vec<&CausalEntry> = causal_by_id
-            .iter()
-            .filter(|(id, _)| keep(&format!("causal:{id}")))
-            .map(|(_, e)| e)
+        // Materialize from the merged causal pool (primary + hop
+        // neighbors), in fused-rank order.
+        let mut causal_kept: Vec<(usize, CausalEntry)> = causal_by_id
+            .into_values()
+            .filter(|e| keep(&format!("causal:{}", e.edge_id)))
+            .map(|e| (rank_of[format!("causal:{}", e.edge_id).as_str()], e))
             .collect();
-        causal_kept.sort_by_key(|e| rank_of[format!("causal:{}", e.edge_id).as_str()]);
+        causal_kept.sort_by_key(|(r, _)| *r);
 
-        // D4: route the display to the dominant layer when the classifier is
-        // confident AND that layer actually has hits (otherwise fall back to
-        // the full fusion view — never hide evidence).
-        let route_causal = dominant_is_causal && !causal_kept.is_empty();
-        let route_fact = dominant_is_fact && !facts_kept.is_empty();
-        let facts_kept: Vec<&AgentFact> = if route_causal {
-            Vec::new()
-        } else {
-            facts_kept
-        };
-        let causal_kept: Vec<&CausalEntry> = if route_fact {
-            Vec::new()
-        } else {
-            causal_kept
-        };
-
-        let layers = usize::from(!facts_kept.is_empty()) + usize::from(!causal_kept.is_empty());
-        let total = facts_kept.len() + causal_kept.len();
-        let mut out =
-            format!("[unified/{mode}] Found {total} memories across {layers} layer(s):\n\n");
-        if !facts_kept.is_empty() {
-            out.push_str(&format!("📊 Facts ({}):\n", facts_kept.len()));
-            for fact in &facts_kept {
-                let rank = rank_of[format!("fact:{}", fact.id).as_str()];
-                out.push_str(&format!(
-                    "  #{rank} [{}] {} = \"{}\" (confidence: {:.0}%)\n",
-                    fact.scope,
-                    fact.key,
-                    truncate_chars(&fact.value, 60),
-                    fact.confidence * 100.0,
-                ));
-            }
-            out.push('\n');
-        }
-        if !causal_kept.is_empty() {
-            out.push_str(&format!("🔗 Causal lessons ({}):\n", causal_kept.len()));
-            for entry in &causal_kept {
-                let rank = rank_of[format!("causal:{}", entry.edge_id).as_str()];
-                out.push_str(&format!(
-                    "  #{rank} [{}] \"{}\" →({})→ \"{}\" (confidence: {:.0}%)\n",
-                    entry.task_tag.as_deref().unwrap_or("untagged"),
-                    truncate_chars(&entry.decision_text, 50),
-                    entry.relation,
-                    truncate_chars(&entry.outcome_text, 50),
-                    entry.confidence * 100.0,
-                ));
-            }
-        }
-        out
+        (facts_kept, causal_kept, mode)
     }
 
     /// Step A (multi-session retrieval design, docs/design/): multi-pass
@@ -928,6 +1030,13 @@ impl Memory {
 
         match self.store.invalidate_edge(edge_id) {
             Ok(true) => {
+                // Phase C: the falsified lesson stops spreading immediately
+                // (O(deg) flip) instead of at the next lazy rebuild.
+                if let Ok(mut guard) = self.graph.lock() {
+                    if let Some(graph) = guard.as_mut() {
+                        graph.invalidate_edges_between(&edge.decision_id, &edge.outcome_id);
+                    }
+                }
                 let reason = reason.map(|r| format!(" (reason: {r})")).unwrap_or_default();
                 format!(
                     "✅ Invalidated edge #{}: \"{}\" →({})→ \"{}\"{reason}. It will no longer appear in search/trace results, but is kept for audit.",
@@ -1443,4 +1552,110 @@ impl Memory {
             Err(_) => String::new(),
         }
     }
+}
+
+// ─── Unified search presentation (shared by both retrieval paths) ────
+
+/// Layer-namespaced key + content of a fact hit.
+fn fact_hit(f: &AgentFact) -> MemoryHit {
+    MemoryHit {
+        key: format!("fact:{}", f.id),
+        content: format!("[{}] {} = \"{}\"", f.scope, f.key, f.value),
+        score: 0.0, // filled by hits_from_ranked
+        rank: 0,
+        created_at: Some(f.updated_at),
+    }
+}
+
+/// Layer-namespaced key + content of a causal hit.
+fn causal_hit(e: &CausalEntry) -> MemoryHit {
+    MemoryHit {
+        key: format!("causal:{}", e.edge_id),
+        content: format!("\"{}\" →({})→ \"{}\"", e.decision_text, e.relation, e.outcome_text),
+        score: 0.0, // filled by hits_from_ranked
+        rank: 0,
+        created_at: Some(e.event_time),
+    }
+}
+
+/// Materialize ranked pairs as `MemoryHit`s, globally rank-sorted (the
+/// same order the fused/spread ranking produced). Score uses the RRF
+/// formula on BOTH paths so the field keeps one semantics.
+fn hits_from_ranked(
+    facts: &[(usize, AgentFact)],
+    causal: &[(usize, CausalEntry)],
+) -> Vec<MemoryHit> {
+    let mut hits: Vec<MemoryHit> = facts
+        .iter()
+        .map(|(rank, f)| {
+            let mut h = fact_hit(f);
+            h.rank = *rank;
+            h.score = 1.0 / (super::RRF_K + *rank as f64);
+            h
+        })
+        .chain(causal.iter().map(|(rank, e)| {
+            let mut h = causal_hit(e);
+            h.rank = *rank;
+            h.score = 1.0 / (super::RRF_K + *rank as f64);
+            h
+        }))
+        .collect();
+    hits.sort_by_key(|h| h.rank);
+    hits
+}
+
+/// The shared display tail of `search_memory`: D4 intent routing (prefer
+/// the dominant layer in the DISPLAY when the classifier is confident and
+/// that layer has hits — never hide evidence), then the grouped
+/// fact/causal rendering with per-item ranks.
+fn render_unified(
+    query: &str,
+    facts: &[(usize, AgentFact)],
+    causal: &[(usize, CausalEntry)],
+    mode: &str,
+) -> String {
+    if facts.is_empty() && causal.is_empty() {
+        return format!("[unified/{mode}] 📭 No memories found matching your query in any layer.");
+    }
+    let intent = crate::query_router::classify_query(query);
+    let dominant_is_causal = matches!(
+        intent,
+        crate::query_router::QueryIntent::Causal | crate::query_router::QueryIntent::Chain
+    );
+    let dominant_is_fact = matches!(intent, crate::query_router::QueryIntent::Fact);
+    let route_causal = dominant_is_causal && !causal.is_empty();
+    let route_fact = dominant_is_fact && !facts.is_empty();
+    let facts: &[(usize, AgentFact)] = if route_causal { &[] } else { facts };
+    let causal: &[(usize, CausalEntry)] = if route_fact { &[] } else { causal };
+
+    let layers = usize::from(!facts.is_empty()) + usize::from(!causal.is_empty());
+    let total = facts.len() + causal.len();
+    let mut out = format!("[unified/{mode}] Found {total} memories across {layers} layer(s):\n\n");
+    if !facts.is_empty() {
+        out.push_str(&format!("📊 Facts ({}):\n", facts.len()));
+        for (rank, fact) in facts {
+            out.push_str(&format!(
+                "  #{rank} [{}] {} = \"{}\" (confidence: {:.0}%)\n",
+                fact.scope,
+                fact.key,
+                truncate_chars(&fact.value, 60),
+                fact.confidence * 100.0,
+            ));
+        }
+        out.push('\n');
+    }
+    if !causal.is_empty() {
+        out.push_str(&format!("🔗 Causal lessons ({}):\n", causal.len()));
+        for (rank, entry) in causal {
+            out.push_str(&format!(
+                "  #{rank} [{}] \"{}\" →({})→ \"{}\" (confidence: {:.0}%)\n",
+                entry.task_tag.as_deref().unwrap_or("untagged"),
+                truncate_chars(&entry.decision_text, 50),
+                entry.relation,
+                truncate_chars(&entry.outcome_text, 50),
+                entry.confidence * 100.0,
+            ));
+        }
+    }
+    out
 }

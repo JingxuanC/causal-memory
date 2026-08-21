@@ -220,6 +220,64 @@ pub fn downscale(
             Ok(())
         })?;
     }
+    downscale_facts(store, config, dry_run, now, report)
+}
+
+/// Phase D (one-graph-convergence): stage 3 fact downscaling — the same
+/// half-life decay and GC the causal edges get, applied to `agent_facts`.
+/// Age runs from `updated_at`; the tier is `half_life_fact_hours`
+/// (default 90d): facts are high-trust "what is" knowledge, so they fade
+/// far slower than temporal lessons. Facts below the GC threshold retire
+/// (`valid_to`); supersession lineage (`superseded_by`) is untouched.
+/// Same-day facts are not decayed, mirroring the edge path.
+pub fn downscale_facts(
+    store: &CausalStore,
+    config: &ConsolidateConfig,
+    dry_run: bool,
+    now: i64,
+    report: &mut ConsolidateReport,
+) -> Result<()> {
+    let facts: Vec<(i64, f64, i64)> = store.with_conn(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, confidence, updated_at FROM agent_facts WHERE valid_to IS NULL",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, i64>(2)?))
+        })?;
+        let v: std::result::Result<Vec<_>, rusqlite::Error> = rows.collect();
+        Ok(v?)
+    })?;
+
+    for (id, confidence, updated_at) in facts {
+        let days = (now - updated_at) as f64 / SECS_PER_DAY;
+        if days < 1.0 {
+            continue;
+        }
+        let halflife = f64::from(config.half_life_fact_hours);
+        let new_conf = confidence * 0.5f64.powf(days * 24.0 / halflife);
+        report.facts_decayed += 1;
+        let collect = new_conf < config.gc_threshold;
+        if collect {
+            report.facts_gc += 1;
+        }
+        if dry_run {
+            continue;
+        }
+        store.with_conn(|conn| {
+            if collect {
+                conn.execute(
+                    "UPDATE agent_facts SET confidence = ?1, valid_to = ?2 WHERE id = ?3",
+                    rusqlite::params![new_conf, now, id],
+                )?;
+            } else {
+                conn.execute(
+                    "UPDATE agent_facts SET confidence = ?1 WHERE id = ?2",
+                    rusqlite::params![new_conf, id],
+                )?;
+            }
+            Ok(())
+        })?;
+    }
     Ok(())
 }
 
