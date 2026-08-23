@@ -6,6 +6,7 @@ members = [
     "crates/causal-memory",
     "crates/causal-memory-cli",
     "crates/causal-memory-py",
+    "benches/common",
 ]
 # The py crate is a cdylib for maturin wheels; plain release profile links
 # -lpython3.9, which the macOS system Python does not ship. Build/test it

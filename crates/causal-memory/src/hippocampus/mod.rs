@@ -1573,7 +1573,17 @@ impl CausalGraph {
                 edges.push(EdgeData {
                     from_id: scope_node_id,
                     to_id: fact_node_id,
-                    relation: Relation::Fact,
+                    // Organizational edge, NOT semantic: NoEffect has
+                    // spread_coeff 0, so activation never travels through
+                    // the scope hub. A single shared scope (production:
+                    // everything under scope:user) otherwise makes every
+                    // fact two hops from every other — any fact hit
+                    // pollutes the whole fact layer via the hub (measured
+                    // on via-mcp LME: "what degree" surfaced unrelated
+                    // facts through scope:user while the true fact was
+                    // outranked). Harness stores are per-question scoped
+                    // and never hit this.
+                    relation: Relation::NoEffect,
                     weight: confidence as f32,
                     valid: true,
                 });

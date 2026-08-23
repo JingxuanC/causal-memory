@@ -44,6 +44,7 @@ local-embed = ["causal-memory/local-embed"]
 
 [dependencies]
 causal-memory.workspace = true
+bench-common = { path = "../../benches/common" }
 rmcp.workspace = true
 axum = "0.8"
 tokio.workspace = true

@@ -168,7 +168,9 @@ impl Memory {
                     task_tag: Some(key.to_string()),
                     scope: Some(scope.to_string()),
                 });
-                graph.add_patch_edge(scope_idx, fact_idx, Relation::Fact, confidence as f32);
+                // Organizational edge (NoEffect): the scope hub must not
+                // propagate activation — see from_store's counterpart.
+                graph.add_patch_edge(scope_idx, fact_idx, Relation::NoEffect, confidence as f32);
                 graph.link_fact_node(fact_idx);
             }
         }

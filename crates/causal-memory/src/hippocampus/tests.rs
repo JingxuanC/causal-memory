@@ -1575,4 +1575,34 @@ mod tests {
         assert!(max >= 10, "facts must have merged at least some pairs");
     }
 
+    /// Scope hubs must not propagate activation: two unrelated facts
+    /// sharing scope:user, a query hitting one must not activate the
+    /// other through the hub (the via-mcp LME regression — every fact
+    /// was two hops from every other, polluting the whole layer).
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: store/graph construction must succeed"
+    )]
+    fn scope_hub_does_not_propagate_activation() {
+        let store = crate::store::CausalStore::open_in_memory().expect("store");
+        store
+            .record_fact("education", "graduated with a degree in physics", "user", "agent", 0.8)
+            .expect("f1");
+        store
+            .record_fact("hobby", "plays the cello on weekends", "user", "agent", 0.8)
+            .expect("f2");
+        let mut graph = CausalGraph::from_store(&store).expect("graph");
+        let results = graph.spreading_activation("degree in physics", None, false);
+        let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("physics")),
+            "queried fact must activate: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("cello")),
+            "unrelated same-scope fact must NOT activate via the hub: {texts:?}"
+        );
+    }
+
 }
