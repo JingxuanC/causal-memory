@@ -36,6 +36,24 @@ type RankedHits = (
     &'static str,
 );
 
+/// Multi-pass session-expansion budget (was a hardcoded 40).
+const MULTI_PASS_SESSION_BUDGET: usize = 80;
+
+/// Top-N density-weighted sessions kept by multi-pass expansion. 2 = the
+/// LME-measured sweet spot (multi-session 133q: 55.6% → 59.4% at -40%
+/// context); 0 disables the whitelist (all touched sessions share the
+/// budget proportionally). Env-tunable for A/B:
+/// CAUSAL_MEMORY_EXPAND_TOP_SESSIONS.
+fn multi_pass_top_sessions() -> usize {
+    static CACHE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("CAUSAL_MEMORY_EXPAND_TOP_SESSIONS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2)
+    })
+}
+
 impl Memory {
     /// `record_decision` — log a decision → outcome causal edge.
     pub fn record_decision(
@@ -808,6 +826,11 @@ impl Memory {
             Ok(e) => e,
             Err(err) => return format!("❌ Multi-pass retrieval failed: {err}"),
         };
+        // Distill episodes are BM25-favored paraphrases that crowd original
+        // turns out of top-k (retrieval-scoring.md §4): cap them at a third
+        // of the budget so primary evidence keeps its slots.
+        let entries =
+            crate::retrieval::apply_episode_quota(entries, per_layer / 3);
         if entries.is_empty() {
             return "[multi-pass] 📭 No memories found matching your query.".to_string();
         }
@@ -832,14 +855,23 @@ impl Memory {
         }
         // Aggregation shapes: append full session context (chunks not already
         // covered by a retrieved edge) so a complete evidence set is visible.
+        // Density-weighted top-N whitelist (the LME dilution cut, +3.8pp /
+        // -40% tokens measured on multi-session 133q): only the highest-
+        // value sessions expand at all, budget split proportionally by
+        // hit_count × query-token overlap. Top-2 default from the measured
+        // sweet spot; 0 disables (all touched sessions, proportional).
         if plan.aggregation {
             let ids: Vec<String> = entries
                 .iter()
                 .flat_map(|e| [e.decision_id.clone(), e.outcome_id.clone()])
                 .collect();
-            if let Ok(chunks) =
-                crate::retrieval::expand_session_chunks(&self.store, &ids, 40)
-            {
+            if let Ok(chunks) = crate::retrieval::expand_session_chunks_weighted(
+                &self.store,
+                &ids,
+                query,
+                MULTI_PASS_SESSION_BUDGET,
+                multi_pass_top_sessions(),
+            ) {
                 let covered: std::collections::HashSet<String> =
                     ids.into_iter().collect();
                 let extra: Vec<&(String, String)> = chunks

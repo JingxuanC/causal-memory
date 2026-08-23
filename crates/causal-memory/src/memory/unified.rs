@@ -55,7 +55,24 @@ impl Memory {
         self.buffer_cooccurrences(&active_ids);
 
         let facts = self.materialize_facts(&fact_ids, scope, limit);
-        let causal = self.materialize_causal(&chunk_activation, task_tag, limit);
+        let mut causal = self.materialize_causal(&chunk_activation, task_tag, limit);
+
+        // Query-plan awareness (the plan_query port from the multi-pass
+        // harness path): temporal anchors float in-window evidence to the
+        // top of the causal list — the anchor rules (N unit ago, last
+        // <weekday>, past-N-unit windows) run against each entry's
+        // event_time. Date-math questions were already carved out of
+        // aggregation upstream (looks_aggregation); this adds the
+        // positive half for the engine path.
+        let plan = crate::retrieval::plan_query(query, chrono::Utc::now().timestamp());
+        if let Some((start, end)) = plan.time_window {
+            causal.sort_by(|a, b| {
+                let aw = a.event_time >= start && a.event_time <= end;
+                let bw = b.event_time >= start && b.event_time <= end;
+                bw.cmp(&aw).then(b.event_time.cmp(&a.event_time))
+            });
+        }
+
         if facts.is_empty() && causal.is_empty() {
             return None;
         }

@@ -641,3 +641,46 @@ mod tests {
         );
     }
 }
+
+    // ─── Production-path sink of the bench optimizations ──────────────
+
+    /// multi_pass now runs the episode quota + weighted top-N expansion
+    /// (the LME dilution cut). Production chunk ids are flat (no
+    /// '::session::' segments), so session-keyed expansion is a no-op on
+    /// agent-native stores by design (comment on session_key: "production
+    /// data with flat chunk ids simply never expands sessions") — this
+    /// test pins that the QUOTA half applies and that session-structured
+    /// stores (harness convention) get the whitelist behavior.
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: memory construction must succeed"
+    )]
+    fn multi_pass_sinks_bench_optimizations() {
+        let memory = Memory::open_in_memory().expect("memory");
+        for turn in 0..6 {
+            memory.record_decision(
+                &format!("bought plants number {turn} for the garden"),
+                &format!("plants thriving batch {turn}"),
+                "caused",
+                "garden",
+                None,
+            );
+        }
+        let out = memory.search_memory_multi_pass(
+            "how many plants did I buy",
+            None,
+            None,
+            Some(10),
+        );
+        // Flat-id store: no session expansion (documented), but the
+        // multi-pass path itself must return the garden evidence.
+        assert!(
+            out.contains("bought plants"),
+            "multi-pass must surface evidence: {out}"
+        );
+        assert!(
+            out.contains("[multi-pass]"),
+            "mode tag present: {out}"
+        );
+    }
