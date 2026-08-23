@@ -496,8 +496,11 @@ fn test_dedup_identical_texts_no_self_pairing() {
         0,
         "no meta edge may be mined: {report:?}"
     );
-    // The tool-call pair is counted as skipped (3 content tokens < 4).
-    assert!(report.skipped_short >= 1);
+    // The tool-call pair is counted as skipped (identical content-token sets
+    // → trivially similar). With token blocking, skip counters only cover
+    // candidate pairs (pairs sharing ≥1 token below the df cap); the old
+    // all-pairs loop additionally counted no-overlap pairs as skipped_short.
+    assert!(report.skipped_self >= 1);
     // No self-pairs or identical-text pairs can exist in the DB.
     let (self_pairs, same_text): (i64, i64) = store
         .with_conn(|conn| {

@@ -391,7 +391,9 @@ pub(crate) fn run_sleep(args: &[String]) -> anyhow::Result<()> {
     }
 
     let store = CausalStore::open(&flags.db)?;
+    eprintln!("[sleep] store opened, starting consolidation");
     let report = consolidate(&store, &config, flags.dry_run, now)?;
+    eprintln!("[sleep] consolidation returned");
 
     if report.skipped_low_diversity {
         println!("=== Sleep Consolidation: SKIPPED (recent diversity {:.2} < 0.4) — nothing new to consolidate ===", report.diversity);

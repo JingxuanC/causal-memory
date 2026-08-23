@@ -90,6 +90,9 @@ pub struct MineReport {
     /// without carrying any real signal).
     pub skipped_self: usize,
     /// Pairs skipped because one side had fewer than `min_tokens` content tokens.
+    /// Counted over token-blocked candidate pairs only (pairs sharing at least
+    /// one content token below the df cap) — no-overlap pairs are never
+    /// visited, unlike the pre-blocking all-pairs scan.
     pub skipped_short: usize,
     /// Detected pairs dropped by the per-decision top-N / global max-pairs caps.
     pub capped: usize,
@@ -209,8 +212,42 @@ impl<'a> PatternMiner<'a> {
         let mut candidates: Vec<Candidate> = Vec::new();
         // signature → strata accumulator
         let mut strata_groups: HashMap<String, StrataAcc> = HashMap::new();
+        // Token blocking (inverted index), NOT an all-pairs scan: a pair can
+        // only reach `similarity_threshold` when its Jaccard over content
+        // tokens is nonzero, i.e. when it shares at least one token — so the
+        // O(N²) loop spent ~100% of its comparisons on pairs that could never
+        // hit. On the LongMemEval distill store (292k items = 4.3e10 pairs)
+        // the all-pairs loop never finished (killed after 45 min, single
+        // core pegged). Tokens above the df cap are too frequent to be
+        // selective; pairs sharing ONLY such tokens cannot reach the
+        // threshold either (the rest of their token sets dilutes Jaccard),
+        // so capping them loses no real candidates. Cap is n/1000
+        // (floor 100), not n/100: the LongMemEval token df distribution is
+        // heavy-tailed — a 1%-of-N cap still yields 2.9e9 candidate pairs
+        // (measured via the bm25 index); n/1000 yields 8.6e7.
+        let df_cap = (items.len() / 1000).max(100);
+        let mut postings: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (idx, toks) in tokens.iter().enumerate() {
+            for t in toks {
+                postings.entry(t.as_str()).or_default().push(idx);
+            }
+        }
+        let mut cand: Vec<usize> = Vec::new();
         for i in 0..items.len() {
-            for j in i + 1..items.len() {
+            cand.clear();
+            for t in &tokens[i] {
+                let list = &postings[t.as_str()];
+                if list.len() > df_cap {
+                    continue;
+                }
+                cand.extend_from_slice(list);
+            }
+            cand.sort_unstable();
+            cand.dedup();
+            for &j in &cand {
+                if j <= i {
+                    continue;
+                }
                 // Trivial similarity: identical token sets (pure punctuation /
                 // word-order differences → would score 1.0) or one text a
                 // substring of the other. No signal — skip.

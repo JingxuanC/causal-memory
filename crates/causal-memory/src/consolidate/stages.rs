@@ -33,10 +33,39 @@ pub fn score_reactivation(
     let window_secs = i64::from(config.access_boost_window_days) * SECS_PER_DAY as i64;
 
     // Flag edges that participate in a contradiction pair.
+    //
+    // Token blocking, same discipline as PatternMiner: Jaccard ≥
+    // similarity_threshold requires at least one shared token, so the
+    // all-pairs O(E²) scan (3.1e10 Jaccard calls on the 248k-edge
+    // LongMemEval store — sleep never finished, single core pegged for
+    // 45+ minutes) is replaced by inverted-index candidate generation.
+    // Tokens above the df cap are too frequent to be selective; pairs
+    // sharing only such tokens cannot reach the threshold either.
+    // Cap is n/1000 (floor 100), not n/100: the LongMemEval token df
+    // distribution is heavy-tailed, and a 1%-of-N cap still yields 2.9e9
+    // candidate pairs (measured via the bm25 index); n/1000 yields 8.6e7.
     let mut contradicted = vec![false; edges.len()];
+    let df_cap = (edges.len() / 1000).max(100);
+    let mut postings: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (idx, toks) in tokens.iter().enumerate() {
+        for t in toks {
+            postings.entry(t.as_str()).or_default().push(idx);
+        }
+    }
+    let mut cand: Vec<usize> = Vec::new();
     for i in 0..edges.len() {
-        for j in i + 1..edges.len() {
-            if contradicted[i] && contradicted[j] {
+        cand.clear();
+        for t in &tokens[i] {
+            let list = &postings[t.as_str()];
+            if list.len() > df_cap {
+                continue;
+            }
+            cand.extend_from_slice(list);
+        }
+        cand.sort_unstable();
+        cand.dedup();
+        for &j in &cand {
+            if j <= i || (contradicted[i] && contradicted[j]) {
                 continue;
             }
             if jaccard(&tokens[i], &tokens[j]) >= config.miner.similarity_threshold
