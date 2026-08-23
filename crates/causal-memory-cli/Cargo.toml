@@ -69,3 +69,7 @@ workspace = true
 [[bin]]
 name = "causal-memory-causal-eval"
 path = "../../benches/causal_eval/main.rs"
+
+[[bin]]
+name = "causal-memory-ablation"
+path = "../../benches/ablation/main.rs"
