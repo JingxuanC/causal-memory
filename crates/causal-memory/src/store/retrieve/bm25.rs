@@ -167,10 +167,21 @@ impl CausalStore {
         // Validity always applies to fact rows; the scope filter binds
         // only when set (same conditional-SQL discipline as the other
         // retrieval queries in this module).
+        //
+        // The fact-validity LEFT JOIN must key on af.id = CAST(substr(...)),
+        // NOT ('fact:' || af.id) = chunk_id: the expression form rewrites
+        // the probe side and forces a full agent_facts scan PER bm25 row —
+        // measured 3 minutes per query on the 21.6M-row LongMemEval index
+        // (the unified engine's seed resolver was effectively dead in
+        // production; the harness paths never touch it, which is why this
+        // survived every bench). substr after 'fact:' keeps the same
+        // semantics: non-fact rows don't match, invalid facts drop out.
         let mut sql = format!(
             "SELECT b.chunk_id, COUNT(DISTINCT b.token) AS overlap
              FROM bm25_index b
-             LEFT JOIN agent_facts af ON ('fact:' || af.id) = b.chunk_id
+             LEFT JOIN agent_facts af
+               ON b.chunk_id LIKE 'fact:%'
+              AND af.id = CAST(substr(b.chunk_id, 6) AS INTEGER)
              WHERE b.token IN ({token_ph})
                AND (af.id IS NULL OR af.valid_to IS NULL)"
         );

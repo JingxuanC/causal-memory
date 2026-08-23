@@ -180,6 +180,10 @@ fn split_typed(
     let mut fact_ids: Vec<i64> = Vec::new();
     let mut chunk_activation: Vec<(String, f32)> = Vec::new();
     let mut active_ids: Vec<String> = Vec::new();
+    // Dedup sets — the old `contains`/`any` linear scans are O(n²) over the
+    // same thousands-of-nodes spread results (see rank_edges_by_activation).
+    let mut seen_facts: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut seen_chunks: std::collections::HashSet<String> = std::collections::HashSet::new();
     for r in results {
         if r.activation.abs() < graph.threshold() {
             continue;
@@ -188,11 +192,11 @@ fn split_typed(
         active_ids.push(id.to_string());
         if let Some(fid) = id.strip_prefix("fact:") {
             if let Ok(n) = fid.parse::<i64>() {
-                if !fact_ids.contains(&n) {
+                if seen_facts.insert(n) {
                     fact_ids.push(n);
                 }
             }
-        } else if !id.starts_with("scope:") && !chunk_activation.iter().any(|(c, _)| c == id) {
+        } else if !id.starts_with("scope:") && seen_chunks.insert(id.to_string()) {
             chunk_activation.push((id.to_string(), r.activation));
         }
     }
@@ -205,14 +209,23 @@ fn rank_edges_by_activation(
     edges: Vec<CausalEntry>,
     limit: usize,
 ) -> Vec<CausalEntry> {
+    // HashMap lookup, not a linear scan per endpoint: a wide spread lights
+    // up thousands of chunks and `edges_touching_chunks` returns thousands
+    // of candidate edges — the old O(E×C) String comparisons pegged a CPU
+    // core for minutes per query on the 32万-node LongMemEval store
+    // (measured: ablation harness 60s+/question with zero I/O).
+    let act: HashMap<&str, f32> = chunk_activation
+        .iter()
+        .map(|(c, a)| (c.as_str(), a.abs()))
+        .collect();
     let mut scored: Vec<(f32, CausalEntry)> = edges
         .into_iter()
         .map(|e| {
-            let strength = chunk_activation
-                .iter()
-                .filter(|(c, _)| *c == e.decision_id || *c == e.outcome_id)
-                .map(|(_, a)| a.abs())
-                .fold(0.0_f32, f32::max);
+            let strength = act
+                .get(e.decision_id.as_str())
+                .copied()
+                .unwrap_or(0.0)
+                .max(act.get(e.outcome_id.as_str()).copied().unwrap_or(0.0));
             (strength, e)
         })
         .collect();

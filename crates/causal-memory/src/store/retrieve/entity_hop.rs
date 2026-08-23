@@ -307,20 +307,46 @@ impl CausalStore {
         }
         let conn = self.acquire()?;
 
-        let chunk_ph = vec!["?"; chunk_ids.len()].join(",");
+        // Same SQLite host-variable ceiling as the B2 fix: a wide spread
+        // can light up thousands of chunks, and `IN (...)` beyond ~900
+        // binds fails to prepare (the unified engine then silently gets
+        // an empty causal pool every query). Two changes: cap the bind
+        // list, and rank the capped set by activation order the caller
+        // passed in (ids arrive activation-ordered, so truncation keeps
+        // the strongest spread surfaces).
+        const MAX_CHUNK_BINDS: usize = 900;
+        let ids: &[String] = if chunk_ids.len() > MAX_CHUNK_BINDS {
+            &chunk_ids[..MAX_CHUNK_BINDS]
+        } else {
+            chunk_ids
+        };
+
+        // Temp-table join, not a wide IN (...): SQLite plans a 900-value IN
+        // against 250k edges as a linear scan per row (the OR of two INs
+        // defeats the chunk PK index) — measured minutes per query on the
+        // LongMemEval store via the unified engine. A temp table with an
+        // index restores O(E·log ids): each edge endpoint probes the
+        // indexed temp table.
+        conn.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS _chunk_probe (id TEXT PRIMARY KEY) WITHOUT ROWID;
+             DELETE FROM _chunk_probe;",
+        )?;
+        {
+            let mut ins = conn.prepare("INSERT OR IGNORE INTO _chunk_probe (id) VALUES (?1)")?;
+            for id in ids {
+                ins.execute(rusqlite::params![id])?;
+            }
+        }
         let mut sql = format!(
             "SELECT {ENTRY_COLUMNS}
              FROM causal_edges ce
              JOIN chunks cf ON cf.id = ce.from_id
              JOIN chunks ct ON ct.id = ce.to_id
              WHERE ce.valid_to IS NULL
-               AND (ce.from_id IN ({chunk_ph}) OR ce.to_id IN ({chunk_ph}))"
+               AND (ce.from_id IN (SELECT id FROM _chunk_probe)
+                    OR ce.to_id IN (SELECT id FROM _chunk_probe))"
         );
-        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = chunk_ids
-            .iter()
-            .chain(chunk_ids.iter())
-            .map(|c| Box::new(c.clone()) as Box<dyn rusqlite::ToSql>)
-            .collect();
+        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
         if let Some(tag) = task_tag {
             sql.push_str(" AND ce.task_tag = ?");
             binds.push(Box::new(tag.to_string()));
