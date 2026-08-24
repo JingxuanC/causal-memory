@@ -165,8 +165,11 @@ class CausalMemoryProvider(_MemoryProvider):
         if hermes_home is None:
             raise ValueError("initialize requires hermes_home in kwargs")
         self._hermes_home = Path(hermes_home)
-        # config passed via kwargs wins over values set by save_config.
-        cfg = kwargs.get("config") or {}
+        # config passed via kwargs wins over values persisted by save_config;
+        # when Hermes doesn't thread a config, reload our own config.json so
+        # db_path overrides survive restarts (save_config is otherwise
+        # write-only).
+        cfg = kwargs.get("config") or self._read_persisted_config()
         self._apply_config(cfg)
         self._open()
 
@@ -296,6 +299,16 @@ class CausalMemoryProvider(_MemoryProvider):
         budget = values.get("prefetch_budget")
         if budget is not None:
             self._prefetch_budget = int(budget)
+
+    def _read_persisted_config(self) -> Dict[str, Any]:
+        """Load config.json written by save_config (missing/corrupt → {})."""
+        assert self._hermes_home is not None
+        try:
+            raw = (self._hermes_home / "causal-memory" / "config.json").read_text()
+            cfg = json.loads(raw)
+            return cfg if isinstance(cfg, dict) else {}
+        except Exception:
+            return {}
 
     def _resolved_db(self) -> Path:
         if self._db_path:
