@@ -37,7 +37,10 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist -m crates/causal-memory-py/Cargo.toml
           sccache: true
-          manylinux: auto
+          # 2_28 (AlmaLinux 8): manylinux2014/CentOS7 is EOL and its perl
+          # lacks IPC::Cmd, which the vendored OpenSSL build needs.
+          manylinux: '2_28'
+          before-script-linux: yum install -y perl-IPC-Cmd
       - uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-${{ matrix.target }}
