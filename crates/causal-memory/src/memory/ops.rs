@@ -145,7 +145,11 @@ impl Memory {
 
         // Parse the messages into turns
         let date = date.unwrap_or("");
-        let date = if date.len() >= 10 { &date[..10] } else { "" };
+        let date = if date.chars().count() >= 10 {
+            date.chars().take(10).collect::<String>()
+        } else {
+            String::new()
+        };
 
         // Split messages into turns — accept raw text with speaker: prefix,
         // or just treat as a single assistant message
@@ -189,7 +193,7 @@ impl Memory {
         };
 
         // Run distill synchronously (blocking the op call)
-        let items = match block_on(distiller.distill_session(date, &turns)) {
+        let items = match block_on(distiller.distill_session(&date, &turns)) {
             Ok(items) if !items.is_empty() => items,
             Ok(_) => return "ℹ️ Nothing worth remembering in this conversation.".to_string(),
             Err(e) => return format!("❌ Extraction failed: {e}"),
@@ -211,7 +215,7 @@ impl Memory {
             };
             summary.push(format!(
                 "  [{kind_str}] {}",
-                &item.text[..item.text.len().min(80)]
+                item.text.chars().take(80).collect::<String>()
             ));
 
             // Write to store based on kind
