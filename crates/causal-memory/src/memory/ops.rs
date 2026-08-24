@@ -206,7 +206,10 @@ impl Memory {
                 ItemKind::Event => "event",
                 ItemKind::Causal => "causal",
             };
-            summary.push(format!("  [{kind_str}] {}", &item.text[..item.text.len().min(80)]));
+            summary.push(format!(
+                "  [{kind_str}] {}",
+                &item.text[..item.text.len().min(80)]
+            ));
 
             // Write to store based on kind
             if item.kind == ItemKind::Causal {
@@ -246,7 +249,10 @@ impl Memory {
                     ItemKind::Lesson => "lesson",
                     _ => "event",
                 };
-                match self.store.record_fact(key, &item.text, "user", "remember", 0.8) {
+                match self
+                    .store
+                    .record_fact(key, &item.text, "user", "remember", 0.8)
+                {
                     Ok(_) => facts += 1,
                     Err(_) => {
                         // Fall back to causal edge with no_effect
@@ -299,7 +305,9 @@ impl Memory {
         // would miss. Falls through to BM25/semantic if graph is unavailable
         // or finds nothing.
         if let Some(query) = query.filter(|q| !q.trim().is_empty()) {
-            if let Some(hippo_result) = self.hippocampus_search(query, task_tag, false, limit) {
+            if let Some(hippo_result) =
+                self.hippocampus_search(query, task_tag, false, limit, detail_level, max_tokens)
+            {
                 return hippo_result;
             }
 
@@ -350,7 +358,10 @@ impl Memory {
             if results.is_empty() {
                 return "[bm25] 📭 No past causal episodes found matching your query.".to_string();
             }
-            let mut out = format!("[bm25/{detail_level}] Found {} past episode(s)", results.len());
+            let mut out = format!(
+                "[bm25/{detail_level}] Found {} past episode(s)",
+                results.len()
+            );
             if max_tokens > 0 {
                 out.push_str(&format!(" (token budget: {max_tokens})"));
             }
@@ -426,7 +437,10 @@ impl Memory {
                 Err(e) => return format!("❌ Failed to record fact: {e}"),
             }
         } else {
-            match self.store.record_fact(key, value, scope, "agent", confidence) {
+            match self
+                .store
+                .record_fact(key, value, scope, "agent", confidence)
+            {
                 Ok(id) => (id, 0),
                 Err(e) => return format!("❌ Failed to record fact: {e}"),
             }
@@ -755,8 +769,7 @@ impl Memory {
             .unwrap_or_default();
         let mut hop_keys: Vec<String> = Vec::new();
         for e in &hop {
-            if let std::collections::hash_map::Entry::Vacant(entry) =
-                causal_by_id.entry(e.edge_id)
+            if let std::collections::hash_map::Entry::Vacant(entry) = causal_by_id.entry(e.edge_id)
             {
                 entry.insert(e.clone());
                 hop_keys.push(format!("causal:{}", e.edge_id));
@@ -829,8 +842,7 @@ impl Memory {
         // Distill episodes are BM25-favored paraphrases that crowd original
         // turns out of top-k (retrieval-scoring.md §4): cap them at a third
         // of the budget so primary evidence keeps its slots.
-        let entries =
-            crate::retrieval::apply_episode_quota(entries, per_layer / 3);
+        let entries = crate::retrieval::apply_episode_quota(entries, per_layer / 3);
         if entries.is_empty() {
             return "[multi-pass] 📭 No memories found matching your query.".to_string();
         }
@@ -872,8 +884,7 @@ impl Memory {
                 MULTI_PASS_SESSION_BUDGET,
                 multi_pass_top_sessions(),
             ) {
-                let covered: std::collections::HashSet<String> =
-                    ids.into_iter().collect();
+                let covered: std::collections::HashSet<String> = ids.into_iter().collect();
                 let extra: Vec<&(String, String)> = chunks
                     .iter()
                     .filter(|(id, _)| !covered.contains(id))
@@ -899,7 +910,9 @@ impl Memory {
         // which decisions could have caused it. Activation spreads along
         // reverse causal edges, surfacing decisions that keyword search
         // would miss (e.g., a decision phrased differently from the query).
-        if let Some(hippo_result) = self.hippocampus_search(outcome_description, None, true, 5) {
+        if let Some(hippo_result) =
+            self.hippocampus_search(outcome_description, None, true, 5, "l1", 0)
+        {
             return hippo_result;
         }
 
@@ -938,14 +951,14 @@ impl Memory {
         let min_confidence = min_confidence.unwrap_or(0.5);
         let limit = limit.unwrap_or(5);
 
-        let chains = match self.store.trace_cause_chain(
-            outcome_description,
-            max_depth,
-            min_confidence,
-        ) {
-            Ok(c) => c,
-            Err(e) => return format!("❌ Chain trace failed: {e}"),
-        };
+        let chains =
+            match self
+                .store
+                .trace_cause_chain(outcome_description, max_depth, min_confidence)
+            {
+                Ok(c) => c,
+                Err(e) => return format!("❌ Chain trace failed: {e}"),
+            };
 
         if chains.is_empty() {
             return "📭 No multi-hop causal chains found. Try widening max_depth or lowering min_confidence.".to_string();
@@ -1028,9 +1041,17 @@ impl Memory {
                     "{} {} lesson(s){} — superseded edges {}.\n\
                      Re-run with apply=true to write, or `causal-memory sleep` folds \
                      this into the next consolidation cycle.",
-                    if apply { "✓ Superseded" } else { "👀 Would supersede" },
+                    if apply {
+                        "✓ Superseded"
+                    } else {
+                        "👀 Would supersede"
+                    },
                     report.superseded_lessons,
-                    if apply { "" } else { " (preview — nothing written)" },
+                    if apply {
+                        ""
+                    } else {
+                        " (preview — nothing written)"
+                    },
                     match config.supersession_action {
                         crate::consolidate::SupersessionAction::Retire => {
                             "exit retrieval (valid_to set)"
@@ -1069,7 +1090,9 @@ impl Memory {
                         graph.invalidate_edges_between(&edge.decision_id, &edge.outcome_id);
                     }
                 }
-                let reason = reason.map(|r| format!(" (reason: {r})")).unwrap_or_default();
+                let reason = reason
+                    .map(|r| format!(" (reason: {r})"))
+                    .unwrap_or_default();
                 format!(
                     "✅ Invalidated edge #{}: \"{}\" →({})→ \"{}\"{reason}. It will no longer appear in search/trace results, but is kept for audit.",
                     edge_id, edge.decision_text, edge.relation, edge.outcome_text,
@@ -1197,11 +1220,10 @@ impl Memory {
                             Err(e) => return format!("❌ Intervention query failed: {e}"),
                         }
                     }
-                    None => match self.store.trace_effect_chain(
-                        action,
-                        max_depth,
-                        min_confidence,
-                    ) {
+                    None => match self
+                        .store
+                        .trace_effect_chain(action, max_depth, min_confidence)
+                    {
                         Ok(c) => c,
                         Err(e) => return format!("❌ Intervention query failed: {e}"),
                     },
@@ -1242,7 +1264,9 @@ impl Memory {
                 )
             })
             .collect();
-        let reference = task_tag.map(str::to_string).or_else(|| modal_stratum(&pooled));
+        let reference = task_tag
+            .map(str::to_string)
+            .or_else(|| modal_stratum(&pooled));
         let summary = stratified_summary(&pooled, reference.as_deref());
         let display: Vec<&Vec<ChainHop>> = match task_tag {
             Some(t) => chains
@@ -1400,9 +1424,7 @@ impl Memory {
         task_tag: Option<&str>,
         limit: usize,
     ) -> (CfDist, Vec<String>, &'static str) {
-        let semantic = crate::embed::embed_shared(query)
-            .await
-            .and_then(|r| {
+        let semantic = crate::embed::embed_shared(query).await.and_then(|r| {
             let vec = r.ok()?;
             let hits = self
                 .store
@@ -1603,7 +1625,10 @@ fn fact_hit(f: &AgentFact) -> MemoryHit {
 fn causal_hit(e: &CausalEntry) -> MemoryHit {
     MemoryHit {
         key: format!("causal:{}", e.edge_id),
-        content: format!("\"{}\" →({})→ \"{}\"", e.decision_text, e.relation, e.outcome_text),
+        content: format!(
+            "\"{}\" →({})→ \"{}\"",
+            e.decision_text, e.relation, e.outcome_text
+        ),
         score: 0.0, // filled by hits_from_ranked
         rank: 0,
         created_at: Some(e.event_time),

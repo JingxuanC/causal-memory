@@ -43,6 +43,37 @@ pub fn format_entry_layered(entry: &CausalEntry, rank: usize, level: &str) -> (S
     }
 }
 
+/// Format one spreading-activation hit at L0/L1/L2 detail, with an
+/// approximate token cost. Activation hits carry only chunk text (no
+/// decision/outcome pair), so the levels differ by text verbosity:
+/// l0 pointer (40 chars), l1 overview (80 chars), l2 full text.
+pub fn format_activation_layered(
+    text: &str,
+    activation: f32,
+    rank: usize,
+    level: &str,
+) -> (String, usize) {
+    let sign = if activation > 0.0 { "+" } else { "-" };
+    let act = activation.abs() * 100.0;
+    match level {
+        "l0" => (
+            format!(
+                "{rank}. [{act:.0}%{sign}] \"{}\"\n",
+                truncate_chars(text, 40)
+            ),
+            25,
+        ),
+        "l1" => (
+            format!(
+                "{rank}. [{act:.0}%{sign}] \"{}\"\n",
+                truncate_chars(text, 80)
+            ),
+            60,
+        ),
+        _ => (format!("{rank}. [{act:.0}%{sign}] \"{text}\"\n"), 100),
+    }
+}
+
 /// P5: Token budget tracker — yields entries until the budget is exhausted.
 pub(crate) struct TokenBudget {
     remaining: usize,

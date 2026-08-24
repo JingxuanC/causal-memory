@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use format::truncate_chars;
+use format::{format_activation_layered, TokenBudget};
 
 /// C7: rebuild the hippocampus graph only after enough writes accumulated
 /// (or enough time passed) — a full from_store per write is O(store) and
@@ -37,8 +37,8 @@ pub(crate) const RRF_K: f64 = 60.0;
 
 pub mod format;
 pub mod ops;
-mod unified;
 pub mod output;
+mod unified;
 
 #[cfg(test)]
 mod tests;
@@ -197,7 +197,8 @@ impl Memory {
         let superseded: Vec<i64> = self
             .store
             .with_conn(|conn| {
-                let mut stmt = conn.prepare("SELECT id FROM agent_facts WHERE superseded_by = ?1")?;
+                let mut stmt =
+                    conn.prepare("SELECT id FROM agent_facts WHERE superseded_by = ?1")?;
                 let rows = stmt.query_map(rusqlite::params![new_fact_id], |r| r.get(0))?;
                 let ids: std::result::Result<Vec<i64>, rusqlite::Error> = rows.collect();
                 Ok(ids?)
@@ -279,12 +280,17 @@ impl Memory {
 
     /// Try spreading activation search on the hippocampus graph.
     /// Returns None if graph is empty, missing, or finds nothing.
+    /// Honors the same detail_level/max_tokens contract as the BM25 and
+    /// semantic paths — these were dead parameters on this path until the
+    /// budget was threaded through here.
     fn hippocampus_search(
         &self,
         query: &str,
         task_tag: Option<&str>,
         reverse: bool,
         limit: usize,
+        detail_level: &str,
+        max_tokens: usize,
     ) -> Option<String> {
         self.maybe_rebuild_graph();
         let mut guard = self.graph.lock().ok()?;
@@ -311,19 +317,26 @@ impl Memory {
         let count = results.len().min(limit);
         let direction = if reverse { "reverse" } else { "forward" };
         let mut out = format!(
-            "[hippocampus/{direction}] Activated {}/{} nodes via spreading activation:\n\n",
+            "[hippocampus/{direction}/{detail_level}] Activated {}/{} nodes via spreading activation",
             count,
             results.len()
         );
+        if max_tokens > 0 {
+            out.push_str(&format!(" (token budget: {max_tokens})"));
+        }
+        out.push_str(":\n\n");
+        let mut budget = TokenBudget::new(max_tokens);
         for (i, r) in results.iter().take(limit).enumerate() {
-            let sign = if r.activation > 0.0 { "+" } else { "-" };
-            out.push_str(&format!(
-                "{}. [{:.0}%{}] \"{}\"\n",
-                i + 1,
-                r.activation.abs() * 100.0,
-                sign,
-                truncate_chars(&r.text, 80),
-            ));
+            let (line, cost) =
+                format_activation_layered(&r.text, r.activation, i + 1, detail_level);
+            if !budget.try_spend(cost) {
+                out.push_str(&format!(
+                    "… {} more result(s) truncated (token budget)\n",
+                    count - i
+                ));
+                break;
+            }
+            out.push_str(&line);
         }
         Some(out)
     }

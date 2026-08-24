@@ -16,13 +16,21 @@ mod tests {
     #[test]
     fn test_format_entry_layered_l0_compact() {
         let entry = CausalEntry {
-            edge_id: 1, decision_id: "d1".into(),
+            edge_id: 1,
+            decision_id: "d1".into(),
             decision_text: "used Redis for caching".into(),
-            outcome_id: "o1".into(), outcome_text: "cache stampede".into(),
-            relation: "caused".into(), confidence: 0.9,
-            task_tag: Some("caching".into()), event_time: 0, valid_to: None,
-            access_count: 0, last_accessed_at: None,
-            discovered_by: "agent".into(), discovered_at: 0, outcome_polarity: None,
+            outcome_id: "o1".into(),
+            outcome_text: "cache stampede".into(),
+            relation: "caused".into(),
+            confidence: 0.9,
+            task_tag: Some("caching".into()),
+            event_time: 0,
+            valid_to: None,
+            access_count: 0,
+            last_accessed_at: None,
+            discovered_by: "agent".into(),
+            discovered_at: 0,
+            outcome_polarity: None,
             superseded_by: None,
         };
         let (l0, t0) = format_entry_layered(&entry, 1, "l0");
@@ -38,6 +46,23 @@ mod tests {
         assert!(b.try_spend(60));
         assert!(b.try_spend(40));
         assert!(!b.try_spend(1));
+    }
+
+    #[test]
+    fn test_format_activation_layered_levels() {
+        let text = "a".repeat(200);
+        let (l0, t0) = format_activation_layered(&text, 0.8, 1, "l0");
+        let (l1, t1) = format_activation_layered(&text, 0.8, 1, "l1");
+        let (l2, t2) = format_activation_layered(&text, 0.8, 1, "l2");
+        // Cost rises with detail; l0/l1 truncate, l2 keeps the full text.
+        assert!(t0 < t1 && t1 < t2);
+        assert!(l0.contains("[80%+]"));
+        assert!(l0.len() < l1.len());
+        assert!(l2.contains(&text));
+        // Negative activation keeps its sign at every level.
+        assert!(format_activation_layered("x", -0.5, 1, "l1")
+            .0
+            .contains("[50%-]"));
     }
 
     #[test]
@@ -415,8 +440,14 @@ mod tests {
     fn test_remember_raw_turns_writes_searchable_pool() {
         let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
         let turns = vec![
-            ("alice".to_string(), "we moved the build to bazel".to_string()),
-            ("bob".to_string(), "bazel cut our build time in half".to_string()),
+            (
+                "alice".to_string(),
+                "we moved the build to bazel".to_string(),
+            ),
+            (
+                "bob".to_string(),
+                "bazel cut our build time in half".to_string(),
+            ),
         ];
         let written = memory.remember_raw_turns(&turns, "s7");
         assert_eq!(written, 2);
@@ -506,15 +537,21 @@ mod tests {
             "locking",
             None,
         );
-        memory.record_decision("ran backup migration", "backup completed", "caused", "backup", None);
+        memory.record_decision(
+            "ran backup migration",
+            "backup completed",
+            "caused",
+            "backup",
+            None,
+        );
         memory.record_fact("tech_stack", "Redis 7.2", Some("user"), None, None);
         memory.record_fact("tech_stack", "Redis 8.0", Some("user"), None, Some(true));
 
         let (hits, mode) = memory.search_memory_entries("redis cache", None, None, 10);
         assert_eq!(mode, "spread", "engine must serve, got: {hits:?}");
         assert!(
-            hits.iter().any(|h| h.key.starts_with("fact:")
-                && h.content.contains("Redis 8.0")),
+            hits.iter()
+                .any(|h| h.key.starts_with("fact:") && h.content.contains("Redis 8.0")),
             "fresh fact must surface despite the stale graph: {hits:?}"
         );
         assert!(
@@ -642,45 +679,37 @@ mod tests {
     }
 }
 
-    // ─── Production-path sink of the bench optimizations ──────────────
+// ─── Production-path sink of the bench optimizations ──────────────
 
-    /// multi_pass now runs the episode quota + weighted top-N expansion
-    /// (the LME dilution cut). Production chunk ids are flat (no
-    /// '::session::' segments), so session-keyed expansion is a no-op on
-    /// agent-native stores by design (comment on session_key: "production
-    /// data with flat chunk ids simply never expands sessions") — this
-    /// test pins that the QUOTA half applies and that session-structured
-    /// stores (harness convention) get the whitelist behavior.
-    #[test]
-    #[allow(
-        clippy::expect_used,
-        reason = "test invariant: memory construction must succeed"
-    )]
-    fn multi_pass_sinks_bench_optimizations() {
-        let memory = Memory::open_in_memory().expect("memory");
-        for turn in 0..6 {
-            memory.record_decision(
-                &format!("bought plants number {turn} for the garden"),
-                &format!("plants thriving batch {turn}"),
-                "caused",
-                "garden",
-                None,
-            );
-        }
-        let out = memory.search_memory_multi_pass(
-            "how many plants did I buy",
+/// multi_pass now runs the episode quota + weighted top-N expansion
+/// (the LME dilution cut). Production chunk ids are flat (no
+/// '::session::' segments), so session-keyed expansion is a no-op on
+/// agent-native stores by design (comment on session_key: "production
+/// data with flat chunk ids simply never expands sessions") — this
+/// test pins that the QUOTA half applies and that session-structured
+/// stores (harness convention) get the whitelist behavior.
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: memory construction must succeed"
+)]
+fn multi_pass_sinks_bench_optimizations() {
+    let memory = Memory::open_in_memory().expect("memory");
+    for turn in 0..6 {
+        memory.record_decision(
+            &format!("bought plants number {turn} for the garden"),
+            &format!("plants thriving batch {turn}"),
+            "caused",
+            "garden",
             None,
-            None,
-            Some(10),
-        );
-        // Flat-id store: no session expansion (documented), but the
-        // multi-pass path itself must return the garden evidence.
-        assert!(
-            out.contains("bought plants"),
-            "multi-pass must surface evidence: {out}"
-        );
-        assert!(
-            out.contains("[multi-pass]"),
-            "mode tag present: {out}"
         );
     }
+    let out = memory.search_memory_multi_pass("how many plants did I buy", None, None, Some(10));
+    // Flat-id store: no session expansion (documented), but the
+    // multi-pass path itself must return the garden evidence.
+    assert!(
+        out.contains("bought plants"),
+        "multi-pass must surface evidence: {out}"
+    );
+    assert!(out.contains("[multi-pass]"), "mode tag present: {out}");
+}
