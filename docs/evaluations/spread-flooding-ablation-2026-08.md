@@ -17,7 +17,12 @@
   `--self-queries` 模式：每条因果边派生 query=outcome 文本、gold=decision 所在边
   （按 `causal:{edge_id}` 精确匹配），n=219。
   **口径注意**：query 是 outcome 原文，对种子检索是"简单模式"，最大化了
-  seed-only 与 spread 的反差；释义查询下反差预期收窄。
+  seed-only 与 spread 的反差。曾预期"释义查询下反差收窄"——2026-08-24 用
+  机械释义（去 30% 高 IDF token）实测**未能构造出该反差**：删除式变换的
+  查询 token 仍是 outcome chunk 的子集，BM25 覆盖率依旧 100%，种子层照样
+  稳命中（两轮四臂逐位一致）。真正的释义需要**同义替换**（查询 token 不在
+  原文中），只能由 LLM 或同义词典生成——后续方向：LLM 离线生成一版
+  paraphrase 查询集、冻结后复跑本 harness（gold 仍是 edge id，无需 judge）。
 
 ## 发现 1：物化瓶颈（已修复）
 
@@ -110,8 +115,11 @@ baseline 回升 **+80.8pt**，与 seed-only 完全持平，且 pool 覆盖更广
 2. **spread 洪泛是小而密图的真实精度杀手**——已由通道级 fan-out 约束治理
    （关联通道按出度分摊，因果家族不分摊，保护抑制性弱信号）；hop 距离决胜
    和 top-K 剪枝留作后备，当前不需要。
-3. **no-swr 首次获得非 vacuous 信号**（mean rank +0.4 变差），Q 播种有用但
-   影响被下游压缩；no-inhibition 信号被洪泛掩盖，待治理后复测。
+3. **no-swr 信号稳定复现**：三轮独立运行（含干净副本重建）逐位一致——
+   Q flatten 反而 +1.8pt（96.8% vs 95.0%），即该库上 Q 加权播种轻微过拟合
+   高 Q 节点，抹平后多捞 4 条金边。Q 加权是否也该做通道级限制是开放问题。
+   no-inhibition 依旧无可见差异（25 条 prevented 低于检索级指标分辨率，
+   需更敏感的指标或 LLM 冻结查询集才能检验）。
 4. 实验注意：真实库副本会被检索副作用演化（record_access / Hebbian flush，
    q_value distinct 24→115、有效边 221→220），跨轮对比有轻微底噪；
    严格对比应每次从原库重新 .backup + sleep。
