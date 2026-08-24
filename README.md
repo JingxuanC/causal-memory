@@ -36,6 +36,21 @@ compaction cannot touch it.
 
 ---
 
+## Demo
+
+21 秒实操演示（真实记忆库，非 mock）：行动前预警（`intervention_query` → DANGER 链）
+→ 经验检索（`search_causal`）→ 反事实对比（`counterfactual_query`）→
+写入闭环（`record_decision` → 立即可检索）。
+
+<video src="https://github.com/JingxuanC/causal-memory/raw/main/docs/demo/causal-memory-demo.mp4" controls width="720"></video>
+
+[下载视频](docs/demo/causal-memory-demo.mp4) ·
+[预警场景截图](docs/demo/demo_intervention.png) ·
+[品牌卡](docs/demo/demo_card.png) ·
+重新生成：`scripts/render_demo.py`
+
+---
+
 ## Benchmarks
 
 ### CausalEval — the causal memory benchmark (primary)
