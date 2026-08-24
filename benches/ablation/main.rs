@@ -34,8 +34,15 @@
 //! endpoint text < 20 chars are skipped. Default n = all derived pairs.
 //! This mode measures causal-lesson retrieval against a REAL store where
 //! the LongMemEval evidence-turn labels are meaningless.
+//!
+//! --self-queries-paraphrase: same derivation, but the outcome text is
+//! mechanically paraphrased first (see paraphrase_drop_anchors) — the
+//! highest-IDF tokens (the literal-match anchors) are dropped, simulating
+//! a user describing the problem in their own words. This is the FAIR
+//! query form for measuring spreading activation's associative value:
+//! verbatim queries are trivially served by the seeding layer alone.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use causal_memory::memory::Memory;
 use causal_memory::store::CausalStore;
@@ -46,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
     let mut data = "benches/longmemeval/data/longmemeval_s_cleaned.json".to_string();
     let mut n: Option<usize> = None;
     let mut self_queries = false;
+    let mut paraphrase = false;
     let mut note: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -54,20 +62,29 @@ async fn main() -> anyhow::Result<()> {
             "--data" => data = args.next().expect("--data needs a value"),
             "-n" | "--n" => n = Some(args.next().expect("-n needs a value").parse()?),
             "--self-queries" => self_queries = true,
+            "--self-queries-paraphrase" => {
+                self_queries = true;
+                paraphrase = true;
+            }
             "--note" => note = Some(args.next().expect("--note needs a value")),
             other => anyhow::bail!("unknown flag {other}"),
         }
     }
 
-    let (queries, data_label, n) = if self_queries {
-        let qs = load_self_queries(&db)?;
-        eprintln!("self-queries: derived {} query pairs from causal_edges", qs.len());
-        (
-            qs,
+    let (queries, data_label, skipped, n) = if self_queries {
+        let (qs, skipped) = load_self_queries(&db, paraphrase)?;
+        eprintln!(
+            "self-queries{}: derived {} query pairs from causal_edges ({} skipped)",
+            if paraphrase { "/paraphrase" } else { "" },
+            qs.len(),
+            skipped
+        );
+        let label = if paraphrase {
+            "self-derived from causal_edges, PARAPHRASED queries (top-IDF anchor tokens dropped), gold=causal edge hit key"
+        } else {
             "self-derived from causal_edges (query=outcome text, gold=causal edge hit key)"
-                .to_string(),
-            n.unwrap_or(usize::MAX),
-        )
+        };
+        (qs, label.to_string(), skipped, n.unwrap_or(usize::MAX))
     } else {
         let raw = std::fs::read(&data)?;
         let qs = load_questions(&raw)?
@@ -78,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
                 gold: Gold::Evidence(q.evidence),
             })
             .collect();
-        (qs, data, n.unwrap_or(100))
+        (qs, data, 0, n.unwrap_or(100))
     };
 
     let mut arms = Vec::new();
@@ -119,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
     println!("{noswr}");
     arms.push(noswr);
 
-    let path = write_results(&db, &data_label, note.as_deref(), &arms)?;
+    let path = write_results(&db, &data_label, skipped, note.as_deref(), &arms)?;
     println!("results written to {path}");
 
     Ok(())
@@ -168,6 +185,7 @@ impl std::fmt::Display for ArmMetrics {
 fn write_results(
     db: &str,
     data: &str,
+    skipped: usize,
     note: Option<&str>,
     arms: &[ArmMetrics],
 ) -> anyhow::Result<String> {
@@ -212,6 +230,7 @@ fn write_results(
         "db": db,
         "data": data,
         "n": base.total,
+        "skipped_queries": skipped,
         "metric": "retrieval-level: evidence hit rate + mean evidence rank + pool token mass (judge-free)",
         "arms": arm_json,
         "notes": notes,
@@ -297,10 +316,20 @@ enum Gold {
 /// edge's hit key (its decision text is surfaced verbatim inside a causal
 /// hit, so an edge hit == the decision chunk retrieved). Edges with either
 /// endpoint text shorter than 20 chars are skipped (too short to seed or
-/// judge meaningfully).
-fn load_self_queries(db: &str) -> anyhow::Result<Vec<AblationQuery>> {
+/// judge meaningfully). With `paraphrase`, the outcome text is first
+/// mechanically paraphrased (top-IDF anchor tokens dropped); pairs whose
+/// paraphrased query keeps < 4 tokens are skipped. Returns (pairs,
+/// skipped_count) — skipped counts only the paraphrase short-query drops.
+fn load_self_queries(db: &str, paraphrase: bool) -> anyhow::Result<(Vec<AblationQuery>, usize)> {
     const MIN_TEXT_LEN: usize = 20;
+    const MIN_QUERY_TOKENS: usize = 4;
     let store = CausalStore::open(db)?;
+    let idf = if paraphrase {
+        Some(chunk_idf(&store)?)
+    } else {
+        None
+    };
+    let mut skipped = 0usize;
     store.with_conn(|c| {
         let mut stmt = c.prepare(
             "SELECT ce.id, cf.text, ct.text
@@ -322,14 +351,80 @@ fn load_self_queries(db: &str) -> anyhow::Result<Vec<AblationQuery>> {
             if decision_text.len() < MIN_TEXT_LEN || outcome_text.len() < MIN_TEXT_LEN {
                 continue;
             }
+            let query_text = match &idf {
+                Some(idf) => {
+                    let p = paraphrase_drop_anchors(&outcome_text, idf);
+                    if p.split_whitespace().count() < MIN_QUERY_TOKENS {
+                        skipped += 1;
+                        continue;
+                    }
+                    p
+                }
+                None => outcome_text,
+            };
             out.push(AblationQuery {
                 id: format!("edge{edge_id}"),
-                text: outcome_text,
+                text: query_text,
                 gold: Gold::HitKey(format!("causal:{edge_id}")),
             });
         }
-        Ok(out)
+        Ok((out, skipped))
     })
+}
+
+/// IDF over the store's chunk corpus (the query-side document space):
+/// idf(t) = ln((N+1)/(df+1)) + 1, df counting chunks containing t.
+fn chunk_idf(store: &CausalStore) -> anyhow::Result<HashMap<String, f64>> {
+    store.with_conn(|c| {
+        let mut stmt = c.prepare("SELECT text FROM chunks")?;
+        let texts = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut df: HashMap<String, usize> = HashMap::new();
+        let mut n_docs = 0usize;
+        for t in texts {
+            n_docs += 1;
+            let distinct: HashSet<String> = causal_memory::patterns::tokenize(&t?).into_iter().collect();
+            for tok in distinct {
+                *df.entry(tok).or_insert(0) += 1;
+            }
+        }
+        Ok(df
+            .into_iter()
+            .map(|(t, d)| {
+                let idf = ((n_docs as f64 + 1.0) / (d as f64 + 1.0)).ln() + 1.0;
+                (t, idf)
+            })
+            .collect())
+    })
+}
+
+/// Mechanical, judge-free paraphrase (deterministic — no RNG, no LLM):
+/// drop the k highest-IDF tokens of the text, k = ceil(30% of the
+/// distinct-token count) clamped to [1, 5]. The dropped tokens are the
+/// literal-match anchors a BM25/semantic seed would need; what remains
+/// simulates a user describing the problem in their own (generic) words.
+/// Tokens only ever get REMOVED, so no decision-side information can leak
+/// into the query. Ties broken by token text for reproducibility.
+fn paraphrase_drop_anchors(text: &str, idf: &HashMap<String, f64>) -> String {
+    let mut seen = HashSet::new();
+    let tokens: Vec<String> = causal_memory::patterns::tokenize(text)
+        .into_iter()
+        .filter(|t| seen.insert(t.clone()))
+        .collect();
+    let k = ((tokens.len() as f64 * 0.3).ceil() as usize).clamp(1, 5);
+    let mut by_idf: Vec<&String> = tokens.iter().collect();
+    by_idf.sort_by(|a, b| {
+        let ia = idf.get(*a).copied().unwrap_or(f64::MAX);
+        let ib = idf.get(*b).copied().unwrap_or(f64::MAX);
+        ib.partial_cmp(&ia).unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.cmp(b))
+    });
+    let drop: HashSet<&String> = by_idf.into_iter().take(k).collect();
+    tokens
+        .iter()
+        .filter(|t| !drop.contains(t))
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 async fn run_arm(
@@ -410,4 +505,78 @@ fn copy_db(src: &str, tag: &str) -> anyhow::Result<String> {
     let src_conn = rusqlite::Connection::open(src)?;
     src_conn.execute("VACUUM INTO ?1", rusqlite::params![&dst])?;
     Ok(dst)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn idf_of(pairs: &[(&str, f64)]) -> HashMap<String, f64> {
+        pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
+    }
+
+    #[test]
+    fn paraphrase_drops_high_idf_anchors() {
+        // Anchors (rare in the corpus, high IDF) vs generic context.
+        let idf = idf_of(&[
+            ("dockerfile", 5.0),
+            ("alpine", 5.0),
+            ("syncuser", 5.0),
+            ("root", 5.0),
+            ("build", 1.2),
+            ("fails", 1.3),
+            ("when", 1.0),
+            ("using", 1.1),
+            ("cache", 1.4),
+            ("network", 1.2),
+            ("timeout", 1.3),
+            ("error", 1.1),
+            ("check", 1.2),
+            ("config", 1.3),
+        ]);
+        let text = "dockerfile alpine syncuser root build fails when using cache network timeout error check config";
+        let p = paraphrase_drop_anchors(text, &idf);
+        // k = ceil(14 × 0.3) = 5 → the four 5.0 anchors + the next-highest.
+        for anchor in ["dockerfile", "alpine", "syncuser", "root"] {
+            assert!(!p.split_whitespace().any(|t| t == anchor), "{anchor} leaked");
+        }
+        // Generic tokens survive.
+        assert!(p.split_whitespace().any(|t| t == "build"));
+        assert!(p.split_whitespace().any(|t| t == "fails"));
+
+        // Overlap with the original text drops significantly (Jaccard of
+        // distinct tokens well below the verbatim 1.0).
+        let orig: HashSet<String> = causal_memory::patterns::tokenize(text).into_iter().collect();
+        let para: HashSet<String> = p.split_whitespace().map(|s| s.to_string()).collect();
+        let inter = orig.intersection(&para).count();
+        let union = orig.union(&para).count();
+        let jaccard = inter as f64 / union as f64;
+        assert!(
+            jaccard <= 0.7,
+            "token overlap must drop materially, jaccard={jaccard:.2}"
+        );
+
+        // No-information-leak invariant: every query token comes from the
+        // original outcome text (transform is removal-only, so nothing
+        // from the decision side can enter).
+        assert!(
+            para.iter().all(|t| orig.contains(t)),
+            "paraphrase introduced foreign tokens: {para:?}"
+        );
+    }
+
+    #[test]
+    fn paraphrase_never_contains_decision_side_tokens() {
+        // The transform's only input is the outcome text — assert on a
+        // realistic pair that decision-specific tokens cannot appear.
+        let idf = idf_of(&[("mysqldump", 5.0), ("导入", 5.0), ("备份", 4.0)]);
+        let outcome = "mysqldump 文件不含 CREATE DATABASE 语句导致 导入 失败";
+        let p = paraphrase_drop_anchors(outcome, &idf);
+        for decision_token in ["手动", "创建", "目标", "数据库"] {
+            assert!(
+                !p.split_whitespace().any(|t| t == decision_token),
+                "decision-side token leaked: {decision_token}"
+            );
+        }
+    }
 }
