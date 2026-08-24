@@ -6,8 +6,10 @@
 //!
 //! Arms:
 //! - baseline: the production pipeline as-is
-//! - no-spread: unified engine disabled (dual-pool RRF fallback only —
-//!   the graph's associative reach removed)
+//! - no-spread: `Memory::disable_spread()` — the seeding layer (BM25/
+//!   semantic direct hits, Q-weighted) still runs, but zero spread hops,
+//!   so the graph's associative reach is removed (engine-level switch,
+//!   in-memory; the store is untouched)
 //! - no-inhibition: prevented edges flipped to caused (the inhibitory
 //!   side removed; negative spread gone)
 //! - no-swr: consolidation-processed fields neutralized (q_value seeding
@@ -47,36 +49,32 @@ async fn main() -> anyhow::Result<()> {
     let raw = std::fs::read(&data)?;
     let questions = load_questions(&raw)?;
 
+    let mut arms = Vec::new();
+
     // Arm 1: baseline (production pipeline, read-only).
     let base = run_arm(&db, &questions, n, Arm::Baseline).await?;
     println!("{base}");
+    arms.push(base);
 
-    // Arm 2: no-spread (clone the DB, break the graph path). We emulate by
-    // a query flag the engine doesn't have — instead, use the store-level
-    // dual-pool directly? The honest approach: measure through the same
-    // facade but with the graph emptied (update graph to None requires an
-    // internal hook we don't expose). Pragmatic: rebuild connection with
-    // a store whose causal_edges prevent graph seeding is invasive.
-    //
-    // Simplest honest emulation: neutralize SPREADING by clearing
-    // cooccurrence + meta edges and zeroing entity links is per-store
-    // mutation — heavy. Fallback plan: report baseline + no-inhibition +
-    // no-swr now (graph mutations on a COPY of the DB), and leave
-    // no-spread to the harness's existing --retrieval baseline mode
-    // (which is exactly dual-pool RRF, measured in prior runs).
+    // Arm 2: no-spread — engine-level switch on the SAME store (read-only;
+    // the switch lives on the in-memory graph instance). Seeding intact,
+    // zero spread hops: seed-hits-only retrieval.
+    let nospread = run_arm(&db, &questions, n, Arm::NoSpread).await?;
+    println!("{nospread}");
+    arms.push(nospread);
 
     // Arm 3: no-inhibition — copy DB, flip prevented → caused.
     let noinhib_db = copy_db(&db, "ablation_noinhib")?;
-    let flipped = CausalStore::open(&noinhib_db)?
-        .with_conn(|c| {
-            Ok(c.execute(
-                "UPDATE causal_edges SET relation='caused' WHERE relation='prevented'",
-                [],
-            )?)
-        })?;
+    let flipped = CausalStore::open(&noinhib_db)?.with_conn(|c| {
+        Ok(c.execute(
+            "UPDATE causal_edges SET relation='caused' WHERE relation='prevented'",
+            [],
+        )?)
+    })?;
     eprintln!("no-inhibition: flipped {flipped} prevented edges");
     let noinhib = run_arm(&noinhib_db, &questions, n, Arm::NoInhibition).await?;
     println!("{noinhib}");
+    arms.push(noinhib);
 
     // Arm 4: no-swr — copy DB, flatten q_value to 0.5 and restore decayed
     // confidences is not reconstructable (decay is lossy); approximate by
@@ -87,6 +85,10 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("no-swr: flattened {flattened} chunk q-values");
     let noswr = run_arm(&noswr_db, &questions, n, Arm::NoSwr).await?;
     println!("{noswr}");
+    arms.push(noswr);
+
+    let path = write_results(&db, &data, n, &arms)?;
+    println!("results written to {path}");
 
     Ok(())
 }
@@ -94,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
 #[derive(Clone, Copy)]
 enum Arm {
     Baseline,
+    NoSpread,
     NoInhibition,
     NoSwr,
 }
@@ -102,10 +105,79 @@ impl Arm {
     fn name(self) -> &'static str {
         match self {
             Arm::Baseline => "baseline",
+            Arm::NoSpread => "no-spread",
             Arm::NoInhibition => "no-inhibition",
             Arm::NoSwr => "no-swr",
         }
     }
+}
+
+struct ArmMetrics {
+    arm: &'static str,
+    hits: usize,
+    total: usize,
+    hit_rate: f64,
+    mean_rank: f64,
+    avg_tok: usize,
+}
+
+impl std::fmt::Display for ArmMetrics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:<14} evidence_hit {}/{} ({:.1}%)  mean_rank {:.1}  avg_pool_tokens {}",
+            self.arm, self.hits, self.total, self.hit_rate, self.mean_rank, self.avg_tok
+        )
+    }
+}
+
+/// Persist per-arm metrics + deltas vs baseline, same summary-json style
+/// as benches/longmemeval/results/run_*_summary.json.
+fn write_results(db: &str, data: &str, n: usize, arms: &[ArmMetrics]) -> anyhow::Result<String> {
+    let dir = std::path::Path::new("benches/ablation/results");
+    std::fs::create_dir_all(dir)?;
+    let run_id = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
+    let git_commit = std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let base = &arms[0];
+    let arm_json: Vec<serde_json::Value> = arms
+        .iter()
+        .map(|a| {
+            serde_json::json!({
+                "arm": a.arm,
+                "evidence_hits": a.hits,
+                "total_questions": a.total,
+                "evidence_hit_rate": a.hit_rate / 100.0,
+                "mean_rank": a.mean_rank,
+                "avg_pool_tokens": a.avg_tok,
+                "delta_hit_rate_vs_baseline": (a.hit_rate - base.hit_rate) / 100.0,
+                "delta_mean_rank_vs_baseline": a.mean_rank - base.mean_rank,
+                "delta_avg_pool_tokens_vs_baseline": a.avg_tok as i64 - base.avg_tok as i64,
+            })
+        })
+        .collect();
+    let doc = serde_json::json!({
+        "run_id": run_id,
+        "date": chrono::Local::now().to_rfc3339(),
+        "git_commit": git_commit,
+        "db": db,
+        "data": data,
+        "n": n,
+        "metric": "retrieval-level: evidence hit rate + mean evidence rank + pool token mass (judge-free)",
+        "arms": arm_json,
+        "notes": {
+            "no-spread": "engine-level switch (Memory::disable_spread): seeding layer intact (BM25/semantic direct hits, Q-weighted), zero spreading-activation hops — seed-hits-only retrieval over the same store",
+            "no-inhibition": "DB copy with prevented edges flipped to caused (inhibitory side removed, negative spread gone)",
+            "no-swr": "DB copy with chunk q_value flattened to 0.5 (approximates a never-consolidated store; decayed confidence is lossy and not restored)"
+        }
+    });
+    let path = dir.join(format!("ablation_{run_id}_summary.json"));
+    std::fs::write(&path, serde_json::to_string_pretty(&doc)?)?;
+    Ok(path.display().to_string())
 }
 
 #[derive(serde::Deserialize)]
@@ -163,8 +235,12 @@ fn load_questions(data: &[u8]) -> anyhow::Result<Vec<LmeQ>> {
         .collect())
 }
 
-async fn run_arm(db: &str, questions: &[LmeQ], n: usize, arm: Arm) -> anyhow::Result<String> {
+async fn run_arm(db: &str, questions: &[LmeQ], n: usize, arm: Arm) -> anyhow::Result<ArmMetrics> {
     let mem = Memory::open(db)?;
+    if let Arm::NoSpread = arm {
+        mem.disable_spread();
+        eprintln!("no-spread: spreading activation disabled (seed-hits-only)");
+    }
     let mut hits = 0usize;
     let mut rank_sum = 0usize;
     let mut rank_n = 0usize;
@@ -199,10 +275,14 @@ async fn run_arm(db: &str, questions: &[LmeQ], n: usize, arm: Arm) -> anyhow::Re
         0.0
     };
     let avg_tok = tok_mass / total.max(1);
-    Ok(format!(
-        "{:<14} evidence_hit {hits}/{total} ({hit_rate:.1}%)  mean_rank {mean_rank:.1}  avg_pool_tokens {avg_tok}",
-        arm.name()
-    ))
+    Ok(ArmMetrics {
+        arm: arm.name(),
+        hits,
+        total,
+        hit_rate,
+        mean_rank,
+        avg_tok,
+    })
 }
 
 /// Distinctive-token overlap: ≥2 shared tokens of ≥4 chars.

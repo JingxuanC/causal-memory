@@ -13,7 +13,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("caching".into()),
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "o1".into(),
@@ -23,7 +23,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("caching".into()),
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "d2".into(),
@@ -33,7 +33,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("concurrency".into()),
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "o2".into(),
@@ -43,7 +43,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("concurrency".into()),
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "d3".into(),
@@ -53,7 +53,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("concurrency".into()),
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "o3".into(),
@@ -63,7 +63,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("concurrency".into()),
-                            scope: None,
+                scope: None,
             },
         ];
         let edges = vec![
@@ -213,7 +213,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "b".into(),
@@ -223,7 +223,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "c".into(),
@@ -233,7 +233,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "w1".into(),
@@ -243,7 +243,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "w2".into(),
@@ -253,7 +253,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             // Padding nodes to reduce probability of w1 being a replay seed
             NodeData {
@@ -264,7 +264,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "p2".into(),
@@ -274,7 +274,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "p3".into(),
@@ -284,7 +284,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "p4".into(),
@@ -294,7 +294,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "p5".into(),
@@ -304,7 +304,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
         ];
         let _ = &mut nodes; // suppress unused mut warning
@@ -366,7 +366,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "b".into(),
@@ -376,7 +376,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
         ];
         let edges = vec![EdgeData {
@@ -456,7 +456,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "b".into(),
@@ -466,7 +466,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "c".into(),
@@ -476,7 +476,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "d".into(),
@@ -486,7 +486,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
         ];
         let edges = vec![
@@ -544,7 +544,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "b".into(),
@@ -554,7 +554,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "c".into(),
@@ -564,7 +564,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "d".into(),
@@ -574,7 +574,7 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
         ];
         // Input order: d→c first (valid), then a→b (invalid).
@@ -662,7 +662,14 @@ mod tests {
             .record_fact("preference", "TypeScript", "user", "agent", 0.8)
             .unwrap();
         store
-            .record_decision("used Redis", "cache hit", "caused", Some("caching"), 0.9, "rule")
+            .record_decision(
+                "used Redis",
+                "cache hit",
+                "caused",
+                Some("caching"),
+                0.9,
+                "rule",
+            )
             .unwrap();
         let mut graph = CausalGraph::from_store(&store).unwrap();
         assert!(graph.num_nodes() > 2);
@@ -687,15 +694,45 @@ mod tests {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: Some("test".into()),
-                            scope: None,
+                scope: None,
             })
             .collect();
         let edges = vec![
-            EdgeData { from_id: "d1".into(), to_id: "o1".into(), relation: Relation::Caused, weight: 0.9, valid: true },
-            EdgeData { from_id: "d2".into(), to_id: "o2".into(), relation: Relation::Caused, weight: 0.85, valid: true },
-            EdgeData { from_id: "d3".into(), to_id: "o3".into(), relation: Relation::Caused, weight: 0.95, valid: true },
-            EdgeData { from_id: "d2".into(), to_id: "o3".into(), relation: Relation::Prevented, weight: 0.6, valid: true },
-            EdgeData { from_id: "d1".into(), to_id: "d3".into(), relation: Relation::CoOccurrence, weight: 0.2, valid: true },
+            EdgeData {
+                from_id: "d1".into(),
+                to_id: "o1".into(),
+                relation: Relation::Caused,
+                weight: 0.9,
+                valid: true,
+            },
+            EdgeData {
+                from_id: "d2".into(),
+                to_id: "o2".into(),
+                relation: Relation::Caused,
+                weight: 0.85,
+                valid: true,
+            },
+            EdgeData {
+                from_id: "d3".into(),
+                to_id: "o3".into(),
+                relation: Relation::Caused,
+                weight: 0.95,
+                valid: true,
+            },
+            EdgeData {
+                from_id: "d2".into(),
+                to_id: "o3".into(),
+                relation: Relation::Prevented,
+                weight: 0.6,
+                valid: true,
+            },
+            EdgeData {
+                from_id: "d1".into(),
+                to_id: "d3".into(),
+                relation: Relation::CoOccurrence,
+                weight: 0.2,
+                valid: true,
+            },
         ];
         CausalGraph::build(&nodes, &edges)
     }
@@ -709,7 +746,10 @@ mod tests {
         let before = graph.edge_raw_weight(idx);
         graph.hebbian_update(&[0, 4], 0.0, 0.5); // d1(0) + d3(4) co-active
         let after = graph.edge_raw_weight(idx);
-        assert!(after > before, "co-active should strengthen: {before} → {after}");
+        assert!(
+            after > before,
+            "co-active should strengthen: {before} → {after}"
+        );
     }
 
     #[test]
@@ -721,7 +761,10 @@ mod tests {
         let before = graph.edge_raw_weight(idx);
         graph.hebbian_update(&[0], 0.5, 0.1); // only d1 active, d3 not
         let after = graph.edge_raw_weight(idx);
-        assert!(after < before, "non-co-active should decay: {before} → {after}");
+        assert!(
+            after < before,
+            "non-co-active should decay: {before} → {after}"
+        );
     }
 
     // ─── P3: Immutable consolidation ─────────────────────────────────────
@@ -737,7 +780,10 @@ mod tests {
         );
         assert!(!result.delta_log.is_empty());
         assert!(result.stats.chains_replayed > 0);
-        assert_eq!(result.instructions.as_deref(), Some("focus on causal lessons"));
+        assert_eq!(
+            result.instructions.as_deref(),
+            Some("focus on causal lessons")
+        );
     }
 
     // ─── P4: Q-value dynamics ────────────────────────────────────────────
@@ -748,7 +794,10 @@ mod tests {
         let before = graph.node_q_value(0);
         graph.update_q_value(0, 1.0, 0.1, 0.9);
         let after = graph.node_q_value(0);
-        assert!(after >= before, "Q should increase on reward: {before} → {after}");
+        assert!(
+            after >= before,
+            "Q should increase on reward: {before} → {after}"
+        );
     }
 
     #[test]
@@ -768,30 +817,37 @@ mod tests {
         // activated, then verify its edges survive consolidation.
         let nodes = vec![
             NodeData {
-                id: "d1".into(), text: "weak decision".into(),
-                event_time: 1000, q_value: 0.5, replay_count: 0,
+                id: "d1".into(),
+                text: "weak decision".into(),
+                event_time: 1000,
+                q_value: 0.5,
+                replay_count: 0,
                 // recently activated → dormant=false
                 last_activated: chrono::Utc::now().timestamp(),
                 task_tag: Some("test".into()),
-                            scope: None,
+                scope: None,
             },
             NodeData {
-                id: "o1".into(), text: "weak outcome".into(),
-                event_time: 1001, q_value: 0.5, replay_count: 0,
+                id: "o1".into(),
+                text: "weak outcome".into(),
+                event_time: 1001,
+                q_value: 0.5,
+                replay_count: 0,
                 last_activated: chrono::Utc::now().timestamp(),
                 task_tag: Some("test".into()),
-                            scope: None,
+                scope: None,
             },
         ];
         let edges = vec![EdgeData {
-            from_id: "d1".into(), to_id: "o1".into(),
+            from_id: "d1".into(),
+            to_id: "o1".into(),
             relation: Relation::Caused,
             weight: 0.01, // below gc_threshold (0.05) → weak
             valid: true,
         }];
         let graph = CausalGraph::build(&nodes, &edges);
         let result = graph.swr_consolidate_immutable(0, None); // 0 replays → no LTP
-        // The weak edge should SURVIVE because dormant=false (recently activated)
+                                                               // The weak edge should SURVIVE because dormant=false (recently activated)
         assert_eq!(
             result.stats.forgotten, 0,
             "recently-activated weak edges should not be GC'd"
@@ -803,14 +859,20 @@ mod tests {
     #[test]
     fn test_novelty_entropy_low_for_uniform() {
         let graph = make_test_graph(); // all replay_count=0
-        assert!(graph.novelty_entropy() < 0.01, "uniform should be low entropy");
+        assert!(
+            graph.novelty_entropy() < 0.01,
+            "uniform should be low entropy"
+        );
     }
 
     #[test]
     fn test_novelty_entropy_high_for_skewed() {
         let mut graph = make_test_graph();
         graph.swr_consolidate(50); // creates skewed replay distribution
-        assert!(graph.novelty_entropy() > 0.1, "skewed should be higher entropy");
+        assert!(
+            graph.novelty_entropy() > 0.1,
+            "skewed should be higher entropy"
+        );
     }
 
     // ─── Inhibitory ablation (paper §4.6) ────────────────────────────────
@@ -827,7 +889,7 @@ mod tests {
                 replay_count: 2,
                 last_activated: 100,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "crash".into(),
@@ -837,7 +899,7 @@ mod tests {
                 replay_count: 1,
                 last_activated: 100,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "safe".into(),
@@ -847,7 +909,7 @@ mod tests {
                 replay_count: 3,
                 last_activated: 100,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
             NodeData {
                 id: "rollback".into(),
@@ -857,7 +919,7 @@ mod tests {
                 replay_count: 2,
                 last_activated: 100,
                 task_tag: None,
-                            scope: None,
+                scope: None,
             },
         ];
         let edges = vec![
@@ -893,10 +955,7 @@ mod tests {
         let mut graph = make_ablation_graph();
         let results = graph.spreading_activation_opts("deploy", None, false, false);
         let safe = results.iter().find(|r| r.text.contains("zero downtime"));
-        assert!(
-            safe.is_some(),
-            "zero downtime release should be in results"
-        );
+        assert!(safe.is_some(), "zero downtime release should be in results");
         assert!(
             safe.unwrap().activation < 0.0,
             "prevented edge should give negative activation to 'zero downtime release'"
@@ -932,6 +991,36 @@ mod tests {
     }
 
     #[test]
+    fn test_disable_spread_keeps_seeds_only() {
+        // After disable_spread(): the seed node still activates (Q-weighted
+        // seeding intact) but zero hops run, so neighbors along caused /
+        // enabled edges stay dark — retrieval is seed-hits-only.
+        let mut graph = make_ablation_graph();
+        graph.disable_spread();
+        let results = graph.spreading_activation_opts("deploy", None, false, false);
+
+        let seed = results.iter().find(|r| r.text.contains("deploy"));
+        assert!(seed.is_some(), "seed node should still activate");
+        assert!(
+            seed.unwrap().activation > 0.0,
+            "seed keeps its Q-weighted initial activation"
+        );
+
+        let crash = results.iter().find(|r| r.text.contains("crash"));
+        assert!(
+            crash.is_none(),
+            "no spread: caused neighbor must not activate, got {:?}",
+            crash.map(|c| c.activation)
+        );
+        let rollback = results.iter().find(|r| r.text.contains("rollback"));
+        assert!(
+            rollback.is_none(),
+            "no spread: enabled neighbor must not activate, got {:?}",
+            rollback.map(|r| r.activation)
+        );
+    }
+
+    #[test]
     fn test_inhibition_changes_ranking() {
         // The key ablation result: WITH inhibition, the "zero downtime release"
         // node appears with NEGATIVE activation (a warning signal — "this
@@ -946,18 +1035,18 @@ mod tests {
 
         let mut graph_without = make_ablation_graph();
         graph_without.disable_inhibition();
-        let results_without =
-            graph_without.spreading_activation_opts("deploy", None, false, false);
+        let results_without = graph_without.spreading_activation_opts("deploy", None, false, false);
 
         // WITH inhibition: crash (positive) and zero-downtime (negative) both present
-        let crash_with = results_with
-            .iter()
-            .find(|r| r.text.contains("crash"));
+        let crash_with = results_with.iter().find(|r| r.text.contains("crash"));
         let safe_with = results_with
             .iter()
             .find(|r| r.text.contains("zero downtime"));
         assert!(crash_with.is_some(), "crash should be activated");
-        assert!(safe_with.is_some(), "zero downtime should appear (as warning)");
+        assert!(
+            safe_with.is_some(),
+            "zero downtime should appear (as warning)"
+        );
         assert!(
             crash_with.unwrap().activation > 0.0,
             "crash is positively activated (caused)"
@@ -1127,8 +1216,18 @@ mod tests {
         };
         // fact in scope lme:q1 shares tokens with d1 (task q1) AND d2 (q2).
         let nodes = vec![
-            node("fact:1", "migrated build tooling to TypeScript for scripts", None, Some("lme:q1")),
-            node("d1", "rewrote build scripts using TypeScript tooling", Some("q1"), None),
+            node(
+                "fact:1",
+                "migrated build tooling to TypeScript for scripts",
+                None,
+                Some("lme:q1"),
+            ),
+            node(
+                "d1",
+                "rewrote build scripts using TypeScript tooling",
+                Some("q1"),
+                None,
+            ),
             node("d2", "switched project to TypeScript", Some("q2"), None),
         ];
         let edges = crate::hippocampus::entity_link_facts(&nodes, &[0]);
@@ -1144,9 +1243,24 @@ mod tests {
 
         // Canonical scope: links to all chunks (single-agent store).
         let nodes = vec![
-            node("fact:2", "migrated build tooling to TypeScript for scripts", None, Some("user")),
-            node("d3", "rewrote build scripts using TypeScript tooling", Some("dev"), None),
-            node("d4", "fixed build scripts for TypeScript tooling", Some("ops"), None),
+            node(
+                "fact:2",
+                "migrated build tooling to TypeScript for scripts",
+                None,
+                Some("user"),
+            ),
+            node(
+                "d3",
+                "rewrote build scripts using TypeScript tooling",
+                Some("dev"),
+                None,
+            ),
+            node(
+                "d4",
+                "fixed build scripts for TypeScript tooling",
+                Some("ops"),
+                None,
+            ),
         ];
         let edges = crate::hippocampus::entity_link_facts(&nodes, &[0]);
         let linked: Vec<&str> = edges.iter().map(|e| e.to_id.as_str()).collect();
@@ -1158,7 +1272,12 @@ mod tests {
         // Link stopwords: a fact sharing only generic tokens must not link.
         let nodes = vec![
             node("fact:3", "user project code issue", None, Some("user")),
-            node("d5", "the user fixed a project code issue", Some("dev"), None),
+            node(
+                "d5",
+                "the user fixed a project code issue",
+                Some("dev"),
+                None,
+            ),
         ];
         let edges = crate::hippocampus::entity_link_facts(&nodes, &[0]);
         assert!(
@@ -1181,7 +1300,9 @@ mod tests {
             "fact node must surface via entity link: {texts:?}"
         );
         assert!(
-            texts.iter().any(|t| t.contains("rewrote module in TypeScript")),
+            texts
+                .iter()
+                .any(|t| t.contains("rewrote module in TypeScript")),
             "causal decision must surface: {texts:?}"
         );
         assert!(
@@ -1202,7 +1323,9 @@ mod tests {
         let results = graph.spreading_activation("prefers", None, false);
         let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
         assert!(
-            texts.iter().any(|t| t.contains("rewrote module in TypeScript")),
+            texts
+                .iter()
+                .any(|t| t.contains("rewrote module in TypeScript")),
             "fact seed must reach the causal decision node: {texts:?}"
         );
     }
@@ -1256,12 +1379,8 @@ mod tests {
         // the Phase B seeded entry point: store-side BM25/semantic seeds
         // drive the spread, not substring luck.
         let mut graph = CausalGraph::from_store(&linked_store()).expect("graph from store");
-        let results = graph.spreading_activation_seeded(
-            "zzz-nomatch",
-            &["fact:1".to_string()],
-            None,
-            true,
-        );
+        let results =
+            graph.spreading_activation_seeded("zzz-nomatch", &["fact:1".to_string()], None, true);
         let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
         assert!(
             texts
@@ -1389,14 +1508,20 @@ mod tests {
         let patched: std::collections::HashSet<&str> =
             fwd.iter().map(|r| r.text.as_str()).collect();
         for t in rb_texts {
-            assert!(patched.contains(t), "rebuilt hit {t:?} missing from patched");
+            assert!(
+                patched.contains(t),
+                "rebuilt hit {t:?} missing from patched"
+            );
         }
     }
 
     #[test]
     fn test_retire_node_never_seeds_or_surfaces() {
         let mut graph = CausalGraph::build(
-            &[node("fact:1", "db: redis 7.2"), node("d1", "deployed redis")],
+            &[
+                node("fact:1", "db: redis 7.2"),
+                node("d1", "deployed redis"),
+            ],
             &[],
         );
         // Suppose the fact was already linked and then replaced: retire it.
@@ -1494,26 +1619,117 @@ mod tests {
         let f1 = graph.append_node(node("fact:1", "shell: zsh completion setup"));
         graph.link_fact_node(f1);
         let fwd = graph.patch_fwd.get(&f1).expect("fact has links");
-        assert_eq!(fwd.len(), 1, "three shared tokens (zsh, setup, completion) → one chunk: {fwd:?}");
+        assert_eq!(
+            fwd.len(),
+            1,
+            "three shared tokens (zsh, setup, completion) → one chunk: {fwd:?}"
+        );
         assert_eq!(fwd[0].other, 0, "links to d1, not the unrelated d2");
     }
     #[test]
     fn test_component_stats_basic() {
         // d1->o1, d2->o2 (two isolated pairs) + d3->o3->d4 chain.
         let nodes = vec![
-            NodeData { id: "d1".into(), text: "a b".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
-            NodeData { id: "o1".into(), text: "c d".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
-            NodeData { id: "d2".into(), text: "e f".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
-            NodeData { id: "o2".into(), text: "g h".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
-            NodeData { id: "d3".into(), text: "i j".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
-            NodeData { id: "o3".into(), text: "k l".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
-            NodeData { id: "d4".into(), text: "m n".into(), event_time: 0, q_value: 0.5, replay_count: 0, last_activated: 0, task_tag: None, scope: None },
+            NodeData {
+                id: "d1".into(),
+                text: "a b".into(),
+                event_time: 0,
+                q_value: 0.5,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: None,
+                scope: None,
+            },
+            NodeData {
+                id: "o1".into(),
+                text: "c d".into(),
+                event_time: 0,
+                q_value: 0.5,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: None,
+                scope: None,
+            },
+            NodeData {
+                id: "d2".into(),
+                text: "e f".into(),
+                event_time: 0,
+                q_value: 0.5,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: None,
+                scope: None,
+            },
+            NodeData {
+                id: "o2".into(),
+                text: "g h".into(),
+                event_time: 0,
+                q_value: 0.5,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: None,
+                scope: None,
+            },
+            NodeData {
+                id: "d3".into(),
+                text: "i j".into(),
+                event_time: 0,
+                q_value: 0.5,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: None,
+                scope: None,
+            },
+            NodeData {
+                id: "o3".into(),
+                text: "k l".into(),
+                event_time: 0,
+                q_value: 0.5,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: None,
+                scope: None,
+            },
+            NodeData {
+                id: "d4".into(),
+                text: "m n".into(),
+                event_time: 0,
+                q_value: 0.5,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: None,
+                scope: None,
+            },
         ];
         let edges = vec![
-            EdgeData { from_id: "d1".into(), to_id: "o1".into(), relation: Relation::Caused, weight: 1.0, valid: true },
-            EdgeData { from_id: "d2".into(), to_id: "o2".into(), relation: Relation::Caused, weight: 1.0, valid: true },
-            EdgeData { from_id: "d3".into(), to_id: "o3".into(), relation: Relation::Caused, weight: 1.0, valid: true },
-            EdgeData { from_id: "o3".into(), to_id: "d4".into(), relation: Relation::Caused, weight: 1.0, valid: true },
+            EdgeData {
+                from_id: "d1".into(),
+                to_id: "o1".into(),
+                relation: Relation::Caused,
+                weight: 1.0,
+                valid: true,
+            },
+            EdgeData {
+                from_id: "d2".into(),
+                to_id: "o2".into(),
+                relation: Relation::Caused,
+                weight: 1.0,
+                valid: true,
+            },
+            EdgeData {
+                from_id: "d3".into(),
+                to_id: "o3".into(),
+                relation: Relation::Caused,
+                weight: 1.0,
+                valid: true,
+            },
+            EdgeData {
+                from_id: "o3".into(),
+                to_id: "d4".into(),
+                relation: Relation::Caused,
+                weight: 1.0,
+                valid: true,
+            },
         ];
         let graph = CausalGraph::build(&nodes, &edges);
         let (comps, max, isolated, v_edges) = graph.component_stats();
@@ -1523,22 +1739,59 @@ mod tests {
         assert_eq!(v_edges, 4);
     }
 
-        #[test]
+    #[test]
     fn test_benchmark_scale_scope_isolation_components() {
         // Miniature 500-question scenario: two questions share one store.
         // Facts scoped lme:q1 / lme:q2 must link WITHIN their question only
         // (component structure stays per-question; spreading from q1 must
         // never surface q2 content).
         let store = CausalStore::open_in_memory().unwrap();
-        store.record_decision("used redis for caching data", "caching worked", "caused", Some("q1"), 0.8, "rule").unwrap();
-        store.record_decision("used channels in go", "race fixed", "caused", Some("q2"), 0.8, "rule").unwrap();
-        store.record_fact("preference", "prefers redis caching data", "lme:q1", "eval", 0.9).unwrap();
-        store.record_fact("preference", "prefers channels in go code", "lme:q2", "eval", 0.9).unwrap();
+        store
+            .record_decision(
+                "used redis for caching data",
+                "caching worked",
+                "caused",
+                Some("q1"),
+                0.8,
+                "rule",
+            )
+            .unwrap();
+        store
+            .record_decision(
+                "used channels in go",
+                "race fixed",
+                "caused",
+                Some("q2"),
+                0.8,
+                "rule",
+            )
+            .unwrap();
+        store
+            .record_fact(
+                "preference",
+                "prefers redis caching data",
+                "lme:q1",
+                "eval",
+                0.9,
+            )
+            .unwrap();
+        store
+            .record_fact(
+                "preference",
+                "prefers channels in go code",
+                "lme:q2",
+                "eval",
+                0.9,
+            )
+            .unwrap();
 
         let mut graph = CausalGraph::from_store(&store).unwrap();
         // Both questions must be separate weakly-connected components.
         let (comps, _max, _iso, _ve) = graph.component_stats();
-        assert!(comps >= 2, "two questions must stay separate components: {comps}");
+        assert!(
+            comps >= 2,
+            "two questions must stay separate components: {comps}"
+        );
 
         // Behavioral isolation: seeding q1 content must surface q1's linked
         // fact and NEVER q2's fact or chunk.
@@ -1549,17 +1802,18 @@ mod tests {
             "q1 fact must be linked in: {texts:?}"
         );
         assert!(
-            !texts.iter().any(|t| t.contains("channels") || t.contains("race fixed")),
+            !texts
+                .iter()
+                .any(|t| t.contains("channels") || t.contains("race fixed")),
             "cross-question leakage: {texts:?}"
         );
     }
-#[test]
+    #[test]
     #[ignore = "real-DB probe: needs ~/.local/share/causal-memory/causal.db (run explicitly)"]
     fn probe_real_db_connectivity() {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        let path = std::env::var("CAUSAL_MEMORY_DB").unwrap_or_else(|_| {
-            format!("{home}/.local/share/causal-memory/causal.db")
-        });
+        let path = std::env::var("CAUSAL_MEMORY_DB")
+            .unwrap_or_else(|_| format!("{home}/.local/share/causal-memory/causal.db"));
         if !std::path::Path::new(&path).exists() {
             eprintln!("probe: no real DB at {path}");
             return;
@@ -1569,7 +1823,11 @@ mod tests {
         let (comps, max, isolated, edges) = graph.component_stats();
         eprintln!(
             "REAL DB: {} nodes, {} valid edges, {} components, largest {}, isolated {}",
-            graph.num_nodes(), edges, comps, max, isolated
+            graph.num_nodes(),
+            edges,
+            comps,
+            max,
+            isolated
         );
         eprintln!("(baseline pre-Phase-A: 431 chunks / 225 edges / 207 components / largest 10)");
         assert!(max >= 10, "facts must have merged at least some pairs");
@@ -1587,7 +1845,13 @@ mod tests {
     fn scope_hub_does_not_propagate_activation() {
         let store = crate::store::CausalStore::open_in_memory().expect("store");
         store
-            .record_fact("education", "graduated with a degree in physics", "user", "agent", 0.8)
+            .record_fact(
+                "education",
+                "graduated with a degree in physics",
+                "user",
+                "agent",
+                0.8,
+            )
             .expect("f1");
         store
             .record_fact("hobby", "plays the cello on weekends", "user", "agent", 0.8)
@@ -1604,5 +1868,4 @@ mod tests {
             "unrelated same-scope fact must NOT activate via the hub: {texts:?}"
         );
     }
-
 }

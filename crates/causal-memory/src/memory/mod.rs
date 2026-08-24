@@ -92,6 +92,20 @@ impl Memory {
         &self.store
     }
 
+    /// Ablation switch: disable spreading activation on the live graph —
+    /// retrieval keeps the seeding layer (BM25/semantic direct hits) but
+    /// no activation propagates along edges. No-op if the graph failed to
+    /// load (retrieval already runs the dual-pool RRF fallback in that
+    /// case). Irreversible for this `Memory` instance; reopen to undo.
+    /// Used by the no-spread ablation arm (benches/ablation).
+    pub fn disable_spread(&self) {
+        if let Ok(mut guard) = self.graph.lock() {
+            if let Some(graph) = guard.as_mut() {
+                graph.disable_spread();
+            }
+        }
+    }
+
     /// Mark the in-memory graph as stale after a write. Cheap; the actual
     /// rebuild happens lazily in maybe_rebuild_graph on the next
     /// hippocampus query.
