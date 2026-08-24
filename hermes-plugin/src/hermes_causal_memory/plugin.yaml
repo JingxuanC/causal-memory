@@ -1,0 +1,15 @@
+name: causal-memory
+version: 0.1.0
+description: >-
+  Causal memory provider — flat facts + decision→outcome causal lessons on one
+  local SQLite store. Spreading-activation recall surfaces associative lessons
+  literal queries miss; lessons live outside the context window, so
+  compaction can't lose them.
+hooks:
+  - system_prompt_block
+  - prefetch
+  - sync_turn
+  - on_session_end
+  - on_pre_compress
+  - on_memory_write
+  - shutdown

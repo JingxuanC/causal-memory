@@ -1,0 +1,124 @@
+# Wheel builds for the causal-memory Python package (crates/causal-memory-py).
+#
+# abi3 (pyo3 abi3-py39): ONE wheel per platform covers CPython 3.9+ — no
+# per-interpreter matrix. Triggered only by `py-v*` tags (or manually);
+# regular main pushes go through ci.yml and never touch this.
+#
+# Publishing uses PyPI Trusted Publishing (OIDC): no API token in repo
+# secrets. One-time setup on the PyPI side: project causal-memory →
+# Publishing → add a pending publisher for this repo, workflow filename
+# `wheels.yml`, environment name `pypi`.
+
+name: wheels
+
+on:
+  push:
+    tags:
+      - 'py-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target: [x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist -m crates/causal-memory-py/Cargo.toml
+          sccache: true
+          manylinux: auto
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.target }}
+          path: dist
+
+  macos:
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      matrix:
+        platform: [macos-13, macos-14] # x86_64, aarch64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          args: --release --out dist -m crates/causal-memory-py/Cargo.toml
+          sccache: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.platform }}
+          path: dist
+
+  windows:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        target: [x64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          architecture: ${{ matrix.target }}
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist -m crates/causal-memory-py/Cargo.toml
+          sccache: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-${{ matrix.target }}
+          path: dist
+
+  sdist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: -m crates/causal-memory-py/Cargo.toml --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist
+
+  release:
+    name: Publish to PyPI
+    needs: [linux, macos, windows, sdist]
+    runs-on: ubuntu-latest
+    # Only tags publish; workflow_dispatch builds stay artifact-only.
+    if: startsWith(github.ref, 'refs/tags/py-v')
+    environment:
+      name: pypi
+      url: https://pypi.org/p/causal-memory
+    permissions:
+      id-token: write # Trusted Publishing (OIDC) — no token secret
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-causal-memory"
+version = "0.1.0"
+description = "Hermes memory-provider plugin backed by causal-memory — facts + decision→outcome causal lessons with spreading-activation recall"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0" }
+keywords = ["hermes", "agent", "memory", "causal"]
+dependencies = ["causal-memory"]
+
+[project.urls]
+Repository = "https://github.com/JingxuanC/causal-memory"
+
+# Hermes discovers packaged providers through this entry point group.
+[project.entry-points."hermes_agent.memory_providers"]
+causal-memory = "hermes_causal_memory:register"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hermes_causal_memory = ["plugin.yaml"]

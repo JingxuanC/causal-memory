@@ -37,5 +37,8 @@ graph-*.html
 
 # Python bindings local dev environment
 .venv/
+# Python build artifacts (editable installs, test caches)
+*.egg-info/
+.pytest_cache/
 benches/longmemeval/db/*.db-shm
 benches/longmemeval/db/*.db-wal
