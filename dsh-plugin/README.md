@@ -1,6 +1,6 @@
 # causal-memory DSH plugin
 
-DeepSeek Harness 原生记忆插件：把 causal-memory 的 14 个工具以**干净命名**
+DeepSeek Harness 原生记忆插件：把 causal-memory 的 16 个工具以**干净命名**
 （无 `mcp__` 前缀）挂到 DSH 的 `ctx.tools`，并注入一条系统提示词段落
 （order 300），告诉模型何时查阅因果记忆库。
 
@@ -47,12 +47,15 @@ dsh plugin --profile web add "$PWD/dsh-plugin"
 | `exclude` | `[]` | 不挂载的工具名数组 |
 | `failOnStartupError` | `false` | 启动连接失败时是否让插件激活失败（默认仅记日志） |
 
-## 工具清单（14 个）
+## 工具清单（16 个）
 
 `record_decision` · `record_fact` · `remember` · `search_causal` ·
 `search_facts` · `search_memory` · `search_patterns` · `causal_directory` ·
 `trace_cause` · `trace_cause_chain` · `intervention_query` ·
-`counterfactual_query` · `invalidate_decision` · `reconstruct_lesson`
+`counterfactual_query` · `invalidate_decision` · `invalidate_pattern` ·
+`resolve_updates` · `reconstruct_lesson`
+
+（工具列表运行时从服务端动态发现，服务端升级后无需改插件。）
 
 ## 卸载
 
