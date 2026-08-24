@@ -2969,10 +2969,10 @@ fn test_bm25_seed_ids_spans_both_namespaces_and_filters_scope() {
     );
 
     // Materialization helpers for the unified engine.
-    let chunks: Vec<String> = seeds
+    let chunks: Vec<(String, f32)> = seeds
         .iter()
         .filter(|s| !s.starts_with("fact:"))
-        .cloned()
+        .map(|s| (s.clone(), 0.8))
         .collect();
     let edges = store.edges_touching_chunks(&chunks, None, 10).unwrap();
     assert!(
@@ -2987,6 +2987,68 @@ fn test_bm25_seed_ids_spans_both_namespaces_and_filters_scope() {
     assert!(
         facts.iter().any(|f| f.key == "editor_preference"),
         "{facts:?}"
+    );
+}
+
+// ─── Materialization prefilter: activation outranks confidence ─────────
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_edges_touching_chunks_activation_prefilter_surfaces_gold() {
+    // Regression for the real-store ablation inversion (baseline 12.8% vs
+    // seed-only 95.0%): one LOW-confidence gold edge whose endpoint
+    // carries the strongest activation, plus 25 HIGH-confidence
+    // distractors on weakly activated chunks — the candidate flood. The
+    // old confidence-DESC SQL prefilter cut the gold edge (~rank 26)
+    // before rank_edges_by_activation ever saw it; the activation-aware
+    // prefilter must surface it at the top of a limit-10 materialization.
+    let store = CausalStore::open_in_memory().unwrap();
+    let (gold_chunk, gold_edge) = store
+        .record_decision_at(
+            "gold decision low confidence",
+            "gold outcome",
+            "caused",
+            None,
+            0.3,
+            "llm_inferred",
+            1_700_000_000,
+        )
+        .unwrap();
+    for i in 0..25 {
+        store
+            .record_decision_at(
+                &format!("distractor decision number {i}"),
+                &format!("distractor outcome number {i}"),
+                "caused",
+                None,
+                0.9,
+                "llm_inferred",
+                1_700_000_100 + i,
+            )
+            .unwrap();
+    }
+    // Every chunk lit (the flood), gold's decision chunk strongest.
+    let act: Vec<(String, f32)> = store
+        .with_conn(|c| {
+            let mut stmt = c.prepare("SELECT id FROM chunks")?;
+            let ids = stmt.query_map([], |r| r.get::<_, String>(0))?;
+            let ids = ids.collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(ids
+                .into_iter()
+                .map(|id| {
+                    let a = if id == gold_chunk { 0.9 } else { 0.05 };
+                    (id, a)
+                })
+                .collect::<Vec<_>>())
+        })
+        .unwrap();
+    let edges = store.edges_touching_chunks(&act, None, 10).unwrap();
+    assert!(
+        edges.first().is_some_and(|e| e.edge_id == gold_edge),
+        "gold edge must top the activation-ordered materialization: {edges:?}"
     );
 }
 

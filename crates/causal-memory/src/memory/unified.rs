@@ -166,10 +166,9 @@ impl Memory {
         task_tag: Option<&str>,
         limit: usize,
     ) -> Vec<CausalEntry> {
-        let chunk_ids: Vec<String> = chunk_activation.iter().map(|(c, _)| c.clone()).collect();
         let edges = self
             .store
-            .edges_touching_chunks(&chunk_ids, task_tag, limit.saturating_mul(2).max(10))
+            .edges_touching_chunks(chunk_activation, task_tag, limit.saturating_mul(2).max(10))
             .unwrap_or_default();
         rank_edges_by_activation(chunk_activation, edges, limit)
     }

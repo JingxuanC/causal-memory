@@ -309,65 +309,70 @@ impl CausalStore {
     }
 
     /// Phase B (one-graph-convergence): valid edges with an endpoint in
-    /// `chunk_ids` — materializes the display rows for chunk nodes the
-    /// spreading-activation engine lit up. Ordered by confidence (edge id
-    /// as tiebreaker); `task_tag` narrows like the single-layer searches.
+    /// `chunk_activation` — materializes the display rows for chunk nodes
+    /// the spreading-activation engine lit up. Ordered by STRONGEST
+    /// endpoint activation (absolute value — prevented edges spread
+    /// negative activation), confidence then edge id as tiebreakers;
+    /// `task_tag` narrows like the single-layer searches.
+    ///
+    /// Activation-aware prefilter: the pre-LIMIT ordering used to be
+    /// confidence DESC, so a high-activation but low-confidence edge was
+    /// cut before `rank_edges_by_activation` ever saw it (real-store
+    /// ablation: baseline evidence hit 12.8% vs seed-only 95.0% — gold
+    /// edges drowned in the candidate flood). Activation now leads the
+    /// ordering; confidence is only a tiebreak.
     pub fn edges_touching_chunks(
         &self,
-        chunk_ids: &[String],
+        chunk_activation: &[(String, f32)],
         task_tag: Option<&str>,
         limit: usize,
     ) -> Result<Vec<crate::store::CausalEntry>> {
-        if chunk_ids.is_empty() || limit == 0 {
+        if chunk_activation.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
         let conn = self.acquire()?;
 
-        // Same SQLite host-variable ceiling as the B2 fix: a wide spread
-        // can light up thousands of chunks, and `IN (...)` beyond ~900
-        // binds fails to prepare (the unified engine then silently gets
-        // an empty causal pool every query). Two changes: cap the bind
-        // list, and rank the capped set by activation order the caller
-        // passed in (ids arrive activation-ordered, so truncation keeps
-        // the strongest spread surfaces).
+        // Host-variable ceiling: a wide spread can light up thousands of
+        // chunks, and the VALUES list carries 2 binds per chunk (id +
+        // activation). Cap the list — ids arrive activation-ordered, so
+        // truncation keeps the strongest spread surfaces (900 chunks →
+        // 1800 binds, far below SQLite's 32766 default).
         const MAX_CHUNK_BINDS: usize = 900;
-        let ids: &[String] = if chunk_ids.len() > MAX_CHUNK_BINDS {
-            &chunk_ids[..MAX_CHUNK_BINDS]
+        let act: &[(String, f32)] = if chunk_activation.len() > MAX_CHUNK_BINDS {
+            &chunk_activation[..MAX_CHUNK_BINDS]
         } else {
-            chunk_ids
+            chunk_activation
         };
 
-        // Temp-table join, not a wide IN (...): SQLite plans a 900-value IN
-        // against 250k edges as a linear scan per row (the OR of two INs
-        // defeats the chunk PK index) — measured minutes per query on the
-        // LongMemEval store via the unified engine. A temp table with an
-        // index restores O(E·log ids): each edge endpoint probes the
-        // indexed temp table.
-        conn.execute_batch(
-            "CREATE TEMP TABLE IF NOT EXISTS _chunk_probe (id TEXT PRIMARY KEY) WITHOUT ROWID;
-             DELETE FROM _chunk_probe;",
-        )?;
-        {
-            let mut ins = conn.prepare("INSERT OR IGNORE INTO _chunk_probe (id) VALUES (?1)")?;
-            for id in ids {
-                ins.execute(rusqlite::params![id])?;
-            }
-        }
+        // Activation scores travel as a VALUES CTE. The LEFT JOIN probes
+        // against the materialized CTE keep the O(E·log ids) plan the
+        // indexed temp table provided (measured minutes per query on the
+        // LongMemEval store when this was a wide literal IN list).
+        let values = vec!["(?,?)"; act.len()].join(",");
         let mut sql = format!(
-            "SELECT {ENTRY_COLUMNS}
+            "WITH act(id, a) AS (VALUES {values})
+             SELECT {ENTRY_COLUMNS}
              FROM causal_edges ce
              JOIN chunks cf ON cf.id = ce.from_id
              JOIN chunks ct ON ct.id = ce.to_id
+             LEFT JOIN act af ON af.id = ce.from_id
+             LEFT JOIN act at ON at.id = ce.to_id
              WHERE ce.valid_to IS NULL
-               AND (ce.from_id IN (SELECT id FROM _chunk_probe)
-                    OR ce.to_id IN (SELECT id FROM _chunk_probe))"
+               AND (af.id IS NOT NULL OR at.id IS NOT NULL)"
         );
-        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(act.len() * 2 + 2);
+        for (id, a) in act {
+            binds.push(Box::new(id.clone()));
+            binds.push(Box::new(*a));
+        }
         if let Some(tag) = task_tag {
             sql.push_str(" AND ce.task_tag = ?");
             binds.push(Box::new(tag.to_string()));
         }
-        sql.push_str(" ORDER BY ce.confidence DESC, ce.id LIMIT ?");
+        sql.push_str(
+            " ORDER BY MAX(COALESCE(ABS(af.a), 0), COALESCE(ABS(at.a), 0)) DESC, \
+             ce.confidence DESC, ce.id LIMIT ?",
+        );
         binds.push(Box::new(limit as i64));
 
         let mut stmt = conn.prepare(&sql)?;
