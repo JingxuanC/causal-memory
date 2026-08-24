@@ -75,8 +75,8 @@ Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
 - [x] **Layered loading + token budget** — ✅ shipped: L0/L1/L2
   (`detail_level`) + strict `max_tokens` on `search_causal`, incl. the
   hippocampus spreading path (threaded 2026-08-24 — the params were
-  silently dead on that path before); remaining: same params on
-  `search_memory`
+  silently dead on that path before) and on `search_memory` (facts +
+  causal sections share one budget; default output byte-identical)
 - [~] **Formal ablation** — harness + engine switches shipped
   2026-08-24 (`disable_inhibition` / `disable_spread`,
   `benches/ablation`). First run (n=100, LongMemEval distill store):
@@ -90,12 +90,12 @@ Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
 
 ## Current state — v0.9.0+ (main)
 
-**Fifteen MCP tools**: `record_decision` / `search_causal` / `record_fact` /
+**Sixteen MCP tools**: `record_decision` / `search_causal` / `record_fact` /
 `search_facts` / `search_memory` / `trace_cause` / `trace_cause_chain` /
-`invalidate_decision` / `resolve_updates` / `search_patterns` / `causal_directory` /
-`intervention_query` / `counterfactual_query` / `reconstruct_lesson` /
-`remember` — over stdio **and** HTTP transport (`causal-memory-http
---port 9938`).
+`invalidate_decision` / `invalidate_pattern` / `resolve_updates` /
+`search_patterns` / `causal_directory` / `intervention_query` /
+`counterfactual_query` / `reconstruct_lesson` / `remember` — over stdio
+**and** HTTP transport (`causal-memory-http --port 9938`).
 
 Core capabilities (all shipped, all tested):
 
@@ -198,7 +198,11 @@ Memory-quality:
   (today an external caller must still start `sleep`)
 - [ ] **LLM update-resolver**: replace rule-based contradiction detection
   with the LLM judge for invalidation decisions (polarity plumbing ready)
-- [ ] Meta-edge invalidation tool (meta edges mine-able but not revocable)
+- [x] **Meta-edge invalidation tool** — ✅ shipped 2026-08-24
+  (`invalidate_pattern`, 16th MCP tool): soft-deletes via the existing
+  `meta_causal_edges.valid_to` (readers already filtered it), live graph
+  patched immediately like `invalidate_decision`; `search_patterns`
+  output now carries `(#<id>)` as the revocation handle
 - [ ] Hybrid retrieval ranking (BM25 + vector + confidence fusion)
 
 Ecosystem:
