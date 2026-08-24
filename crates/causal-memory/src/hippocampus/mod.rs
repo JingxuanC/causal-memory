@@ -158,6 +158,15 @@ struct PatchEdge {
     valid: bool,
 }
 
+/// The associative channel: learned/derived, dense, hub-forming edge types
+/// (Fact entity-links, Hebbian CoOccurrence). Spread along these is
+/// subject to the fan-out constraint (see `spread_step`); curated
+/// causal-family relations spread undivided.
+#[inline]
+fn is_associative(rel: Relation) -> bool {
+    matches!(rel, Relation::Fact | Relation::CoOccurrence)
+}
+
 impl CausalGraph {
     /// Create a new graph with default parameters.
     pub fn new() -> Self {
@@ -331,6 +340,19 @@ impl CausalGraph {
     }
 
     /// Core: single-hop spreading activation step (SpMV-style).
+    ///
+    /// Channel-scoped fan-out constraint (Collins & Loftus, applied to the
+    /// associative channel only): a node's activation is DIVIDED among its
+    /// valid outgoing ASSOCIATIVE edges (Fact entity-links, CoOccurrence
+    /// Hebbian links) — the dense, learned, hub-forming channel. Without
+    /// this, a high-degree chunk hub saturates whole neighborhoods at the
+    /// ±1.0 clamp within 2 hops (measured on the real 1834-node store:
+    /// ~1100 nodes activated per query, ~600 tied at 1.0, materialization
+    /// fell back to confidence tiebreaks — self-queries baseline 14.2% vs
+    /// seed-only 95.0%). Causal-family edges (Caused/Enabled/Prevented/
+    /// Meta) are curated, sparse, and carry the primary signal — their
+    /// spread is NOT divided, so causal-chain and inhibitory semantics are
+    /// exactly preserved.
     #[inline]
     fn spread_step(&self, activations: &[f32], decay: f32) -> Vec<f32> {
         let mut new_act = vec![0.0_f32; self.num_nodes];
@@ -343,16 +365,33 @@ impl CausalGraph {
             let start = self.row_ptr[i] as usize;
             let end = self.row_ptr[i + 1] as usize;
 
+            // Fan-out divisor over the associative channel only.
+            let assoc_degree = (start..end)
+                .filter(|&e| self.edge_valid[e] && is_associative(self.edge_relations[e]))
+                .count();
+            let assoc_share = if assoc_degree > 0 {
+                a / assoc_degree as f32
+            } else {
+                a
+            };
+
             for edge_idx in start..end {
                 if !self.edge_valid[edge_idx] {
                     continue; // Skip invalidated edges
                 }
                 let target = self.col_idx[edge_idx] as usize;
                 let weight = self.values[edge_idx];
-                new_act[target] += a * weight * decay;
+                let out = if is_associative(self.edge_relations[edge_idx]) {
+                    assoc_share
+                } else {
+                    a
+                };
+                new_act[target] += out * weight * decay;
             }
 
-            // Phase C: write-path patch edges from this node.
+            // Phase C: write-path patch edges from this node. Patches are
+            // causal-family by construction (new lessons / org edges) and
+            // never hub-forming between rebuilds — spread undivided.
             if let Some(patches) = self.patch_fwd.get(&(i as u32)) {
                 for p in patches {
                     if p.valid {
@@ -370,6 +409,7 @@ impl CausalGraph {
 
     /// Reverse single-hop step (for trace_cause: outcome → decision).
     /// Bug fix #1: now checks edge_valid via rev_to_fwd_idx mapping.
+    /// Same channel-scoped fan-out as `spread_step`.
     #[inline]
     fn spread_step_rev(&self, activations: &[f32], decay: f32) -> Vec<f32> {
         let mut new_act = vec![0.0_f32; self.num_nodes];
@@ -382,6 +422,20 @@ impl CausalGraph {
             let start = self.row_ptr_rev[i] as usize;
             let end = self.row_ptr_rev[i + 1] as usize;
 
+            let assoc_degree = (start..end)
+                .filter(|&r| {
+                    let fwd_idx = self.rev_to_fwd_idx[r] as usize;
+                    fwd_idx < self.edge_valid.len()
+                        && self.edge_valid[fwd_idx]
+                        && is_associative(self.edge_relations[fwd_idx])
+                })
+                .count();
+            let assoc_share = if assoc_degree > 0 {
+                a / assoc_degree as f32
+            } else {
+                a
+            };
+
             for rev_idx in start..end {
                 // Bug fix #1: check forward edge validity
                 let fwd_idx = self.rev_to_fwd_idx[rev_idx] as usize;
@@ -390,7 +444,12 @@ impl CausalGraph {
                 }
                 let target = self.col_idx_rev[rev_idx] as usize;
                 let weight = self.values_rev[rev_idx];
-                new_act[target] += a * weight * decay;
+                let out = if is_associative(self.edge_relations[fwd_idx]) {
+                    assoc_share
+                } else {
+                    a
+                };
+                new_act[target] += out * weight * decay;
             }
 
             // Phase C: write-path patch edges pointing INTO this node.

@@ -1021,6 +1021,96 @@ mod tests {
     }
 
     #[test]
+    fn test_fanout_constraint_damps_hub_broadcast() {
+        // Channel-scoped fan-out (Collins & Loftus on the associative
+        // channel only): a node's activation is divided among its
+        // outgoing ASSOCIATIVE edges (Fact / CoOccurrence). A hub with 10
+        // co-occurrence edges gives each neighbor 1/10 of what a
+        // degree-1 node gives its neighbor; causal-family spread from the
+        // same hub is NOT divided (curated signal, semantics preserved).
+        let node = |id: &str, text: &str| NodeData {
+            id: id.into(),
+            text: text.into(),
+            event_time: 1,
+            q_value: 0.5,
+            replay_count: 0,
+            last_activated: 100,
+            task_tag: None,
+            scope: None,
+        };
+        let mut nodes = vec![
+            node("hub", "hub node"),
+            node("leaf", "leaf node"),
+            node("solo", "solo target"),
+            node("causal", "causal target"),
+        ];
+        let mut edges = vec![
+            EdgeData {
+                from_id: "leaf".into(),
+                to_id: "solo".into(),
+                relation: Relation::Caused,
+                weight: 1.0,
+                valid: true,
+            },
+            // The hub's one causal edge: undivided spread.
+            EdgeData {
+                from_id: "hub".into(),
+                to_id: "causal".into(),
+                relation: Relation::Caused,
+                weight: 1.0,
+                valid: true,
+            },
+        ];
+        for i in 0..10 {
+            nodes.push(node(&format!("t{i}"), &format!("assoc target {i}")));
+            edges.push(EdgeData {
+                from_id: "hub".into(),
+                to_id: format!("t{i}"),
+                relation: Relation::CoOccurrence,
+                weight: 1.0,
+                valid: true,
+            });
+        }
+        let mut graph = CausalGraph::build(&nodes, &edges);
+        // Query "node" substring-seeds "hub node" and "leaf node" (seed
+        // activation 0.75 each, q=0.5). Degree-1 leaf and the hub's
+        // causal edge pass on 0.75 × 1.0 × 0.7 ≈ 0.525; the hub's ten
+        // associative neighbors get 0.75 × (1/10) × 1.0 × 0.7 ≈ 0.05 —
+        // below the 0.1 threshold.
+        let results = graph.spreading_activation_opts("node", None, false, false);
+
+        let solo = results.iter().find(|r| r.text.contains("solo target"));
+        assert!(
+            solo.is_some(),
+            "degree-1 neighbor must activate (fan-out of 1 is a no-op)"
+        );
+        let a = solo.unwrap().activation;
+        assert!(
+            (a - 0.525).abs() < 0.01,
+            "degree-1 spread unchanged: expected ~0.525, got {a}"
+        );
+        let causal = results.iter().find(|r| r.text.contains("causal target"));
+        assert!(
+            causal.is_some(),
+            "causal-family spread from a hub must NOT be fan-out divided"
+        );
+        let a = causal.unwrap().activation;
+        assert!(
+            (a - 0.525).abs() < 0.01,
+            "causal spread undivided despite hub degree: expected ~0.525, got {a}"
+        );
+        for i in 0..10 {
+            let t = results
+                .iter()
+                .find(|r| r.text.contains(&format!("assoc target {i}")));
+            assert!(
+                t.is_none(),
+                "associative hub neighbor {i} must stay below threshold (fan-out /10), got {t:?}"
+            );
+        }
+    }
+
+    #[test]
     fn test_inhibition_changes_ranking() {
         // The key ablation result: WITH inhibition, the "zero downtime release"
         // node appears with NEGATIVE activation (a warning signal — "this
