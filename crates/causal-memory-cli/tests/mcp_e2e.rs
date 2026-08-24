@@ -24,6 +24,7 @@ const EXPECTED_TOOLS: &[&str] = &[
     "trace_cause",
     "trace_cause_chain",
     "invalidate_decision",
+    "invalidate_pattern",
     "resolve_updates",
     "search_patterns",
     "causal_directory",
@@ -113,7 +114,7 @@ async fn mcp_stdio_end_to_end() {
     let info = client.peer_info().expect("server must report its info");
     assert!(!info.server_info.name.is_empty());
 
-    // ── 2. tools/list: exactly the 15 documented tools.
+    // ── 2. tools/list: exactly the 16 documented tools.
     let tools = client.list_all_tools().await.unwrap();
     let names: HashSet<String> = tools.iter().map(|t| t.name.to_string()).collect();
     let expected: HashSet<String> = EXPECTED_TOOLS.iter().map(|s| s.to_string()).collect();

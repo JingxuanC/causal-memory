@@ -531,6 +531,21 @@ impl CausalStore {
         Ok(n > 0)
     }
 
+    /// Soft-invalidate a mined meta-causal edge (cross-task pattern): set
+    /// valid_to = now. Returns true if a row was actually invalidated;
+    /// false if the edge does not exist or was already invalidated
+    /// (idempotent no-op). Meta edges were mine-able but not revocable —
+    /// this is the revoking half (roadmap).
+    pub fn invalidate_meta_edge(&self, edge_id: i64) -> Result<bool> {
+        let conn = self.acquire()?;
+        let now = chrono::Utc::now().timestamp();
+        let n = conn.execute(
+            "UPDATE meta_causal_edges SET valid_to = ?1 WHERE id = ?2 AND valid_to IS NULL",
+            params![now, edge_id],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Record a raw conversation turn into `session_logs` (not `chunks`).
     ///
     /// This is the write-time gatekeeping path: raw turns are stored for

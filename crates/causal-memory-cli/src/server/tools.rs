@@ -1,4 +1,4 @@
-//! The 15 MCP tools — thin rmcp handlers over the shared library facade
+//! The 16 MCP tools — thin rmcp handlers over the shared library facade
 //! (`causal_memory::memory::Memory`). All orchestration logic lives in the
 //! library; this file only declares parameter schemas and delegates.
 
@@ -116,6 +116,13 @@ pub struct SearchMemoryParams {
     /// Max number of results (default 10)
     #[schemars(description = "Maximum fused results to return (default 10)")]
     pub limit: Option<usize>,
+    /// Detail level: l0 = one-line pointer (~25 tok/item); l1 = overview
+    /// (~60 tok/item); l2 = standard display (default, ~100 tok/item). Saves tokens.
+    #[schemars(description = "Detail level: l0 (pointer), l1 (overview), l2 (full, default)")]
+    pub detail_level: Option<String>,
+    /// Maximum total tokens to return (0 = unlimited, default 0).
+    #[schemars(description = "Max output tokens (0 = unlimited, default 0)")]
+    pub max_tokens: Option<usize>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -147,6 +154,16 @@ pub struct InvalidateDecisionParams {
     #[schemars(description = "ID of the causal edge to invalidate")]
     pub edge_id: i64,
     /// Why this lesson is wrong (echoed back for confirmation; not persisted)
+    #[schemars(description = "Reason for invalidation (optional, for confirmation only)")]
+    pub reason: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct InvalidatePatternParams {
+    /// The id of the mined pattern edge to invalidate (shown as #N in search_patterns results)
+    #[schemars(description = "ID of the meta-causal (pattern) edge to invalidate")]
+    pub edge_id: i64,
+    /// Why this pattern is wrong (echoed back for confirmation; not persisted)
     #[schemars(description = "Reason for invalidation (optional, for confirmation only)")]
     pub reason: Option<String>,
 }
@@ -311,6 +328,8 @@ impl CausalMemoryServer {
             params.task_tag.as_deref(),
             params.scope.as_deref(),
             params.limit,
+            params.detail_level.as_deref(),
+            params.max_tokens,
         )
     }
 
@@ -366,6 +385,18 @@ impl CausalMemoryServer {
             params.task_tag.as_deref(),
             params.limit,
         )
+    }
+
+    #[tool(
+        name = "invalidate_pattern",
+        description = "Mark a mined cross-task pattern (a meta-causal edge shown by search_patterns) as wrong (soft-invalidate). Hidden from future search_patterns results and from spreading activation, kept in the database for audit. Use when a mined similar_to/repeated/contradicts/refines link is spurious."
+    )]
+    fn invalidate_pattern(
+        &self,
+        Parameters(params): Parameters<InvalidatePatternParams>,
+    ) -> String {
+        self.memory
+            .invalidate_pattern(params.edge_id, params.reason.as_deref())
     }
 
     #[tool(

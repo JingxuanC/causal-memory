@@ -1,10 +1,13 @@
-//! The 15 memory operations, shared by all frontends. Each method mirrors
+//! The 16 memory operations, shared by all frontends. Each method mirrors
 //! one MCP tool and returns the same text the tool would produce — agent
 //! frameworks (MCP host, Python bindings) consume these strings directly.
 
 use std::collections::HashMap;
 
-use super::format::{format_entry_layered, rrf_fuse_many, truncate_chars, TokenBudget};
+use super::format::{
+    format_entry_layered, format_fact_layered, format_lesson_layered, rrf_fuse_many,
+    truncate_chars, TokenBudget,
+};
 use super::output::*;
 use super::{block_on, Memory, INTERVENTION_MIN_SIMILARITY, SEMANTIC_CONTRADICTION_MIN_SIMILARITY};
 use crate::store::{AgentFact, CausalEntry, ChainHop};
@@ -632,13 +635,17 @@ impl Memory {
     }
 
     /// `search_memory` — unified retrieval: facts + causal lessons fused by
-    /// Reciprocal Rank Fusion (RRF) in one call.
+    /// Reciprocal Rank Fusion (RRF) in one call. `detail_level` (l0/l1/l2,
+    /// default l2) picks the per-item verbosity; `max_tokens` (default 0 =
+    /// unlimited) truncates the rendered pool against a shared token budget.
     pub fn search_memory(
         &self,
         query: &str,
         task_tag: Option<&str>,
         scope: Option<&str>,
         limit: Option<usize>,
+        detail_level: Option<&str>,
+        max_tokens: Option<usize>,
     ) -> String {
         let limit = limit.unwrap_or(10);
         if let Some(s) = scope {
@@ -646,13 +653,24 @@ impl Memory {
                 return format!("❌ Invalid scope '{s}' — use one of: user, session, agent");
             }
         }
+        let detail_level = detail_level.unwrap_or("l2");
+        if !matches!(detail_level, "l0" | "l1" | "l2") {
+            return format!("❌ Invalid detail_level '{detail_level}' — use one of: l0, l1, l2");
+        }
 
         // Phase B: unified engine first; the dual-pool RRF path stays as
         // the fallback and the regression control for A/B comparison.
         // Both produce the same ranked-pair shape, so D4 routing and the
         // grouped display are shared.
         let (facts, causal, mode) = self.ranked_hits(query, task_tag, scope, limit);
-        render_unified(query, &facts, &causal, mode)
+        render_unified(
+            query,
+            &facts,
+            &causal,
+            mode,
+            detail_level,
+            max_tokens.unwrap_or(0),
+        )
     }
 
     /// One retrieval story, two presentations: the unified spread engine
@@ -1103,6 +1121,76 @@ impl Memory {
         }
     }
 
+    /// `invalidate_pattern` — soft-invalidate a mined cross-task pattern
+    /// (meta-causal edge, the id shown as `#N` in `search_patterns`).
+    /// Meta edges are mine-able during sleep consolidation; this is the
+    /// revoking half (roadmap). Idempotent.
+    pub fn invalidate_pattern(&self, edge_id: i64, reason: Option<&str>) -> String {
+        use rusqlite::OptionalExtension;
+        struct MetaRow {
+            from_id: String,
+            to_id: String,
+            relation: String,
+            from_text: String,
+            to_text: String,
+            valid_to: Option<i64>,
+        }
+        let meta = self.store.with_conn(|c| {
+            Ok(c.query_row(
+                "SELECT m.from_id, m.to_id, m.relation, cf.text, ct.text, m.valid_to
+                     FROM meta_causal_edges m
+                     JOIN chunks cf ON cf.id = m.from_id
+                     JOIN chunks ct ON ct.id = m.to_id
+                     WHERE m.id = ?1",
+                rusqlite::params![edge_id],
+                |r| {
+                    Ok(MetaRow {
+                        from_id: r.get(0)?,
+                        to_id: r.get(1)?,
+                        relation: r.get(2)?,
+                        from_text: r.get(3)?,
+                        to_text: r.get(4)?,
+                        valid_to: r.get(5)?,
+                    })
+                },
+            )
+            .optional()?)
+        });
+        let meta = match meta {
+            Ok(Some(m)) => m,
+            Ok(None) => return format!("❌ Pattern edge #{edge_id} not found."),
+            Err(e) => return format!("❌ Lookup failed: {e}"),
+        };
+        if meta.valid_to.is_some() {
+            return format!(
+                "❌ Pattern edge #{} was already invalidated: \"{}\" --[{}]--> \"{}\"",
+                edge_id, meta.from_text, meta.relation, meta.to_text,
+            );
+        }
+
+        match self.store.invalidate_meta_edge(edge_id) {
+            Ok(true) => {
+                // The revoked pattern stops spreading immediately (O(deg)
+                // flip) instead of at the next lazy rebuild — same
+                // contract as invalidate_decision.
+                if let Ok(mut guard) = self.graph.lock() {
+                    if let Some(graph) = guard.as_mut() {
+                        graph.invalidate_edges_between(&meta.from_id, &meta.to_id);
+                    }
+                }
+                let reason = reason
+                    .map(|r| format!(" (reason: {r})"))
+                    .unwrap_or_default();
+                format!(
+                    "✅ Invalidated pattern edge #{}: \"{}\" --[{}]--> \"{}\"{reason}. It will no longer appear in search_patterns or spreading activation, but is kept for audit.",
+                    edge_id, meta.from_text, meta.relation, meta.to_text,
+                )
+            }
+            Ok(false) => format!("❌ Pattern edge #{edge_id} could not be invalidated."),
+            Err(e) => format!("❌ Invalidate failed: {e}"),
+        }
+    }
+
     /// `search_patterns` — mined cross-task meta edges (similar_to /
     /// repeated / contradicts / refines).
     pub fn search_patterns(
@@ -1133,10 +1221,11 @@ impl Memory {
             };
             let pattern = edge.pattern.as_deref().unwrap_or("");
             out.push_str(&format!(
-                "{}. \"{}\" --[{label}]--> \"{}\"\n   {pattern}\n   confidence: {:.0}%\n",
+                "{}. \"{}\" --[{label}]--> \"{}\" (#{})\n   {pattern}\n   confidence: {:.0}%\n",
                 i + 1,
                 edge.from_text,
                 edge.to_text,
+                edge.id,
                 edge.confidence * 100.0,
             ));
             // v5 stratified-replication verdicts (NULL = untested → no note).
@@ -1664,12 +1753,16 @@ fn hits_from_ranked(
 /// The shared display tail of `search_memory`: D4 intent routing (prefer
 /// the dominant layer in the DISPLAY when the classifier is confident and
 /// that layer has hits — never hide evidence), then the grouped
-/// fact/causal rendering with per-item ranks.
+/// fact/causal rendering with per-item ranks. `detail_level` picks the
+/// per-item verbosity (l2 = the historical format, byte-identical);
+/// `max_tokens` > 0 truncates both sections against one shared budget.
 fn render_unified(
     query: &str,
     facts: &[(usize, AgentFact)],
     causal: &[(usize, CausalEntry)],
     mode: &str,
+    detail_level: &str,
+    max_tokens: usize,
 ) -> String {
     if facts.is_empty() && causal.is_empty() {
         return format!("[unified/{mode}] 📭 No memories found matching your query in any layer.");
@@ -1688,31 +1781,35 @@ fn render_unified(
     let layers = usize::from(!facts.is_empty()) + usize::from(!causal.is_empty());
     let total = facts.len() + causal.len();
     let mut out = format!("[unified/{mode}] Found {total} memories across {layers} layer(s):\n\n");
+    let mut budget = TokenBudget::new(max_tokens);
+    let mut truncated = 0usize;
     if !facts.is_empty() {
         out.push_str(&format!("📊 Facts ({}):\n", facts.len()));
         for (rank, fact) in facts {
-            out.push_str(&format!(
-                "  #{rank} [{}] {} = \"{}\" (confidence: {:.0}%)\n",
-                fact.scope,
-                fact.key,
-                truncate_chars(&fact.value, 60),
-                fact.confidence * 100.0,
-            ));
+            let (line, cost) = format_fact_layered(fact, *rank, detail_level);
+            if !budget.try_spend(cost) {
+                truncated += 1;
+                continue;
+            }
+            out.push_str(&line);
         }
         out.push('\n');
     }
     if !causal.is_empty() {
         out.push_str(&format!("🔗 Causal lessons ({}):\n", causal.len()));
         for (rank, entry) in causal {
-            out.push_str(&format!(
-                "  #{rank} [{}] \"{}\" →({})→ \"{}\" (confidence: {:.0}%)\n",
-                entry.task_tag.as_deref().unwrap_or("untagged"),
-                truncate_chars(&entry.decision_text, 50),
-                entry.relation,
-                truncate_chars(&entry.outcome_text, 50),
-                entry.confidence * 100.0,
-            ));
+            let (line, cost) = format_lesson_layered(entry, *rank, detail_level);
+            if !budget.try_spend(cost) {
+                truncated += 1;
+                continue;
+            }
+            out.push_str(&line);
         }
+    }
+    if truncated > 0 {
+        out.push_str(&format!(
+            "… {truncated} more result(s) truncated (token budget)\n"
+        ));
     }
     out
 }

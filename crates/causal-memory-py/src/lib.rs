@@ -139,8 +139,10 @@ impl PyCausalMemory {
     }
 
     /// Search ALL memory types at once — facts AND causal lessons fused by
-    /// Reciprocal Rank Fusion into one ranked list.
-    #[pyo3(signature = (query, task_tag=None, scope=None, limit=None))]
+    /// Reciprocal Rank Fusion into one ranked list. detail_level: l0
+    /// (pointer) / l1 (overview) / l2 (full, default); max_tokens 0 =
+    /// unlimited.
+    #[pyo3(signature = (query, task_tag=None, scope=None, limit=None, detail_level=None, max_tokens=None))]
     fn search_memory(
         &self,
         py: Python<'_>,
@@ -148,8 +150,13 @@ impl PyCausalMemory {
         task_tag: Option<&str>,
         scope: Option<&str>,
         limit: Option<usize>,
+        detail_level: Option<&str>,
+        max_tokens: Option<usize>,
     ) -> String {
-        py.allow_threads(|| self.inner.search_memory(query, task_tag, scope, limit))
+        py.allow_threads(|| {
+            self.inner
+                .search_memory(query, task_tag, scope, limit, detail_level, max_tokens)
+        })
     }
 
     /// When something went wrong, trace back which past decision could have
@@ -200,6 +207,14 @@ impl PyCausalMemory {
         limit: Option<usize>,
     ) -> String {
         py.allow_threads(|| self.inner.search_patterns(query, task_tag, limit))
+    }
+
+    /// Mark a mined cross-task pattern (meta edge, the #N id shown by
+    /// search_patterns) as wrong (soft-invalidate; hidden from
+    /// search_patterns and spreading activation, kept for audit).
+    #[pyo3(signature = (edge_id, reason=None))]
+    fn invalidate_pattern(&self, py: Python<'_>, edge_id: i64, reason: Option<&str>) -> String {
+        py.allow_threads(|| self.inner.invalidate_pattern(edge_id, reason))
     }
 
     /// L0 directory of recent decisions and their outcomes — a compact

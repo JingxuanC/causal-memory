@@ -466,7 +466,7 @@ mod tests {
         let memory = counterfactual_memory();
         // Same query through both presentations: the structured core must
         // surface the same memories the text tool reports.
-        let text = memory.search_memory("redis mutex", None, None, Some(10));
+        let text = memory.search_memory("redis mutex", None, None, Some(10), None, None);
         let (hits, _mode) = memory.search_memory_entries("redis mutex", None, None, 10);
         assert!(!hits.is_empty(), "seeded edges must surface");
         assert!(text.contains("redis"), "text tool: {text}");
@@ -606,7 +606,7 @@ mod tests {
         );
 
         // Text tool: same engine, grouped display.
-        let text = memory.search_memory("TypeScript module", None, None, None);
+        let text = memory.search_memory("TypeScript module", None, None, None, None, None);
         assert!(text.starts_with("[unified/spread]"), "{text}");
         assert!(text.contains("editor_preference"), "{text}");
         assert!(text.contains("Causal lessons"), "{text}");
@@ -712,4 +712,139 @@ fn multi_pass_sinks_bench_optimizations() {
         "multi-pass must surface evidence: {out}"
     );
     assert!(out.contains("[multi-pass]"), "mode tag present: {out}");
+}
+
+// ─── search_memory detail_level / max_tokens + invalidate_pattern ──────
+
+#[test]
+fn search_memory_detail_levels_and_default_compat() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_fact(
+        "editor",
+        "Neovim with a fairly long configuration description",
+        None,
+        None,
+        None,
+    );
+    memory.record_decision(
+        "used redis mutex for cache invalidation",
+        "deadlock under concurrent load",
+        "caused",
+        "concurrency",
+        None,
+    );
+
+    let l2 = memory.search_memory("redis mutex", None, None, Some(10), None, None);
+    let l0 = memory.search_memory("redis mutex", None, None, Some(10), Some("l0"), None);
+    let l1 = memory.search_memory("redis mutex", None, None, Some(10), Some("l1"), None);
+
+    // l0 is strictly cheaper than l2; l1 sits between (or equal at l1's cap).
+    assert!(
+        l0.len() < l2.len(),
+        "l0 must be shorter than l2\nl0: {l0}\nl2: {l2}"
+    );
+    assert!(l1.len() <= l2.len(), "l1 must not exceed l2");
+    // l0 pointers drop the confidence annotations.
+    assert!(!l0.contains("confidence:"), "l0 drops confidence: {l0}");
+    assert!(l2.contains("confidence:"), "l2 keeps confidence: {l2}");
+
+    // Default (None, None) is byte-identical to explicit l2 + unlimited —
+    // and to the pre-feature format (same lines, no truncation note).
+    let explicit = memory.search_memory("redis mutex", None, None, Some(10), Some("l2"), Some(0));
+    assert_eq!(l2, explicit, "default == explicit l2/0");
+    assert!(
+        !l2.contains("truncated (token budget)"),
+        "unlimited default must not truncate: {l2}"
+    );
+
+    // Invalid level rejected like invalid scope.
+    let bad = memory.search_memory("redis mutex", None, None, Some(10), Some("l9"), None);
+    assert!(bad.contains("Invalid detail_level"), "{bad}");
+}
+
+#[test]
+fn search_memory_max_tokens_truncates() {
+    let memory = Memory::open_in_memory().expect("memory");
+    for i in 0..6 {
+        memory.record_decision(
+            &format!("deployed cache variant {i} without warmup"),
+            &format!("cold start latency spike {i}"),
+            "caused",
+            "deploy",
+            None,
+        );
+    }
+    let full = memory.search_memory("cache warmup deploy", None, None, Some(10), None, None);
+    // Budget below the cost of the full pool: items are dropped and the
+    // truncation note reports how many.
+    let capped = memory.search_memory("cache warmup deploy", None, None, Some(10), None, Some(150));
+    assert!(
+        capped.len() < full.len(),
+        "capped must be shorter\ncapped: {capped}\nfull: {full}"
+    );
+    assert!(
+        capped.contains("more result(s) truncated (token budget)"),
+        "truncation note: {capped}"
+    );
+}
+
+#[test]
+fn invalidate_pattern_soft_deletes_meta_edge() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "switched apk sources to Aliyun mirrors",
+        "alpine build stabilized",
+        "caused",
+        "docker",
+        None,
+    );
+    // Mine a pattern between the two chunks of that lesson.
+    let (from_id, to_id) = {
+        let store = memory.store();
+        store
+            .with_conn(|c| {
+                Ok(
+                    c.query_row("SELECT from_id, to_id FROM causal_edges LIMIT 1", [], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    })?,
+                )
+            })
+            .expect("chunk ids")
+    };
+    let meta_id = memory
+        .store()
+        .upsert_meta_edge(
+            &from_id,
+            &to_id,
+            "similar_to",
+            "both are mirror-source fixes",
+            0.7,
+        )
+        .expect("meta edge");
+
+    // Visible before revocation, with the #id handle exposed.
+    let before = memory.search_patterns(Some("mirror"), None, Some(10));
+    assert!(before.contains("similar_to"), "pattern listed: {before}");
+    assert!(
+        before.contains(&format!("(#{meta_id})")),
+        "id exposed: {before}"
+    );
+
+    // Revoke: confirmation message, then gone from search_patterns.
+    let msg = memory.invalidate_pattern(meta_id, Some("spurious"));
+    assert!(msg.starts_with("✅ Invalidated pattern edge"), "{msg}");
+    assert!(msg.contains("(reason: spurious)"), "{msg}");
+    let after = memory.search_patterns(Some("mirror"), None, Some(10));
+    assert!(
+        after.contains("No cross-task patterns"),
+        "revoked pattern must not be listed: {after}"
+    );
+
+    // Idempotent: second revocation is a clean no-op message, not an error.
+    let again = memory.invalidate_pattern(meta_id, None);
+    assert!(again.contains("already invalidated"), "{again}");
+
+    // Unknown id is a clean miss.
+    let missing = memory.invalidate_pattern(999_999, None);
+    assert!(missing.contains("not found"), "{missing}");
 }

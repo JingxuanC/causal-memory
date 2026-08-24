@@ -1,4 +1,4 @@
-//! MCP server handler — exposes 15 tools for unified agent memory.
+//! MCP server handler — exposes 16 tools for unified agent memory.
 //!
 //! Thin shell: every tool handler parses its rmcp parameters and delegates
 //! to the shared library facade `causal_memory::memory::Memory`, which owns
