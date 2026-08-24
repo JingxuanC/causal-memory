@@ -2,7 +2,7 @@
 
 > 来源：formal ablation harness（`benches/ablation/`）在两种库上的四臂实验。
 > 本文记录两个 roadmap 之外的发现：**物化阶段的 confidence 预过滤瓶颈**
-> （已修复，`f6405dd`）和 **小而密图上的 spread 激活洪泛**（治理中）。
+> （已修复，`f6405dd`）和 **小而密图上的 spread 激活洪泛**（已治理，`400cfcd`）。
 > 所有数字可复跑：harness 无 LLM、无 judge，指标为检索级（evidence hit /
 > mean rank / pool tokens）。
 
@@ -34,12 +34,12 @@
 排序改为 `MAX(ABS(端点激活)) DESC, confidence DESC, id`，confidence 回到平局加赛位置。
 副作用是正的：`record_access` 的 access boost 现在打在激活正确的边上。
 
-## 发现 2：spread 激活洪泛（治理中）
+## 发现 2：spread 激活洪泛（已治理，`400cfcd`）
 
 修复预过滤后真实库 baseline 仅从 12.8% 回到 14.2%，未翻正。深挖结论：
 
 - 真实库 433 chunks，但图实际 **1834 节点**（Hebbian 共现边 + meta 边贡献了
-  大量连接，形成 hub）。
+  大量连接，形成 hub；其中 1400 个是 fact 节点）。
 - 每次查询 spread 激活 **~1000–1100 节点**，且大量**饱和在 1.0**。
 - 金边端点激活 0.7975 时，有 ~500–600 个节点比它强；金边两端都到 1.0 时，
   仍有几百个节点并列——**平局落回 confidence 决胜，金边再次输掉**。
@@ -47,6 +47,39 @@
   这不是预过滤能修的。no-spread 95% 的对比度是真实机制，不是测试 bug。
 
 LME 大库不受影响的原因：大图激活稀疏、不饱和，spread 维持正贡献（+1pt）。
+
+### 治理：通道级 fan-out 约束（2026-08-24，`400cfcd`）
+
+机制：**关联通道**（`Fact` 双向实体链接 + `CoOccurrence` Hebbian 共现边——
+学习/派生、稠密、hub 形成）向外传播时按出度分摊 `a / assoc_out_degree`；
+**因果家族边**（Caused/Enabled/Prevented/Meta、patch overlay）不分摊。
+
+关键决策——为什么不按经典 Collins & Loftus 全出度分摊：全度归一化会让
+2–4 度的普通因果节点上 prevented 的弱负传播（coeff −0.3）被稀释到阈值下，
+抑制性信号这个核心特性被误伤（3 个既有测试当场变红）。洪泛的根源是关联
+通道的 hub，因果边稀疏（220 条 / 433 chunks）且是主信号；通道级分摊两全，
+因果/抑制语义逐位保持。hop 距离决胜未采用：单机制已消除洪泛，最小侵入。
+
+**治理效果（真实库 self-queries n=219，治理前 → 治理后）：**
+
+| arm | 治理前 | 治理后 |
+|---|---|---|
+| baseline | 14.2% / 15.5 / 1850 | **95.0% / 12.2 / 1273** |
+| no-spread | 95.0% / 10.4 / 892 | 95.0% / 10.4 / 892（锚点不变） |
+| no-inhibition | 14.2% / 15.5 / 1851 | 95.0% / 12.2 / 1274 |
+| no-swr | 11.9% / 15.3 / 1848 | **96.8%** / 11.8 / 1262 |
+
+baseline 回升 **+80.8pt**，与 seed-only 完全持平，且 pool 覆盖更广
+（1273 vs 892 tokens）——spread 不再有害；pool tokens −31%（洪泛噪声被挤出）。
+**no-swr 首次浮现真信号**：Q flatten 反而 +1.8pt，说明该库上 Q 加权播种
+略微过拟合高 Q hub；no-inhibition 仍无可见差异（25 条 prevented 在检索级
+指标上无量级影响）。
+
+**LME 大库回归检查（n=100）**：baseline 84.0% 逐位保持，pool tokens
+1221→1191（−2.5%，阻尼的预期效果），延迟 p50 154ms / p90 183ms 同区间。
+零回归。
+
+结果文件：`benches/ablation/results/ablation_20260824_{154840,155018}_summary.json`。
 
 ## 数据（四臂，hit rate / mean rank / pool tokens）
 
@@ -74,9 +107,9 @@ LME 大库不受影响的原因：大图激活稀疏、不饱和，spread 维持
 
 1. **物化预过滤必须感知激活值**——已修复并钉死回归测试；LME 零回归（逐位相同），
    每查询延迟 70–105ms 不变（CTE 上限 900 chunks，远低于 SQLite 绑定限制）。
-2. **spread 洪泛是小而密图的真实精度杀手**，治理方向（按优先级）：
-   度归一化 / fan-out 约束（hub 摊薄，Hebbian 共现边是主要 hub 来源）、
-   hop 距离决胜（同激活近者优先，confidence 再后移）、激活 top-K 剪枝。
+2. **spread 洪泛是小而密图的真实精度杀手**——已由通道级 fan-out 约束治理
+   （关联通道按出度分摊，因果家族不分摊，保护抑制性弱信号）；hop 距离决胜
+   和 top-K 剪枝留作后备，当前不需要。
 3. **no-swr 首次获得非 vacuous 信号**（mean rank +0.4 变差），Q 播种有用但
    影响被下游压缩；no-inhibition 信号被洪泛掩盖，待治理后复测。
 4. 实验注意：真实库副本会被检索副作用演化（record_access / Hebbian flush，
