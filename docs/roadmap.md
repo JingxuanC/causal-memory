@@ -1,5 +1,12 @@
 # Roadmap
 
+> Updated 2026-08-24: **code-audited sync** — checked every open item
+> against the source instead of the docs. Shipped but unticked: half-life
+> decay tiers, per-type answer prompting, multi-session retrieval,
+> Memora (weekly), layered loading + token budget (incl. the hippocampus
+> path fix). New since last update: bounded-forgetting GC budget,
+> `disable_spread` ablation switch + first formal ablation run.
+>
 > Updated 2026-07-30: **positioning shift — from causal layer to complete memory
 > system**. The causal layer was the beachhead, not the boundary. causal-memory
 > is growing into a complete agent memory system: fact/preference memory and
@@ -47,9 +54,9 @@ argument — lightweight self-built fact layer, pluggable storage substrate).
   with a backup; `instructions`-style focus parameter still a candidate
   for the narrative layer
 - [~] **Query routing + fusion retrieval** — ✅ RRF fusion shipped
-  (`search_memory`, 2026-07-31); remaining: query-type classifier for
-  single-layer routing and iterative retrieval with entity/time anchors for
-  multi-session questions (targets LongMemEval multi-session 32.3%)
+  (`search_memory`, 2026-07-31); iterative retrieval with entity/time
+  anchors for multi-session questions also shipped (60.2%, see below).
+  Remaining: query-type classifier for single-layer routing
 - [x] **Q-value dynamics** — ✅ shipped (consolidate Stage 1.5 Bellman
   reinforcement → `chunks.q_value` persistence → hippocampus seeding
   `0.5 + 0.5·Q`). Implementation note: the learned utility weights *node
@@ -65,12 +72,21 @@ Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
   but still-active edges)
 - [ ] **Flip-path marking** — tag results as direct-seed vs spreading-surfaced
   so upper layers can do Top-k ∪ Top-m unions (HeLa-Mem dual-path retrieval)
-- [ ] **Layered loading + token budget** — L0 summary / L1 overview / L2 full
-  text on retrieval results (OpenViking pattern); strict `max_tokens` control
-- [ ] **Formal ablation** — ablate SWR / spreading / `prevented` once each and
-  quantify contributions (HeLa-Mem ablation analogue; strengthens the paper)
-- [ ] **Token-efficiency benchmark** — measure causal-memory token cost per
-  query, compare against OpenViking's 34–91% savings claim
+- [x] **Layered loading + token budget** — ✅ shipped: L0/L1/L2
+  (`detail_level`) + strict `max_tokens` on `search_causal`, incl. the
+  hippocampus spreading path (threaded 2026-08-24 — the params were
+  silently dead on that path before); remaining: same params on
+  `search_memory`
+- [~] **Formal ablation** — harness + engine switches shipped
+  2026-08-24 (`disable_inhibition` / `disable_spread`,
+  `benches/ablation`). First run (n=100, LongMemEval distill store):
+  no-spread −1pt evidence hit / −186 pool tokens; no-inhibition and
+  no-swr vacuous on that store (1 `prevented` edge; never consolidated,
+  all q_value=0.5) — rerun on a consolidated store still owed
+- [~] **Token-efficiency benchmark** — per-question token accounting
+  shipped in the LongMemEval harness (avg ctx/ans tokens in every run
+  summary); the dedicated cross-system comparison vs OpenViking's
+  34–91% savings claim is still open
 
 ## Current state — v0.9.0+ (main)
 
@@ -102,6 +118,9 @@ Core capabilities (all shipped, all tested):
 - Sleep consolidation: four-phase cycle; reactivation scores feed
   downscaling (half-rate decay for replay-protected edges), replay marks
   carry into the next cycle
+- Forgetting: bounded GC budget (`max(floor=50, 20% of population)`,
+  weakest-first, edges and facts independently), half-life decay tiers,
+  diversity-gated cycles (`sleep --auto`)
 - Pearl ladder: Rung-2 `intervention_query` (stratified, Simpson warning)
   + contrastive empirical `counterfactual_query` (honestly labeled: not SCM)
 - Reconstructive retrieval: `reconstruct_lesson` (Markov-blanket subgraph
@@ -146,16 +165,21 @@ explosion (17,496 → 119 edges, 26.5s → 0.8s).
 
 Benchmark-driven:
 
-- [ ] **Memora benchmark** (arXiv:2604.20006) — the only weekly→quarterly
-  memory eval with an explicit *forgetting* dimension; the natural next
-  stage for the compaction-survival claim after LoCoMo k=5
-- [ ] **Multi-session retrieval** (LongMemEval's 32.3%): query decomposition
-  or iterative retrieval for cross-session synthesis; higher top-k for
-  multi-evidence questions
-- [ ] **Per-type answer prompting** (preference questions 23.3%:
-  rubric-style answers need a different answer contract than short-fact)
-- [ ] `max_tokens` budget param on `search_causal`; `causal-memory stats`
-  (Claude Code `/context` analogue)
+- [~] **Memora benchmark** (arXiv:2604.20006) — weekly scale shipped:
+  full FAMA protocol port (`benches/memora`), 17 runs, FAMA 31.0 /
+  MPA 46.8% / FAA 72.1% (single-judge, not directly comparable to the
+  official 3-judge vote). Remaining: monthly/quarterly scales (harness
+  supports them, never run)
+- [x] **Multi-session retrieval** — ✅ shipped (LongMemEval multi-session
+  32.3% → 60.2%): query decomposition with temporal anchors
+  (`parse_temporal_anchor` / `retrieve_multi_pass`), multi-session-only
+  hippocampus spreading, P8 session expansion
+- [x] **Per-type answer prompting** — ✅ shipped: per-question-type
+  answer contracts (knowledge-update / multi-session / preference
+  rules); preference 13.3% → 56.7% → 80.0%
+- [x] `max_tokens` budget param on `search_causal` — ✅ (see mechanism
+  absorption above); [ ] `causal-memory stats` (Claude Code `/context`
+  analogue) still open
 
 Memory-quality:
 
@@ -163,11 +187,15 @@ Memory-quality:
   superseded edges stay retrievable with `superseded_by` provenance;
   CausalEval C7 50% → 100% with C3 unharmed. The LLM-judge upgrade below
   now builds on this instead of hard invalidation
-- [ ] **Half-life decay tiers** (Vela-inspired): `halflife_hours` column,
-  effective_confidence = confidence · 0.5^(age/halflife); 24h/168h/720h/2160h
-  tiers replace the flat 0.99/day
-- [ ] **noveltyEntropy trigger**: run sleep when recent-decision entropy
-  crosses a threshold, not on a calendar
+- [x] **Half-life decay tiers** (Vela-inspired) — ✅ shipped:
+  `halflife_hours` per provenance tier (user_feedback 2160h / llm 2160h /
+  temporal 168h / fact 2160h), `effective = confidence · 0.5^(age/halflife)`
+  for edges and facts; unmapped sources (`distill`, `rule`) intentionally
+  keep the legacy flat `decay_per_day`
+- [~] **noveltyEntropy trigger** — diversity gate shipped: `sleep --auto`
+  computes normalized Shannon entropy over the last 64 chunks and skips
+  the cycle below `min_diversity` (0.4). Remaining: auto-invocation
+  (today an external caller must still start `sleep`)
 - [ ] **LLM update-resolver**: replace rule-based contradiction detection
   with the LLM judge for invalidation decisions (polarity plumbing ready)
 - [ ] Meta-edge invalidation tool (meta edges mine-able but not revocable)
