@@ -42,7 +42,9 @@ compaction cannot touch it.
 → 经验检索（`search_causal`）→ 反事实对比（`counterfactual_query`）→
 写入闭环（`record_decision` → 立即可检索）。
 
-<video src="https://github.com/JingxuanC/causal-memory/raw/main/docs/demo/causal-memory-demo.mp4" controls width="720"></video>
+<!-- jsDelivr serves the repo mp4 as video/mp4; github.com/raw returns
+     application/octet-stream + nosniff, which browsers refuse to play. -->
+<video src="https://cdn.jsdelivr.net/gh/JingxuanC/causal-memory@main/docs/demo/causal-memory-demo.mp4" poster="https://cdn.jsdelivr.net/gh/JingxuanC/causal-memory@main/docs/demo/demo_card.png" controls width="720"></video>
 
 [下载视频](docs/demo/causal-memory-demo.mp4) ·
 [预警场景截图](docs/demo/demo_intervention.png) ·
