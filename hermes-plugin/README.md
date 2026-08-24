@@ -15,11 +15,29 @@ Hermes memory-provider plugin backed by [causal-memory](https://github.com/Jingx
 
 ```
 $HERMES_HOME/plugins/causal-memory/
-├── __init__.py    → from hermes_causal_memory import *
+├── __init__.py    → re-export the provider (see below)
 ├── plugin.yaml    → copy from src/hermes_causal_memory/plugin.yaml
 ├── cli.py         → from hermes_causal_memory.cli import *
 └── README.md      → this file
 ```
+
+`__init__.py` must NAME the provider class, not star-import it:
+
+```python
+"""causal-memory MemoryProvider plugin (directory layout shim)."""
+
+from hermes_causal_memory import CausalMemoryProvider, register
+
+__all__ = ["CausalMemoryProvider", "register"]
+```
+
+Hermes's memory-provider discovery (`plugins/memory/_is_memory_provider_dir`)
+text-scans `__init__.py` for the literal strings `register_memory_provider`
+or `MemoryProvider` before it ever imports the module — a bare
+`from hermes_causal_memory import *` contains neither, so the plugin is
+silently skipped (listed by `hermes plugins list` but never loaded as a
+provider). `CausalMemoryProvider` contains the `MemoryProvider` substring,
+so the explicit re-export passes the scan.
 
 The plugin needs the `causal_memory` bindings importable by the Hermes Python (`pip install causal-memory` once it is on PyPI, or `maturin develop` from the causal-memory repo).
 
