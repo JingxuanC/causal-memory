@@ -13,6 +13,8 @@
 [![Tests: 368](https://img.shields.io/badge/tests-368-brightgreen.svg)](#build--test)
 [![Release: v0.9.0](https://img.shields.io/badge/release-v0.9.0-blue.svg)](https://github.com/JingxuanC/causal-memory/releases)
 
+**English** · [简体中文](README.zh-CN.md)
+
 ---
 
 ## Why
@@ -38,19 +40,20 @@ compaction cannot touch it.
 
 ## Demo
 
-21 秒实操演示（真实记忆库，非 mock）：行动前预警（`intervention_query` → DANGER 链）
-→ 经验检索（`search_causal`）→ 反事实对比（`counterfactual_query`）→
-写入闭环（`record_decision` → 立即可检索）。
+A 21-second hands-on demo (real memory store, no mocks): pre-action warning
+(`intervention_query` → DANGER chain) → experience recall (`search_causal`)
+→ counterfactual comparison (`counterfactual_query`) → write loop
+(`record_decision` → immediately searchable).
 
 <!-- GitHub's CSP (media-src) only allows GitHub-hosted media, so an
      external <video> never plays on the repo page. An animated GIF goes
      through the camo image proxy and plays inline. Click for the mp4. -->
-[![21 秒实操演示](docs/demo/causal-memory-demo.gif)](docs/demo/causal-memory-demo.mp4)
+[![21-second demo](docs/demo/causal-memory-demo.gif)](docs/demo/causal-memory-demo.mp4)
 
-[下载视频](docs/demo/causal-memory-demo.mp4) ·
-[预警场景截图](docs/demo/demo_intervention.png) ·
-[品牌卡](docs/demo/demo_card.png) ·
-重新生成：`scripts/render_demo.py`
+[Download video](docs/demo/causal-memory-demo.mp4) ·
+[Warning-scene screenshot](docs/demo/demo_intervention.png) ·
+[Brand card](docs/demo/demo_card.png) ·
+Regenerate: `scripts/render_demo.py`
 
 ---
 
