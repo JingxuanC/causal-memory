@@ -51,7 +51,9 @@ jobs:
     runs-on: ${{ matrix.platform }}
     strategy:
       matrix:
-        platform: [macos-13, macos-14] # x86_64, aarch64
+        # macos-13 is retired (Dec 2025) — jobs queue forever. Intel wheels
+        # now build on macos-15-intel; macos-14/15 are Apple Silicon.
+        platform: [macos-15-intel, macos-14] # x86_64, aarch64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
