@@ -28,7 +28,11 @@ dsh plugin --profile web add "$PWD/dsh-plugin"
 
 ## 启用
 
-在 `~/.dsh/profiles/web/cordis.patch.yml` 的 insert 列表中加入：
+本包声明了 `dsh.bundle` manifest（`cordis.patch.yml`），通过
+`dsh plugin add` 安装时 insert 会**自动合并**，无需手工配置。
+
+仅当以 `link:` 方式做开发安装时需要手工确认
+`~/.dsh/profiles/web/cordis.patch.yml` 的 insert 列表包含：
 
 ```yaml
 - id: causal-memory-plugin
