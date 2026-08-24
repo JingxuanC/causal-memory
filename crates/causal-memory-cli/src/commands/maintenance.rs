@@ -452,6 +452,12 @@ fn print_consolidation_report(
     println!("  decayed:        {}", report.decayed);
     println!("  access-boosted: {}", report.boosted);
     println!("  GC invalidated: {}", report.gc_invalidated);
+    if report.gc_deferred > 0 {
+        println!(
+            "  GC deferred (bounded-forgetting budget, retry next cycle): {}",
+            report.gc_deferred
+        );
+    }
     println!(
         "  facts decayed:  {} (GC'd: {})",
         report.facts_decayed, report.facts_gc

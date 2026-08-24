@@ -53,6 +53,18 @@ pub struct ConsolidateConfig {
     /// GC threshold for replay-protected edges (stage 3), more lenient than
     /// `gc_threshold`.
     pub replay_gc_threshold: f64,
+    /// Bounded forgetting (stage 3): a single cycle invalidates at most this
+    /// fraction of the valid-edge population via GC (the weakest first —
+    /// the rest keep decaying and are re-evaluated next cycle). Guard
+    /// against mass extinction when a corpus was ingested in one burst with
+    /// skewed timestamps: measured on the LongMemEval distill store, where
+    /// `discovered_at` carries historical event dates (2023), one unbounded
+    /// cycle GC'd 90% of all edges and evidence-hit rate collapsed 94%→50%.
+    pub max_gc_fraction: f64,
+    /// Absolute GC allowance per cycle (stage 3): small stores are exempt
+    /// from `max_gc_fraction` — below this many candidates the budget never
+    /// binds, preserving exact pre-guard behaviour for small corpora/tests.
+    pub gc_floor: usize,
     /// C7 (stage 1.7): max repeated-decision candidates the LLM supersession
     /// judge considers per sleep cycle. A cap bounds per-cycle LLM cost;
     /// candidates beyond it wait for the next cycle.
@@ -91,6 +103,8 @@ impl Default for ConsolidateConfig {
             replay_protect_score: 1.0,
             replay_decay_divisor: 2.0,
             replay_gc_threshold: 0.1,
+            max_gc_fraction: 0.2,
+            gc_floor: 50,
             half_life_user_feedback_hours: 2160, // 90d
             half_life_llm_hours: 2160,            // 90d (same magnitude as legacy ~69d)
             half_life_temporal_hours: 168,        // 7d
@@ -151,6 +165,10 @@ pub struct ConsolidateReport {
     pub boosted: usize,
     /// Stage 3: edges soft-invalidated by garbage collection.
     pub gc_invalidated: usize,
+    /// Stage 3: below-threshold edges/facts spared this cycle by the bounded-
+    /// forgetting budget (`max_gc_fraction`/`gc_floor`); they keep their
+    /// decayed confidence and are re-evaluated next cycle.
+    pub gc_deferred: usize,
     /// Stage 3 (Phase D): facts whose confidence decayed (age ≥ 1 day).
     pub facts_decayed: usize,
     /// Stage 3 (Phase D): facts retired by garbage collection.

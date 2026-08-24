@@ -262,6 +262,65 @@ fn test_gc_invalidates_low_confidence_but_pins_user_feedback() {
     assert!((edge_conf(&store, pinned_id) - expected).abs() < 1e-9);
 }
 
+#[test]
+fn test_gc_bounded_forgetting_budget() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // 100 edges that ALL fall below the GC threshold after decay
+    // (0.21 × 0.5^(240/2160) ≈ 0.194 < 0.2). An unbounded cycle would wipe
+    // every one (the LongMemEval mass-extinction repro: burst ingest +
+    // uniform age → uniform decay). The budget caps this cycle at
+    // max(gc_floor=50, 0.2×100) = 50 invalidations, weakest first.
+    let mut ids = Vec::new();
+    for i in 0..100 {
+        ids.push(insert_edge(
+            &store,
+            &format!("speculative tweak number {i} attempted here"),
+            "no measurable effect",
+            0.21,
+            "llm_inferred",
+            Some("perf"),
+            NOW - 10 * DAY,
+            None,
+        ));
+    }
+    // Weakest candidate (0.05 → ~0.046): must be invalidated first.
+    let weakest = insert_edge(
+        &store,
+        "wild guess refactor of the whole module",
+        "nothing improved at all",
+        0.05,
+        "llm_inferred",
+        Some("perf"),
+        NOW - 10 * DAY,
+        None,
+    );
+    // Strongest candidate (0.215 → ~0.199, still < 0.2): spared this cycle.
+    let strongest = insert_edge(
+        &store,
+        "borderline optimization of the retry path",
+        "marginal effect only",
+        0.215,
+        "llm_inferred",
+        Some("perf"),
+        NOW - 10 * DAY,
+        None,
+    );
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    // 102 candidates total; budget = max(50, 0.2×102) = 50.
+    assert_eq!(report.gc_invalidated, 50);
+    assert_eq!(report.gc_deferred, 52);
+    assert!(!edge_valid(&store, weakest), "weakest candidate GC'd first");
+    assert!(
+        edge_valid(&store, strongest),
+        "strongest below-threshold edge survives under the budget"
+    );
+    // The weakest edge is one of the 50 invalidated, so 51 of the 100
+    // identical-confidence edges survive alongside it... minus its seat:
+    // 50 invalidated = weakest + 49 from `ids` → 51 of `ids` survive.
+    let survivors = ids.iter().filter(|&&id| edge_valid(&store, id)).count();
+    assert_eq!(survivors, 51, "invalidation stopped at the budget");
+}
+
 // ── Stage 2a: redundant merge ────────────────────────────────────────
 
 #[test]

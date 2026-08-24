@@ -187,6 +187,14 @@ pub fn downscale(
     let edges = store.all_valid_edges()?;
     let window_secs = i64::from(config.access_boost_window_days) * SECS_PER_DAY as i64;
 
+    // Pass 1: compute post-decay confidence and GC candidacy per edge.
+    struct Pending {
+        edge_id: i64,
+        new_conf: f64,
+        changed: bool,
+        collect: bool,
+    }
+    let mut pendings: Vec<Pending> = Vec::with_capacity(edges.len());
     for e in &edges {
         let is_protected = protected.contains(&e.edge_id);
         let mut new_conf = e.confidence;
@@ -227,23 +235,55 @@ pub fn downscale(
             config.gc_threshold
         };
         let collect = new_conf < threshold && e.discovered_by != "user_feedback";
-        if collect {
-            report.gc_invalidated += 1;
-        }
+        pendings.push(Pending {
+            edge_id: e.edge_id,
+            new_conf,
+            changed,
+            collect,
+        });
+    }
 
-        if dry_run || (!changed && !collect) {
+    // GC budget (bounded forgetting): invalidate the weakest candidates
+    // first, at most max(gc_floor, max_gc_fraction × population) per cycle.
+    // Without the cap, a burst-ingested corpus with skewed timestamps
+    // decays uniformly and one cycle wipes most of the store (LongMemEval:
+    // 90% GC'd, evidence-hit 94%→50%). Exempt candidates keep their decayed
+    // confidence and face the next cycle. Small stores (< gc_floor
+    // candidates) are unaffected — exact pre-guard behaviour.
+    let mut gc_candidates: Vec<&Pending> = pendings.iter().filter(|p| p.collect).collect();
+    gc_candidates.sort_by(|a, b| {
+        a.new_conf
+            .partial_cmp(&b.new_conf)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.edge_id.cmp(&b.edge_id))
+    });
+    let budget = config
+        .gc_floor
+        .max((pendings.len() as f64 * config.max_gc_fraction) as usize);
+    let invalidate: HashSet<i64> = gc_candidates
+        .iter()
+        .take(budget)
+        .map(|p| p.edge_id)
+        .collect();
+    report.gc_invalidated = invalidate.len();
+    report.gc_deferred = gc_candidates.len() - invalidate.len();
+
+    // Pass 2: write.
+    for p in &pendings {
+        let collect = invalidate.contains(&p.edge_id);
+        if dry_run || (!p.changed && !collect) {
             continue;
         }
         store.with_conn(|conn| {
             if collect {
                 conn.execute(
                     "UPDATE causal_edges SET confidence = ?1, valid_to = ?2 WHERE id = ?3",
-                    rusqlite::params![new_conf, now, e.edge_id],
+                    rusqlite::params![p.new_conf, now, p.edge_id],
                 )?;
             } else {
                 conn.execute(
                     "UPDATE causal_edges SET confidence = ?1 WHERE id = ?2",
-                    rusqlite::params![new_conf, e.edge_id],
+                    rusqlite::params![p.new_conf, p.edge_id],
                 )?;
             }
             Ok(())
@@ -277,6 +317,11 @@ pub fn downscale_facts(
         Ok(v?)
     })?;
 
+    // Same bounded-forgetting budget as the edge pass: at most
+    // max(gc_floor, max_gc_fraction × population) invalidations per cycle,
+    // weakest first; spared facts keep their decayed confidence.
+    let population = facts.len();
+    let mut gc_candidates: Vec<(i64, f64)> = Vec::new();
     for (id, confidence, updated_at) in facts {
         let days = (now - updated_at) as f64 / SECS_PER_DAY;
         if days < 1.0 {
@@ -287,23 +332,49 @@ pub fn downscale_facts(
         report.facts_decayed += 1;
         let collect = new_conf < config.gc_threshold;
         if collect {
-            report.facts_gc += 1;
+            gc_candidates.push((id, new_conf));
+            continue;
         }
         if dry_run {
             continue;
         }
         store.with_conn(|conn| {
-            if collect {
-                conn.execute(
-                    "UPDATE agent_facts SET confidence = ?1, valid_to = ?2 WHERE id = ?3",
-                    rusqlite::params![new_conf, now, id],
-                )?;
-            } else {
-                conn.execute(
-                    "UPDATE agent_facts SET confidence = ?1 WHERE id = ?2",
-                    rusqlite::params![new_conf, id],
-                )?;
-            }
+            conn.execute(
+                "UPDATE agent_facts SET confidence = ?1 WHERE id = ?2",
+                rusqlite::params![new_conf, id],
+            )?;
+            Ok(())
+        })?;
+    }
+    gc_candidates.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+    let budget = config
+        .gc_floor
+        .max((population as f64 * config.max_gc_fraction) as usize);
+    report.facts_gc = gc_candidates.len().min(budget);
+    report.gc_deferred += gc_candidates.len().saturating_sub(budget);
+    if dry_run {
+        return Ok(());
+    }
+    for (id, new_conf) in gc_candidates.iter().take(budget) {
+        store.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_facts SET confidence = ?1, valid_to = ?2 WHERE id = ?3",
+                rusqlite::params![new_conf, now, id],
+            )?;
+            Ok(())
+        })?;
+    }
+    // Deferred candidates still get their decayed confidence written.
+    for (id, new_conf) in gc_candidates.iter().skip(budget) {
+        store.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_facts SET confidence = ?1 WHERE id = ?2",
+                rusqlite::params![new_conf, id],
+            )?;
             Ok(())
         })?;
     }
