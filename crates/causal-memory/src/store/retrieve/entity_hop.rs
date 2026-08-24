@@ -3,14 +3,12 @@
 use anyhow::{anyhow, Result};
 use rusqlite::params;
 
-use crate::store::{CausalStore, ENTRY_COLUMNS, entry_from_row};
 use super::by_conf;
+use crate::store::{entry_from_row, CausalStore, ENTRY_COLUMNS};
 
 /// Lock the entity cache ignoring poisoning (cache writes can't panic, so a
 /// poisoned guard only means some other thread panicked elsewhere).
-fn poison_safe_lock<T>(
-    m: &std::sync::Mutex<T>,
-) -> std::sync::MutexGuard<'_, T> {
+fn poison_safe_lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -63,14 +61,17 @@ impl CausalStore {
         // Which ids need their texts (cache misses only)?
         let uncached: Vec<i64> = {
             let cache = poison_safe_lock(&self.entity_cache);
-            all_ids.iter().copied().filter(|id| !cache.contains_key(id)).collect()
+            all_ids
+                .iter()
+                .copied()
+                .filter(|id| !cache.contains_key(id))
+                .collect()
         };
         let mut texts: std::collections::HashMap<i64, (String, String)> =
             std::collections::HashMap::new();
         if !uncached.is_empty() {
             for chunk_ids in uncached.chunks(500) {
-                let placeholders =
-                    chunk_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let placeholders = chunk_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let sql = format!(
                     "SELECT ce.id, cf.text, ct.text
                      FROM causal_edges ce
@@ -174,7 +175,9 @@ impl CausalStore {
         };
 
         // Fetch edges matching a built SQL with bound values.
-        let run = |sql: String, binds: Vec<Box<dyn rusqlite::ToSql>>| -> Result<Vec<crate::store::CausalEntry>> {
+        let run = |sql: String,
+                   binds: Vec<Box<dyn rusqlite::ToSql>>|
+         -> Result<Vec<crate::store::CausalEntry>> {
             let mut stmt = conn.prepare(&sql)?;
             let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
             let rows = stmt.query_map(rusqlite::params_from_iter(bind_refs), entry_from_row)?;
@@ -205,8 +208,16 @@ impl CausalStore {
             return Ok(Vec::new());
         }
 
-        let edge_ph = seed_edge_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let chunk_ph = seed_chunks.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let edge_ph = seed_edge_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let chunk_ph = seed_chunks
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
 
         // 1-hop: valid edges sharing an endpoint chunk with a seed.
         let mut binds: Vec<Box<dyn rusqlite::ToSql>> = seed_edge_ids
@@ -243,7 +254,11 @@ impl CausalStore {
         // shared query tokens (causal leaps are topically loose).
         let mut hop2: Vec<crate::store::CausalEntry> = Vec::new();
         if !hop1_chunks.is_empty() {
-            let h1_chunk_ph = hop1_chunks.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let h1_chunk_ph = hop1_chunks
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
             let id_ph = seed_edge_ids
                 .iter()
                 .map(|_| "?")
@@ -278,7 +293,8 @@ impl CausalStore {
 
         // One ranked list: 1-hop first (decay by rank), each by query overlap
         // then confidence; truncate to the budget.
-        let mut ranked: Vec<crate::store::CausalEntry> = Vec::with_capacity(hop1.len() + hop2.len());
+        let mut ranked: Vec<crate::store::CausalEntry> =
+            Vec::with_capacity(hop1.len() + hop2.len());
         let mut scored: Vec<(usize, crate::store::CausalEntry)> =
             hop1.into_iter().map(|e| (overlap(&e), e)).collect();
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(by_conf(&a.1, &b.1)));

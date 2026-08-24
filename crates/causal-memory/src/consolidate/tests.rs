@@ -1,6 +1,9 @@
-use std::collections::HashMap;
-use crate::consolidate::{consolidate, recent_diversity, resolve_supersessions_with, ConsolidateConfig, ConsolidateReport, SupersessionAction};
+use crate::consolidate::{
+    consolidate, recent_diversity, resolve_supersessions_with, ConsolidateConfig,
+    ConsolidateReport, SupersessionAction,
+};
 use crate::store::CausalStore;
+use std::collections::HashMap;
 const NOW: i64 = 1_700_000_000;
 const DAY: i64 = 86_400;
 
@@ -790,8 +793,7 @@ fn test_replay_feedback_loop_across_cycles() {
     );
     // Control: full 3-day decay, no boost.
     assert!(
-        (edge_conf(&store, control_id) - 0.6 * 0.99_f64.powi(2) * 0.99_f64.powi(3)).abs()
-            < 1e-9
+        (edge_conf(&store, control_id) - 0.6 * 0.99_f64.powi(2) * 0.99_f64.powi(3)).abs() < 1e-9
     );
     assert!(
         edge_conf(&store, protected_id) > edge_conf(&store, control_id),
@@ -874,7 +876,10 @@ fn test_diversity_high_when_varied() {
             .unwrap();
     }
     let d = recent_diversity(&store, 64).unwrap();
-    assert!(d > 0.5, "varied recent text must score high diversity (got {d:.2})");
+    assert!(
+        d > 0.5,
+        "varied recent text must score high diversity (got {d:.2})"
+    );
 }
 
 // ── Stage 1.7: C7 supersession resolution ─────────────────────────────
@@ -911,7 +916,15 @@ fn test_supersession_skips_without_llm() {
     let store = CausalStore::open_in_memory().unwrap();
     insert_falsified_pair(&store);
     let mut report = ConsolidateReport::default();
-    resolve_supersessions_with(&store, &default_config(), false, &mut report, None, SupersessionAction::Retire).unwrap();
+    resolve_supersessions_with(
+        &store,
+        &default_config(),
+        false,
+        &mut report,
+        None,
+        SupersessionAction::Retire,
+    )
+    .unwrap();
     assert_eq!(
         report.superseded_lessons, 0,
         "no LLM configured → stage must be a silent no-op"
@@ -933,7 +946,15 @@ fn test_supersession_judge_failure_keeps_edge() {
     let store = CausalStore::open_in_memory().unwrap();
     insert_falsified_pair(&store);
     let mut report = ConsolidateReport::default();
-    resolve_supersessions_with(&store, &default_config(), false, &mut report, Some(&bad), SupersessionAction::Retire).unwrap();
+    resolve_supersessions_with(
+        &store,
+        &default_config(),
+        false,
+        &mut report,
+        Some(&bad),
+        SupersessionAction::Retire,
+    )
+    .unwrap();
     assert_eq!(
         report.superseded_lessons, 0,
         "judge failure must be conservative (keep the edge)"
@@ -958,12 +979,24 @@ fn test_supersession_live_apply() {
     insert_falsified_pair(&store);
     assert_eq!(store.all_valid_edges().unwrap().len(), 2, "precondition");
     let mut report = ConsolidateReport::default();
-    resolve_supersessions_with(&store, &default_config(), false, &mut report, Some(&llm), SupersessionAction::Retire).unwrap();
+    resolve_supersessions_with(
+        &store,
+        &default_config(),
+        false,
+        &mut report,
+        Some(&llm),
+        SupersessionAction::Retire,
+    )
+    .unwrap();
     let valid = store.all_valid_edges().unwrap();
     assert_eq!(
-        valid.len(), 1,
+        valid.len(),
+        1,
         "live judge must retire the falsified old edge (got {:?})",
-        valid.iter().map(|e| e.outcome_text.as_str()).collect::<Vec<_>>()
+        valid
+            .iter()
+            .map(|e| e.outcome_text.as_str())
+            .collect::<Vec<_>>()
     );
     assert_eq!(report.superseded_lessons, 1);
 }
@@ -998,10 +1031,15 @@ fn test_supersession_annotate_live() {
         valid.len(),
         2,
         "annotate must keep both edges retrievable (got {:?})",
-        valid.iter().map(|e| e.outcome_text.as_str()).collect::<Vec<_>>()
+        valid
+            .iter()
+            .map(|e| e.outcome_text.as_str())
+            .collect::<Vec<_>>()
     );
     let annotated = valid.iter().find(|e| e.outcome_text == "caused an outage");
-    let corrected_by = valid.iter().find(|e| e.outcome_text == "was safe, no incident");
+    let corrected_by = valid
+        .iter()
+        .find(|e| e.outcome_text == "was safe, no incident");
     match (annotated, corrected_by) {
         (Some(old), Some(new)) => {
             assert_eq!(
@@ -1009,7 +1047,10 @@ fn test_supersession_annotate_live() {
                 Some(new.edge_id),
                 "soft mark must point at the correcting edge"
             );
-            assert_eq!(new.superseded_by, None, "the correction itself is not superseded");
+            assert_eq!(
+                new.superseded_by, None,
+                "the correction itself is not superseded"
+            );
         }
         _ => panic!("both edges must survive annotation"),
     }
@@ -1081,10 +1122,16 @@ fn test_fact_half_life_decay_and_gc() {
     assert_eq!(report.facts_gc, 1);
     let (conf, valid) = fact_state(&store, old);
     assert!(!valid, "old fact must retire");
-    assert!(conf < 0.2, "retired confidence must be below the threshold: {conf}");
+    assert!(
+        conf < 0.2,
+        "retired confidence must be below the threshold: {conf}"
+    );
     let (conf, valid) = fact_state(&store, fresh);
     assert!(valid, "fresh fact must stay valid");
-    assert!((conf - 0.9).abs() < 1e-9, "fresh fact must not decay: {conf}");
+    assert!(
+        (conf - 0.9).abs() < 1e-9,
+        "fresh fact must not decay: {conf}"
+    );
 }
 
 #[test]
@@ -1113,10 +1160,16 @@ fn test_fact_replace_records_supersession_lineage() {
         })
         .unwrap();
     assert!(!valid, "old value must retire");
-    assert_eq!(superseded_by, Some(new), "lineage must point at the new fact");
+    assert_eq!(
+        superseded_by,
+        Some(new),
+        "lineage must point at the new fact"
+    );
 
     // Revive (re-record the old value) clears the lineage.
-    store.record_fact("pm", "npm", "user", "agent", 0.8).unwrap();
+    store
+        .record_fact("pm", "npm", "user", "agent", 0.8)
+        .unwrap();
     let (valid, superseded_by): (bool, Option<i64>) = store
         .with_conn(|conn| {
             Ok(conn.query_row(

@@ -683,7 +683,10 @@ fn test_max_pairs_global_cap() {
 #[test]
 fn test_entity_tokens_names_and_noise() {
     // Mid-sentence names are entities; possessives normalized.
-    assert_eq!(entity_tokens("I talked to Melanie's kids today"), vec!["melanie"]);
+    assert_eq!(
+        entity_tokens("I talked to Melanie's kids today"),
+        vec!["melanie"]
+    );
     // Sentence-initial caps are capitalization noise, not entities.
     assert!(entity_tokens("Melanie went hiking.").is_empty());
     // Mixed sentence: mid-sentence names survive, sentence-initial ones drop.
@@ -773,8 +776,18 @@ fn test_fact_does_not_dilute_stratification() {
     // fact's scope leaked into the pool, strata would become {tag, scope}
     // and wrongly clear `confounded`.
     let store = store_with(&[
-        ("deployed the payments service without canary checks", "deploy failed", Some("ops"), 100),
-        ("deployed the inventory service without canary checks", "deploy failed", Some("ops"), 200),
+        (
+            "deployed the payments service without canary checks",
+            "deploy failed",
+            Some("ops"),
+            100,
+        ),
+        (
+            "deployed the inventory service without canary checks",
+            "deploy failed",
+            Some("ops"),
+            200,
+        ),
     ]);
     store
         .record_fact(

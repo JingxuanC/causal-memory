@@ -56,7 +56,6 @@ impl Relation {
     }
 }
 
-
 /// Result of a spreading activation query.
 #[derive(Debug, Clone)]
 pub struct ActivationResult {

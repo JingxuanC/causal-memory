@@ -508,7 +508,10 @@ fn normalize_item(item: RawItem, fallback_date: &str) -> Option<MemoryItem> {
         .and_then(|v| v.as_str().map(str::to_string))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && s != "null");
-    let causal_relation = item.causal_relation.as_deref().and_then(CausalRelation::parse);
+    let causal_relation = item
+        .causal_relation
+        .as_deref()
+        .and_then(CausalRelation::parse);
     // If the LLM provided a causal_relation, force kind=Causal even if it
     // used a different field name (type/description) or didn't set kind.
     let kind = if causal_relation.is_some() {
@@ -675,8 +678,15 @@ pub async fn distill_recurrence(
             if i == 0 { session_embedding } else { None },
         )?;
     }
-    distill_recurrence_inner(store, distiller, session_id, date, session_embedding, min_similarity)
-        .await
+    distill_recurrence_inner(
+        store,
+        distiller,
+        session_id,
+        date,
+        session_embedding,
+        min_similarity,
+    )
+    .await
 }
 
 /// Core of `distill_recurrence`, assuming the turns are already in
@@ -885,72 +895,69 @@ mod tests {
     }
 }
 
-    // ─── v8: recurrence-triggered distill (P1) ────────────────────────────
+// ─── v8: recurrence-triggered distill (P1) ────────────────────────────
 
-    #[test]
-    fn test_should_distill_recurrence() {
-        let a = vec![1.0f32, 0.0, 0.0];
-        let prior = vec![
-            (1, vec![0.5f32, 0.5, 0.0]), // sim 0.707 — below a 0.9 gate
-            (2, vec![1.0f32, 0.0, 0.0]), // sim 1.0 — exact topic repeat
-        ];
-        // Above threshold → picks the BEST match.
-        assert_eq!(should_distill(&a, &prior, 0.9), Some((2, 1.0)));
-        // Lower threshold still picks the best.
-        assert_eq!(should_distill(&a, &prior, 0.6), Some((2, 1.0)));
-        // Strict gate rejects the 0.707 match.
-        assert_eq!(should_distill(&a, &prior, 0.99), Some((2, 1.0)));
-        assert_eq!(should_distill(&a, &prior, 1.01), None);
-        // Unrelated topic (orthogonal to every candidate) → no recurrence.
-        let b = vec![0.0f32, 0.0, 1.0];
-        assert_eq!(should_distill(&b, &prior, 0.5), None);
-        // Empty candidate set → never fires.
-        assert_eq!(should_distill(&a, &[], 0.1), None);
-    }
+#[test]
+fn test_should_distill_recurrence() {
+    let a = vec![1.0f32, 0.0, 0.0];
+    let prior = vec![
+        (1, vec![0.5f32, 0.5, 0.0]), // sim 0.707 — below a 0.9 gate
+        (2, vec![1.0f32, 0.0, 0.0]), // sim 1.0 — exact topic repeat
+    ];
+    // Above threshold → picks the BEST match.
+    assert_eq!(should_distill(&a, &prior, 0.9), Some((2, 1.0)));
+    // Lower threshold still picks the best.
+    assert_eq!(should_distill(&a, &prior, 0.6), Some((2, 1.0)));
+    // Strict gate rejects the 0.707 match.
+    assert_eq!(should_distill(&a, &prior, 0.99), Some((2, 1.0)));
+    assert_eq!(should_distill(&a, &prior, 1.01), None);
+    // Unrelated topic (orthogonal to every candidate) → no recurrence.
+    let b = vec![0.0f32, 0.0, 1.0];
+    assert_eq!(should_distill(&b, &prior, 0.5), None);
+    // Empty candidate set → never fires.
+    assert_eq!(should_distill(&a, &[], 0.1), None);
+}
 
-    #[test]
-    fn test_record_items_splits_facts_and_edges() {
-        use crate::store::CausalStore;
-        let store = CausalStore::open_in_memory().unwrap();
-        let items = vec![
-            MemoryItem {
-                kind: ItemKind::Fact,
-                text: "user uses Arch Linux".to_string(),
-                date: Some("2026-08-01".to_string()),
-                supersedes: None,
-                causal_relation: None,
-                decision: None,
-            },
-            MemoryItem {
-                kind: ItemKind::Lesson,
-                text: "always pin dependency versions".to_string(),
-                date: Some("2026-08-01".to_string()),
-                supersedes: None,
-                causal_relation: None,
-                decision: None,
-            },
-            MemoryItem {
-                kind: ItemKind::Causal,
-                text: "production crash".to_string(),
-                date: Some("2026-08-01".to_string()),
-                supersedes: None,
-                causal_relation: Some(CausalRelation::Caused),
-                decision: Some("deployed without tests".to_string()),
-            },
-        ];
-        let n = record_items(&store, &items, None).unwrap();
-        assert_eq!(n, 3);
-        // Fact → agent_facts; lesson (self-edge) + causal (proper edge) → causal_edges.
-        let facts = store
-            .search_facts_bm25("Arch", None, 10)
-            .unwrap()
-            .len();
-        assert_eq!(facts, 1);
-        assert_eq!(store.count_edges().unwrap(), 2);
-        // The causal item formed a real decision → outcome edge.
-        let causal = store
-            .search_causal_bm25(None, "deployed without tests", 10)
-            .unwrap();
-        assert_eq!(causal.len(), 1);
-        assert_eq!(causal[0].relation, "caused");
-    }
+#[test]
+fn test_record_items_splits_facts_and_edges() {
+    use crate::store::CausalStore;
+    let store = CausalStore::open_in_memory().unwrap();
+    let items = vec![
+        MemoryItem {
+            kind: ItemKind::Fact,
+            text: "user uses Arch Linux".to_string(),
+            date: Some("2026-08-01".to_string()),
+            supersedes: None,
+            causal_relation: None,
+            decision: None,
+        },
+        MemoryItem {
+            kind: ItemKind::Lesson,
+            text: "always pin dependency versions".to_string(),
+            date: Some("2026-08-01".to_string()),
+            supersedes: None,
+            causal_relation: None,
+            decision: None,
+        },
+        MemoryItem {
+            kind: ItemKind::Causal,
+            text: "production crash".to_string(),
+            date: Some("2026-08-01".to_string()),
+            supersedes: None,
+            causal_relation: Some(CausalRelation::Caused),
+            decision: Some("deployed without tests".to_string()),
+        },
+    ];
+    let n = record_items(&store, &items, None).unwrap();
+    assert_eq!(n, 3);
+    // Fact → agent_facts; lesson (self-edge) + causal (proper edge) → causal_edges.
+    let facts = store.search_facts_bm25("Arch", None, 10).unwrap().len();
+    assert_eq!(facts, 1);
+    assert_eq!(store.count_edges().unwrap(), 2);
+    // The causal item formed a real decision → outcome edge.
+    let causal = store
+        .search_causal_bm25(None, "deployed without tests", 10)
+        .unwrap();
+    assert_eq!(causal.len(), 1);
+    assert_eq!(causal[0].relation, "caused");
+}

@@ -1,8 +1,8 @@
 //! Export / import subcommands.
 
-use rusqlite::OptionalExtension;
-use causal_memory::store::CausalStore;
 use crate::get_db_path;
+use causal_memory::store::CausalStore;
+use rusqlite::OptionalExtension;
 use std::path::PathBuf;
 
 fn fnv1a(text: &str) -> String {

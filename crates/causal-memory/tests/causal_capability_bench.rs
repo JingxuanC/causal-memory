@@ -58,17 +58,47 @@ fn build_devops_graph() -> CausalGraph {
     ];
 
     let edges = vec![
-        edge("deploy_without_tests", "production_crash", Relation::Caused, 0.9),
-        edge("deploy_without_tests", "safe_release", Relation::Prevented, 0.85),
+        edge(
+            "deploy_without_tests",
+            "production_crash",
+            Relation::Caused,
+            0.9,
+        ),
+        edge(
+            "deploy_without_tests",
+            "safe_release",
+            Relation::Prevented,
+            0.85,
+        ),
         edge("production_crash", "user_complaints", Relation::Caused, 0.8),
-        edge("production_crash", "rollback_needed", Relation::Enabled, 0.7),
+        edge(
+            "production_crash",
+            "rollback_needed",
+            Relation::Enabled,
+            0.7,
+        ),
         edge("rollback_needed", "downtime", Relation::Caused, 0.75),
-        edge("add_input_validation", "sql_injection", Relation::Prevented, 0.9),
-        edge("add_input_validation", "security_audit_passed", Relation::Enabled, 0.6),
+        edge(
+            "add_input_validation",
+            "sql_injection",
+            Relation::Prevented,
+            0.9,
+        ),
+        edge(
+            "add_input_validation",
+            "security_audit_passed",
+            Relation::Enabled,
+            0.6,
+        ),
         edge("skip_code_review", "hidden_bugs", Relation::Caused, 0.85),
         edge("hidden_bugs", "production_crash", Relation::Caused, 0.7),
         edge("enable_caching", "faster_response", Relation::Caused, 0.8),
-        edge("enable_caching", "timeout_errors", Relation::Prevented, 0.85),
+        edge(
+            "enable_caching",
+            "timeout_errors",
+            Relation::Prevented,
+            0.85,
+        ),
     ];
 
     CausalGraph::build(&nodes, &edges)
@@ -116,9 +146,15 @@ fn cap1_prevented_edge_produces_warning() {
     let safe = results.iter().find(|r| r.text.contains("safe release"));
 
     assert!(crash.is_some(), "caused edge should activate crash");
-    assert!(crash.unwrap().activation > 0.0, "caused = positive activation");
+    assert!(
+        crash.unwrap().activation > 0.0,
+        "caused = positive activation"
+    );
 
-    assert!(safe.is_some(), "prevented edge should activate safe_release");
+    assert!(
+        safe.is_some(),
+        "prevented edge should activate safe_release"
+    );
     assert!(
         safe.unwrap().activation < 0.0,
         "prevented = NEGATIVE activation (warning signal)"
@@ -149,10 +185,15 @@ fn cap2_trace_cause_backward() {
     // deploy_without_tests AND skip_code_review (via hidden_bugs)
     let results = graph.spreading_activation_opts(&q("production_crash"), None, true, false);
 
-    let deploy = results.iter().find(|r| r.text.contains("deploy without tests"));
+    let deploy = results
+        .iter()
+        .find(|r| r.text.contains("deploy without tests"));
     let skip = results.iter().find(|r| r.text.contains("skip code review"));
 
-    assert!(deploy.is_some(), "backward traversal should find direct cause");
+    assert!(
+        deploy.is_some(),
+        "backward traversal should find direct cause"
+    );
     assert!(
         skip.is_some() || results.iter().any(|r| r.text.contains("hidden bugs")),
         "backward traversal should find indirect cause path"
@@ -275,13 +316,20 @@ fn cap5_mixed_signal_dominant_activation() {
     // Query "deploy feature A": outcome gets positive activation
     // Query by node text directly (substring match)
     let results = graph.spreading_activation_opts("deploy feature", None, false, false);
-    let outcome = results.iter().find(|r| r.text.contains("feature A is live"));
+    let outcome = results
+        .iter()
+        .find(|r| r.text.contains("feature A is live"));
     assert!(outcome.is_some(), "outcome should be activated from deploy");
-    assert!(outcome.unwrap().activation > 0.0, "caused signal should dominate");
+    assert!(
+        outcome.unwrap().activation > 0.0,
+        "caused signal should dominate"
+    );
 
     // Query "rollback feature A": outcome gets negative activation
     let results = graph.spreading_activation_opts("rollback feature", None, false, false);
-    let outcome = results.iter().find(|r| r.text.contains("feature A is live"));
+    let outcome = results
+        .iter()
+        .find(|r| r.text.contains("feature A is live"));
     if let Some(o) = outcome {
         assert!(
             o.activation < 0.0,
@@ -314,9 +362,7 @@ fn cap6_store_prevented_edge_roundtrip() {
         .unwrap();
     assert!(!results.is_empty(), "should find the prevented edge");
 
-    let prevented = results
-        .iter()
-        .find(|e| e.relation == "prevented");
+    let prevented = results.iter().find(|e| e.relation == "prevented");
     assert!(prevented.is_some(), "edge should have relation=prevented");
     assert!(
         prevented.unwrap().outcome_text.contains("SQL injection"),
@@ -360,7 +406,10 @@ fn cap6_store_trace_cause_chain() {
     let has_root = results.iter().any(|e| {
         e.decision_text.contains("production crash") || e.decision_text.contains("deployed")
     });
-    assert!(has_root, "should find the causal decision in search results");
+    assert!(
+        has_root,
+        "should find the causal decision in search results"
+    );
 }
 
 // ─── Capability 7: Graph builds from store with mixed edge types ──────────
@@ -428,7 +477,9 @@ fn causal_capability_summary() {
         ("cap4_inhibitory_filter", || {
             let mut g = build_devops_graph();
             let r = g.spreading_activation_opts(&q("enable_caching"), None, false, false);
-            assert!(r.iter().any(|r| r.activation > 0.0 && r.text.contains("faster")));
+            assert!(r
+                .iter()
+                .any(|r| r.activation > 0.0 && r.text.contains("faster")));
         }),
         ("cap5_mixed_signal", || {
             let mut g = build_devops_graph();

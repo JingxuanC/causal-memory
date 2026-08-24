@@ -4,12 +4,12 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 
-use crate::patterns::{
-    boilerplate_tokens, content_tokens, jaccard, tokenize,
-};
+use crate::patterns::{boilerplate_tokens, content_tokens, jaccard, tokenize};
 use crate::store::{outcome_polarity, outcomes_contradict, CausalStore};
 
-use super::types::{ConsolidateConfig, ConsolidateReport, MetaNode, ReactivationEntry, SECS_PER_DAY};
+use super::types::{
+    ConsolidateConfig, ConsolidateReport, MetaNode, ReactivationEntry, SECS_PER_DAY,
+};
 
 /// Stage 1: replay-priority score for every valid edge.
 ///
@@ -307,11 +307,14 @@ pub fn downscale_facts(
     report: &mut ConsolidateReport,
 ) -> Result<()> {
     let facts: Vec<(i64, f64, i64)> = store.with_conn(|conn| {
-        let mut stmt = conn.prepare(
-            "SELECT id, confidence, updated_at FROM agent_facts WHERE valid_to IS NULL",
-        )?;
+        let mut stmt = conn
+            .prepare("SELECT id, confidence, updated_at FROM agent_facts WHERE valid_to IS NULL")?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, f64>(1)?, r.get::<_, i64>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
         })?;
         let v: std::result::Result<Vec<_>, rusqlite::Error> = rows.collect();
         Ok(v?)

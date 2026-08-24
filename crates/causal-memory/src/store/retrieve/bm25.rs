@@ -2,8 +2,7 @@
 
 use anyhow::{anyhow, Result};
 
-
-use crate::store::{CausalStore, ENTRY_COLUMNS, entry_from_row};
+use crate::store::{entry_from_row, CausalStore, ENTRY_COLUMNS};
 
 impl CausalStore {
     pub fn search_causal(
@@ -70,10 +69,10 @@ impl CausalStore {
             "SELECT DISTINCT chunk_id FROM bm25_index
              WHERE chunk_id NOT LIKE 'fact:%' AND token IN ({chunk_ph})"
         ))?;
-        let chunk_rows = chunk_stmt.query_map(
-            rusqlite::params_from_iter(query_tokens.iter()),
-            |r| r.get::<_, String>(0),
-        )?;
+        let chunk_rows = chunk_stmt
+            .query_map(rusqlite::params_from_iter(query_tokens.iter()), |r| {
+                r.get::<_, String>(0)
+            })?;
         let chunk_ids: Vec<String> = chunk_rows
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| anyhow!("index query failed: {e}"))?;

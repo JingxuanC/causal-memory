@@ -2,8 +2,7 @@
 
 use anyhow::{anyhow, Result};
 
-
-use crate::store::{CausalStore, ENTRY_COLUMNS, entry_from_row};
+use crate::store::{entry_from_row, CausalStore, ENTRY_COLUMNS};
 
 impl CausalStore {
     pub fn search_causal_semantic(
@@ -99,7 +98,8 @@ impl CausalStore {
                 continue;
             };
             let sim = crate::embed::cosine_similarity(query_vec, &vec);
-            let ents = self.entity_tokens_for(entry.edge_id, &entry.decision_text, &entry.outcome_text);
+            let ents =
+                self.entity_tokens_for(entry.edge_id, &entry.decision_text, &entry.outcome_text);
             let overlap = q_entities.iter().filter(|q| ents.contains(q)).count();
             scored.push((entry, sim * (1.0 + entity_boost * overlap as f64)));
         }
@@ -130,5 +130,4 @@ impl CausalStore {
         scored.retain(|(_, sim)| *sim >= min_similarity);
         Ok(scored)
     }
-
 }

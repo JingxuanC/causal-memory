@@ -2,7 +2,9 @@
 //! (`causal_memory::memory::Memory`). All orchestration logic lives in the
 //! library; this file only declares parameter schemas and delegates.
 
-use rmcp::{handler::server::wrapper::Parameters, schemars, tool, tool_handler, tool_router, ServerHandler};
+use rmcp::{
+    handler::server::wrapper::Parameters, schemars, tool, tool_handler, tool_router, ServerHandler,
+};
 use serde::Deserialize;
 
 use super::CausalMemoryServer;
@@ -155,7 +157,9 @@ pub struct ResolveUpdatesParams {
     #[schemars(description = "Max candidates to judge this call (default 20)")]
     pub limit: Option<usize>,
     /// false = preview (count only, no writes); true = apply the supersessions
-    #[schemars(description = "Preview by default; set true to actually write the supersession marks")]
+    #[schemars(
+        description = "Preview by default; set true to actually write the supersession marks"
+    )]
     pub apply: Option<bool>,
 }
 
@@ -253,7 +257,8 @@ impl CausalMemoryServer {
         description = "Extract and store memories from conversation text. The system automatically identifies facts, lessons, and causal relationships (caused/enabled/prevented) using LLM analysis. Call this after any meaningful conversation exchange — just paste the conversation text, no need to manually identify decisions or outcomes."
     )]
     fn remember(&self, Parameters(params): Parameters<RememberParams>) -> String {
-        self.memory.remember(&params.messages, params.date.as_deref())
+        self.memory
+            .remember(&params.messages, params.date.as_deref())
     }
 
     #[tool(
@@ -346,10 +351,7 @@ impl CausalMemoryServer {
         name = "resolve_updates",
         description = "Knowledge-update pass: scan past decisions that were re-recorded with a DIFFERENT outcome, let an LLM judge decide whether the new evidence falsifies the old lesson, and supersede accordingly (the superseded lesson is annotated with its correction and stays auditable). Use after recording outcomes that contradict earlier lessons. Preview by default — pass apply=true to write."
     )]
-    fn resolve_updates(
-        &self,
-        Parameters(params): Parameters<ResolveUpdatesParams>,
-    ) -> String {
+    fn resolve_updates(&self, Parameters(params): Parameters<ResolveUpdatesParams>) -> String {
         self.memory
             .resolve_updates(params.limit, params.apply.unwrap_or(false))
     }

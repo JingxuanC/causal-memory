@@ -43,13 +43,25 @@ pub struct RefutationResult {
 impl RefutationResult {
     /// Grade from test results: A (3/3 robust) → F (2+ refuted).
     fn grade(tests: &[SingleTest]) -> char {
-        let robust = tests.iter().filter(|t| t.result == TestResult::Robust).count();
-        let refuted = tests.iter().filter(|t| t.result == TestResult::Refuted).count();
-        if robust >= 3 { 'A' }
-        else if robust >= 2 && refuted == 0 { 'B' }
-        else if refuted == 0 { 'C' }
-        else if refuted >= 2 { 'F' }
-        else { 'D' }
+        let robust = tests
+            .iter()
+            .filter(|t| t.result == TestResult::Robust)
+            .count();
+        let refuted = tests
+            .iter()
+            .filter(|t| t.result == TestResult::Refuted)
+            .count();
+        if robust >= 3 {
+            'A'
+        } else if robust >= 2 && refuted == 0 {
+            'B'
+        } else if refuted == 0 {
+            'C'
+        } else if refuted >= 2 {
+            'F'
+        } else {
+            'D'
+        }
     }
 }
 
@@ -114,8 +126,16 @@ impl<'a> EdgeRefuter<'a> {
         let neighbors_to = self.graph.all_neighbors(to);
 
         // Exclude each other from the sets
-        let nf: HashSet<u32> = neighbors_from.iter().copied().filter(|&n| n != to).collect();
-        let nt: HashSet<u32> = neighbors_to.iter().copied().filter(|&n| n != from).collect();
+        let nf: HashSet<u32> = neighbors_from
+            .iter()
+            .copied()
+            .filter(|&n| n != to)
+            .collect();
+        let nt: HashSet<u32> = neighbors_to
+            .iter()
+            .copied()
+            .filter(|&n| n != from)
+            .collect();
 
         let intersection = nf.intersection(&nt).count();
         let union = nf.len() + nt.len() - intersection;
@@ -126,14 +146,28 @@ impl<'a> EdgeRefuter<'a> {
         };
 
         let (result, detail) = if jaccard >= 0.15 {
-            (TestResult::Robust, format!("High neighbor overlap (J={:.3}): shared context", jaccard))
+            (
+                TestResult::Robust,
+                format!("High neighbor overlap (J={:.3}): shared context", jaccard),
+            )
         } else if jaccard < 0.03 {
-            (TestResult::Refuted, format!("No neighbor overlap (J={:.3}): likely spurious", jaccard))
+            (
+                TestResult::Refuted,
+                format!("No neighbor overlap (J={:.3}): likely spurious", jaccard),
+            )
         } else {
-            (TestResult::Inconclusive, format!("Moderate overlap (J={:.3})", jaccard))
+            (
+                TestResult::Inconclusive,
+                format!("Moderate overlap (J={:.3})", jaccard),
+            )
         };
 
-        SingleTest { name: "confounder", result, score: jaccard, detail }
+        SingleTest {
+            name: "confounder",
+            result,
+            score: jaccard,
+            detail,
+        }
     }
 
     // ─── Refuter 2: Corroboration (edge-disjoint paths) ────────────────
@@ -146,14 +180,28 @@ impl<'a> EdgeRefuter<'a> {
         let in_degree_to = self.graph.in_degree(to);
 
         let (result, detail) = if alt_paths >= 1 {
-            (TestResult::Robust, format!("{} alternative paths found", alt_paths))
+            (
+                TestResult::Robust,
+                format!("{} alternative paths found", alt_paths),
+            )
         } else if in_degree_to >= 2 {
-            (TestResult::Inconclusive, format!("No alt path, but in-degree={}", in_degree_to))
+            (
+                TestResult::Inconclusive,
+                format!("No alt path, but in-degree={}", in_degree_to),
+            )
         } else {
-            (TestResult::Refuted, "No alternative path and low in-degree — isolated edge".to_string())
+            (
+                TestResult::Refuted,
+                "No alternative path and low in-degree — isolated edge".to_string(),
+            )
         };
 
-        SingleTest { name: "corroboration", result, score: alt_paths as f32, detail }
+        SingleTest {
+            name: "corroboration",
+            result,
+            score: alt_paths as f32,
+            detail,
+        }
     }
 
     // ─── Refuter 3: Placebo (activation specificity) ───────────────────
@@ -206,23 +254,52 @@ impl<'a> EdgeRefuter<'a> {
         };
 
         let (result, detail) = if placebo_count < 3 {
-            (TestResult::Inconclusive, format!("Only {} placebo samples", placebo_count))
+            (
+                TestResult::Inconclusive,
+                format!("Only {} placebo samples", placebo_count),
+            )
         } else if specificity >= 2.0 {
-            (TestResult::Robust, format!("Specificity {:.1}x: X reaches Y but random nodes rarely do", specificity))
+            (
+                TestResult::Robust,
+                format!(
+                    "Specificity {:.1}x: X reaches Y but random nodes rarely do",
+                    specificity
+                ),
+            )
         } else if specificity < 1.0 {
-            (TestResult::Refuted, format!("Specificity {:.1}x: random nodes reach Y just as easily", specificity))
+            (
+                TestResult::Refuted,
+                format!(
+                    "Specificity {:.1}x: random nodes reach Y just as easily",
+                    specificity
+                ),
+            )
         } else {
-            (TestResult::Inconclusive, format!("Specificity {:.1}x: moderate", specificity))
+            (
+                TestResult::Inconclusive,
+                format!("Specificity {:.1}x: moderate", specificity),
+            )
         };
 
-        SingleTest { name: "placebo", result, score: specificity, detail }
+        SingleTest {
+            name: "placebo",
+            result,
+            score: specificity,
+            detail,
+        }
     }
 
     // ─── Graph helpers ─────────────────────────────────────────────────
 
     /// Count simple paths from `from` to `to` (excluding one edge), up to max_hops.
     /// Uses bounded DFS.
-    fn count_simple_paths(&self, from: u32, to: u32, exclude_edge: usize, max_hops: usize) -> usize {
+    fn count_simple_paths(
+        &self,
+        from: u32,
+        to: u32,
+        exclude_edge: usize,
+        max_hops: usize,
+    ) -> usize {
         let mut count = 0;
         let mut visited = HashSet::new();
         visited.insert(from);
@@ -258,7 +335,14 @@ impl<'a> EdgeRefuter<'a> {
                 continue;
             }
             visited.insert(neighbor);
-            self.dfs_count(neighbor, target, exclude_edge, hops_left - 1, visited, count);
+            self.dfs_count(
+                neighbor,
+                target,
+                exclude_edge,
+                hops_left - 1,
+                visited,
+                count,
+            );
             visited.remove(&neighbor);
         }
     }

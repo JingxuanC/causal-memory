@@ -160,8 +160,8 @@ impl LocalEmbedder {
         // 150s stall). Cache root resolves exactly like fastembed's
         // `get_cache_dir()` (FASTEMBED_CACHE_DIR, default `.fastembed_cache`).
         // Pre-creating the cache dir is the opt-in for download-on-first-use.
-        let cache_root = std::env::var("FASTEMBED_CACHE_DIR")
-            .unwrap_or_else(|_| ".fastembed_cache".to_string());
+        let cache_root =
+            std::env::var("FASTEMBED_CACHE_DIR").unwrap_or_else(|_| ".fastembed_cache".to_string());
         if !std::path::Path::new(&cache_root).is_dir() {
             anyhow::bail!(
                 "local embedding model not cached (missing {cache_root}/); \
@@ -169,9 +169,7 @@ impl LocalEmbedder {
                  create the directory to allow download-on-first-use"
             );
         }
-        let model = fastembed::TextEmbedding::try_new(
-            fastembed::TextInitOptions::new(model_enum),
-        )?;
+        let model = fastembed::TextEmbedding::try_new(fastembed::TextInitOptions::new(model_enum))?;
         Ok(Self { model, model_name })
     }
 
@@ -329,7 +327,10 @@ fn embed_cache() -> &'static std::sync::Mutex<lru::LruCache<String, Vec<f32>>> {
 /// Minimal interface so the cache works over every embedder variant
 /// (HTTP Embedder, UnifiedEmbedder, local ONNX).
 pub trait CachedEmbed {
-    fn embed_async(&mut self, text: &str) -> impl std::future::Future<Output = Result<Vec<f32>>> + Send;
+    fn embed_async(
+        &mut self,
+        text: &str,
+    ) -> impl std::future::Future<Output = Result<Vec<f32>>> + Send;
 }
 
 impl CachedEmbed for UnifiedEmbedder {
@@ -490,7 +491,11 @@ mod tests {
         let mut lru = lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap());
         assert!(lru.get("q").is_none(), "miss on empty");
         lru.put("q".to_string(), vec![1.0, 2.0]);
-        assert_eq!(lru.get("q").cloned(), Some(vec![1.0, 2.0]), "hit after insert");
+        assert_eq!(
+            lru.get("q").cloned(),
+            Some(vec![1.0, 2.0]),
+            "hit after insert"
+        );
     }
 
     #[test]

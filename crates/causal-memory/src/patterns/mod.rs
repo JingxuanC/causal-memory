@@ -41,9 +41,7 @@ use crate::store::CausalStore;
 mod classify;
 mod tokenizer;
 
-pub use tokenizer::{
-    boilerplate_tokens, content_tokens, entity_tokens, jaccard, tokenize,
-};
+pub use tokenizer::{boilerplate_tokens, content_tokens, entity_tokens, jaccard, tokenize};
 
 use classify::{classify_pair, pair_signature, PatternHit, StrataAcc, StrataVerdict};
 use tokenizer::normalize;
@@ -163,9 +161,8 @@ impl<'a> PatternMiner<'a> {
             }
         }
         let facts: Vec<(i64, String, String, String)> = self.store.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT id, key, value, scope FROM agent_facts WHERE valid_to IS NULL",
-            )?;
+            let mut stmt = conn
+                .prepare("SELECT id, key, value, scope FROM agent_facts WHERE valid_to IS NULL")?;
             let rows = stmt.query_map([], |r| {
                 Ok((
                     r.get::<_, i64>(0)?,
@@ -275,7 +272,11 @@ impl<'a> PatternMiner<'a> {
                     _ => {
                         // Phase D: fact-involving pair — similar_to only
                         // (facts have no outcome to contradict/refine/repeat).
-                        let (fi, oi) = if items[i].edge.is_none() { (i, j) } else { (j, i) };
+                        let (fi, oi) = if items[i].edge.is_none() {
+                            (i, j)
+                        } else {
+                            (j, i)
+                        };
                         Some(PatternHit {
                             relation: "similar_to",
                             from_id: items[fi].id.as_str(),

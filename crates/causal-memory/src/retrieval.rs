@@ -39,13 +39,90 @@ pub struct QueryPlan {
 }
 
 const STOPWORDS: &[&str] = &[
-    "how", "many", "what", "which", "who", "whom", "whose", "where", "when", "why", "do", "did",
-    "does", "is", "are", "was", "were", "have", "has", "had", "i", "you", "we", "they", "he",
-    "she", "it", "the", "a", "an", "of", "in", "on", "at", "to", "for", "with", "from", "by",
-    "and", "or", "but", "not", "this", "that", "these", "those", "my", "your", "me", "need",
-    "pick", "up", "return", "list", "all", "items", "kind", "types", "led", "leading", "worked",
-    "bought", "am", "currently", "much", "more", "most", "total", "spent", "money", "did", "get",
-    "got", "going", "been", "being", "some", "any", "would", "could", "should", "will", "can",
+    "how",
+    "many",
+    "what",
+    "which",
+    "who",
+    "whom",
+    "whose",
+    "where",
+    "when",
+    "why",
+    "do",
+    "did",
+    "does",
+    "is",
+    "are",
+    "was",
+    "were",
+    "have",
+    "has",
+    "had",
+    "i",
+    "you",
+    "we",
+    "they",
+    "he",
+    "she",
+    "it",
+    "the",
+    "a",
+    "an",
+    "of",
+    "in",
+    "on",
+    "at",
+    "to",
+    "for",
+    "with",
+    "from",
+    "by",
+    "and",
+    "or",
+    "but",
+    "not",
+    "this",
+    "that",
+    "these",
+    "those",
+    "my",
+    "your",
+    "me",
+    "need",
+    "pick",
+    "up",
+    "return",
+    "list",
+    "all",
+    "items",
+    "kind",
+    "types",
+    "led",
+    "leading",
+    "worked",
+    "bought",
+    "am",
+    "currently",
+    "much",
+    "more",
+    "most",
+    "total",
+    "spent",
+    "money",
+    "did",
+    "get",
+    "got",
+    "going",
+    "been",
+    "being",
+    "some",
+    "any",
+    "would",
+    "could",
+    "should",
+    "will",
+    "can",
 ];
 
 /// Lowercased word tokens of a query (alphanumeric runs only).
@@ -74,8 +151,18 @@ pub fn extract_entities(query: &str) -> Vec<String> {
 }
 
 const MONTHS: [&str; 12] = [
-    "january", "february", "march", "april", "may", "june", "july", "august", "september",
-    "october", "november", "december",
+    "january",
+    "february",
+    "march",
+    "april",
+    "may",
+    "june",
+    "july",
+    "august",
+    "september",
+    "october",
+    "november",
+    "december",
 ];
 
 const UNITS_DAY: &str = "day";
@@ -132,7 +219,13 @@ fn month_index(name: &str) -> Option<u32> {
 /// like `chrono::Weekday::num_days_from_monday`.
 fn weekday_index(name: &str) -> Option<u32> {
     const DAYS: [&str; 7] = [
-        "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
     ];
     DAYS.iter().position(|d| *d == name).map(|i| i as u32)
 }
@@ -234,8 +327,7 @@ pub fn parse_temporal_anchor(query: &str, now: i64) -> Option<(i64, i64)> {
         };
     }
     // 6. "since the (start|beginning) of the year".
-    let re_since_year =
-        Regex::new(r"since (?:the )?(?:start|beginning) of (?:the )?year").ok()?;
+    let re_since_year = Regex::new(r"since (?:the )?(?:start|beginning) of (?:the )?year").ok()?;
     if re_since_year.is_match(&q) {
         return Some((day_start_ts(y, 1, 1)?, now));
     }
@@ -277,10 +369,9 @@ pub fn parse_temporal_anchor(query: &str, now: i64) -> Option<(i64, i64)> {
     //     jewelry last Saturday" — the article, not a calendar-period
     //     reading, distinguishes this from rule 4's "last week").
     //     The window is that single day.
-    let re_weekday = Regex::new(
-        r"(?:last|on|this) (monday|tuesday|wednesday|thursday|friday|saturday|sunday)",
-    )
-    .ok()?;
+    let re_weekday =
+        Regex::new(r"(?:last|on|this) (monday|tuesday|wednesday|thursday|friday|saturday|sunday)")
+            .ok()?;
     if let Some(c) = re_weekday.captures(&q) {
         if let Some(dow) = weekday_index(&c[1]) {
             let today_dow = today.weekday().num_days_from_monday();
@@ -310,7 +401,12 @@ pub fn looks_aggregation(query: &str) -> bool {
     // questions at 2-3x context inflation; true aggregations like "how
     // many books did I buy" contain neither pattern and stay matched).
     const DATE_MATH_UNITS: &[&str] = &[
-        "days ago", "weeks ago", "months ago", "years ago", "hours ago", "long ago",
+        "days ago",
+        "weeks ago",
+        "months ago",
+        "years ago",
+        "hours ago",
+        "long ago",
     ];
     if DATE_MATH_UNITS.iter().any(|p| l.contains(p)) {
         return false;
@@ -374,7 +470,8 @@ pub fn retrieve_multi_pass(
     query: &str,
     plan: &QueryPlan,
     per_query_cap: usize,
-) -> Result<Vec<CausalEntry>> {    let base = store.search_causal_bm25(task_tag, query, per_query_cap)?;
+) -> Result<Vec<CausalEntry>> {
+    let base = store.search_causal_bm25(task_tag, query, per_query_cap)?;
     let mut seen: HashSet<i64> = HashSet::new();
     let mut merged: Vec<CausalEntry> = Vec::new();
     for e in base {
@@ -571,7 +668,10 @@ pub fn expand_session_chunks_weighted(
             if spent >= budget {
                 break;
             }
-            let have = out.iter().filter(|(id, _)| id.starts_with(key.as_str())).count();
+            let have = out
+                .iter()
+                .filter(|(id, _)| id.starts_with(key.as_str()))
+                .count();
             let chunks = store.chunks_by_prefix(key)?;
             for (id, text) in chunks.into_iter().skip(have) {
                 if spent >= budget {
@@ -669,8 +769,14 @@ mod tests {
             .collect();
 
         let capped = apply_episode_quota(pool, 3);
-        let episodes = capped.iter().filter(|e| e.discovered_by == "distill").count();
-        let originals = capped.iter().filter(|e| e.discovered_by == "temporal").count();
+        let episodes = capped
+            .iter()
+            .filter(|e| e.discovered_by == "distill")
+            .count();
+        let originals = capped
+            .iter()
+            .filter(|e| e.discovered_by == "temporal")
+            .count();
         assert_eq!(episodes, 3, "episodes capped at the quota");
         assert_eq!(originals, 5, "originals never dropped");
         // Highest-ranked episodes survive (first 3 of 5), originals keep order.
@@ -690,11 +796,7 @@ mod tests {
         assert_eq!(n, 4);
         // Quota of 0 drops every episode (pure-original mode).
         assert_eq!(
-            apply_episode_quota(
-                vec![entry(0, "distill"), entry(1, "temporal")],
-                0
-            )
-            .len(),
+            apply_episode_quota(vec![entry(0, "distill"), entry(1, "temporal")], 0).len(),
             1
         );
     }
@@ -726,7 +828,11 @@ mod tests {
         // Rule 3's window for n=1: [now-2u, now-u] — the week that ended
         // one week before now.
         assert_eq!(end - start, week, "window spans exactly one week");
-        assert_eq!(FRIDAY_TS - end, week, "window is the week ending 1 week before now");
+        assert_eq!(
+            FRIDAY_TS - end,
+            week,
+            "window is the week ending 1 week before now"
+        );
         assert!(end < FRIDAY_TS, "window lies strictly before now");
         // "one week ago" (spelled numeral) matches the same shape.
         assert!(parse_temporal_anchor("I went one week ago", FRIDAY_TS).is_some());
@@ -792,7 +898,9 @@ mod tests {
 
         let p2 = plan_query("What time did I go to bed yesterday?", NOW);
         assert!(!p2.aggregation, "time questions are not aggregation");
-        let w = p2.time_window.expect("yesterday anchors to a calendar-day window");
+        let w = p2
+            .time_window
+            .expect("yesterday anchors to a calendar-day window");
         assert_eq!(w.1 - w.0, 86_399);
         assert_eq!(w.0 % 86_400, 0, "yesterday window starts at local midnight");
     }
@@ -810,7 +918,10 @@ mod tests {
         assert!(w.0 < NOW);
         let w = parse_temporal_anchor("What time did I go to bed yesterday?", NOW).unwrap();
         assert_eq!(w.1 - w.0, 86_399);
-        assert_eq!(parse_temporal_anchor("What did I buy at the store?", NOW), None);
+        assert_eq!(
+            parse_temporal_anchor("What did I buy at the store?", NOW),
+            None
+        );
         assert_eq!(parse_temporal_anchor("How do you make coffee?", NOW), None);
     }
 
@@ -824,12 +935,36 @@ mod tests {
     #[test]
     fn multi_pass_widens_across_sessions() {
         let store = CausalStore::open_in_memory().unwrap();
-        insert_turn(&store, "q1::s1::1", "I love watching movies on weekends.", 1_000, "q1");
-        insert_turn(&store, "q1::s2::1", "I bought three plants from the nursery.", 2_000, "q1");
+        insert_turn(
+            &store,
+            "q1::s1::1",
+            "I love watching movies on weekends.",
+            1_000,
+            "q1",
+        );
+        insert_turn(
+            &store,
+            "q1::s2::1",
+            "I bought three plants from the nursery.",
+            2_000,
+            "q1",
+        );
         // s3 has one BM25-hit turn plus an evidence turn with NO query token:
         // full-coverage expansion must pull BOTH once the session is touched.
-        insert_turn(&store, "q1::s3::1", "My sister also gave me plants.", 3_000, "q1");
-        insert_turn(&store, "q1::s3::2", "The snake plant is in the living room.", 3_001, "q1");
+        insert_turn(
+            &store,
+            "q1::s3::1",
+            "My sister also gave me plants.",
+            3_000,
+            "q1",
+        );
+        insert_turn(
+            &store,
+            "q1::s3::2",
+            "The snake plant is in the living room.",
+            3_001,
+            "q1",
+        );
 
         let plan = QueryPlan {
             entities: vec!["plants".into(), "nursery".into()],
@@ -858,11 +993,23 @@ mod tests {
     #[test]
     fn single_session_query_stays_single_pass() {
         let store = CausalStore::open_in_memory().unwrap();
-        insert_turn(&store, "q1::s1::1", "I bought a Nikon camera in May.", 1_000, "q1");
-        insert_turn(&store, "q1::s1::2", "The Nikon cost 1200 dollars.", 1_001, "q1");
+        insert_turn(
+            &store,
+            "q1::s1::1",
+            "I bought a Nikon camera in May.",
+            1_000,
+            "q1",
+        );
+        insert_turn(
+            &store,
+            "q1::s1::2",
+            "The Nikon cost 1200 dollars.",
+            1_001,
+            "q1",
+        );
         let plan = plan_query("What camera did I buy?", NOW);
-        let hits = retrieve_multi_pass(&store, Some("q1"), "What camera did I buy?", &plan, 5)
-            .unwrap();
+        let hits =
+            retrieve_multi_pass(&store, Some("q1"), "What camera did I buy?", &plan, 5).unwrap();
         assert!(!hits.is_empty());
         assert!(plan.time_window.is_none());
     }
@@ -902,7 +1049,6 @@ mod weighted_expand_tests {
     use super::*;
     use crate::store::CausalStore;
 
-
     fn seed(store: &CausalStore, id: &str, text: &str) {
         store
             .with_conn(|c| {
@@ -924,18 +1070,33 @@ mod weighted_expand_tests {
         let store = CausalStore::open_in_memory().unwrap();
         // Evidence session: 3 turns, hits mention pick/return/store.
         for t in 1..=3 {
-            seed(&store, &format!("q1::clothes::{t}"), "need to pick up return store items today");
+            seed(
+                &store,
+                &format!("q1::clothes::{t}"),
+                "need to pick up return store items today",
+            );
         }
         // Chatty session: 5 turns, hits mention only 'store'.
         for t in 1..=5 {
-            seed(&store, &format!("q1::ecom::{t}"), "online store business shipping ideas");
+            seed(
+                &store,
+                &format!("q1::ecom::{t}"),
+                "online store business shipping ideas",
+            );
         }
         let ids: Vec<String> = vec![
-            "q1::clothes::1".into(), "q1::clothes::2".into(),
-            "q1::ecom::1".into(), "q1::ecom::2".into(), "q1::ecom::3".into(),
+            "q1::clothes::1".into(),
+            "q1::clothes::2".into(),
+            "q1::ecom::1".into(),
+            "q1::ecom::2".into(),
+            "q1::ecom::3".into(),
         ];
         let out = expand_session_chunks_weighted(
-            &store, &ids, "how many items do I pick up or return from a store", 10, 0,
+            &store,
+            &ids,
+            "how many items do I pick up or return from a store",
+            10,
+            0,
         )
         .unwrap();
         let clothes = out.iter().filter(|(id, _)| id.contains("clothes")).count();
@@ -957,7 +1118,6 @@ mod whitelist_expand_tests {
     use super::*;
     use crate::store::CausalStore;
 
-
     fn seed(store: &CausalStore, id: &str, text: &str) {
         store
             .with_conn(|c| {
@@ -977,30 +1137,57 @@ mod whitelist_expand_tests {
         let store = CausalStore::open_in_memory().unwrap();
         // Dense session: hits share 3 query tokens.
         for t in 1..=4 {
-            seed(&store, &format!("q1::dense::{t}"), "pick up return store items now");
+            seed(
+                &store,
+                &format!("q1::dense::{t}"),
+                "pick up return store items now",
+            );
         }
         // Two chatty sessions sharing one generic token each.
         for t in 1..=4 {
-            seed(&store, &format!("q1::chat1::{t}"), "online store business talk");
-            seed(&store, &format!("q1::chat2::{t}"), "store ideas shipping chat");
+            seed(
+                &store,
+                &format!("q1::chat1::{t}"),
+                "online store business talk",
+            );
+            seed(
+                &store,
+                &format!("q1::chat2::{t}"),
+                "store ideas shipping chat",
+            );
         }
         let ids: Vec<String> = vec![
-            "q1::dense::1".into(), "q1::dense::2".into(),
-            "q1::chat1::1".into(), "q1::chat2::1".into(),
+            "q1::dense::1".into(),
+            "q1::dense::2".into(),
+            "q1::chat1::1".into(),
+            "q1::chat2::1".into(),
         ];
         // Whitelist of 1: only the dense session expands.
         let out = expand_session_chunks_weighted(
-            &store, &ids, "how many items do I pick up or return from a store", 10, 1,
+            &store,
+            &ids,
+            "how many items do I pick up or return from a store",
+            10,
+            1,
         )
         .unwrap();
-        assert!(out.iter().all(|(id, _)| id.contains("dense")), "only dense survives: {out:?}");
+        assert!(
+            out.iter().all(|(id, _)| id.contains("dense")),
+            "only dense survives: {out:?}"
+        );
         // Whitelist of 2: dense + the heavier chat session.
         let out2 = expand_session_chunks_weighted(
-            &store, &ids, "how many items do I pick up or return from a store", 10, 2,
+            &store,
+            &ids,
+            "how many items do I pick up or return from a store",
+            10,
+            2,
         )
         .unwrap();
-        let kinds: std::collections::HashSet<&str> =
-            out2.iter().map(|(id, _)| id.rsplit_once("::").unwrap().0.rsplit_once("::").unwrap().1).collect();
+        let kinds: std::collections::HashSet<&str> = out2
+            .iter()
+            .map(|(id, _)| id.rsplit_once("::").unwrap().0.rsplit_once("::").unwrap().1)
+            .collect();
         assert_eq!(kinds.len(), 2, "exactly two sessions expand: {kinds:?}");
     }
 }

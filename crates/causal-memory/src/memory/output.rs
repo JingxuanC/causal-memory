@@ -12,11 +12,9 @@ pub(crate) fn judge_outcome_polarity(decision: &str, outcome: &str) -> String {
     // edges later (edges_without_polarity).
     if std::env::var("CAUSAL_MEMORY_NO_LLM_POLARITY").is_err() {
         if let Some(config) = crate::llm::LlmConfig::from_env() {
-        if let Ok(pol) = block_on(crate::llm::judge_polarity(
-            &config, decision, outcome,
-        )) {
-            return pol;
-        }
+            if let Ok(pol) = block_on(crate::llm::judge_polarity(&config, decision, outcome)) {
+                return pol;
+            }
             // LLM failed — fall through to the heuristic.
         }
     }
@@ -127,7 +125,10 @@ pub(crate) fn modal_stratum(chains: &[(Option<String>, &str)]) -> Option<String>
 /// when the pooled majority and the stratum majority point in opposite
 /// directions (the pooled estimate is then likely confounded by task_tag).
 /// Returns an empty string when there are no chains.
-pub(crate) fn stratified_summary(chains: &[(Option<String>, &str)], reference: Option<&str>) -> String {
+pub(crate) fn stratified_summary(
+    chains: &[(Option<String>, &str)],
+    reference: Option<&str>,
+) -> String {
     if chains.is_empty() {
         return String::new();
     }

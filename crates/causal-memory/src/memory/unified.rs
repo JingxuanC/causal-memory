@@ -93,13 +93,18 @@ impl Memory {
             .bm25_seed_ids(query, scope, UNIFIED_SEED_LIMIT)
             .unwrap_or_default();
         if let Some(Ok(vec)) = block_on(crate::embed::embed_shared(query)) {
-            if let Ok(sem) = self.store.search_facts_semantic(&vec, scope, UNIFIED_SEED_LIMIT) {
+            if let Ok(sem) = self
+                .store
+                .search_facts_semantic(&vec, scope, UNIFIED_SEED_LIMIT)
+            {
                 seed_ids.extend(sem.into_iter().map(|(f, _)| format!("fact:{}", f.id)));
             }
-            if let Ok(sem) =
-                self.store
-                    .search_causal_semantic_entity_boosted(&vec, query, task_tag, UNIFIED_SEED_LIMIT)
-            {
+            if let Ok(sem) = self.store.search_causal_semantic_entity_boosted(
+                &vec,
+                query,
+                task_tag,
+                UNIFIED_SEED_LIMIT,
+            ) {
                 seed_ids.extend(sem.into_iter().map(|(e, _)| e.decision_id));
             }
         }

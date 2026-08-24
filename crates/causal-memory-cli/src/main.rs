@@ -13,10 +13,12 @@ mod commands;
 mod server;
 use commands::distill::{run_distill, run_novelty};
 use commands::io::{run_export, run_import};
-use commands::maintenance::{run_embed, run_judge, run_migrate, run_polarity, run_resolve_updates, run_restore, run_sleep};
+use commands::maintenance::{
+    run_embed, run_judge, run_migrate, run_polarity, run_resolve_updates, run_restore, run_sleep,
+};
+use commands::misc::run_refute;
 use commands::misc::{run_extract, run_http_server, run_link, run_mcp_server, run_reasoning};
 use commands::wiki::run_wiki;
-use commands::misc::run_refute;
 
 pub(crate) fn get_db_path() -> PathBuf {
     if let Ok(path) = std::env::var("CAUSAL_MEMORY_DB") {

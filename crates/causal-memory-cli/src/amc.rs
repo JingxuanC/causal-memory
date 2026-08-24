@@ -194,9 +194,12 @@ async fn handle_add(
             "no messages in add request".into(),
         ));
     }
-    let memory = users
-        .get(&req.user_id)
-        .map_err(|e| (axum::http::StatusCode::INTERNAL_SERVER_ERROR, format!("open store: {e}")))?;
+    let memory = users.get(&req.user_id).map_err(|e| {
+        (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            format!("open store: {e}"),
+        )
+    })?;
 
     // `remember` runs the distiller synchronously (one LLM call per batch,
     // seconds). Raw mode is a pure local write. Both return only after the
@@ -210,16 +213,15 @@ async fn handle_add(
                 .collect::<Vec<_>>()
                 .join("\n");
             // Off the async executor: the facade blocks on the LLM call.
-            let res = tokio::task::spawn_blocking(move || {
-                (memory.clone(), memory.remember(&text, None))
-            })
-            .await
-            .map_err(|e| {
-                (
-                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("add task panicked: {e}"),
-                )
-            })?;
+            let res =
+                tokio::task::spawn_blocking(move || (memory.clone(), memory.remember(&text, None)))
+                    .await
+                    .map_err(|e| {
+                        (
+                            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("add task panicked: {e}"),
+                        )
+                    })?;
             eprintln!("amc/add [{}] distill: {}", req.user_id, res.1);
             res.0
         }
@@ -358,7 +360,10 @@ fn main() -> Result<()> {
     }
 
     match causal_memory::embed::init_embedder() {
-        Some(e) => println!("causal-memory-amc embedding: {} (semantic layer live)", e.model()),
+        Some(e) => println!(
+            "causal-memory-amc embedding: {} (semantic layer live)",
+            e.model()
+        ),
         None => println!("causal-memory-amc embedding: none (BM25-only retrieval)"),
     }
     let users = Arc::new(UserMemories::new(db_dir, mode));
@@ -465,7 +470,10 @@ mod tests {
         }
 
         // Isolation: alice never sees bob's fruit and vice versa.
-        for (user, mine, theirs) in [("alice", "dragonfruit", "persimmon"), ("bob", "persimmon", "dragonfruit")] {
+        for (user, mine, theirs) in [
+            ("alice", "dragonfruit", "persimmon"),
+            ("bob", "persimmon", "dragonfruit"),
+        ] {
             let resp = client
                 .post(format!("{base}/search"))
                 .json(&serde_json::json!({
@@ -497,7 +505,10 @@ mod tests {
                 "s1",
                 &[
                     ("user", "deploy notes"),
-                    ("assistant", "carol fixed the flaky retry test by adding jitter"),
+                    (
+                        "assistant",
+                        "carol fixed the flaky retry test by adding jitter",
+                    ),
                     ("assistant", "carol moved the cache to redis cluster"),
                     ("assistant", "carol enabled pprof on the api server"),
                 ],
@@ -515,7 +526,11 @@ mod tests {
             .json::<serde_json::Value>()
             .await
             .unwrap();
-        assert_eq!(resp["data"].as_array().unwrap().len(), 2, "top_k=2 must bind");
+        assert_eq!(
+            resp["data"].as_array().unwrap().len(),
+            2,
+            "top_k=2 must bind"
+        );
 
         std::fs::remove_dir_all(dir).ok();
     }

@@ -101,10 +101,7 @@ fn swr_ltp_strengthens_frequently_replayed_edges() {
         "SWR should perform LTP on replayed edges, got {} events",
         stats.ltp_events
     );
-    assert!(
-        stats.chains_replayed > 0,
-        "SWR should replay causal chains"
-    );
+    assert!(stats.chains_replayed > 0, "SWR should replay causal chains");
 
     // At least some edges should have increased weight
     let strengthened = (0..graph.num_edges())
@@ -133,27 +130,37 @@ fn swr_ltd_and_ltp_have_opposite_effects() {
     ];
     let mut graph = CausalGraph::build(&nodes, &edges);
 
-    let weights_before: Vec<f32> =
-        (0..graph.num_edges()).map(|i| graph.edge_raw_weight(i)).collect();
+    let weights_before: Vec<f32> = (0..graph.num_edges())
+        .map(|i| graph.edge_raw_weight(i))
+        .collect();
 
     // Run SWR
     let stats = graph.swr_consolidate(100);
 
-    let weights_after: Vec<f32> =
-        (0..graph.num_edges()).map(|i| graph.edge_raw_weight(i)).collect();
+    let weights_after: Vec<f32> = (0..graph.num_edges())
+        .map(|i| graph.edge_raw_weight(i))
+        .collect();
 
     // Some edges should have LTP (increased) and the system should have
     // applied LTD globally (even if net effect varies per edge)
-    let ltp_count = weights_before.iter().zip(&weights_after)
+    let ltp_count = weights_before
+        .iter()
+        .zip(&weights_after)
         .filter(|(before, after)| **after > *before + 0.001)
         .count();
 
     println!("\n=== SWR LTP vs LTD ===");
     println!("  Edges with LTP (weight increased): {ltp_count}");
-    println!("  Chains replayed: {}, LTP events: {}", stats.chains_replayed, stats.ltp_events);
+    println!(
+        "  Chains replayed: {}, LTP events: {}",
+        stats.chains_replayed, stats.ltp_events
+    );
     println!("  Weights: {:?} → {:?}", weights_before, weights_after);
 
-    assert!(ltp_count > 0, "some edges should have increased weight (LTP)");
+    assert!(
+        ltp_count > 0,
+        "some edges should have increased weight (LTP)"
+    );
     assert!(stats.ltp_events > 0, "SWR should report LTP events");
 
     // Verify replay protection: nodes with high replay_count get half LTD
@@ -203,15 +210,13 @@ fn swr_improves_retrieval_precision() {
     let mut graph = build_mixed_graph();
 
     // Before consolidation: query "important decision" — some noise may leak in
-    let results_before = graph
-        .spreading_activation_opts("important decision", None, false, false);
+    let results_before = graph.spreading_activation_opts("important decision", None, false, false);
 
     // Run consolidation to strengthen important chain, weaken noise
     graph.swr_consolidate(100);
 
     // After consolidation: important results should be more prominent
-    let results_after = graph
-        .spreading_activation_opts("important decision", None, false, false);
+    let results_after = graph.spreading_activation_opts("important decision", None, false, false);
 
     // Measure: fraction of top-k results that are "important" nodes
     let precision_before = results_before
@@ -229,14 +234,26 @@ fn swr_improves_retrieval_precision() {
         / 5.0;
 
     println!("\n=== SWR Retrieval Precision ===");
-    println!("  Before consolidation: precision@5 = {:.0} ({}/{})",
+    println!(
+        "  Before consolidation: precision@5 = {:.0} ({}/{})",
         precision_before * 100.0,
-        results_before.iter().take(5).filter(|r| r.text.contains("important")).count(),
-        5);
-    println!("  After consolidation:  precision@5 = {:.0} ({}/{})",
+        results_before
+            .iter()
+            .take(5)
+            .filter(|r| r.text.contains("important"))
+            .count(),
+        5
+    );
+    println!(
+        "  After consolidation:  precision@5 = {:.0} ({}/{})",
         precision_after * 100.0,
-        results_after.iter().take(5).filter(|r| r.text.contains("important")).count(),
-        5);
+        results_after
+            .iter()
+            .take(5)
+            .filter(|r| r.text.contains("important"))
+            .count(),
+        5
+    );
 
     // Consolidation should not hurt precision (and ideally improve it)
     assert!(
@@ -466,8 +483,14 @@ fn novelty_entropy_triggers_consolidation_correctly() {
     let entropy_diverse = graph_diverse.novelty_entropy();
 
     println!("\n=== Novelty Trigger ===");
-    println!("  Uniform replay:   entropy={entropy_uniform:.3} → should_consolidate={}", entropy_uniform > 0.6);
-    println!("  Diverse replay:   entropy={entropy_diverse:.3} → should_consolidate={}", entropy_diverse > 0.6);
+    println!(
+        "  Uniform replay:   entropy={entropy_uniform:.3} → should_consolidate={}",
+        entropy_uniform > 0.6
+    );
+    println!(
+        "  Diverse replay:   entropy={entropy_diverse:.3} → should_consolidate={}",
+        entropy_diverse > 0.6
+    );
 
     assert!(
         entropy_uniform < 0.2,
@@ -503,8 +526,14 @@ fn novelty_consolidation_feedback_loop() {
     let precision_final = measure_precision(&mut graph);
 
     println!("\n=== Novelty-Consolidation Feedback Loop ===");
-    println!("  Phase 1: entropy={entropy_initial:.3}, precision={:.0}", precision_initial * 100.0);
-    println!("  Phase 2: entropy={entropy_after:.3} → consolidate? {}", entropy_after > 0.3);
+    println!(
+        "  Phase 1: entropy={entropy_initial:.3}, precision={:.0}",
+        precision_initial * 100.0
+    );
+    println!(
+        "  Phase 2: entropy={entropy_after:.3} → consolidate? {}",
+        entropy_after > 0.3
+    );
     println!("  Phase 3: precision={:.0}", precision_final * 100.0);
 
     assert!(
@@ -540,7 +569,11 @@ fn full_sleep_wake_cycle() {
     let initial_valid = graph.num_valid_edges();
 
     println!("Day 1 (awake):");
-    println!("  Memories: {} nodes, {} valid edges", graph.num_nodes(), initial_valid);
+    println!(
+        "  Memories: {} nodes, {} valid edges",
+        graph.num_nodes(),
+        initial_valid
+    );
     println!("  Retrieval precision@5: {:.0}", initial_precision * 100.0);
     println!("  Novelty entropy: {initial_entropy:.3}");
 
@@ -569,8 +602,10 @@ fn full_sleep_wake_cycle() {
     // ── Run consolidation if entropy warrants ──
     if entropy_night2 > 0.3 {
         let stats = graph.swr_consolidate(100);
-        println!("  Consolidation: {} chains replayed, {} LTP events, {} forgotten",
-            stats.chains_replayed, stats.ltp_events, stats.forgotten);
+        println!(
+            "  Consolidation: {} chains replayed, {} LTP events, {} forgotten",
+            stats.chains_replayed, stats.ltp_events, stats.forgotten
+        );
     }
 
     let final_precision = measure_precision(&mut graph);
@@ -578,8 +613,17 @@ fn full_sleep_wake_cycle() {
     let final_valid = graph.num_valid_edges();
 
     println!("\nAfter sleep cycle:");
-    println!("  Memories: {} nodes, {} valid edges (was {})", graph.num_nodes(), final_valid, initial_valid);
-    println!("  Retrieval precision@5: {:.0} (was {:.0})", final_precision * 100.0, initial_precision * 100.0);
+    println!(
+        "  Memories: {} nodes, {} valid edges (was {})",
+        graph.num_nodes(),
+        final_valid,
+        initial_valid
+    );
+    println!(
+        "  Retrieval precision@5: {:.0} (was {:.0})",
+        final_precision * 100.0,
+        initial_precision * 100.0
+    );
     println!("  Novelty entropy: {final_entropy:.3} (was {initial_entropy:.3})");
 
     // The system should have evolved (not frozen)

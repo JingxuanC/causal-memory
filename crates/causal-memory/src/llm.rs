@@ -229,9 +229,8 @@ pub async fn judge_supersession(
     );
 
     let content = chat(config, SUPERSESSION_JUDGE_PROMPT, &user_msg, 120, 0.0).await?;
-    serde_json::from_str(&content).map_err(|e| {
-        anyhow::anyhow!("Failed to parse supersession verdict: {e}\nRaw: {content}")
-    })
+    serde_json::from_str(&content)
+        .map_err(|e| anyhow::anyhow!("Failed to parse supersession verdict: {e}\nRaw: {content}"))
 }
 
 /// Reconstruct a lesson narrative from a causal subgraph (reconstructive

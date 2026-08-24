@@ -1,8 +1,8 @@
 //! Distill pipeline subcommands (distill / recurrence / novelty).
 
-use causal_memory::store::CausalStore;
-use crate::get_db_path;
 use super::maintenance::load_session;
+use crate::get_db_path;
+use causal_memory::store::CausalStore;
 use std::path::PathBuf;
 
 pub(crate) async fn run_distill(args: &[String]) -> anyhow::Result<()> {
@@ -227,7 +227,7 @@ fn session_id_from_name(name: &str) -> i64 {
 /// (merged with the matched session), eagerly distill embedding-less ones,
 /// leave the rest pending.
 pub(crate) async fn run_distill_recurrence(args: &[String]) -> anyhow::Result<()> {
-    use causal_memory::distill::{Distiller, distill_recurrence, distill_undistilled_batch};
+    use causal_memory::distill::{distill_recurrence, distill_undistilled_batch, Distiller};
 
     let mut mode = String::new();
     let mut db_override: Option<String> = None;
@@ -251,9 +251,7 @@ pub(crate) async fn run_distill_recurrence(args: &[String]) -> anyhow::Result<()
         i += 1;
     }
     if !matches!(mode.as_str(), "recurrence" | "batch") {
-        anyhow::bail!(
-            "--mode must be recurrence|batch (eager is the default mode), got: {mode}"
-        );
+        anyhow::bail!("--mode must be recurrence|batch (eager is the default mode), got: {mode}");
     }
 
     let distiller = match Distiller::from_env() {
@@ -284,7 +282,10 @@ pub(crate) async fn run_distill_recurrence(args: &[String]) -> anyhow::Result<()
                 o.items.len()
             );
         }
-        println!("eager fallback (no embedding): {}", out.eager_fallback.len());
+        println!(
+            "eager fallback (no embedding): {}",
+            out.eager_fallback.len()
+        );
         println!("still pending (no recurrence): {}", out.still_pending.len());
         return Ok(());
     }
@@ -315,9 +316,7 @@ pub(crate) async fn run_distill_recurrence(args: &[String]) -> anyhow::Result<()
     let embedder =
         causal_memory::embed::EmbedConfig::from_env().map(causal_memory::embed::Embedder::new);
     if embedder.is_none() {
-        eprintln!(
-            "⚠️ --mode recurrence needs an embedder for the semantic recurrence check."
-        );
+        eprintln!("⚠️ --mode recurrence needs an embedder for the semantic recurrence check.");
         eprintln!("   Set CAUSAL_MEMORY_EMBED_API, or build with --features local-embed.");
         eprintln!("   Falling back to EAGER distill (every session distilled).");
     }
@@ -337,12 +336,24 @@ pub(crate) async fn run_distill_recurrence(args: &[String]) -> anyhow::Result<()
             let items = distiller.distill_session(&date, &turns).await?;
             let _ = write_distilled_items(&store, &items, None).await?;
             distilled += 1;
-            println!("{}: {} item(s) (eager fallback — no embedder)", file.display(), items.len());
+            println!(
+                "{}: {} item(s) (eager fallback — no embedder)",
+                file.display(),
+                items.len()
+            );
             continue;
         };
-        let file_name = file.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let file_name = file
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let session_id = session_id_from_name(&file_name);
-        let session_text = turns.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n");
+        let session_text = turns
+            .iter()
+            .map(|(_, t)| t.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
         let embedding = match embedder.embed(&session_text).await {
             Ok(v) => Some(v),
             Err(e) => {
@@ -382,7 +393,10 @@ pub(crate) async fn run_distill_recurrence(args: &[String]) -> anyhow::Result<()
         }
     }
     println!("\n=== Distill complete (recurrence mode) ===");
-    println!("Sessions distilled: {distilled}/{}   pending: {pending}", files.len());
+    println!(
+        "Sessions distilled: {distilled}/{}   pending: {pending}",
+        files.len()
+    );
     Ok(())
 }
 
@@ -402,7 +416,7 @@ const NOVELTY_PREDICT_SYSTEM: &str = "You are a world-model simulator. Given a d
 /// Sync by design: the prediction closure calls `block_on` on its own
 /// runtime, which is only legal outside an async context.
 pub(crate) fn run_novelty(args: &[String]) -> anyhow::Result<()> {
-    use causal_memory::hippocampus::{CausalGraph, NoveltyMode, needs_prediction_gap};
+    use causal_memory::hippocampus::{needs_prediction_gap, CausalGraph, NoveltyMode};
 
     let mut mode = NoveltyMode::default();
     let mut db: Option<&String> = None;
@@ -441,9 +455,8 @@ pub(crate) fn run_novelty(args: &[String]) -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     let mut predict = |decision_text: &str| -> Option<String> {
         let config = causal_memory::llm::LlmConfig::from_env()?;
-        let user_msg = format!(
-            "Decision/action: \"{decision_text}\"\nPredict the most likely outcome:"
-        );
+        let user_msg =
+            format!("Decision/action: \"{decision_text}\"\nPredict the most likely outcome:");
         rt.block_on(causal_memory::llm::chat(
             &config,
             NOVELTY_PREDICT_SYSTEM,
@@ -474,7 +487,11 @@ pub(crate) fn run_novelty(args: &[String]) -> anyhow::Result<()> {
         } else {
             ""
         },
-        if report.should_record { "RECORD" } else { "skip" }
+        if report.should_record {
+            "RECORD"
+        } else {
+            "skip"
+        }
     );
     if !report.predicted_positive.is_empty() {
         println!("predicted: {}", report.predicted_positive.join(" | "));
@@ -484,4 +501,3 @@ pub(crate) fn run_novelty(args: &[String]) -> anyhow::Result<()> {
     }
     Ok(())
 }
-

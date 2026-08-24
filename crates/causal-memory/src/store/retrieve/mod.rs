@@ -17,7 +17,7 @@ pub use fusion::rrf_merge_many;
 use anyhow::{anyhow, Result};
 use rusqlite::{params, OptionalExtension};
 
-use super::{CausalStore, ENTRY_COLUMNS, entry_from_row, CausalEntry};
+use super::{entry_from_row, CausalEntry, CausalStore, ENTRY_COLUMNS};
 
 impl CausalStore {
     pub fn rejudge_decision(
@@ -517,8 +517,7 @@ impl CausalStore {
         // substr start = length(pattern-with-%) = prefix.len()+1 → skips
         // exactly the prefix, landing on the suffix's first char.
         let pattern = format!("{prefix}%");
-        let suffix_expr =
-            format!("substr(id, {})", prefix.chars().count() + 1);
+        let suffix_expr = format!("substr(id, {})", prefix.chars().count() + 1);
         let mut stmt = conn.prepare(&format!(
             "SELECT id, text FROM chunks WHERE id LIKE ?1
              ORDER BY CAST({suffix_expr} AS INTEGER) IS NOT CAST({suffix_expr} AS INTEGER),

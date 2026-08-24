@@ -7,9 +7,8 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
-    CausalStore, ENTRY_COLUMNS, ID_COUNTER, SUPERSEDES_MIN_SHARED_TOKENS,
-    SUPERSEDES_SIM_THRESHOLD, containment_similarity, date_tokens, effective_polarity,
-    entry_from_row, is_retraction_record,
+    containment_similarity, date_tokens, effective_polarity, entry_from_row, is_retraction_record,
+    CausalStore, ENTRY_COLUMNS, ID_COUNTER, SUPERSEDES_MIN_SHARED_TOKENS, SUPERSEDES_SIM_THRESHOLD,
 };
 
 /// One C7 falsification candidate: (old_edge_id, new_edge_id, old_decision,
@@ -276,10 +275,7 @@ impl CausalStore {
         // Causal items create a proper directed edge: decision → outcome
         let (chunk_id, edge_id) = if item.kind == crate::distill::ItemKind::Causal {
             let decision_text = item.decision.as_deref().unwrap_or("unknown action");
-            let relation = item
-                .causal_relation
-                .map(|r| r.as_str())
-                .unwrap_or("caused");
+            let relation = item.causal_relation.map(|r| r.as_str()).unwrap_or("caused");
             Self::insert_causal_distilled(
                 &conn,
                 decision_text,
@@ -346,13 +342,9 @@ impl CausalStore {
         confidence: f64,
         task_tag: Option<&str>,
     ) -> Result<(String, i64)> {
-        let chunk_id = Self::insert_chunk_with_retry(
-            conn,
-            text,
-            event_time,
-            None,
-            |seq| format!("distill:{event_time}:{seq}"),
-        )?;
+        let chunk_id = Self::insert_chunk_with_retry(conn, text, event_time, None, |seq| {
+            format!("distill:{event_time}:{seq}")
+        })?;
         Self::index_chunk(conn, &chunk_id, text)?;
         conn.execute(
             "INSERT INTO causal_edges
@@ -377,21 +369,13 @@ impl CausalStore {
         confidence: f64,
         task_tag: Option<&str>,
     ) -> Result<(String, i64)> {
-        let dec_id = Self::insert_chunk_with_retry(
-            conn,
-            decision_text,
-            event_time,
-            None,
-            |seq| format!("distill:d{event_time}:{seq}"),
-        )?;
+        let dec_id = Self::insert_chunk_with_retry(conn, decision_text, event_time, None, |seq| {
+            format!("distill:d{event_time}:{seq}")
+        })?;
         Self::index_chunk(conn, &dec_id, decision_text)?;
-        let out_id = Self::insert_chunk_with_retry(
-            conn,
-            outcome_text,
-            event_time,
-            None,
-            |seq| format!("distill:o{event_time}:{seq}"),
-        )?;
+        let out_id = Self::insert_chunk_with_retry(conn, outcome_text, event_time, None, |seq| {
+            format!("distill:o{event_time}:{seq}")
+        })?;
         Self::index_chunk(conn, &out_id, outcome_text)?;
         conn.execute(
             "INSERT INTO causal_edges
@@ -783,9 +767,8 @@ impl CausalStore {
                 "SELECT id, sparse_code FROM chunks
                  WHERE sparse_code IS NOT NULL AND length(text) >= 20",
             )?;
-            let rows = stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
             for row in rows {
                 let (id, code_hex) = row?;
                 if let Ok(other) = u128::from_str_radix(&code_hex, 16) {

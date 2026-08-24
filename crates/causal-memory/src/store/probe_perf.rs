@@ -32,6 +32,9 @@ fn probe_entity_cache() {
         let _ = store.search_causal_entity(query, 10).unwrap();
     }
     let warm = t1.elapsed() / 5;
-    println!("COLD first query: {cold:?}; WARM avg per query: {warm:?}; hits={}", r1.len());
+    println!(
+        "COLD first query: {cold:?}; WARM avg per query: {warm:?}; hits={}",
+        r1.len()
+    );
     println!("speedup: {:.1}x", cold.as_secs_f64() / warm.as_secs_f64());
 }

@@ -313,7 +313,8 @@ fn evidence_turn_ids(q: &LmeQuestion) -> Vec<String> {
         .collect()
 }
 
-fn ingest_question(store: &CausalStore, q: &LmeQuestion) -> Result<(usize, Vec<String>)> {    let prefix = format!("{}::", q.question_id);
+fn ingest_question(store: &CausalStore, q: &LmeQuestion) -> Result<(usize, Vec<String>)> {
+    let prefix = format!("{}::", q.question_id);
     let expected_chunks: usize = q.haystack_sessions.iter().map(|s| s.len()).sum();
 
     // substr() instead of LIKE: question_ids contain '_', a LIKE wildcard.
@@ -652,13 +653,8 @@ fn retrieve(
     }
     let now = parse_lme_datetime(&q.question_date).unwrap_or(SYNTH_BASE_TS);
     let plan = retrieval::plan_query(&q.question, now);
-    let mut merged = retrieval::retrieve_multi_pass(
-        store,
-        Some(&q.question_id),
-        &q.question,
-        &plan,
-        topk,
-    )?;
+    let mut merged =
+        retrieval::retrieve_multi_pass(store, Some(&q.question_id), &q.question, &plan, topk)?;
 
     // Semantic seed layer (retrieval-scoring.md §2): cosine-rank the
     // question's embedded edges (currently the distill layer) as a
@@ -670,8 +666,10 @@ fn retrieve(
         if let Ok(sem) = store.search_causal_semantic(qvec, Some(&q.question_id), topk) {
             if !sem.is_empty() {
                 // RRF merge: BM25 pool rank vs semantic pool rank.
-                let bm25_keys: Vec<String> =
-                    merged.iter().map(|e| format!("bm25:{}", e.edge_id)).collect();
+                let bm25_keys: Vec<String> = merged
+                    .iter()
+                    .map(|e| format!("bm25:{}", e.edge_id))
+                    .collect();
                 let sem_keys: Vec<String> = sem
                     .iter()
                     .map(|(e, _)| format!("sem:{}", e.edge_id))
@@ -727,8 +725,7 @@ fn rrf_fuse_two(a: &[String], b: &[String]) -> Vec<String> {
     for (i, k) in b.iter().enumerate() {
         *score.entry(k.as_str()).or_insert(0.0) += 1.0 / (K + i as f64 + 1.0);
     }
-    let mut ranked: Vec<(f64, &str)> =
-        score.into_iter().map(|(k, v)| (v, k)).collect();
+    let mut ranked: Vec<(f64, &str)> = score.into_iter().map(|(k, v)| (v, k)).collect();
     ranked.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal));
     ranked.into_iter().map(|(_, k)| k.to_string()).collect()
 }
@@ -1482,10 +1479,7 @@ async fn answer_question(
         let evidence_hit = {
             let mut hit = false;
             for sid in &q.answer_session_ids {
-                if hits
-                    .iter()
-                    .any(|h| h.content.contains(sid.as_str()))
-                {
+                if hits.iter().any(|h| h.content.contains(sid.as_str())) {
                     hit = true;
                     break;
                 }
@@ -1531,8 +1525,7 @@ async fn answer_question(
     // the lock uncontended — exactly one caller inside at a time, no OS
     // threads parked on the mutex, IO wakes flow freely.
     let query_vec = {
-        static EMBED_GATE: std::sync::OnceLock<tokio::sync::Semaphore> =
-            std::sync::OnceLock::new();
+        static EMBED_GATE: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
         let _permit = EMBED_GATE
             .get_or_init(|| tokio::sync::Semaphore::new(1))
             .acquire()
@@ -1543,8 +1536,8 @@ async fn answer_question(
             _ => None,
         }
     };
-    let mut final_entries = retrieve(store, q, topk, retrieval_mode, query_vec.as_deref())
-        .unwrap_or_default();
+    let mut final_entries =
+        retrieve(store, q, topk, retrieval_mode, query_vec.as_deref()).unwrap_or_default();
     let mut seen_chunk: HashSet<String> = retrieved_chunk_ids(&final_entries).into_iter().collect();
     let retrieved_ids: Vec<String> = seen_chunk.iter().cloned().collect();
     let evidence_hit = retrieved_ids.iter().any(|r| evidence_ids.contains(r));
@@ -1553,7 +1546,15 @@ async fn answer_question(
     // question's haystack) and puts fact lines FIRST: the high-precision
     // layer for the factual-recall slice. Evidence-hit stays computed from
     // causal entries only (facts carry no chunk ids) — protocol unchanged.
-    let mut final_memories = render_memories(store, graph, q, &final_entries, with_facts, plan.aggregation, topk);
+    let mut final_memories = render_memories(
+        store,
+        graph,
+        q,
+        &final_entries,
+        with_facts,
+        plan.aggregation,
+        topk,
+    );
 
     // First answer (V1 precision contract; V2 extracts the ANSWER: tail).
     let mut predicted = match answer_once(cfg, q, &final_memories, prompt_version).await {
@@ -1612,7 +1613,15 @@ async fn answer_question(
             }
             final_entries = expand_and_inject(store, q, merged).unwrap_or(final_entries.clone());
             seen_chunk.extend(new_ids);
-            final_memories = render_memories(store, graph, q, &final_entries, with_facts, plan.aggregation, topk);
+            final_memories = render_memories(
+                store,
+                graph,
+                q,
+                &final_entries,
+                with_facts,
+                plan.aggregation,
+                topk,
+            );
             predicted = match answer_once(cfg, q, &final_memories, prompt_version).await {
                 Ok(p) => p,
                 Err(_) => break,
@@ -1731,10 +1740,18 @@ async fn answer_once(
 ) -> Result<String> {
     let system = answer_system_prompt(&q.question_type, prompt_version);
     let user = answer_user_prompt(q, memories);
-    let max_tokens = if prompt_version == LmePromptVersion::V2 { 800 } else { ANSWER_MAX_TOKENS };
+    let max_tokens = if prompt_version == LmePromptVersion::V2 {
+        800
+    } else {
+        ANSWER_MAX_TOKENS
+    };
     let raw = chat(cfg, &system, &user, max_tokens).await?;
     Ok(if prompt_version == LmePromptVersion::V2 {
-        raw.rsplit("ANSWER:").next().unwrap_or(&raw).trim().to_string()
+        raw.rsplit("ANSWER:")
+            .next()
+            .unwrap_or(&raw)
+            .trim()
+            .to_string()
     } else {
         raw
     })
@@ -1825,12 +1842,11 @@ async fn run(args: Args) -> Result<()> {
     // ViaMcp ingests through the Memory facade (`remember` = the MCP
     // server's write path with LLM distill built in) instead of the
     // harness's own SQL — measuring the deployed write pipeline.
-    let facade: Option<causal_memory::memory::Memory> =
-        if args.ingest == IngestMode::ViaMcp {
-            Some(causal_memory::memory::Memory::open(&db_path)?)
-        } else {
-            None
-        };
+    let facade: Option<causal_memory::memory::Memory> = if args.ingest == IngestMode::ViaMcp {
+        Some(causal_memory::memory::Memory::open(&db_path)?)
+    } else {
+        None
+    };
     let distiller = Distiller::from_env().map(Arc::new);
     let mut distill_totals = DistillStats::default();
     let mut pending_distill: Vec<&LmeQuestion> = Vec::new();
@@ -1847,7 +1863,11 @@ async fn run(args: Args) -> Result<()> {
                 // keep the corpus searchable; retrieval is facade-scoped
                 // below.
                 for (s_idx, session) in q.haystack_sessions.iter().enumerate() {
-                    let sid = q.haystack_session_ids.get(s_idx).cloned().unwrap_or_default();
+                    let sid = q
+                        .haystack_session_ids
+                        .get(s_idx)
+                        .cloned()
+                        .unwrap_or_default();
                     let date = q
                         .haystack_dates
                         .get(s_idx)
@@ -1974,7 +1994,20 @@ async fn run(args: Args) -> Result<()> {
             .unwrap_or_default();
         async move {
             let facade_ref = facade.as_ref().as_ref();
-            let row = answer_question(&cfg, &store, &graph, q, evidence, args.topk, with_facts, args.prompt_version, args.verify_loop, &mode, facade_ref).await;
+            let row = answer_question(
+                &cfg,
+                &store,
+                &graph,
+                q,
+                evidence,
+                args.topk,
+                with_facts,
+                args.prompt_version,
+                args.verify_loop,
+                &mode,
+                facade_ref,
+            )
+            .await;
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d.is_multiple_of(25) || d == total {
                 eprintln!("{d}/{total} questions done");
@@ -2018,7 +2051,8 @@ async fn run(args: Args) -> Result<()> {
         prompt_version: match args.prompt_version {
             LmePromptVersion::V1 => "v1",
             LmePromptVersion::V2 => "v2",
-        }.to_string(),
+        }
+        .to_string(),
         distill_ingest: (args.ingest == IngestMode::Distill).then_some(distill_totals),
         data: args.data.display().to_string(),
         qtype_filter: args.qtype.clone(),
@@ -2279,32 +2313,38 @@ mod tests {
     }
 }
 
-    // ─── P0: preference-prompt regression guard ───────────────────────────
+// ─── P0: preference-prompt regression guard ───────────────────────────
 
-    #[test]
-    fn preference_prompt_v2_encourages_inference_not_refusal() {
-        // P0 (r4 vs r3, 2026-08-04): the new PREFERENCE_RULE moved preference
-        // accuracy 13.3% → 56.7% by banning the blanket refusal. This test
-        // pins that rule inside the V2 prompt path so a future refactor
-        // cannot silently regress it.
-        let p = answer_system_prompt("single-session-preference", LmePromptVersion::V2);
-        assert!(p.contains("DO NOT answer 'I don't have enough information'"));
-        assert!(p.contains("preference-grounded recommendation"));
-        assert!(p.starts_with(ANSWER_SYSTEM_PROMPT_V2));
+#[test]
+fn preference_prompt_v2_encourages_inference_not_refusal() {
+    // P0 (r4 vs r3, 2026-08-04): the new PREFERENCE_RULE moved preference
+    // accuracy 13.3% → 56.7% by banning the blanket refusal. This test
+    // pins that rule inside the V2 prompt path so a future refactor
+    // cannot silently regress it.
+    let p = answer_system_prompt("single-session-preference", LmePromptVersion::V2);
+    assert!(p.contains("DO NOT answer 'I don't have enough information'"));
+    assert!(p.contains("preference-grounded recommendation"));
+    assert!(p.starts_with(ANSWER_SYSTEM_PROMPT_V2));
 
-        // Structural side-effect guard: the rule is appended ONLY for
-        // preference questions — temporal/multi-session/knowledge-update
-        // never see it, so the +43.4pp gain cannot leak into other classes.
-        for other in ["temporal-reasoning", "multi-session", "knowledge-update", "single-session-user", "single-session-assistant"] {
-            let prompt = answer_system_prompt(other, LmePromptVersion::V2);
-            assert!(
-                !prompt.contains(PREFERENCE_RULE),
-                "{other} must not receive the preference rule"
-            );
-        }
-
-        // V1 keeps the same rule (the two versions share the type-specific
-        // append layer).
-        let p1 = answer_system_prompt("single-session-preference", LmePromptVersion::V1);
-        assert!(p1.contains(PREFERENCE_RULE));
+    // Structural side-effect guard: the rule is appended ONLY for
+    // preference questions — temporal/multi-session/knowledge-update
+    // never see it, so the +43.4pp gain cannot leak into other classes.
+    for other in [
+        "temporal-reasoning",
+        "multi-session",
+        "knowledge-update",
+        "single-session-user",
+        "single-session-assistant",
+    ] {
+        let prompt = answer_system_prompt(other, LmePromptVersion::V2);
+        assert!(
+            !prompt.contains(PREFERENCE_RULE),
+            "{other} must not receive the preference rule"
+        );
     }
+
+    // V1 keeps the same rule (the two versions share the type-specific
+    // append layer).
+    let p1 = answer_system_prompt("single-session-preference", LmePromptVersion::V1);
+    assert!(p1.contains(PREFERENCE_RULE));
+}

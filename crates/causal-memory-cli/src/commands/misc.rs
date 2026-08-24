@@ -1,8 +1,8 @@
 //! Misc subcommands (mcp / extract / reasoning / link).
 
+use crate::get_db_path;
 use crate::server::CausalMemoryServer;
 use causal_memory::store::CausalStore;
-use crate::get_db_path;
 
 pub(crate) fn run_mcp_server() -> anyhow::Result<()> {
     let db_path = get_db_path();
@@ -37,19 +37,26 @@ pub(crate) fn run_mcp_server() -> anyhow::Result<()> {
 /// confounder (neighbor Jaccard), corroboration (path redundancy),
 /// placebo (activation specificity).
 pub(crate) fn run_refute(args: &[String]) -> anyhow::Result<()> {
+    use crate::get_db_path;
     use causal_memory::hippocampus::CausalGraph;
     use causal_memory::refute::EdgeRefuter;
     use causal_memory::store::CausalStore;
-    use crate::get_db_path;
 
     let db_path = get_db_path();
     let store = CausalStore::open(&db_path)?;
     let edge_count = store.count_edges().unwrap_or(0);
-    eprintln!("Loading graph from {} ({edge_count} edges)...", db_path.display());
+    eprintln!(
+        "Loading graph from {} ({edge_count} edges)...",
+        db_path.display()
+    );
 
     let graph = CausalGraph::from_store(&store)?;
-    eprintln!("Graph: {} nodes, {} edges ({} valid)",
-        graph.num_nodes(), graph.num_edges(), graph.num_valid_edges());
+    eprintln!(
+        "Graph: {} nodes, {} edges ({} valid)",
+        graph.num_nodes(),
+        graph.num_edges(),
+        graph.num_valid_edges()
+    );
 
     let refuter = EdgeRefuter::new(&graph);
     let report = refuter.refute_all();
@@ -61,7 +68,11 @@ pub(crate) fn run_refute(args: &[String]) -> anyhow::Result<()> {
     println!("\n  Grade distribution:");
     for grade in ['A', 'B', 'C', 'D', 'F'] {
         let count = report.distribution.get(&grade).copied().unwrap_or(0);
-        let pct = if report.graded > 0 { 100.0 * count as f64 / report.graded as f64 } else { 0.0 };
+        let pct = if report.graded > 0 {
+            100.0 * count as f64 / report.graded as f64
+        } else {
+            0.0
+        };
         let bar = "█".repeat(count * 40 / report.graded.max(1));
         println!("    {}: {:>4} ({:>5.1}%) {}", grade, count, pct, bar);
     }
@@ -69,19 +80,26 @@ pub(crate) fn run_refute(args: &[String]) -> anyhow::Result<()> {
     // Sample edges by grade
     println!("\n  Sample edges by grade:");
     for grade in ['A', 'B', 'D', 'F'] {
-        let sample: Vec<_> = report.results.iter()
+        let sample: Vec<_> = report
+            .results
+            .iter()
             .filter(|(_, r)| r.grade == grade)
             .take(3)
             .collect();
-        if sample.is_empty() { continue; }
+        if sample.is_empty() {
+            continue;
+        }
         println!("\n    Grade {}:", grade);
         for (edge_idx, result) in sample {
             let from = graph.edge_source_node(*edge_idx);
             let to = graph.edge_target(*edge_idx);
             let from_text = graph.node_text(from as usize);
             let to_text = graph.node_text(to as usize);
-            println!("      [{}] {} → {}",
-                result.tests.iter()
+            println!(
+                "      [{}] {} → {}",
+                result
+                    .tests
+                    .iter()
                     .map(|t| match t.result {
                         causal_memory::refute::TestResult::Robust => "✓",
                         causal_memory::refute::TestResult::Inconclusive => "?",
@@ -90,7 +108,8 @@ pub(crate) fn run_refute(args: &[String]) -> anyhow::Result<()> {
                     .collect::<Vec<_>>()
                     .join(""),
                 &from_text[..from_text.len().min(40)],
-                &to_text[..to_text.len().min(40)]);
+                &to_text[..to_text.len().min(40)]
+            );
         }
     }
 
@@ -101,8 +120,9 @@ pub(crate) fn run_refute(args: &[String]) -> anyhow::Result<()> {
         store.with_conn(|c| {
             c.execute_batch(
                 "ALTER TABLE causal_edges ADD COLUMN refutation_grade TEXT;
-                 ALTER TABLE causal_edges ADD COLUMN refutation_detail TEXT;"
-            ).ok();
+                 ALTER TABLE causal_edges ADD COLUMN refutation_detail TEXT;",
+            )
+            .ok();
             Ok::<_, anyhow::Error>(())
         })?;
 
@@ -111,7 +131,7 @@ pub(crate) fn run_refute(args: &[String]) -> anyhow::Result<()> {
         // which sorts by event_time. We need to re-query to get the DB row IDs.
         let edge_ids: Vec<i64> = store.with_conn(|c| {
             let mut stmt = c.prepare(
-                "SELECT id FROM causal_edges WHERE valid_to IS NULL ORDER BY event_time ASC"
+                "SELECT id FROM causal_edges WHERE valid_to IS NULL ORDER BY event_time ASC",
             )?;
             let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -220,8 +240,8 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
 }
 
 pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
-    use causal_memory::session::{default_source_kind, parser_for, SessionSource};
     use causal_memory::distill::{Distiller, ItemKind};
+    use causal_memory::session::{default_source_kind, parser_for, SessionSource};
 
     let (agent, session_dir) = crate::commands::parse_agent_path(args);
     if session_dir.as_os_str().is_empty() {
@@ -253,8 +273,11 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
         "Extracting memories from: {} (agent={agent:?})",
         session_dir.display()
     );
-    println!("  {} assistant messages, {} tool calls",
-        parsed.assistant_texts.len(), parsed.decisions.len());
+    println!(
+        "  {} assistant messages, {} tool calls",
+        parsed.assistant_texts.len(),
+        parsed.decisions.len()
+    );
 
     // Build conversation turns from assistant reasoning texts
     // (not tool calls — we extract from the agent's THINKING, not its ACTIONS)
@@ -324,9 +347,7 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
                     ItemKind::Lesson => "lesson".into(),
                     ItemKind::Event => "event".into(),
                     ItemKind::Causal => {
-                        let rel = item.causal_relation
-                            .map(|r| r.as_str())
-                            .unwrap_or("caused");
+                        let rel = item.causal_relation.map(|r| r.as_str()).unwrap_or("caused");
                         total_causal += 1;
                         // Write causal edge
                         let now_ts = chrono::Utc::now().timestamp();
@@ -338,8 +359,13 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
                             _ => 0.5,
                         };
                         let _ = store.record_decision_at(
-                            decision, &item.text, rel,
-                            Some("reasoning"), conf, "llm_inferred", now_ts,
+                            decision,
+                            &item.text,
+                            rel,
+                            Some("reasoning"),
+                            conf,
+                            "llm_inferred",
+                            now_ts,
                         );
                         format!("causal({})", rel)
                     }
@@ -347,10 +373,22 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
 
                 if item.kind != ItemKind::Causal {
                     let key = match item.kind {
-                        ItemKind::Fact => { total_facts += 1; "fact" }
-                        ItemKind::Preference => { total_facts += 1; "preference" }
-                        ItemKind::Lesson => { total_facts += 1; "lesson" }
-                        _ => { total_episodes += 1; "event" }
+                        ItemKind::Fact => {
+                            total_facts += 1;
+                            "fact"
+                        }
+                        ItemKind::Preference => {
+                            total_facts += 1;
+                            "preference"
+                        }
+                        ItemKind::Lesson => {
+                            total_facts += 1;
+                            "lesson"
+                        }
+                        _ => {
+                            total_episodes += 1;
+                            "event"
+                        }
                     };
                     let _ = store.record_fact(key, &item.text, "user", "reasoning", 0.8);
                 }
@@ -367,7 +405,10 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
     println!("  Facts/preferences:     {}", total_facts);
     println!("  Causal edges:          {}", total_causal);
     println!("  Other episodes:        {}", total_episodes);
-    println!("  Total memories:        {}", total_facts + total_causal + total_episodes);
+    println!(
+        "  Total memories:        {}",
+        total_facts + total_causal + total_episodes
+    );
     println!("\nTotal causal edges in DB: {}", store.count_edges()?);
 
     Ok(())

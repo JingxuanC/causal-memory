@@ -67,8 +67,14 @@ fn meta_pattern_miner_detects_repeated_decisions() {
     let report = miner.mine().unwrap();
 
     println!("\n=== Meta-Edge Pattern Mining ===");
-    println!("  repeated: {}, similar_to: {}", report.repeated, report.similar_to);
-    println!("  skipped_self: {}, skipped_short: {}", report.skipped_self, report.skipped_short);
+    println!(
+        "  repeated: {}, similar_to: {}",
+        report.repeated, report.similar_to
+    );
+    println!(
+        "  skipped_self: {}, skipped_short: {}",
+        report.skipped_self, report.skipped_short
+    );
 
     // The miner should detect that these two decisions are similar
     assert!(
@@ -109,22 +115,22 @@ fn meta_pattern_miner_dry_run_writes_nothing() {
     // Check no meta edges were written
     let store_meta_count = store
         .with_conn(|c| {
-            Ok(c.query_row(
-                "SELECT COUNT(*) FROM meta_causal_edges",
-                [],
-                |r| r.get::<_, i64>(0),
-            )?)
+            Ok(
+                c.query_row("SELECT COUNT(*) FROM meta_causal_edges", [], |r| {
+                    r.get::<_, i64>(0)
+                })?,
+            )
         })
         .unwrap();
 
     println!("\n=== Dry Run ===");
-    println!("  detected: {} repeated, {} similar", dry.repeated, dry.similar_to);
+    println!(
+        "  detected: {} repeated, {} similar",
+        dry.repeated, dry.similar_to
+    );
     println!("  meta edges in DB: {store_meta_count}");
 
-    assert_eq!(
-        store_meta_count, 0,
-        "dry run must not write meta edges"
-    );
+    assert_eq!(store_meta_count, 0, "dry run must not write meta edges");
     assert!(
         dry.repeated > 0 || dry.similar_to > 0,
         "dry run should still detect patterns"
@@ -161,7 +167,10 @@ fn meta_pattern_miner_ignores_dissimilar_decisions() {
     let report = miner.mine().unwrap();
 
     println!("\n=== Dissimilar Decisions ===");
-    println!("  repeated: {}, similar_to: {}", report.repeated, report.similar_to);
+    println!(
+        "  repeated: {}, similar_to: {}",
+        report.repeated, report.similar_to
+    );
 
     // Should NOT detect any pattern between nginx and pottery
     assert_eq!(
@@ -217,9 +226,7 @@ fn hebbian_non_co_active_decays() {
         mk("redis", "redis caching layer"),
         mk("performance", "application performance metrics"),
     ];
-    let edges = vec![
-        edge("redis", "performance", Relation::CoOccurrence, 0.05),
-    ];
+    let edges = vec![edge("redis", "performance", Relation::CoOccurrence, 0.05)];
     let mut graph = CausalGraph::build(&nodes, &edges);
 
     let edge_idx = 0;
@@ -319,8 +326,12 @@ fn intervention_forward_predicts_consequences() {
     }
 
     // Should predict: crash (caused), fast_merge (enabled), tech_debt (caused)
-    let predicts_crash = results.iter().any(|r| r.text.contains("crash") && r.activation > 0.0);
-    let predicts_fast = results.iter().any(|r| r.text.contains("faster") && r.activation > 0.0);
+    let predicts_crash = results
+        .iter()
+        .any(|r| r.text.contains("crash") && r.activation > 0.0);
+    let predicts_fast = results
+        .iter()
+        .any(|r| r.text.contains("faster") && r.activation > 0.0);
 
     assert!(predicts_crash, "should predict crash as a consequence");
     assert!(
@@ -430,16 +441,26 @@ fn advanced_dynamics_summary() {
     let tests: Vec<(&str, fn())> = vec![
         ("meta_pattern_mining", || {
             let store = CausalStore::open_in_memory().unwrap();
-            store.record_decision(
-                "deployed without running tests to production",
-                "production crash with errors",
-                "caused", Some("inc1"), 0.9, "test",
-            ).unwrap();
-            store.record_decision(
-                "deployed without running tests to staging",
-                "staging crash with errors",
-                "caused", Some("inc2"), 0.85, "test",
-            ).unwrap();
+            store
+                .record_decision(
+                    "deployed without running tests to production",
+                    "production crash with errors",
+                    "caused",
+                    Some("inc1"),
+                    0.9,
+                    "test",
+                )
+                .unwrap();
+            store
+                .record_decision(
+                    "deployed without running tests to staging",
+                    "staging crash with errors",
+                    "caused",
+                    Some("inc2"),
+                    0.85,
+                    "test",
+                )
+                .unwrap();
             let miner = PatternMiner::new(&store, MinerConfig::default());
             let r = miner.mine().unwrap();
             assert!(r.repeated > 0 || r.similar_to > 0);

@@ -1,8 +1,8 @@
 //! Store maintenance subcommands (restore / judge / sleep / migrate / embed / polarity).
 
+use crate::get_db_path;
 use causal_memory::extractor::DecisionExtractor;
 use causal_memory::store::CausalStore;
-use crate::get_db_path;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -20,9 +20,10 @@ pub(crate) fn run_restore(args: &[String]) -> anyhow::Result<()> {
                 if edge_id.is_some() {
                     anyhow::bail!("unexpected argument: {other}");
                 }
-                edge_id = Some(other.parse().map_err(|_| {
-                    anyhow::anyhow!("edge id must be an integer, got: {other}")
-                })?);
+                edge_id =
+                    Some(other.parse().map_err(|_| {
+                        anyhow::anyhow!("edge id must be an integer, got: {other}")
+                    })?);
             }
         }
         i += 1;
@@ -49,7 +50,9 @@ pub(crate) fn run_restore(args: &[String]) -> anyhow::Result<()> {
 
 /// Parse a session JSON file: `{"date": "YYYY-MM-DD", "turns": [...]}` where
 /// turns are `[speaker, message]` pairs or `{speaker, message}` objects.
-pub(crate) fn load_session(path: &std::path::Path) -> anyhow::Result<(String, Vec<(String, String)>)> {
+pub(crate) fn load_session(
+    path: &std::path::Path,
+) -> anyhow::Result<(String, Vec<(String, String)>)> {
     let raw = std::fs::read_to_string(path)?;
     let v: serde_json::Value = serde_json::from_str(&raw)?;
     let date = v
@@ -223,7 +226,10 @@ pub(crate) async fn run_resolve_updates(args: &[String]) -> anyhow::Result<()> {
         println!("No repeated-decision candidates found — nothing to resolve.");
         return Ok(());
     }
-    println!("C7 update-resolver: {} candidate edge(s) with repeated decisions but different outcomes", candidates.len());
+    println!(
+        "C7 update-resolver: {} candidate edge(s) with repeated decisions but different outcomes",
+        candidates.len()
+    );
     if llm.is_none() {
         println!("No CAUSAL_MEMORY_LLM_API configured — set it to get LLM verdicts (rule-based fallback only).");
     }
@@ -243,13 +249,15 @@ pub(crate) async fn run_resolve_updates(args: &[String]) -> anyhow::Result<()> {
         let new_o: String = new_out.chars().take(60).collect();
         print!("[edge {edge_id}] \"{old_d}\" → \"{old_o}\"\n            now: \"{new_o}\"");
         let verdict = match &llm {
-            Some(config) => match judge_supersession(config, old_dec, old_out, new_dec, new_out).await {
-                Ok(v) => v,
-                Err(e) => {
-                    println!("  ⚠ judge failed: {e} (kept, rule-based fallback)");
-                    continue;
+            Some(config) => {
+                match judge_supersession(config, old_dec, old_out, new_dec, new_out).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        println!("  ⚠ judge failed: {e} (kept, rule-based fallback)");
+                        continue;
+                    }
                 }
-            },
+            }
             None => {
                 println!("  (no LLM — preview only)");
                 continue;
@@ -260,19 +268,42 @@ pub(crate) async fn run_resolve_updates(args: &[String]) -> anyhow::Result<()> {
                 store.invalidate_edge(*edge_id)?;
                 retired.insert(*edge_id);
                 superseded += 1;
-                println!("  ✗ SUPERSEDED{}", if !verdict.reasoning.is_empty() { format!(" — {}", verdict.reasoning) } else { String::new() });
+                println!(
+                    "  ✗ SUPERSEDED{}",
+                    if !verdict.reasoning.is_empty() {
+                        format!(" — {}", verdict.reasoning)
+                    } else {
+                        String::new()
+                    }
+                );
             } else {
-                println!("  ✗ would supersede{}", if !verdict.reasoning.is_empty() { format!(" — {}", verdict.reasoning) } else { String::new() });
+                println!(
+                    "  ✗ would supersede{}",
+                    if !verdict.reasoning.is_empty() {
+                        format!(" — {}", verdict.reasoning)
+                    } else {
+                        String::new()
+                    }
+                );
             }
         } else {
-            println!("  ✓ keep{}", if !verdict.reasoning.is_empty() { format!(" — {}", verdict.reasoning) } else { String::new() });
+            println!(
+                "  ✓ keep{}",
+                if !verdict.reasoning.is_empty() {
+                    format!(" — {}", verdict.reasoning)
+                } else {
+                    String::new()
+                }
+            );
         }
     }
     println!();
     if apply {
         println!("Applied: {superseded} edge(s) invalidated.");
     } else {
-        println!("Preview only (no changes). Re-run with --apply to invalidate the superseded edges.");
+        println!(
+            "Preview only (no changes). Re-run with --apply to invalidate the superseded edges."
+        );
     }
     Ok(())
 }
@@ -376,7 +407,10 @@ pub(crate) fn run_sleep(args: &[String]) -> anyhow::Result<()> {
         let ts = chrono::Utc::now().format("%Y%m%d_%H%M%S");
         let new_path = flags.db.with_file_name(format!("{stem}.consolidated-{ts}"));
         if new_path.exists() {
-            anyhow::bail!("target {} already exists — refusing to overwrite", new_path.display());
+            anyhow::bail!(
+                "target {} already exists — refusing to overwrite",
+                new_path.display()
+            );
         }
         vacuum_into(&flags.db, &new_path)?;
         let new_store = CausalStore::open(&new_path)?;
@@ -384,8 +418,16 @@ pub(crate) fn run_sleep(args: &[String]) -> anyhow::Result<()> {
         println!("=== Sleep Consolidation (IMMUTABLE — new store) ===");
         println!("  original untouched: {}", flags.db.display());
         println!("  consolidated store: {}", new_path.display());
-        println!("  preview diversity: {:.2} ({} edges)", preview.diversity, report.reactivated.len());
-        println!("  to activate: sleep --restore {} [--db {}]", new_path.display(), flags.db.display());
+        println!(
+            "  preview diversity: {:.2} ({} edges)",
+            preview.diversity,
+            report.reactivated.len()
+        );
+        println!(
+            "  to activate: sleep --restore {} [--db {}]",
+            new_path.display(),
+            flags.db.display()
+        );
         println!();
         return print_consolidation_report(&report, flags.db.as_path(), Some(new_path.as_path()));
     }
@@ -413,24 +455,43 @@ fn print_consolidation_report(
         "=== Sleep Consolidation Report{} ===",
         if report.dry_run { " (DRY RUN)" } else { "" }
     );
-    println!("DB: {} (recent diversity {:.2})", db_path.display(), report.diversity);
+    println!(
+        "DB: {} (recent diversity {:.2})",
+        db_path.display(),
+        report.diversity
+    );
     if let Some(p) = extra_store {
         println!("Consolidated store (original untouched): {}", p.display());
     }
     println!();
 
-    println!("① Reactivation (replay priority, top {}):", report.reactivated.len().min(10));
+    println!(
+        "① Reactivation (replay priority, top {}):",
+        report.reactivated.len().min(10)
+    );
     for (i, entry) in report.reactivated.iter().take(10).enumerate() {
         let snippet: String = entry.decision_text.chars().take(60).collect();
-        println!("  {}. [edge {}] score {:.2} — {}", i + 1, entry.edge_id, entry.score, snippet);
+        println!(
+            "  {}. [edge {}] score {:.2} — {}",
+            i + 1,
+            entry.edge_id,
+            entry.score,
+            snippet
+        );
         println!("     ({})", entry.reasons.join(", "));
     }
     if report.reactivated.is_empty() {
         println!("  (no valid edges)");
     }
-    println!("  → {} edge(s) replay-protected & marked (half decay, lenient GC)", report.replayed);
+    println!(
+        "  → {} edge(s) replay-protected & marked (half decay, lenient GC)",
+        report.replayed
+    );
 
-    println!("\n①.7 C7 supersession (LLM judge): {} lesson(s) retired", report.superseded_lessons);
+    println!(
+        "\n①.7 C7 supersession (LLM judge): {} lesson(s) retired",
+        report.superseded_lessons
+    );
 
     println!("\n② Generalization:");
     println!("  redundant edges merged: {}", report.merged_edges);
@@ -465,7 +526,10 @@ fn print_consolidation_report(
 
     println!("\n④ REM integration:");
     println!("  cross-domain transfers: {}", report.rem_transfers);
-    println!("⑤ Q-value reinforcement (Bellman): {} chunk(s) updated", report.q_updates);
+    println!(
+        "⑤ Q-value reinforcement (Bellman): {} chunk(s) updated",
+        report.q_updates
+    );
 
     if report.dry_run {
         println!("\n(dry run — no changes were written)");
@@ -486,7 +550,10 @@ fn vacuum_into(src: &std::path::Path, dst: &std::path::Path) -> anyhow::Result<(
 /// Swap the live DB for a consolidated snapshot (D2): back up the current
 /// file, then copy the snapshot over it. The snapshot is a complete DB, so
 /// a plain file copy is enough; the original backup allows rollback.
-fn restore_from_consolidated(src: &std::path::Path, target: &std::path::Path) -> anyhow::Result<()> {
+fn restore_from_consolidated(
+    src: &std::path::Path,
+    target: &std::path::Path,
+) -> anyhow::Result<()> {
     if !src.exists() {
         anyhow::bail!("consolidated store not found: {}", src.display());
     }
@@ -501,7 +568,11 @@ fn restore_from_consolidated(src: &std::path::Path, target: &std::path::Path) ->
         println!("Backed up current store: {}", backup.display());
     }
     std::fs::copy(src, target)?;
-    println!("Restored consolidated store: {} → {}", src.display(), target.display());
+    println!(
+        "Restored consolidated store: {} → {}",
+        src.display(),
+        target.display()
+    );
     println!("Backup (rollback): {}", backup.display());
     Ok(())
 }
@@ -530,7 +601,8 @@ pub(crate) fn run_migrate(args: &[String]) -> anyhow::Result<()> {
 
 /// Backfill embeddings for valid edges that don't have one yet.
 pub(crate) async fn run_embed(args: &[String]) -> anyhow::Result<()> {
-    use causal_memory::embed::{EmbedConfig, Embedder};    let mut db: Option<PathBuf> = None;
+    use causal_memory::embed::{EmbedConfig, Embedder};
+    let mut db: Option<PathBuf> = None;
     let mut limit: usize = 0; // 0 = all pending
     let mut also_facts = false;
     let mut i = 0;
@@ -563,35 +635,36 @@ pub(crate) async fn run_embed(args: &[String]) -> anyhow::Result<()> {
     }
 
     // Try HTTP embedding config first, then local ONNX.
-    let mut embedder: causal_memory::embed::UnifiedEmbedder =
-        if let Some(config) = EmbedConfig::from_env() {
-            println!("Embedder: {} @ {}", config.model, config.api_base);
-            causal_memory::embed::UnifiedEmbedder::Http(Embedder::new(config))
-        } else {
-            #[cfg(feature = "local-embed")]
-            {
-                match causal_memory::embed::LocalEmbedder::new() {
-                    Ok(e) => {
-                        println!("Embedder: {} (local ONNX)", e.model());
-                        causal_memory::embed::UnifiedEmbedder::Local(e)
-                    }
-                    Err(e) => {
-                        eprintln!("No HTTP embedding configured and local ONNX failed: {e}");
-                        eprintln!("Set CAUSAL_MEMORY_EMBED_API + CAUSAL_MEMORY_EMBED_KEY, or build with --features local-embed");
-                        std::process::exit(1);
-                    }
+    let mut embedder: causal_memory::embed::UnifiedEmbedder = if let Some(config) =
+        EmbedConfig::from_env()
+    {
+        println!("Embedder: {} @ {}", config.model, config.api_base);
+        causal_memory::embed::UnifiedEmbedder::Http(Embedder::new(config))
+    } else {
+        #[cfg(feature = "local-embed")]
+        {
+            match causal_memory::embed::LocalEmbedder::new() {
+                Ok(e) => {
+                    println!("Embedder: {} (local ONNX)", e.model());
+                    causal_memory::embed::UnifiedEmbedder::Local(e)
+                }
+                Err(e) => {
+                    eprintln!("No HTTP embedding configured and local ONNX failed: {e}");
+                    eprintln!("Set CAUSAL_MEMORY_EMBED_API + CAUSAL_MEMORY_EMBED_KEY, or build with --features local-embed");
+                    std::process::exit(1);
                 }
             }
-            #[cfg(not(feature = "local-embed"))]
-            {
-                eprintln!("Embedding not configured. Set:");
-                eprintln!("  CAUSAL_MEMORY_EMBED_API   (default: CAUSAL_MEMORY_LLM_API)");
-                eprintln!("  CAUSAL_MEMORY_EMBED_KEY   (default: CAUSAL_MEMORY_LLM_KEY)");
-                eprintln!("  CAUSAL_MEMORY_EMBED_MODEL (default: text-embedding-3-small)");
-                eprintln!("  Or rebuild with --features local-embed for offline ONNX embedding.");
-                std::process::exit(1);
-            }
-        };
+        }
+        #[cfg(not(feature = "local-embed"))]
+        {
+            eprintln!("Embedding not configured. Set:");
+            eprintln!("  CAUSAL_MEMORY_EMBED_API   (default: CAUSAL_MEMORY_LLM_API)");
+            eprintln!("  CAUSAL_MEMORY_EMBED_KEY   (default: CAUSAL_MEMORY_LLM_KEY)");
+            eprintln!("  CAUSAL_MEMORY_EMBED_MODEL (default: text-embedding-3-small)");
+            eprintln!("  Or rebuild with --features local-embed for offline ONNX embedding.");
+            std::process::exit(1);
+        }
+    };
 
     let db_path = db.unwrap_or_else(get_db_path);
     if let Some(parent) = db_path.parent() {
@@ -617,12 +690,22 @@ pub(crate) async fn run_embed(args: &[String]) -> anyhow::Result<()> {
                     }
                     Err(e) => {
                         total_failed += 1;
-                        println!("  [{}/{}] edge {} DB write failed: {e}", idx + 1, pending.len(), edge_id);
+                        println!(
+                            "  [{}/{}] edge {} DB write failed: {e}",
+                            idx + 1,
+                            pending.len(),
+                            edge_id
+                        );
                     }
                 },
                 Err(e) => {
                     total_failed += 1;
-                    println!("  [{}/{}] edge {} embed failed: {e}", idx + 1, pending.len(), edge_id);
+                    println!(
+                        "  [{}/{}] edge {} embed failed: {e}",
+                        idx + 1,
+                        pending.len(),
+                        edge_id
+                    );
                 }
             }
         }
@@ -643,12 +726,22 @@ pub(crate) async fn run_embed(args: &[String]) -> anyhow::Result<()> {
                         }
                         Err(e) => {
                             total_failed += 1;
-                            println!("  [{}/{}] fact {} DB write failed: {e}", idx + 1, facts.len(), fid);
+                            println!(
+                                "  [{}/{}] fact {} DB write failed: {e}",
+                                idx + 1,
+                                facts.len(),
+                                fid
+                            );
                         }
                     },
                     Err(e) => {
                         total_failed += 1;
-                        println!("  [{}/{}] fact {} embed failed: {e}", idx + 1, facts.len(), fid);
+                        println!(
+                            "  [{}/{}] fact {} embed failed: {e}",
+                            idx + 1,
+                            facts.len(),
+                            fid
+                        );
                     }
                 }
             }

@@ -201,7 +201,8 @@ pub struct CausalStore {
     /// Chunk texts are immutable and edges are append/invalidate-only, so a
     /// cached entry can never go stale within a process — an invalidated
     /// edge simply drops out of the candidate set before the cache is read.
-    pub(crate) entity_cache: Arc<Mutex<std::collections::HashMap<i64, std::sync::Arc<Vec<String>>>>>,
+    pub(crate) entity_cache:
+        Arc<Mutex<std::collections::HashMap<i64, std::sync::Arc<Vec<String>>>>>,
 }
 
 impl CausalStore {
@@ -290,9 +291,8 @@ impl CausalStore {
         if tokens.is_empty() {
             return Ok(());
         }
-        let mut stmt = conn.prepare(
-            "INSERT OR IGNORE INTO bm25_index (token, chunk_id) VALUES (?1, ?2)",
-        )?;
+        let mut stmt =
+            conn.prepare("INSERT OR IGNORE INTO bm25_index (token, chunk_id) VALUES (?1, ?2)")?;
         for tok in tokens {
             stmt.execute(params![tok, chunk_id])?;
         }
@@ -339,7 +339,11 @@ impl CausalStore {
             "SELECT from_id, to_id, weight FROM cooccurrence_edges ORDER BY weight DESC",
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, f64>(2)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, f64>(2)?,
+            ))
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| anyhow!("Query failed: {e}"))
@@ -433,25 +437,18 @@ pub(crate) struct PooledConn {
     pool: Arc<ConnPool>,
 }
 
-
 impl Deref for PooledConn {
     type Target = Connection;
     // conn is Some for the whole borrowable lifetime; it is only taken out
     // inside Drop when the connection returns to the pool.
-    #[allow(
-        clippy::expect_used,
-        reason = "conn is invariantly Some outside Drop"
-    )]
+    #[allow(clippy::expect_used, reason = "conn is invariantly Some outside Drop")]
     fn deref(&self) -> &Connection {
         self.conn.as_ref().expect("pooled conn present")
     }
 }
 
 impl DerefMut for PooledConn {
-    #[allow(
-        clippy::expect_used,
-        reason = "conn is invariantly Some outside Drop"
-    )]
+    #[allow(clippy::expect_used, reason = "conn is invariantly Some outside Drop")]
     fn deref_mut(&mut self) -> &mut Connection {
         self.conn.as_mut().expect("pooled conn present")
     }
@@ -477,11 +474,11 @@ mod write;
 pub use types::*;
 pub use utils::{
     containment_similarity, date_tokens, effective_polarity, is_retraction_record,
-    outcome_polarity, outcomes_contradict, strip_bracket_prefix,
-    RETRACTION_MARKERS, SUPERSEDES_MIN_SHARED_TOKENS, SUPERSEDES_SIM_THRESHOLD,
+    outcome_polarity, outcomes_contradict, strip_bracket_prefix, RETRACTION_MARKERS,
+    SUPERSEDES_MIN_SHARED_TOKENS, SUPERSEDES_SIM_THRESHOLD,
 };
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod probe_perf;
+#[cfg(test)]
+mod tests;

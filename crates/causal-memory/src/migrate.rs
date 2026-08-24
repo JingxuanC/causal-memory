@@ -849,9 +849,7 @@ fn migrate_to_v9(conn: &Connection) -> Result<()> {
     }
     let cols = table_columns(conn, "chunks")?;
     if !cols.contains("q_value") {
-        conn.execute_batch(
-            "ALTER TABLE chunks ADD COLUMN q_value REAL NOT NULL DEFAULT 0.5",
-        )?;
+        conn.execute_batch("ALTER TABLE chunks ADD COLUMN q_value REAL NOT NULL DEFAULT 0.5")?;
     }
     if !cols.contains("sparse_code") {
         conn.execute_batch("ALTER TABLE chunks ADD COLUMN sparse_code TEXT")?;
@@ -876,7 +874,7 @@ fn migrate_to_v10(conn: &Connection) -> Result<()> {
             chunk_id TEXT NOT NULL,
             PRIMARY KEY (token, chunk_id)
          );
-         CREATE INDEX IF NOT EXISTS idx_bm25_chunk ON bm25_index(chunk_id);"
+         CREATE INDEX IF NOT EXISTS idx_bm25_chunk ON bm25_index(chunk_id);",
     )?;
 
     // Backfill: index every existing chunk and fact so fresh stores and
@@ -884,18 +882,16 @@ fn migrate_to_v10(conn: &Connection) -> Result<()> {
     // keeps it idempotent for partially-migrated DBs. Very old DBs (v1-v2)
     // may not have the chunks/agent_facts tables yet — the base schema runs
     // after all migrations — so guard each backfill source.
-    let mut idx = conn.prepare(
-        "INSERT OR IGNORE INTO bm25_index (token, chunk_id) VALUES (?1, ?2)",
-    )?;
+    let mut idx =
+        conn.prepare("INSERT OR IGNORE INTO bm25_index (token, chunk_id) VALUES (?1, ?2)")?;
     let mut count = 0usize;
 
     if !table_exists(conn, "chunks")? {
         tracing::debug!("v10: no chunks table yet, skipping chunk backfill");
     } else {
         let mut cstmt = conn.prepare("SELECT id, text FROM chunks")?;
-    let crows = cstmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })?;
+        let crows =
+            cstmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         for row in crows {
             let (id, text) = row?;
             for tok in crate::patterns::tokenize(&text) {
@@ -908,7 +904,11 @@ fn migrate_to_v10(conn: &Connection) -> Result<()> {
     if table_exists(conn, "agent_facts")? {
         let mut fstmt = conn.prepare("SELECT id, key, value FROM agent_facts")?;
         let frows = fstmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
         })?;
         for row in frows {
             let (fid, key, value) = row?;
@@ -935,7 +935,7 @@ fn migrate_to_v11(conn: &Connection) -> Result<()> {
             weight REAL NOT NULL DEFAULT 0.2,
             updated_at INTEGER NOT NULL,
             PRIMARY KEY (from_id, to_id)
-         );"
+         );",
     )?;
     Ok(())
 }
