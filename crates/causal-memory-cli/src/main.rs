@@ -17,6 +17,7 @@ use commands::maintenance::{
     run_embed, run_judge, run_migrate, run_polarity, run_resolve_updates, run_restore, run_sleep,
 };
 use commands::misc::run_refute;
+use commands::misc::run_stats;
 use commands::misc::{run_extract, run_http_server, run_link, run_mcp_server, run_reasoning};
 use commands::wiki::run_wiki;
 
@@ -156,6 +157,11 @@ fn main() -> anyhow::Result<()> {
         return run_refute(&args[2..]);
     }
 
+    // Subcommand: stats [--db <PATH>] — store overview (size, layers, recency)
+    if args.len() >= 2 && args[1] == "stats" {
+        return run_stats(&args[2..]);
+    }
+
     // Default: MCP server mode (stdio)
     // --http: HTTP transport mode (remote agents, multi-agent shared memory)
     if args.len() >= 2 && args[1] == "http" {
@@ -189,6 +195,7 @@ fn print_help() {
          \x20 polarity [--db P] [--limit N]  backfill outcome polarity\n\
          \x20 resolve-updates        LLM update-resolver for falsified lessons\n\
          \x20 refute                 graph-structural refutation on all edges\n\
+         \x20 stats [--db P]         store overview (size, layers, recency)\n\
          \n\
          Share & export:\n\
          \x20 export <file.jsonl>    share causal memory across agents\n\

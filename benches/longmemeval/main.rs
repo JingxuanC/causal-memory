@@ -1526,11 +1526,16 @@ async fn answer_question(
     // threads parked on the mutex, IO wakes flow freely.
     let query_vec = {
         static EMBED_GATE: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
-        let _permit = EMBED_GATE
+        // AcquireError only happens when the semaphore is closed; this
+        // static gate is never closed.
+        let _permit = match EMBED_GATE
             .get_or_init(|| tokio::sync::Semaphore::new(1))
             .acquire()
             .await
-            .expect("semaphore never closes");
+        {
+            Ok(p) => p,
+            Err(_) => unreachable!("EMBED_GATE semaphore never closes"),
+        };
         match causal_memory::embed::embed_shared(&q.question).await {
             Some(Ok(v)) => Some(v),
             _ => None,

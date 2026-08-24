@@ -56,17 +56,22 @@ async fn main() -> anyhow::Result<()> {
     let mut paraphrase = false;
     let mut note: Option<String> = None;
     let mut args = std::env::args().skip(1);
+    let next_val =
+        |args: &mut std::iter::Skip<std::env::Args>, flag: &str| -> anyhow::Result<String> {
+            args.next()
+                .ok_or_else(|| anyhow::anyhow!("{flag} needs a value"))
+        };
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--db" => db = args.next().expect("--db needs a value"),
-            "--data" => data = args.next().expect("--data needs a value"),
-            "-n" | "--n" => n = Some(args.next().expect("-n needs a value").parse()?),
+            "--db" => db = next_val(&mut args, "--db")?,
+            "--data" => data = next_val(&mut args, "--data")?,
+            "-n" | "--n" => n = Some(next_val(&mut args, "-n")?.parse()?),
             "--self-queries" => self_queries = true,
             "--self-queries-paraphrase" => {
                 self_queries = true;
                 paraphrase = true;
             }
-            "--note" => note = Some(args.next().expect("--note needs a value")),
+            "--note" => note = Some(next_val(&mut args, "--note")?),
             other => anyhow::bail!("unknown flag {other}"),
         }
     }
@@ -382,7 +387,8 @@ fn chunk_idf(store: &CausalStore) -> anyhow::Result<HashMap<String, f64>> {
         let mut n_docs = 0usize;
         for t in texts {
             n_docs += 1;
-            let distinct: HashSet<String> = causal_memory::patterns::tokenize(&t?).into_iter().collect();
+            let distinct: HashSet<String> =
+                causal_memory::patterns::tokenize(&t?).into_iter().collect();
             for tok in distinct {
                 *df.entry(tok).or_insert(0) += 1;
             }
@@ -415,7 +421,8 @@ fn paraphrase_drop_anchors(text: &str, idf: &HashMap<String, f64>) -> String {
     by_idf.sort_by(|a, b| {
         let ia = idf.get(*a).copied().unwrap_or(f64::MAX);
         let ib = idf.get(*b).copied().unwrap_or(f64::MAX);
-        ib.partial_cmp(&ia).unwrap_or(std::cmp::Ordering::Equal)
+        ib.partial_cmp(&ia)
+            .unwrap_or(std::cmp::Ordering::Equal)
             .then(a.cmp(b))
     });
     let drop: HashSet<&String> = by_idf.into_iter().take(k).collect();
@@ -538,7 +545,10 @@ mod tests {
         let p = paraphrase_drop_anchors(text, &idf);
         // k = ceil(14 × 0.3) = 5 → the four 5.0 anchors + the next-highest.
         for anchor in ["dockerfile", "alpine", "syncuser", "root"] {
-            assert!(!p.split_whitespace().any(|t| t == anchor), "{anchor} leaked");
+            assert!(
+                !p.split_whitespace().any(|t| t == anchor),
+                "{anchor} leaked"
+            );
         }
         // Generic tokens survive.
         assert!(p.split_whitespace().any(|t| t == "build"));
@@ -546,7 +556,9 @@ mod tests {
 
         // Overlap with the original text drops significantly (Jaccard of
         // distinct tokens well below the verbatim 1.0).
-        let orig: HashSet<String> = causal_memory::patterns::tokenize(text).into_iter().collect();
+        let orig: HashSet<String> = causal_memory::patterns::tokenize(text)
+            .into_iter()
+            .collect();
         let para: HashSet<String> = p.split_whitespace().map(|s| s.to_string()).collect();
         let inter = orig.intersection(&para).count();
         let union = orig.union(&para).count();

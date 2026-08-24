@@ -538,3 +538,110 @@ pub(crate) fn run_link() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// `stats` — store overview (Claude Code `/context` analogue): file size,
+/// per-layer counts, consolidation state, and recency at a glance.
+pub(crate) fn run_stats(args: &[String]) -> anyhow::Result<()> {
+    let mut db: Option<std::path::PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--db" => {
+                i += 1;
+                let Some(p) = args.get(i) else {
+                    anyhow::bail!("--db requires a path\nUsage: causal-memory stats [--db <PATH>]")
+                };
+                db = Some(std::path::PathBuf::from(p));
+            }
+            other => {
+                anyhow::bail!("unknown flag: {other}\nUsage: causal-memory stats [--db <PATH>]")
+            }
+        }
+        i += 1;
+    }
+    let db = db.unwrap_or_else(get_db_path);
+    let bytes = std::fs::metadata(&db).map(|m| m.len()).unwrap_or(0);
+    let store = CausalStore::open(&db)?;
+
+    store.with_conn(|c| {
+        let q1 = |sql: &str| -> rusqlite::Result<i64> { c.query_row(sql, [], |r| r.get(0)) };
+        let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let chunks = q1("SELECT COUNT(*) FROM chunks")?;
+        let (qmin, qmax, qavg): (f64, f64, f64) = c.query_row(
+            "SELECT MIN(q_value), MAX(q_value), AVG(q_value) FROM chunks",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let q_tuned = q1("SELECT COUNT(*) FROM chunks WHERE ABS(q_value - 0.5) > 0.001")?;
+        let edges_valid = q1("SELECT COUNT(*) FROM causal_edges WHERE valid_to IS NULL")?;
+        let edges_dead = q1("SELECT COUNT(*) FROM causal_edges WHERE valid_to IS NOT NULL")?;
+        let facts_active = q1("SELECT COUNT(*) FROM agent_facts WHERE valid_to IS NULL")?;
+        let facts_dead = q1("SELECT COUNT(*) FROM agent_facts WHERE valid_to IS NOT NULL")?;
+        let meta = q1("SELECT COUNT(*) FROM meta_causal_edges")?;
+        let cooc = q1("SELECT COUNT(*) FROM cooccurrence_edges")?;
+        let emb = q1("SELECT COUNT(*) FROM edge_embeddings")?;
+        let latest: Option<i64> = c
+            .query_row("SELECT MAX(created_at) FROM chunks", [], |r| r.get(0))
+            .ok();
+
+        println!("causal-memory stats — {}", db.display());
+        println!("  file: {} · schema v{version}", human_bytes(bytes));
+        println!();
+        println!("  chunks:            {chunks}  (q_value {qmin:.2}–{qmax:.2}, avg {qavg:.3}; {q_tuned} tuned by consolidation)");
+        println!("  causal edges:      {edges_valid} active · {edges_dead} invalidated");
+        let mut stmt =
+            c.prepare("SELECT relation, COUNT(*) FROM causal_edges WHERE valid_to IS NULL GROUP BY relation ORDER BY 2 DESC")?;
+        let rels = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (rel, n) in &rels {
+            println!("      {rel:<14} {n}");
+        }
+        println!("  facts:             {facts_active} active · {facts_dead} superseded/invalidated");
+        let mut stmt = c.prepare(
+            "SELECT scope, COUNT(*) FROM agent_facts WHERE valid_to IS NULL GROUP BY scope ORDER BY 2 DESC",
+        )?;
+        let scopes = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (scope, n) in &scopes {
+            println!("      {scope:<14} {n}");
+        }
+        println!("  meta edges:        {meta}");
+        println!("  co-occurrence:     {cooc}");
+        println!("  edge embeddings:   {emb}");
+        println!();
+        let mut stmt = c.prepare(
+            "SELECT COALESCE(task_tag,'untagged'), COUNT(*) FROM causal_edges WHERE valid_to IS NULL GROUP BY task_tag ORDER BY 2 DESC LIMIT 5",
+        )?;
+        let tags = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !tags.is_empty() {
+            let line: Vec<String> = tags.iter().map(|(t, n)| format!("{t} ({n})")).collect();
+            println!("  top task tags:     {}", line.join(", "));
+        }
+        if let Some(ts) = latest {
+            let dt = chrono::DateTime::from_timestamp(ts, 0)
+                .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                .unwrap_or_else(|| ts.to_string());
+            println!("  latest memory:     {dt}");
+        }
+        Ok(())
+    })
+}
+
+fn human_bytes(b: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut v = b as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{b} B")
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
+}
