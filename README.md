@@ -42,9 +42,10 @@ compaction cannot touch it.
 → 经验检索（`search_causal`）→ 反事实对比（`counterfactual_query`）→
 写入闭环（`record_decision` → 立即可检索）。
 
-<!-- jsDelivr serves the repo mp4 as video/mp4; github.com/raw returns
-     application/octet-stream + nosniff, which browsers refuse to play. -->
-<video src="https://cdn.jsdelivr.net/gh/JingxuanC/causal-memory@main/docs/demo/causal-memory-demo.mp4" poster="https://cdn.jsdelivr.net/gh/JingxuanC/causal-memory@main/docs/demo/demo_card.png" controls width="720"></video>
+<!-- GitHub's CSP (media-src) only allows GitHub-hosted media, so an
+     external <video> never plays on the repo page. An animated GIF goes
+     through the camo image proxy and plays inline. Click for the mp4. -->
+[![21 秒实操演示](docs/demo/causal-memory-demo.gif)](docs/demo/causal-memory-demo.mp4)
 
 [下载视频](docs/demo/causal-memory-demo.mp4) ·
 [预警场景截图](docs/demo/demo_intervention.png) ·
