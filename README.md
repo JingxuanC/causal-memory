@@ -9,9 +9,9 @@
 > *why* it worked — and *what would happen if* they acted differently.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Status: v0.9.0](https://img.shields.io/badge/status-v0.9.0--alpha-orange.svg)](#status)
+[![Status: v0.9.1](https://img.shields.io/badge/status-v0.9.1--alpha-orange.svg)](#status)
 [![Tests: 368](https://img.shields.io/badge/tests-368-brightgreen.svg)](#build--test)
-[![Release: v0.9.0](https://img.shields.io/badge/release-v0.9.0-blue.svg)](https://github.com/JingxuanC/causal-memory/releases)
+[![Release: v0.9.1](https://img.shields.io/badge/release-v0.9.1-blue.svg)](https://github.com/JingxuanC/causal-memory/releases)
 
 **English** · [简体中文](README.zh-CN.md)
 
@@ -418,7 +418,7 @@ research papers. Key references:
 
 ## Status
 
-**v0.9.0 — alpha.**
+**v0.9.1 — alpha.**
 
 What works (16/16 layers with end-to-end validation):
 

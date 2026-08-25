@@ -5,7 +5,21 @@ All notable changes to causal-memory are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.0] - Unreleased
+## [0.9.1] - 2026-08-25
+
+### Fixed
+- **UTF-8 char-boundary panic in the `remember` op** (`memory/ops.rs`):
+  truncating multi-byte text could slice inside a UTF-8 sequence and panic.
+- **hermes-plugin**: `on_memory_write` now matches the Hermes
+  `MemoryProvider` ABC (accepts `metadata`); persisted `config.json` is
+  reloaded on `initialize`; offline test suite no longer leaks LLM env vars.
+
+### Changed
+- The PyPI page now shows a pip-user quickstart (install, 30-second example,
+  env-var configuration table, MCP-binary pointer) instead of the
+  cargo-centric repo README.
+
+## [0.9.0] - 2026-08-24
 
 ### Benchmarks
 - **LongMemEval-S full-pipeline headline: 76.4% overall (382/500) at
