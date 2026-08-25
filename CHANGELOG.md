@@ -5,6 +5,23 @@ All notable changes to causal-memory are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - Unreleased
+
+### Added
+- **`causal-memory` console script in the PyPI package** — `pip install
+  causal-memory` now also installs the full CLI / MCP server command (no
+  Rust toolchain needed): bare `causal-memory` runs the MCP stdio server,
+  and every cargo subcommand (`stats`, `sleep`, `export` / `import`,
+  `wiki`, …) works the same. The cargo binary and the console script
+  share one dispatcher (`causal-memory-cli` refactored to lib+bin).
+- **JSON config file + `setconfig` commands** (`config.rs`): configuration
+  can live in `$CAUSAL_MEMORY_CONFIG` or
+  `~/.local/share/causal-memory/config.json` instead of process env (env
+  still wins). Manage it with `causal-memory setconfig KEY=VALUE …`
+  (whitelisted keys, empty value deletes), `getconfig` (`*_KEY` values
+  masked), and `config-path` — no more hand-exporting env vars into every
+  agent process.
+
 ## [0.9.1] - 2026-08-25
 
 ### Fixed

@@ -8,6 +8,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "causal_memory_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "causal-memory"
 path = "src/main.rs"

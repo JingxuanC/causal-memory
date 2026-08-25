@@ -215,8 +215,10 @@ fn session_id_from_name(name: &str) -> i64 {
 
 /// v8 (P1): recurrence-triggered distill (RecMem, arXiv:2605.16045).
 ///
-///     causal-memory distill --mode recurrence <session.json|dir> [--db PATH] [--threshold F]
-///     causal-memory distill --mode batch [--db PATH] [--threshold F]
+/// ```text
+/// causal-memory distill --mode recurrence <session.json|dir> [--db PATH] [--threshold F]
+/// causal-memory distill --mode batch [--db PATH] [--threshold F]
+/// ```
 ///
 /// Recurrence mode: each session is logged to `session_logs` WITH its
 /// embedding, and distilled only when its topic semantically repeats a prior
@@ -406,7 +408,9 @@ const NOVELTY_PREDICT_SYSTEM: &str = "You are a world-model simulator. Given a d
 
 /// (P5) Novelty gate with the FEP prediction-gap fallback.
 ///
-///     causal-memory novelty <decision> <actual> [--mode entropy|prediction_gap|hybrid] [--db <PATH>]
+/// ```text
+/// causal-memory novelty <decision> <actual> [--mode entropy|prediction_gap|hybrid] [--db <PATH>]
+/// ```
 ///
 /// Entropy mode = the cheap word-frequency surprise (no LLM). PredictionGap
 /// mode = LLM predicts the outcome of the decision, surprise is the semantic

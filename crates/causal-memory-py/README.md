@@ -61,11 +61,26 @@ can add them later — the store format is the same.
 
 - ✅ The **Python library**: embed causal memory in your own agent, script,
   or framework integration.
-- ❌ Not the **MCP server binary**. If you want Claude Code / Cursor to use
-  causal-memory as an MCP tool server, build the Rust binary instead:
-  `cargo build --release` from the
-  [repo](https://github.com/JingxuanC/causal-memory#quick-start), then point
-  your MCP config at it.
+- ✅ The **MCP server command**: the same `pip install` also drops a
+  `causal-memory` console script on your PATH — point your MCP client
+  config straight at it, no Rust toolchain needed:
+
+  ```json
+  {
+    "mcpServers": {
+      "causal-memory": {
+        "command": "causal-memory"
+      }
+    }
+  }
+  ```
+
+  The console script is the full CLI: bare `causal-memory` runs the MCP
+  stdio server; subcommands cover configuration (`setconfig` / `getconfig`
+  / `config-path`), maintenance (`stats`, `sleep`, `migrate`, …) and
+  import/export. See `causal-memory --help`.
+- ❌ Not a hosted service — everything runs against a local SQLite file
+  you own.
 
 ## Links
 

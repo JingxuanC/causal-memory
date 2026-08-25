@@ -252,6 +252,7 @@ name = "causal-memory-py"
 version = "0.9.1"
 dependencies = [
  "causal-memory",
+ "causal-memory-cli",
  "pyo3",
 ]
 
