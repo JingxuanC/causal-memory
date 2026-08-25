@@ -36,7 +36,21 @@ pub fn get_db_path() -> PathBuf {
 /// Full CLI entry: dispatch `args` (program name already stripped) and
 /// return the process exit code. Errors print to stderr (stdout is
 /// reserved for the MCP protocol).
+// The libc::signal call is the one justified unsafe in this crate:
+// restoring SIGPIPE's default disposition has no safe std equivalent.
+#[allow(unsafe_code)]
 pub fn run(args: &[String]) -> i32 {
+    // Rust ignores SIGPIPE by default, so writing into a closed pipe
+    // (`causal-memory stats | head -3`) panics on println! instead of
+    // dying quietly like a normal Unix tool. Restore the default handler.
+    // Safe to do in the console script too: that process exists only to
+    // run the CLI. Single-threaded entry point, no handler was installed
+    // by us before this call.
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     // Logging goes to stderr only; try_init because the console script
     // shares the process with an embedding Python runtime.
     let _ = tracing_subscriber::fmt()

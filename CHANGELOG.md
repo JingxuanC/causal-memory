@@ -5,6 +5,16 @@ All notable changes to causal-memory are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.3] - Unreleased
+
+### Fixed
+- **`stats` on an empty database** no longer errors (`MIN/MAX/AVG` return
+  NULL on zero rows; now COALESCEd to the initial q_value 0.5).
+- **Broken-pipe panic when piping to `head`/`less`** — the CLI restores
+  SIGPIPE's default disposition (Rust ignores it by default), so both the
+  cargo binary and the pip console script die quietly like normal Unix
+  tools instead of panicking on `println!`.
+
 ## [0.9.2] - 2026-08-25
 
 ### Added

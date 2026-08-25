@@ -235,6 +235,7 @@ dependencies = [
  "causal-memory",
  "chrono",
  "futures",
+ "libc",
  "reqwest",
  "rmcp",
  "rusqlite",

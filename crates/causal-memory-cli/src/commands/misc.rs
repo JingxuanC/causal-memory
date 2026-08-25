@@ -568,7 +568,9 @@ pub(crate) fn run_stats(args: &[String]) -> anyhow::Result<()> {
         let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         let chunks = q1("SELECT COUNT(*) FROM chunks")?;
         let (qmin, qmax, qavg): (f64, f64, f64) = c.query_row(
-            "SELECT MIN(q_value), MAX(q_value), AVG(q_value) FROM chunks",
+            // MIN/MAX/AVG return NULL on an empty chunks table — default to
+            // the untouched initial q_value instead of erroring out.
+            "SELECT COALESCE(MIN(q_value), 0.5), COALESCE(MAX(q_value), 0.5), COALESCE(AVG(q_value), 0.5) FROM chunks",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
