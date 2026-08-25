@@ -1,5 +1,6 @@
 pub mod bm25;
 pub mod chain_linker;
+pub mod config;
 pub mod consolidate;
 pub mod distill;
 pub mod embed;

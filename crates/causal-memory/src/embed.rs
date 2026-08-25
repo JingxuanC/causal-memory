@@ -32,18 +32,20 @@ pub struct EmbedConfig {
 }
 
 impl EmbedConfig {
-    /// Load from env. Returns None if not configured (semantic search unavailable).
+    /// Load from env / config file (`config::get`: process env wins, the
+    /// JSON config file is the fallback). Returns None if not configured
+    /// (semantic search unavailable).
     ///
     /// - CAUSAL_MEMORY_EMBED_API, default: CAUSAL_MEMORY_LLM_API
     /// - CAUSAL_MEMORY_EMBED_KEY, default: CAUSAL_MEMORY_LLM_KEY
     /// - CAUSAL_MEMORY_EMBED_MODEL, default: "text-embedding-3-small"
     pub fn from_env() -> Option<Self> {
         Self::resolve(
-            std::env::var("CAUSAL_MEMORY_EMBED_API").ok().as_deref(),
-            std::env::var("CAUSAL_MEMORY_EMBED_KEY").ok().as_deref(),
-            std::env::var("CAUSAL_MEMORY_EMBED_MODEL").ok().as_deref(),
-            std::env::var("CAUSAL_MEMORY_LLM_API").ok().as_deref(),
-            std::env::var("CAUSAL_MEMORY_LLM_KEY").ok().as_deref(),
+            crate::config::get("CAUSAL_MEMORY_EMBED_API").as_deref(),
+            crate::config::get("CAUSAL_MEMORY_EMBED_KEY").as_deref(),
+            crate::config::get("CAUSAL_MEMORY_EMBED_MODEL").as_deref(),
+            crate::config::get("CAUSAL_MEMORY_LLM_API").as_deref(),
+            crate::config::get("CAUSAL_MEMORY_LLM_KEY").as_deref(),
         )
     }
 

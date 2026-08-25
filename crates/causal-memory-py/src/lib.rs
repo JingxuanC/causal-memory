@@ -274,10 +274,22 @@ impl PyCausalMemory {
     }
 }
 
+/// Console-script entry point (`causal-memory` command): config management
+/// (setconfig / getconfig / config-path). The generated wrapper passes no
+/// arguments — read Python's sys.argv (Rust's own argv also carries the
+/// interpreter path, so there is no fixed skip count); the returned int
+/// becomes the exit code via `sys.exit`.
+#[pyfunction]
+fn _main(py: Python<'_>) -> PyResult<i32> {
+    let argv: Vec<String> = py.import("sys")?.getattr("argv")?.extract()?;
+    Ok(cm::config::cli_main(&argv[1..]))
+}
+
 /// causal-memory: an agent memory system with a causal core.
 #[pymodule]
 fn causal_memory(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCausalMemory>()?;
+    m.add_function(wrap_pyfunction!(_main, m)?)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }

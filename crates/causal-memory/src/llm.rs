@@ -29,9 +29,7 @@ fn timeout_secs(env_value: Option<&str>) -> u64 {
 
 fn http_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(timeout_secs(
-        std::env::var("CAUSAL_MEMORY_HTTP_TIMEOUT_SECS")
-            .ok()
-            .as_deref(),
+        crate::config::get("CAUSAL_MEMORY_HTTP_TIMEOUT_SECS").as_deref(),
     ))
 }
 
@@ -142,14 +140,15 @@ pub struct LlmConfig {
 }
 
 impl LlmConfig {
-    /// Load from env. Returns None if not configured (caller falls back to rules).
+    /// Load from env / config file (`config::get`: process env wins, the
+    /// JSON config file is the fallback). Returns None if not configured
+    /// (caller falls back to rules).
     pub fn from_env() -> Option<Self> {
-        let api_base = std::env::var("CAUSAL_MEMORY_LLM_API").ok()?;
-        let api_key = std::env::var("CAUSAL_MEMORY_LLM_KEY")
-            .or_else(|_| std::env::var("DEEPSEEK_API_KEY"))
-            .ok()?;
+        let api_base = crate::config::get("CAUSAL_MEMORY_LLM_API")?;
+        let api_key = crate::config::get("CAUSAL_MEMORY_LLM_KEY")
+            .or_else(|| std::env::var("DEEPSEEK_API_KEY").ok())?;
         let model =
-            std::env::var("CAUSAL_MEMORY_LLM_MODEL").unwrap_or_else(|_| "deepseek-chat".into());
+            crate::config::get("CAUSAL_MEMORY_LLM_MODEL").unwrap_or_else(|| "deepseek-chat".into());
         Some(Self {
             api_base,
             api_key,

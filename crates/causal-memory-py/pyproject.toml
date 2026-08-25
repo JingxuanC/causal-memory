@@ -23,6 +23,9 @@ classifiers = [
 [project.urls]
 Repository = "https://github.com/JingxuanC/causal-memory"
 
+[project.scripts]
+causal-memory = "causal_memory:_main"
+
 [tool.maturin]
 # The Rust crate lives beside this pyproject.toml; the built module is the
 # top-level `causal_memory` extension (no pure-Python package wrapper).
