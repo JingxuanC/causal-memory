@@ -8,9 +8,9 @@
 > *何时为真*、*为什么有效*——以及*换个做法会怎样*。
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Status: v0.9.1](https://img.shields.io/badge/status-v0.9.1--alpha-orange.svg)](#项目状态)
+[![Status: v0.9.2](https://img.shields.io/badge/status-v0.9.2--alpha-orange.svg)](#项目状态)
 [![Tests: 368](https://img.shields.io/badge/tests-368-brightgreen.svg)](#构建与测试)
-[![Release: v0.9.1](https://img.shields.io/badge/release-v0.9.1-blue.svg)](https://github.com/JingxuanC/causal-memory/releases)
+[![Release: v0.9.2](https://img.shields.io/badge/release-v0.9.2-blue.svg)](https://github.com/JingxuanC/causal-memory/releases)
 
 [English](README.md) · **简体中文**
 
@@ -407,7 +407,7 @@ Docker 路线：`docker build -t causal-memory-amc . && docker run -p 8787:8787 
 
 ## 项目状态
 
-**v0.9.1 —— alpha。**
+**v0.9.2 —— alpha。**
 
 已可用（16/16 层有端到端验证）：
 
