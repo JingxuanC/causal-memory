@@ -260,7 +260,13 @@ class CausalMemoryProvider(_MemoryProvider):
         # configured; silent no-op otherwise.
         return None
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[dict] = None,
+    ) -> None:
         """Mirror Hermes-native memory writes into the fact layer."""
         if self._mem is None:
             return
