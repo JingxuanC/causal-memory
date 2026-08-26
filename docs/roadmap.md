@@ -67,9 +67,11 @@ argument — lightweight self-built fact layer, pluggable storage substrate).
 
 Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
 
-- [ ] **Triple-criterion GC** — prune only when structurally weak AND dormant
-  AND zero recent access (HeLa-Mem adaptive forgetting; avoids deleting old
-  but still-active edges)
+- [x] **Triple-criterion GC** — ✅ shipped 2026-08-26: prune only when
+  structurally weak AND dormant (`gc_min_age_hours`, default 168h) AND zero
+  recent access (`gc_access_grace_hours`, 168h, edges only — `agent_facts`
+  has no access column so facts use weak+dormant); old-but-active edges
+  survive (HeLa-Mem adaptive forgetting)
 - [x] **Flip-path marking** — ✅ shipped: every spreading-activation result
   carries provenance (`hop` 0=seed / N + `via` winning edge relation &
   source); `search_causal` / `search_memory` take `explain=true` to render

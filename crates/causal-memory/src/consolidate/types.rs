@@ -65,6 +65,21 @@ pub struct ConsolidateConfig {
     /// from `max_gc_fraction` — below this many candidates the budget never
     /// binds, preserving exact pre-guard behaviour for small corpora/tests.
     pub gc_floor: usize,
+    /// Triple-criterion GC (stage 3), HeLa-Mem adaptive forgetting: an
+    /// edge/fact is collectable only when it is weak (below the GC
+    /// threshold) AND dormant (`discovered_at`/`updated_at` older than this
+    /// many hours) AND — edges only — untouched (no access within
+    /// `gc_access_grace_hours`). The previous rule (weak alone) deleted
+    /// old-but-still-active memories. Default 168h (7d), aligned with the
+    /// temporal half-life tier: young low-confidence entries get a grace
+    /// period instead of being collected on the first cycle.
+    /// (`agent_facts` has no access-tracking column, so the access criterion
+    /// applies to causal edges only.)
+    pub gc_min_age_hours: u32,
+    /// Triple-criterion GC (stage 3): an edge counts as recently active
+    /// (and is spared) when `last_accessed_at` is within this many hours.
+    /// Default 168h, aligned with `access_boost_window_days` (7d).
+    pub gc_access_grace_hours: u32,
     /// C7 (stage 1.7): max repeated-decision candidates the LLM supersession
     /// judge considers per sleep cycle. A cap bounds per-cycle LLM cost;
     /// candidates beyond it wait for the next cycle.
@@ -105,6 +120,8 @@ impl Default for ConsolidateConfig {
             replay_gc_threshold: 0.1,
             max_gc_fraction: 0.2,
             gc_floor: 50,
+            gc_min_age_hours: 168,       // 7d dormancy (aligned with temporal tier)
+            gc_access_grace_hours: 168,  // 7d access grace (aligned with boost window)
             half_life_user_feedback_hours: 2160, // 90d
             half_life_llm_hours: 2160,           // 90d (same magnitude as legacy ~69d)
             half_life_temporal_hours: 168,       // 7d

@@ -227,14 +227,23 @@ pub fn downscale(
             }
         }
 
-        // GC: user_feedback edges are pinned and never collected; replay-
+        // GC (triple criterion, HeLa-Mem adaptive forgetting): collect only
+        // when the edge is weak AND dormant AND untouched recently — the
+        // previous weak-alone rule deleted old-but-still-active lessons.
+        // user_feedback edges are pinned and never collected; replay-
         // protected edges use the more lenient threshold.
         let threshold = if is_protected {
             config.replay_gc_threshold
         } else {
             config.gc_threshold
         };
-        let collect = new_conf < threshold && e.discovered_by != "user_feedback";
+        let weak = new_conf < threshold;
+        let dormant =
+            now - e.discovered_at >= i64::from(config.gc_min_age_hours) * 3600;
+        let untouched = e.last_accessed_at.is_none_or(|last| {
+            now - last >= i64::from(config.gc_access_grace_hours) * 3600
+        });
+        let collect = weak && dormant && untouched && e.discovered_by != "user_feedback";
         pendings.push(Pending {
             edge_id: e.edge_id,
             new_conf,
@@ -333,7 +342,11 @@ pub fn downscale_facts(
         let halflife = f64::from(config.half_life_fact_hours);
         let new_conf = confidence * 0.5f64.powf(days * 24.0 / halflife);
         report.facts_decayed += 1;
-        let collect = new_conf < config.gc_threshold;
+        // Triple-criterion GC, facts variant: agent_facts has no access
+        // tracking, so the criterion is weak AND dormant (age from
+        // `updated_at` past `gc_min_age_hours`).
+        let dormant = now - updated_at >= i64::from(config.gc_min_age_hours) * 3600;
+        let collect = new_conf < config.gc_threshold && dormant;
         if collect {
             gc_candidates.push((id, new_conf));
             continue;

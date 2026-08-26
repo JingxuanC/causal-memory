@@ -324,6 +324,96 @@ fn test_gc_bounded_forgetting_budget() {
     assert_eq!(survivors, 51, "invalidation stopped at the budget");
 }
 
+// ── Stage 3: triple-criterion GC (HeLa-Mem adaptive forgetting) ──────
+
+#[test]
+fn test_gc_recently_accessed_weak_edge_survives() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Both edges: 10 days old, 0.21 → ~0.194 < 0.2 — weak AND dormant.
+    // The one read an hour ago is spared by the access-freshness criterion;
+    // only the never-accessed twin is collected.
+    let accessed_id = insert_edge(
+        &store,
+        "weak but still consulted lesson",
+        "marginal effect",
+        0.21,
+        "llm_inferred",
+        Some("perf"),
+        NOW - 10 * DAY,
+        Some(NOW - 3600),
+    );
+    let stale_id = insert_edge(
+        &store,
+        "weak and never consulted lesson",
+        "marginal effect",
+        0.21,
+        "llm_inferred",
+        Some("perf"),
+        NOW - 10 * DAY,
+        None,
+    );
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert!(
+        edge_valid(&store, accessed_id),
+        "weak but recently accessed edge survives (old-but-active)"
+    );
+    assert!(
+        !edge_valid(&store, stale_id),
+        "weak + dormant + untouched edge is collected"
+    );
+    assert_eq!(report.gc_invalidated, 1);
+}
+
+#[test]
+fn test_gc_dormancy_grace_for_young_edges() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Recorded at 0.19 (already below gc_threshold) only 2 days ago: weak
+    // but NOT dormant (< gc_min_age_hours = 168h) → grace, survives cycle 1.
+    let id = insert_edge(
+        &store,
+        "fresh speculative idea, low initial confidence",
+        "unverified",
+        0.19,
+        "llm_inferred",
+        Some("perf"),
+        NOW - 2 * DAY,
+        None,
+    );
+    consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert!(
+        edge_valid(&store, id),
+        "young weak edge gets the dormancy grace period"
+    );
+    // Six days later the edge is 8 days old → dormant; still weak and never
+    // accessed → collected.
+    consolidate(&store, &default_config(), false, NOW + 6 * DAY).unwrap();
+    assert!(
+        !edge_valid(&store, id),
+        "once dormant, the weak untouched edge is collected"
+    );
+}
+
+#[test]
+fn test_fact_gc_dormancy_grace() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Weak (0.1 < 0.2) but only 2 days old → not dormant → spared;
+    // agent_facts has no access tracking, so the criterion is weak+dormant.
+    let young = store
+        .record_fact("editor", "zed", "user", "agent", 0.1)
+        .unwrap();
+    let old = store
+        .record_fact("pager", "less", "user", "agent", 0.1)
+        .unwrap();
+    backdate_fact(&store, young, NOW - 2 * DAY);
+    backdate_fact(&store, old, NOW - 10 * DAY);
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    let (_, young_valid) = fact_state(&store, young);
+    let (_, old_valid) = fact_state(&store, old);
+    assert!(young_valid, "young weak fact gets the dormancy grace");
+    assert!(!old_valid, "old weak fact is collected");
+    assert_eq!(report.facts_gc, 1);
+}
+
 // ── Stage 2a: redundant merge ────────────────────────────────────────
 
 #[test]
