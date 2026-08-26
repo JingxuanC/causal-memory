@@ -64,6 +64,10 @@ pub struct SearchCausalParams {
     /// Maximum total tokens to return (0 = unlimited, default 0).
     #[schemars(description = "Max output tokens (0 = unlimited, default 0)")]
     pub max_tokens: Option<usize>,
+    /// Append a provenance tag per result ([seed] / [spread hop=N via
+    /// relation←"source"]) — shows WHY each episode was recalled.
+    #[schemars(description = "Explain recall provenance per result (default false)")]
+    pub explain: Option<bool>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -123,6 +127,10 @@ pub struct SearchMemoryParams {
     /// Maximum total tokens to return (0 = unlimited, default 0).
     #[schemars(description = "Max output tokens (0 = unlimited, default 0)")]
     pub max_tokens: Option<usize>,
+    /// Append a provenance tag per result ([seed] / [spread hop=N via
+    /// relation←"source"]) — shows WHY each memory was recalled.
+    #[schemars(description = "Explain recall provenance per result (default false)")]
+    pub explain: Option<bool>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -260,13 +268,15 @@ impl CausalMemoryServer {
         description = "Record a decision and its observed outcome as a causal memory. Call this AFTER you've acted on a decision and observed the result, especially if the outcome was surprising or educational. This builds your experience base for future similar tasks."
     )]
     fn record_decision(&self, Parameters(params): Parameters<RecordDecisionParams>) -> String {
-        self.memory.record_decision(
-            &params.decision,
-            &params.outcome,
-            &params.relation,
-            &params.task_tag,
-            params.confidence_source.as_deref(),
-        )
+        self.timed("record_decision", || {
+            self.memory.record_decision(
+                &params.decision,
+                &params.outcome,
+                &params.relation,
+                &params.task_tag,
+                params.confidence_source.as_deref(),
+            )
+        })
     }
 
     #[tool(
@@ -274,8 +284,10 @@ impl CausalMemoryServer {
         description = "Extract and store memories from conversation text. The system automatically identifies facts, lessons, and causal relationships (caused/enabled/prevented) using LLM analysis. Call this after any meaningful conversation exchange — just paste the conversation text, no need to manually identify decisions or outcomes."
     )]
     fn remember(&self, Parameters(params): Parameters<RememberParams>) -> String {
-        self.memory
-            .remember(&params.messages, params.date.as_deref())
+        self.timed("remember", || {
+            self.memory
+                .remember(&params.messages, params.date.as_deref())
+        })
     }
 
     #[tool(
@@ -283,13 +295,16 @@ impl CausalMemoryServer {
         description = "Search past decisions and their outcomes for situations similar to your current task. Call this BEFORE attempting a non-trivial decision to learn from past experience. Filter by task_tag for domain-specific lessons, or use query text for broader search."
     )]
     fn search_causal(&self, Parameters(params): Parameters<SearchCausalParams>) -> String {
-        self.memory.search_causal(
-            params.task_tag.as_deref(),
-            params.query.as_deref(),
-            params.limit,
-            params.detail_level.as_deref(),
-            params.max_tokens,
-        )
+        self.timed("search_causal", || {
+            self.memory.search_causal(
+                params.task_tag.as_deref(),
+                params.query.as_deref(),
+                params.limit,
+                params.detail_level.as_deref(),
+                params.max_tokens,
+                params.explain,
+            )
+        })
     }
 
     #[tool(
@@ -297,13 +312,15 @@ impl CausalMemoryServer {
         description = "Record a flat fact for future retrieval: user preferences, tech stack, configuration, project facts. Use this for stable 'what is' information. Do NOT use it for causal relationships (decision → outcome lessons belong in record_decision). Re-recording the same fact is idempotent."
     )]
     fn record_fact(&self, Parameters(params): Parameters<RecordFactParams>) -> String {
-        self.memory.record_fact(
-            &params.key,
-            &params.value,
-            params.scope.as_deref(),
-            params.confidence,
-            params.replace_same_key,
-        )
+        self.timed("record_fact", || {
+            self.memory.record_fact(
+                &params.key,
+                &params.value,
+                params.scope.as_deref(),
+                params.confidence,
+                params.replace_same_key,
+            )
+        })
     }
 
     #[tool(
@@ -311,11 +328,13 @@ impl CausalMemoryServer {
         description = "Search flat facts: user preferences, tech stack, configuration, project facts. Call this when you need 'what is' information. For causal lessons (decision → outcome), use search_causal instead. Without a query, lists the most recently updated facts."
     )]
     fn search_facts(&self, Parameters(params): Parameters<SearchFactsParams>) -> String {
-        self.memory.search_facts(
-            params.query.as_deref(),
-            params.scope.as_deref(),
-            params.limit,
-        )
+        self.timed("search_facts", || {
+            self.memory.search_facts(
+                params.query.as_deref(),
+                params.scope.as_deref(),
+                params.limit,
+            )
+        })
     }
 
     #[tool(
@@ -323,14 +342,17 @@ impl CausalMemoryServer {
         description = "Search ALL memory types at once: flat facts (preferences, tech stack, config) AND causal lessons (decision → outcome). Use this when you're not sure whether what you need is a fact or a lesson — results from every layer are fused by Reciprocal Rank Fusion (RRF) into one ranked list. For a deep dive into one layer, use search_facts or search_causal directly."
     )]
     fn search_memory(&self, Parameters(params): Parameters<SearchMemoryParams>) -> String {
-        self.memory.search_memory(
-            &params.query,
-            params.task_tag.as_deref(),
-            params.scope.as_deref(),
-            params.limit,
-            params.detail_level.as_deref(),
-            params.max_tokens,
-        )
+        self.timed("search_memory", || {
+            self.memory.search_memory(
+                &params.query,
+                params.task_tag.as_deref(),
+                params.scope.as_deref(),
+                params.limit,
+                params.detail_level.as_deref(),
+                params.max_tokens,
+                params.explain,
+            )
+        })
     }
 
     #[tool(
@@ -338,7 +360,9 @@ impl CausalMemoryServer {
         description = "When something went wrong, trace back which past decision could have caused it. Use for post-mortem analysis. Provide a description of the bad outcome."
     )]
     fn trace_cause(&self, Parameters(params): Parameters<TraceCauseParams>) -> String {
-        self.memory.trace_cause(&params.outcome_description)
+        self.timed("trace_cause", || {
+            self.memory.trace_cause(&params.outcome_description)
+        })
     }
 
     #[tool(
@@ -346,12 +370,14 @@ impl CausalMemoryServer {
         description = "Deep failure analysis: trace multi-hop causal chains backward from a bad outcome. Use when a single-hop trace doesn't reveal the root cause. E.g., 'service crashed' ← 'OOM' ← 'cache had no TTL' ← 'Redis configured without expiry'. Parameters: outcome_description, max_depth (default 3), min_confidence (default 0.5), limit (default 5)."
     )]
     fn trace_cause_chain(&self, Parameters(params): Parameters<TraceCauseChainParams>) -> String {
-        self.memory.trace_cause_chain(
-            &params.outcome_description,
-            params.max_depth,
-            params.min_confidence,
-            params.limit,
-        )
+        self.timed("trace_cause_chain", || {
+            self.memory.trace_cause_chain(
+                &params.outcome_description,
+                params.max_depth,
+                params.min_confidence,
+                params.limit,
+            )
+        })
     }
 
     #[tool(
@@ -362,8 +388,10 @@ impl CausalMemoryServer {
         &self,
         Parameters(params): Parameters<InvalidateDecisionParams>,
     ) -> String {
-        self.memory
-            .invalidate_decision(params.edge_id, params.reason.as_deref())
+        self.timed("invalidate_decision", || {
+            self.memory
+                .invalidate_decision(params.edge_id, params.reason.as_deref())
+        })
     }
 
     #[tool(
@@ -371,8 +399,10 @@ impl CausalMemoryServer {
         description = "Knowledge-update pass: scan past decisions that were re-recorded with a DIFFERENT outcome, let an LLM judge decide whether the new evidence falsifies the old lesson, and supersede accordingly (the superseded lesson is annotated with its correction and stays auditable). Use after recording outcomes that contradict earlier lessons. Preview by default — pass apply=true to write."
     )]
     fn resolve_updates(&self, Parameters(params): Parameters<ResolveUpdatesParams>) -> String {
-        self.memory
-            .resolve_updates(params.limit, params.apply.unwrap_or(false))
+        self.timed("resolve_updates", || {
+            self.memory
+                .resolve_updates(params.limit, params.apply.unwrap_or(false))
+        })
     }
 
     #[tool(
@@ -380,11 +410,13 @@ impl CausalMemoryServer {
         description = "Search mined cross-task patterns (meta-causal edges): decisions that are similar_to each other, repeated across tasks, contradicts each other, or refines an earlier failed attempt. Use this to recall abstracted lessons that span multiple task domains."
     )]
     fn search_patterns(&self, Parameters(params): Parameters<SearchPatternsParams>) -> String {
-        self.memory.search_patterns(
-            params.query.as_deref(),
-            params.task_tag.as_deref(),
-            params.limit,
-        )
+        self.timed("search_patterns", || {
+            self.memory.search_patterns(
+                params.query.as_deref(),
+                params.task_tag.as_deref(),
+                params.limit,
+            )
+        })
     }
 
     #[tool(
@@ -395,8 +427,10 @@ impl CausalMemoryServer {
         &self,
         Parameters(params): Parameters<InvalidatePatternParams>,
     ) -> String {
-        self.memory
-            .invalidate_pattern(params.edge_id, params.reason.as_deref())
+        self.timed("invalidate_pattern", || {
+            self.memory
+                .invalidate_pattern(params.edge_id, params.reason.as_deref())
+        })
     }
 
     #[tool(
@@ -404,7 +438,9 @@ impl CausalMemoryServer {
         description = "L0 directory of your recent decisions and their outcomes — a compact pointer list meant to be pinned in the agent's system prompt so it always knows what past experience it holds. Entries are one-line pointers; use trace_cause / search_causal / intervention_query with the decision texts for full details."
     )]
     fn causal_directory(&self, Parameters(params): Parameters<CausalDirectoryParams>) -> String {
-        self.memory.causal_directory(params.limit)
+        self.timed("causal_directory", || {
+            self.memory.causal_directory(params.limit)
+        })
     }
 
     #[tool(
@@ -415,12 +451,14 @@ impl CausalMemoryServer {
         &self,
         Parameters(params): Parameters<InterventionQueryParams>,
     ) -> String {
-        self.memory.intervention_query(
-            &params.action,
-            params.task_tag.as_deref(),
-            params.max_depth,
-            params.limit,
-        )
+        self.timed("intervention_query", || {
+            self.memory.intervention_query(
+                &params.action,
+                params.task_tag.as_deref(),
+                params.max_depth,
+                params.limit,
+            )
+        })
     }
 
     #[tool(
@@ -428,12 +466,14 @@ impl CausalMemoryServer {
         description = "Contrastive (empirical) counterfactual: compare the recorded outcomes of a decision vs an alternative in similar past situations. Call when choosing between two concrete options BEFORE acting. Reports recorded evidence only — this is NOT a Pearl Rung-3 SCM counterfactual."
     )]
     fn counterfactual_query(&self, Parameters(params): Parameters<CounterfactualParams>) -> String {
-        self.memory.counterfactual_query(
-            &params.decision,
-            &params.alternative,
-            params.task_tag.as_deref(),
-            params.limit,
-        )
+        self.timed("counterfactual_query", || {
+            self.memory.counterfactual_query(
+                &params.decision,
+                &params.alternative,
+                params.task_tag.as_deref(),
+                params.limit,
+            )
+        })
     }
 
     #[tool(
@@ -444,8 +484,10 @@ impl CausalMemoryServer {
         &self,
         Parameters(params): Parameters<ReconstructLessonParams>,
     ) -> String {
-        self.memory
-            .reconstruct_lesson(&params.query, params.max_edges, params.calibrate)
+        self.timed("reconstruct_lesson", || {
+            self.memory
+                .reconstruct_lesson(&params.query, params.max_edges, params.calibrate)
+        })
     }
 }
 

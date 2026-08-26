@@ -9,6 +9,7 @@ pub mod hippocampus;
 pub mod llm;
 pub mod memory;
 pub mod migrate;
+pub mod observability;
 pub mod patterns;
 pub mod query_router;
 pub mod reasoning_extractor;

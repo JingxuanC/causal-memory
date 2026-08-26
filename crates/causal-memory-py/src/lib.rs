@@ -90,7 +90,8 @@ impl PyCausalMemory {
     /// Search past decisions and their outcomes for situations similar to
     /// your current task. Call BEFORE a non-trivial decision.
     /// detail_level: l0 (summary), l1 (overview), l2 (full, default).
-    #[pyo3(signature = (task_tag=None, query=None, limit=None, detail_level=None, max_tokens=None))]
+    /// explain=True appends a provenance tag per hit ([seed] / [spread …]).
+    #[pyo3(signature = (task_tag=None, query=None, limit=None, detail_level=None, max_tokens=None, explain=None))]
     fn search_causal(
         &self,
         py: Python<'_>,
@@ -99,10 +100,11 @@ impl PyCausalMemory {
         limit: Option<usize>,
         detail_level: Option<&str>,
         max_tokens: Option<usize>,
+        explain: Option<bool>,
     ) -> String {
         py.allow_threads(|| {
             self.inner
-                .search_causal(task_tag, query, limit, detail_level, max_tokens)
+                .search_causal(task_tag, query, limit, detail_level, max_tokens, explain)
         })
     }
 
@@ -141,8 +143,12 @@ impl PyCausalMemory {
     /// Search ALL memory types at once — facts AND causal lessons fused by
     /// Reciprocal Rank Fusion into one ranked list. detail_level: l0
     /// (pointer) / l1 (overview) / l2 (full, default); max_tokens 0 =
-    /// unlimited.
-    #[pyo3(signature = (query, task_tag=None, scope=None, limit=None, detail_level=None, max_tokens=None))]
+    /// unlimited; explain=True appends a provenance tag per hit.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "tool surface mirrors the MCP schema; kwargs-style from Python"
+    )]
+    #[pyo3(signature = (query, task_tag=None, scope=None, limit=None, detail_level=None, max_tokens=None, explain=None))]
     fn search_memory(
         &self,
         py: Python<'_>,
@@ -152,10 +158,18 @@ impl PyCausalMemory {
         limit: Option<usize>,
         detail_level: Option<&str>,
         max_tokens: Option<usize>,
+        explain: Option<bool>,
     ) -> String {
         py.allow_threads(|| {
-            self.inner
-                .search_memory(query, task_tag, scope, limit, detail_level, max_tokens)
+            self.inner.search_memory(
+                query,
+                task_tag,
+                scope,
+                limit,
+                detail_level,
+                max_tokens,
+                explain,
+            )
         })
     }
 

@@ -111,7 +111,10 @@ impl UserMemories {
             return Ok(Arc::clone(m));
         }
         let path = self.db_path(user_id);
-        let memory = Arc::new(Memory::open(&path)?);
+        let memory = Arc::new(Memory::new_with_label(
+            causal_memory::store::CausalStore::open(&path)?,
+            "amc",
+        ));
         guard.insert(user_id.to_string(), Arc::clone(&memory));
         Ok(memory)
     }
@@ -188,6 +191,21 @@ async fn handle_add(
     State(users): State<Arc<UserMemories>>,
     Json(req): Json<AddRequest>,
 ) -> Result<Json<AddResponse>, (axum::http::StatusCode, String)> {
+    let t0 = std::time::Instant::now();
+    let out = handle_add_inner(users, req).await;
+    causal_memory::observability::metrics().record_request(
+        "amc",
+        "add",
+        if out.is_ok() { "ok" } else { "error" },
+        t0.elapsed().as_secs_f64(),
+    );
+    out
+}
+
+async fn handle_add_inner(
+    users: Arc<UserMemories>,
+    req: AddRequest,
+) -> Result<Json<AddResponse>, (axum::http::StatusCode, String)> {
     if req.messages.is_empty() {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
@@ -250,6 +268,18 @@ async fn handle_search(
     State(users): State<Arc<UserMemories>>,
     Json(req): Json<SearchRequest>,
 ) -> Json<SearchResponse> {
+    let t0 = std::time::Instant::now();
+    let out = handle_search_inner(users, req).await;
+    causal_memory::observability::metrics().record_request(
+        "amc",
+        "search",
+        "ok",
+        t0.elapsed().as_secs_f64(),
+    );
+    out
+}
+
+async fn handle_search_inner(users: Arc<UserMemories>, req: SearchRequest) -> Json<SearchResponse> {
     // `options` is contract-fidelity input (choice questions): the platform's
     // answer model receives the memories; options do not change retrieval.
     let _ = &req.options;
@@ -307,7 +337,27 @@ fn build_app(users: AppState) -> Router {
         .route("/add", post(handle_add))
         .route("/search", post(handle_search))
         .route("/health", get(handle_health))
+        // Observability: liveness/readiness + Prometheus text. /health
+        // stays for backward compatibility.
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/readyz", get(handle_readyz))
+        .route("/metrics", get(handle_metrics))
         .with_state(users)
+}
+
+/// Readiness: a light store check (the DB dir must be writable + openable).
+/// Fails 503 when the probe store can't be created/opened.
+async fn handle_readyz(State(users): State<Arc<UserMemories>>) -> axum::http::StatusCode {
+    let probe = users.get("__readyz_probe__");
+    match probe {
+        Ok(_) => axum::http::StatusCode::OK,
+        Err(_) => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
+/// Prometheus text exposition (process-wide registry).
+async fn handle_metrics() -> String {
+    causal_memory::observability::metrics().render_prometheus(None)
 }
 
 fn main() -> Result<()> {

@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.9.3] - Unreleased
 
+### Added
+- **Flip-path marking (recall provenance)** — every spreading-activation
+  result now carries `hop` (0 = direct seed, N = lit in hop N) and `via`
+  (the winning edge's relation + source). `search_causal` / `search_memory`
+  accept `explain=true` (MCP + Python bindings) to append per-hit tags like
+  `[spread hop=2 via prevented←"skip tests"]`; default output is
+  byte-identical to before (activation values and ranking untouched).
+- **Recall audit (schema v13)** — every recall persists a best-effort row
+  to the new `recall_audit` table (query, seeds, hop summary, per-result
+  provenance, latency; retention: 30 days / newest 10k rows, swept
+  amortized). Audit write failures never affect retrieval (counter + warn).
+- **Observability endpoints (MCP HTTP + AMC servers)** — hand-rolled
+  in-process registry, no metrics/OTel crates: `/metrics` (Prometheus
+  text: RED per tool + recall seeds/activated/results + store gauges +
+  uptime), `/healthz`, `/readyz` (store probe), `/debug/recall?query=...`
+  (live full recall trace as JSON), `/debug/recalls` (persisted audit
+  rows). Structured JSON logs on stderr via `CAUSAL_MEMORY_LOG_FORMAT=json`.
+  OTLP export deferred until a collector exists.
+
 ### Fixed
 - **`stats` on an empty database** no longer errors (`MIN/MAX/AVG` return
   NULL on zero rows; now COALESCEd to the initial q_value 0.5).

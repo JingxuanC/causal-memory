@@ -397,6 +397,24 @@ impl CausalStore {
         Ok(n)
     }
 
+    /// Count valid facts (scrape-time store gauge for /metrics).
+    pub fn count_facts(&self) -> Result<i64> {
+        let conn = self.acquire()?;
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_facts WHERE valid_to IS NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(n)
+    }
+
+    /// Count chunks (scrape-time store gauge for /metrics).
+    pub fn count_chunks(&self) -> Result<i64> {
+        let conn = self.acquire()?;
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))?;
+        Ok(n)
+    }
+
     // ─── Internal helpers ──────────────────────────────────────────────────
 
     /// Bump access counters for edges returned by a read-path query.

@@ -53,13 +53,22 @@ pub fn run(args: &[String]) -> i32 {
 
     // Logging goes to stderr only; try_init because the console script
     // shares the process with an embedding Python runtime.
-    let _ = tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .try_init();
+    // CAUSAL_MEMORY_LOG_FORMAT=json → structured JSON logs (still stderr,
+    // never stdout — the MCP stdio protocol lives there).
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    if std::env::var("CAUSAL_MEMORY_LOG_FORMAT").as_deref() == Ok("json") {
+        let _ = tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(filter)
+            .json()
+            .try_init();
+    } else {
+        let _ = tracing_subscriber::fmt()
+            .with_writer(std::io::stderr)
+            .with_env_filter(filter)
+            .try_init();
+    }
 
     // Config management (pip-friendly): handled by the core crate so the
     // rules live next to the reader (config::get).

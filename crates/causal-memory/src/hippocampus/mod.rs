@@ -28,7 +28,7 @@ pub(crate) mod utils;
 
 pub use types::{
     ActivationResult, ConsolidationDelta, ConsolidationResult, ConsolidationStats, EdgeData,
-    NodeData, NoveltyReport, Relation,
+    NodeData, NoveltyReport, Relation, ViaEdge,
 };
 
 /// (P5) Novelty-gate modes (Nemori FEP, arXiv:2508.03341).
@@ -150,11 +150,14 @@ pub struct CausalGraph {
 }
 
 /// Phase C: one overlay edge — the "other" node, its pre-multiplied spread
-/// value, and its validity flag (flippable in O(1), mirroring `edge_valid`).
+/// value, its relation (for provenance reporting only — the spread itself
+/// uses the pre-multiplied value), and its validity flag (flippable in
+/// O(1), mirroring `edge_valid`).
 #[derive(Debug, Clone, Copy)]
 struct PatchEdge {
     other: u32,
     value: f32,
+    relation: Relation,
     valid: bool,
 }
 
@@ -354,8 +357,12 @@ impl CausalGraph {
     /// spread is NOT divided, so causal-chain and inhibitory semantics are
     /// exactly preserved.
     #[inline]
-    fn spread_step(&self, activations: &[f32], decay: f32) -> Vec<f32> {
+    fn spread_step(&self, activations: &[f32], decay: f32) -> (Vec<f32>, Vec<Option<ViaEdge>>) {
         let mut new_act = vec![0.0_f32; self.num_nodes];
+        // Flip-path marking: per-target, the edge with the largest
+        // |contribution| THIS hop. Pure bookkeeping — activation values are
+        // computed exactly as before.
+        let mut hop_via: Vec<Option<ViaEdge>> = vec![None; self.num_nodes];
 
         for (i, &a) in activations.iter().enumerate() {
             if a.abs() < self.threshold {
@@ -386,7 +393,18 @@ impl CausalGraph {
                 } else {
                     a
                 };
-                new_act[target] += out * weight * decay;
+                let contribution = out * weight * decay;
+                new_act[target] += contribution;
+                let wins = hop_via[target]
+                    .map(|v| contribution.abs() > v.contribution.abs())
+                    .unwrap_or(true);
+                if wins {
+                    hop_via[target] = Some(ViaEdge {
+                        from: i as u32,
+                        relation: self.edge_relations[edge_idx],
+                        contribution,
+                    });
+                }
             }
 
             // Phase C: write-path patch edges from this node. Patches are
@@ -395,7 +413,19 @@ impl CausalGraph {
             if let Some(patches) = self.patch_fwd.get(&(i as u32)) {
                 for p in patches {
                     if p.valid {
-                        new_act[p.other as usize] += a * p.value * decay;
+                        let contribution = a * p.value * decay;
+                        new_act[p.other as usize] += contribution;
+                        let target = p.other as usize;
+                        let wins = hop_via[target]
+                            .map(|v| contribution.abs() > v.contribution.abs())
+                            .unwrap_or(true);
+                        if wins {
+                            hop_via[target] = Some(ViaEdge {
+                                from: i as u32,
+                                relation: p.relation,
+                                contribution,
+                            });
+                        }
                     }
                 }
             }
@@ -404,15 +434,17 @@ impl CausalGraph {
         for a in &mut new_act {
             *a = a.clamp(-1.0, 1.0);
         }
-        new_act
+        (new_act, hop_via)
     }
 
     /// Reverse single-hop step (for trace_cause: outcome → decision).
     /// Bug fix #1: now checks edge_valid via rev_to_fwd_idx mapping.
-    /// Same channel-scoped fan-out as `spread_step`.
+    /// Same channel-scoped fan-out as `spread_step`, and the same Flip-path
+    /// provenance bookkeeping (via records the FORWARD edge's relation).
     #[inline]
-    fn spread_step_rev(&self, activations: &[f32], decay: f32) -> Vec<f32> {
+    fn spread_step_rev(&self, activations: &[f32], decay: f32) -> (Vec<f32>, Vec<Option<ViaEdge>>) {
         let mut new_act = vec![0.0_f32; self.num_nodes];
+        let mut hop_via: Vec<Option<ViaEdge>> = vec![None; self.num_nodes];
 
         for (i, &a) in activations.iter().enumerate() {
             if a.abs() < self.threshold {
@@ -449,14 +481,37 @@ impl CausalGraph {
                 } else {
                     a
                 };
-                new_act[target] += out * weight * decay;
+                let contribution = out * weight * decay;
+                new_act[target] += contribution;
+                let wins = hop_via[target]
+                    .map(|v| contribution.abs() > v.contribution.abs())
+                    .unwrap_or(true);
+                if wins {
+                    hop_via[target] = Some(ViaEdge {
+                        from: i as u32,
+                        relation: self.edge_relations[fwd_idx],
+                        contribution,
+                    });
+                }
             }
 
             // Phase C: write-path patch edges pointing INTO this node.
             if let Some(patches) = self.patch_rev.get(&(i as u32)) {
                 for p in patches {
                     if p.valid {
-                        new_act[p.other as usize] += a * p.value * decay;
+                        let contribution = a * p.value * decay;
+                        new_act[p.other as usize] += contribution;
+                        let target = p.other as usize;
+                        let wins = hop_via[target]
+                            .map(|v| contribution.abs() > v.contribution.abs())
+                            .unwrap_or(true);
+                        if wins {
+                            hop_via[target] = Some(ViaEdge {
+                                from: i as u32,
+                                relation: p.relation,
+                                contribution,
+                            });
+                        }
                     }
                 }
             }
@@ -465,7 +520,7 @@ impl CausalGraph {
         for a in &mut new_act {
             *a = a.clamp(-1.0, 1.0);
         }
-        new_act
+        (new_act, hop_via)
     }
 
     /// Full K-hop spreading activation (CA3 pattern completion).
@@ -542,6 +597,13 @@ impl CausalGraph {
         run_hebbian: bool,
     ) -> Vec<ActivationResult> {
         let mut activations = vec![0.0_f32; self.num_nodes];
+        // Flip-path marking: provenance of each node's CURRENT (strongest)
+        // activation. hop = u8::MAX for unlit; seeds = 0. Both update
+        // together when the abs-max merge replaces a node's activation, so
+        // hop/via always describe the winning value. No effect on the
+        // activation values themselves.
+        let mut node_hop = vec![u8::MAX; self.num_nodes];
+        let mut node_via: Vec<Option<ViaEdge>> = vec![None; self.num_nodes];
         let now = chrono::Utc::now().timestamp();
         for &seed in seeds {
             // P4: Q-value-weighted seeding. High-Q nodes (proven useful)
@@ -550,6 +612,7 @@ impl CausalGraph {
             let q = self.node_q_value[seed as usize];
             activations[seed as usize] = 0.5 + 0.5 * q; // maps [0,1] Q → [0.5,1.0] seed
             self.node_last_activated[seed as usize] = now;
+            node_hop[seed as usize] = 0;
         }
 
         // Zero hops when spreading is disabled (ablation): seeds keep
@@ -559,8 +622,8 @@ impl CausalGraph {
         } else {
             0
         };
-        for _ in 0..hops {
-            let new_act = if reverse {
+        for hop in 1..=hops {
+            let (new_act, hop_via) = if reverse {
                 self.spread_step_rev(&activations, self.decay)
             } else {
                 self.spread_step(&activations, self.decay)
@@ -581,6 +644,8 @@ impl CausalGraph {
                     if new_act[i].abs() > activations[i].abs() {
                         activations[i] = new_act[i];
                         self.node_last_activated[i] = now;
+                        node_hop[i] = hop as u8;
+                        node_via[i] = hop_via[i];
                     }
                 }
             }
@@ -601,6 +666,8 @@ impl CausalGraph {
                 activation: a,
                 text: self.node_text[i].clone(),
                 task_tag: self.node_task_tag[i].clone(),
+                hop: node_hop[i],
+                via: node_via[i],
             })
             .collect();
 
@@ -1304,6 +1371,7 @@ impl CausalGraph {
                 patches.push(PatchEdge {
                     other,
                     value,
+                    relation,
                     valid: true,
                 });
             }

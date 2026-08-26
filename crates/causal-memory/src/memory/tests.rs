@@ -466,7 +466,7 @@ mod tests {
         let memory = counterfactual_memory();
         // Same query through both presentations: the structured core must
         // surface the same memories the text tool reports.
-        let text = memory.search_memory("redis mutex", None, None, Some(10), None, None);
+        let text = memory.search_memory("redis mutex", None, None, Some(10), None, None, None);
         let (hits, _mode) = memory.search_memory_entries("redis mutex", None, None, 10);
         assert!(!hits.is_empty(), "seeded edges must surface");
         assert!(text.contains("redis"), "text tool: {text}");
@@ -505,7 +505,7 @@ mod tests {
                 None,
             );
         }
-        let out = memory.search_causal(None, Some("prefers zsh setup"), Some(5), None, None);
+        let out = memory.search_causal(None, Some("prefers zsh setup"), Some(5), None, None, None);
         assert!(
             out.starts_with("[hippocampus"),
             "fresh fact must be reachable via the graph path, got: {out}"
@@ -606,7 +606,7 @@ mod tests {
         );
 
         // Text tool: same engine, grouped display.
-        let text = memory.search_memory("TypeScript module", None, None, None, None, None);
+        let text = memory.search_memory("TypeScript module", None, None, None, None, None, None);
         assert!(text.starts_with("[unified/spread]"), "{text}");
         assert!(text.contains("editor_preference"), "{text}");
         assert!(text.contains("Causal lessons"), "{text}");
@@ -734,9 +734,9 @@ fn search_memory_detail_levels_and_default_compat() {
         None,
     );
 
-    let l2 = memory.search_memory("redis mutex", None, None, Some(10), None, None);
-    let l0 = memory.search_memory("redis mutex", None, None, Some(10), Some("l0"), None);
-    let l1 = memory.search_memory("redis mutex", None, None, Some(10), Some("l1"), None);
+    let l2 = memory.search_memory("redis mutex", None, None, Some(10), None, None, None);
+    let l0 = memory.search_memory("redis mutex", None, None, Some(10), Some("l0"), None, None);
+    let l1 = memory.search_memory("redis mutex", None, None, Some(10), Some("l1"), None, None);
 
     // l0 is strictly cheaper than l2; l1 sits between (or equal at l1's cap).
     assert!(
@@ -750,7 +750,15 @@ fn search_memory_detail_levels_and_default_compat() {
 
     // Default (None, None) is byte-identical to explicit l2 + unlimited —
     // and to the pre-feature format (same lines, no truncation note).
-    let explicit = memory.search_memory("redis mutex", None, None, Some(10), Some("l2"), Some(0));
+    let explicit = memory.search_memory(
+        "redis mutex",
+        None,
+        None,
+        Some(10),
+        Some("l2"),
+        Some(0),
+        None,
+    );
     assert_eq!(l2, explicit, "default == explicit l2/0");
     assert!(
         !l2.contains("truncated (token budget)"),
@@ -758,7 +766,7 @@ fn search_memory_detail_levels_and_default_compat() {
     );
 
     // Invalid level rejected like invalid scope.
-    let bad = memory.search_memory("redis mutex", None, None, Some(10), Some("l9"), None);
+    let bad = memory.search_memory("redis mutex", None, None, Some(10), Some("l9"), None, None);
     assert!(bad.contains("Invalid detail_level"), "{bad}");
 }
 
@@ -774,10 +782,26 @@ fn search_memory_max_tokens_truncates() {
             None,
         );
     }
-    let full = memory.search_memory("cache warmup deploy", None, None, Some(10), None, None);
+    let full = memory.search_memory(
+        "cache warmup deploy",
+        None,
+        None,
+        Some(10),
+        None,
+        None,
+        None,
+    );
     // Budget below the cost of the full pool: items are dropped and the
     // truncation note reports how many.
-    let capped = memory.search_memory("cache warmup deploy", None, None, Some(10), None, Some(150));
+    let capped = memory.search_memory(
+        "cache warmup deploy",
+        None,
+        None,
+        Some(10),
+        None,
+        Some(150),
+        None,
+    );
     assert!(
         capped.len() < full.len(),
         "capped must be shorter\ncapped: {capped}\nfull: {full}"
@@ -847,4 +871,87 @@ fn invalidate_pattern_soft_deletes_meta_edge() {
     // Unknown id is a clean miss.
     let missing = memory.invalidate_pattern(999_999, None);
     assert!(missing.contains("not found"), "{missing}");
+}
+
+// ─── explain (Flip-path marking) + recall audit e2e ──────────────────
+
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: memory construction must succeed"
+)]
+fn search_explain_tags_and_default_invariance() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "skipped the test suite before the release",
+        "production outage on friday",
+        "caused",
+        "release",
+        None,
+    );
+    memory.record_decision(
+        "deployed without env check",
+        "crash loop in production",
+        "caused",
+        "release",
+        None,
+    );
+
+    // Default == explicit explain=false, byte-identical, no ↳ markers.
+    let default = memory.search_causal(None, Some("test suite release"), Some(5), None, None, None);
+    let explicit_false = memory.search_causal(
+        None,
+        Some("test suite release"),
+        Some(5),
+        None,
+        None,
+        Some(false),
+    );
+    assert_eq!(default, explicit_false, "default == explain=false");
+    assert!(!default.contains('↳'), "default has no explain tags");
+
+    // explain=true: every surfaced hit carries a provenance tag.
+    let explained = memory.search_causal(
+        None,
+        Some("test suite release"),
+        Some(5),
+        None,
+        None,
+        Some(true),
+    );
+    assert!(
+        explained.contains("↳ ["),
+        "explain tags present: {explained}"
+    );
+    assert!(
+        explained.contains("[seed]") || explained.contains("[spread hop="),
+        "tag shape: {explained}"
+    );
+
+    // search_memory: same contract.
+    let d = memory.search_memory("test suite release", None, None, Some(10), None, None, None);
+    let e = memory.search_memory(
+        "test suite release",
+        None,
+        None,
+        Some(10),
+        None,
+        None,
+        Some(true),
+    );
+    assert!(!d.contains('↳'), "default unified output unchanged");
+    assert!(e.contains("↳ ["), "unified explain tags: {e}");
+
+    // Every recall wrote an audit row (v13 recall_audit).
+    let audits = memory.store().recent_recall_audits(10).expect("audit read");
+    assert!(
+        audits.iter().any(|a| a.query == "test suite release"),
+        "audit row for the recall: {audits:?}"
+    );
+    let row = audits
+        .iter()
+        .find(|a| a.query == "test suite release")
+        .expect("audit row");
+    assert!(row.result_count > 0);
+    assert!(!row.results.as_array().unwrap().is_empty());
 }

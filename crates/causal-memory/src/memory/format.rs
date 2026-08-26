@@ -151,6 +151,27 @@ pub fn format_lesson_layered(entry: &CausalEntry, rank: usize, level: &str) -> (
     }
 }
 
+/// Flip-path marking: the explain tag for one hit — `[seed]` for direct
+/// seed hits, `[spread hop=N via relation←"from"]` for spread-lit hits.
+pub(crate) fn provenance_tag(
+    hop: u8,
+    via_relation: Option<&'static str>,
+    via_from_text: Option<&str>,
+) -> String {
+    if hop == 0 {
+        return "[seed]".to_string();
+    }
+    match (via_relation, via_from_text) {
+        (Some(rel), Some(from)) => format!(
+            "[spread hop={} via {}←\"{}\"]",
+            hop,
+            rel,
+            truncate_chars(from, 40)
+        ),
+        _ => format!("[spread hop={hop}]"),
+    }
+}
+
 /// P5: Token budget tracker — yields entries until the budget is exhausted.
 pub(crate) struct TokenBudget {
     remaining: usize,

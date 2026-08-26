@@ -31,7 +31,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 13;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -79,6 +79,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 12 {
         migrate_to_v12(&tx)?;
+    }
+    if version < 13 {
+        migrate_to_v13(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -954,5 +957,16 @@ fn migrate_to_v12(conn: &Connection) -> Result<()> {
     if !cols.contains("superseded_by") {
         conn.execute_batch("ALTER TABLE agent_facts ADD COLUMN superseded_by INTEGER")?;
     }
+    Ok(())
+}
+
+/// v12 → v13: recall audit table (observability). One best-effort row per
+/// recall (query, seeds, per-hop activation summary, per-result
+/// provenance, latency) powers `/debug/recalls` — an audit log that
+/// survives restarts. Writes never block retrieval (callers count + log
+/// failures). Fresh DBs get the table from CAUSAL_SCHEMA_SQL below; this
+/// step covers existing DBs (idempotent).
+fn migrate_to_v13(conn: &Connection) -> Result<()> {
+    conn.execute_batch(crate::store::RECALL_AUDIT_DDL)?;
     Ok(())
 }

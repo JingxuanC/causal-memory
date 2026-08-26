@@ -70,8 +70,12 @@ Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
 - [ ] **Triple-criterion GC** — prune only when structurally weak AND dormant
   AND zero recent access (HeLa-Mem adaptive forgetting; avoids deleting old
   but still-active edges)
-- [ ] **Flip-path marking** — tag results as direct-seed vs spreading-surfaced
-  so upper layers can do Top-k ∪ Top-m unions (HeLa-Mem dual-path retrieval)
+- [x] **Flip-path marking** — ✅ shipped: every spreading-activation result
+  carries provenance (`hop` 0=seed / N + `via` winning edge relation &
+  source); `search_causal` / `search_memory` take `explain=true` to render
+  `[seed]` / `[spread hop=N via relation←"source"]` tags per hit, and
+  every recall persists an audit row (`recall_audit`, schema v13) read back
+  via `/debug/recalls` (2026-08-26)
 - [x] **Layered loading + token budget** — ✅ shipped: L0/L1/L2
   (`detail_level`) + strict `max_tokens` on `search_causal`, incl. the
   hippocampus spreading path (threaded 2026-08-24 — the params were
@@ -239,7 +243,12 @@ Ecosystem:
   HTTP, stateless mode); auth/multi-tenant hardening still open
 - [ ] Multi-tenant support
 - [ ] Backup / restore tooling (migrations already done)
-- [ ] Observability (Prometheus, OpenTelemetry)
+- [x] Observability (Prometheus, OpenTelemetry) — ✅ shipped the core:
+  hand-rolled in-process registry (no metrics/OTel crates), RED +
+  recall metrics at `/metrics` (Prometheus text), `/healthz` `/readyz`,
+  `/debug/recall` + `/debug/recalls` (persisted recall audit), JSON
+  structured logs via `CAUSAL_MEMORY_LOG_FORMAT=json` (2026-08-26).
+  OTel/OTLP export deferred until a collector actually exists
 - [ ] Stable API guarantee
 
 ## Explicitly out of scope

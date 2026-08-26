@@ -1111,6 +1111,49 @@ mod tests {
     }
 
     #[test]
+    fn test_provenance_seed_and_spread_hops() {
+        // Flip-path marking: seeds are hop 0 with no via; a one-hop spread
+        // hit records hop 1 and the winning edge back to the seed.
+        let mut graph = make_ablation_graph();
+        let results = graph.spreading_activation_opts("deploy", None, false, false);
+
+        let seed = results.iter().find(|r| r.text.contains("deploy")).unwrap();
+        assert_eq!(seed.hop, 0, "seed must be hop 0");
+        assert!(seed.via.is_none(), "seed has no via edge");
+
+        let crash = results.iter().find(|r| r.text.contains("crash")).unwrap();
+        assert_eq!(crash.hop, 1, "crash lights in hop 1");
+        let via = crash.via.expect("spread hit must carry via");
+        assert_eq!(via.relation, Relation::Caused);
+        assert!(via.contribution > 0.0);
+        assert_eq!(
+            graph.node_id(via.from as usize),
+            "deploy",
+            "via must point back at the seed node"
+        );
+    }
+
+    #[test]
+    fn test_provenance_prevented_negative_path() {
+        // The inhibitory path is visible: the prevented node's negative
+        // activation carries a via edge with relation Prevented and a
+        // negative contribution — "why does this result have a negative
+        // score" is now answerable from the result itself.
+        let mut graph = make_ablation_graph();
+        let results = graph.spreading_activation_opts("deploy", None, false, false);
+
+        let safe = results
+            .iter()
+            .find(|r| r.text.contains("zero downtime"))
+            .expect("prevented node should surface with negative activation");
+        assert!(safe.activation < 0.0);
+        let via = safe.via.expect("prevented hit must carry via");
+        assert_eq!(via.relation, Relation::Prevented);
+        assert!(via.contribution < 0.0);
+        assert_eq!(graph.node_id(via.from as usize), "deploy");
+    }
+
+    #[test]
     fn test_inhibition_changes_ranking() {
         // The key ablation result: WITH inhibition, the "zero downtime release"
         // node appears with NEGATIVE activation (a warning signal — "this

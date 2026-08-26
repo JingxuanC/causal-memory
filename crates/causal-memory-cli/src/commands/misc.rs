@@ -217,26 +217,104 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
             .with_stateful_mode(false)
             .with_json_response(true);
         let service = StreamableHttpService::new(
-            move || Ok(CausalMemoryServer::new((*shared_store).clone())),
+            move || {
+                Ok(CausalMemoryServer::new_with_label(
+                    (*shared_store).clone(),
+                    "mcp-http",
+                ))
+            },
             Arc::new(rmcp::transport::streamable_http_server::session::never::NeverSessionManager::default()),
             config,
         );
 
+        // One Memory for the debug endpoints (graph built once, not per
+        // request); MCP connections keep their per-connection instances.
+        let debug_memory = Arc::new(causal_memory::memory::Memory::new_with_label(
+            (*store).clone(),
+            "mcp-http",
+        ));
+
         let app = axum::Router::new()
             .route_service("/mcp", service)
-            .route("/health", axum::routing::get(|| async { "ok" }));
+            // /health kept for backward compatibility.
+            .route("/health", axum::routing::get(|| async { "ok" }))
+            .route("/healthz", axum::routing::get(|| async { "ok" }))
+            .route("/readyz", axum::routing::get(obs_readyz))
+            .route("/metrics", axum::routing::get(obs_metrics))
+            .route("/debug/recall", axum::routing::get(obs_debug_recall))
+            .route("/debug/recalls", axum::routing::get(obs_debug_recalls))
+            .with_state(ObsState { store, debug_memory });
 
         let listener = tokio::net::TcpListener::bind(format!("{host}:{port}"))
             .await
             .map_err(|e| anyhow::anyhow!("Failed to bind {host}:{port}: {e}"))?;
         eprintln!("Listening on http://{host}:{port}/mcp");
-        eprintln!("Health check: http://{host}:{port}/health");
+        eprintln!("Health check: http://{host}:{port}/healthz (legacy: /health)");
+        eprintln!("Metrics:      http://{host}:{port}/metrics");
+        eprintln!("Recall debug: http://{host}:{port}/debug/recall?query=... (+ /debug/recalls)");
+        eprintln!("NOTE: /metrics and /debug/* are unauthenticated — do not expose to the public internet");
 
         axum::serve(listener, app)
             .await
             .map_err(|e| anyhow::anyhow!("HTTP server error: {e}"))?;
         Ok(())
     })
+}
+
+/// Shared state for the observability endpoints (MCP HTTP mode).
+#[derive(Clone)]
+struct ObsState {
+    store: std::sync::Arc<CausalStore>,
+    debug_memory: std::sync::Arc<causal_memory::memory::Memory>,
+}
+
+/// Readiness: a light DB probe (count chunks). 503 when the store is down.
+async fn obs_readyz(
+    axum::extract::State(s): axum::extract::State<ObsState>,
+) -> axum::http::StatusCode {
+    match s.store.count_chunks() {
+        Ok(_) => axum::http::StatusCode::OK,
+        Err(_) => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
+/// Prometheus text exposition; store gauges computed at scrape time.
+async fn obs_metrics(axum::extract::State(s): axum::extract::State<ObsState>) -> String {
+    causal_memory::observability::metrics().render_prometheus(Some(&s.store))
+}
+
+/// /debug/recall?query=...&topk=N — run one recall NOW and return the full
+/// trace (seeds, hop summary, per-result provenance) as JSON.
+async fn obs_debug_recall(
+    axum::extract::State(s): axum::extract::State<ObsState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::Json<serde_json::Value> {
+    let query = params.get("query").cloned().unwrap_or_default();
+    let topk = params
+        .get("topk")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(10)
+        .clamp(1, 50);
+    let mem = s.debug_memory.clone();
+    let trace = tokio::task::spawn_blocking(move || mem.recall_trace(&query, topk))
+        .await
+        .unwrap_or_else(|e| serde_json::json!({ "error": format!("recall task failed: {e}") }));
+    axum::Json(trace)
+}
+
+/// /debug/recalls — newest-first audit rows from the recall_audit table
+/// (persisted; survives restarts).
+async fn obs_debug_recalls(
+    axum::extract::State(s): axum::extract::State<ObsState>,
+) -> axum::Json<serde_json::Value> {
+    let store = (*s.store).clone();
+    let rows = tokio::task::spawn_blocking(move || store.recent_recall_audits(100))
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("audit read task failed: {e}")));
+    match rows {
+        Ok(entries) => axum::Json(serde_json::json!({ "recalls": entries })),
+        Err(e) => axum::Json(serde_json::json!({ "error": format!("{e:#}") })),
+    }
 }
 
 pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
@@ -645,5 +723,75 @@ fn human_bytes(b: u64) -> String {
         format!("{b} B")
     } else {
         format!("{v:.1} {}", UNITS[u])
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+mod obs_tests {
+    use super::*;
+
+    fn state() -> ObsState {
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .record_decision_full(
+                "skipped the test suite before the release",
+                "production outage on friday",
+                "caused",
+                Some("release"),
+                0.8,
+                "rule",
+                1000,
+                Some("negative"),
+            )
+            .unwrap();
+        let store = std::sync::Arc::new(store);
+        let debug_memory = std::sync::Arc::new(causal_memory::memory::Memory::new_with_label(
+            (*store).clone(),
+            "test",
+        ));
+        ObsState {
+            store,
+            debug_memory,
+        }
+    }
+
+    #[tokio::test]
+    async fn obs_endpoints_end_to_end() {
+        let s = state();
+
+        // Readiness probes the store.
+        assert_eq!(
+            obs_readyz(axum::extract::State(s.clone())).await,
+            axum::http::StatusCode::OK
+        );
+
+        // Live recall trace: results carry provenance tags.
+        let mut q = std::collections::HashMap::new();
+        q.insert("query".to_string(), "test suite release".to_string());
+        let axum::Json(trace) =
+            obs_debug_recall(axum::extract::State(s.clone()), axum::extract::Query(q)).await;
+        let results = trace["results"].as_array().unwrap();
+        assert!(!results.is_empty(), "trace has results: {trace}");
+        assert!(
+            results[0]["explain"].as_str().unwrap().starts_with('['),
+            "provenance tag: {}",
+            results[0]
+        );
+
+        // The recall landed in the audit table; /debug/recalls reads it back.
+        let axum::Json(recalls) = obs_debug_recalls(axum::extract::State(s.clone())).await;
+        let rows = recalls["recalls"].as_array().unwrap();
+        assert!(!rows.is_empty(), "audit rows: {recalls}");
+        assert_eq!(rows[0]["query"], "test suite release");
+
+        // Metrics text exposes the causal_memory families (2 chunks: the
+        // decision chunk + the outcome chunk).
+        let text = obs_metrics(axum::extract::State(s)).await;
+        assert!(text.contains("causal_memory_store_chunks 2"), "{text}");
+        assert!(text.contains("causal_memory_uptime_seconds"), "{text}");
     }
 }

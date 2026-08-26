@@ -3124,3 +3124,42 @@ fn test_chunks_by_prefix_orders_turns_numerically() {
         "turns must be numeric order"
     );
 }
+
+// ─── v13 recall_audit (observability) ────────────────────────────────
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_recall_audit_roundtrip_newest_first() {
+    let store = CausalStore::open_in_memory().unwrap();
+    for (q, mode) in [("query one", "spread"), ("query two", "bm25")] {
+        store
+            .insert_recall_audit(&RecallAuditRow {
+                query: q,
+                task_tag: Some("t"),
+                server: "test",
+                mode,
+                seeds_json: r#"[{"id":"d1","source":"bm25"}]"#,
+                activated_nodes: 3,
+                max_hop: 1,
+                results_json: r#"[{"key":"causal:1","explain":"[seed]"}]"#,
+                latency_ms: 1.5,
+                result_count: 2,
+            })
+            .unwrap();
+    }
+    let entries = store.recent_recall_audits(10).unwrap();
+    assert_eq!(entries.len(), 2);
+    assert!(
+        entries[0].id > entries[1].id,
+        "newest first: {:?}",
+        entries.iter().map(|e| e.id).collect::<Vec<_>>()
+    );
+    assert_eq!(entries[0].query, "query two");
+    assert_eq!(entries[0].mode, "bm25");
+    // JSON fields decode back.
+    assert_eq!(entries[0].results[0]["explain"], "[seed]");
+    assert_eq!(entries[1].seeds[0]["source"], "bm25");
+}

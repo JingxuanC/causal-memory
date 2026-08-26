@@ -177,6 +177,48 @@ CREATE TABLE IF NOT EXISTS cooccurrence_edges (
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (from_id, to_id)
 );
+
+-- Recall audit (schema v13, observability): one best-effort row per
+-- recall. Fresh DBs get the table here (detect_version marks them at
+-- SCHEMA_VERSION, skipping the per-version migrations); existing DBs get
+-- it from migrate_to_v13. Keep in sync with RECALL_AUDIT_DDL below.
+CREATE TABLE IF NOT EXISTS recall_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    query TEXT NOT NULL,
+    task_tag TEXT,
+    server TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    seeds_json TEXT NOT NULL,
+    activated_nodes INTEGER NOT NULL,
+    max_hop INTEGER NOT NULL,
+    results_json TEXT NOT NULL,
+    latency_ms REAL NOT NULL,
+    result_count INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recall_audit_created ON recall_audit(created_at);
+"#;
+
+/// Recall audit table (schema v13, observability): one best-effort row per
+/// recall — query, seeds, per-hop summary, per-result provenance, latency.
+/// Powers `/debug/recalls`. Single source of truth for the DDL; the v13
+/// migration replays it for existing DBs (idempotent IF NOT EXISTS).
+pub const RECALL_AUDIT_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS recall_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    query TEXT NOT NULL,
+    task_tag TEXT,
+    server TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    seeds_json TEXT NOT NULL,
+    activated_nodes INTEGER NOT NULL,
+    max_hop INTEGER NOT NULL,
+    results_json TEXT NOT NULL,
+    latency_ms REAL NOT NULL,
+    result_count INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_recall_audit_created ON recall_audit(created_at);
 "#;
 
 /// Thread-safe causal store backed by SQLite.
@@ -463,6 +505,7 @@ impl Drop for PooledConn {
 }
 
 // Submodules — each adds methods to `impl CausalStore`.
+mod audit;
 mod embed;
 mod facts;
 pub mod retrieve;
@@ -471,6 +514,7 @@ mod utils;
 mod write;
 
 // Re-export all public types so `causal_memory::store::CausalEntry` still works.
+pub use audit::{RecallAuditEntry, RecallAuditRow};
 pub use types::*;
 pub use utils::{
     containment_similarity, date_tokens, effective_polarity, is_retraction_record,

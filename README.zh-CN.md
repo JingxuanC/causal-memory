@@ -228,6 +228,19 @@ cargo build --release
 ./target/release/causal-memory http --port 9938   # MCP Streamable HTTP
 ```
 
+同一端口的可观测性端点（**无鉴权——请勿暴露公网**）：
+
+```
+GET /metrics                    Prometheus 文本（RED + 召回指标）
+GET /healthz / /readyz          存活 / 就绪（就绪会探测 store）
+GET /debug/recall?query=...     现场执行一次召回，返回完整 JSON trace
+                                （种子、各跳摘要、逐条结果的 provenance）
+GET /debug/recalls              最近的召回审计记录（落库持久化，
+                                schema v13 recall_audit 表，重启不丢）
+```
+
+stderr 结构化 JSON 日志：`CAUSAL_MEMORY_LOG_FORMAT=json`。
+
 ### 使用本地 embedding（无需 API key）
 
 ```bash

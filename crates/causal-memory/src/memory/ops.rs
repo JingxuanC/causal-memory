@@ -32,8 +32,27 @@ pub struct MemoryHit {
 
 /// Ranked retrieval results shared by both search paths: (rank, item)
 /// pairs per layer (rank = fused position, or engine activation position
-/// on the spread path) plus the mode tag.
-type RankedHits = (
+/// on the spread path) plus the mode tag, the explain map (Flip-path
+/// marking: hit key → `[seed]` / `[spread hop=N via …]` tag; rendered only
+/// when the caller passes explain=true, so default output is unchanged),
+/// and the recall-audit metadata (seeds / hop summary) for the audit row
+/// and the /debug/recall trace endpoint.
+struct RankedHits {
+    facts: Vec<(usize, AgentFact)>,
+    causal: Vec<(usize, CausalEntry)>,
+    mode: &'static str,
+    explains: HashMap<String, String>,
+    seeds: Vec<(String, &'static str)>,
+    activated_nodes: usize,
+    /// Hop distribution of the SURFACED hits (index = hop; surfaced hits
+    /// only, not the whole lit set).
+    hop_counts: Vec<usize>,
+    max_hop: u8,
+}
+
+/// The dual-pool fallback's return shape (no provenance — every hit there
+/// is a literal/semantic seed by construction).
+type DualPoolHits = (
     Vec<(usize, AgentFact)>,
     Vec<(usize, CausalEntry)>,
     &'static str,
@@ -293,6 +312,10 @@ impl Memory {
     }
 
     /// `search_causal` — BM25 + semantic retrieval of past causal episodes.
+    /// `explain` (default false) appends a provenance tag per hit
+    /// (Flip-path marking); default output is byte-identical to the
+    /// pre-explain format.
+    #[allow(clippy::too_many_arguments)]
     pub fn search_causal(
         &self,
         task_tag: Option<&str>,
@@ -300,11 +323,16 @@ impl Memory {
         limit: Option<usize>,
         detail_level: Option<&str>,
         max_tokens: Option<usize>,
+        explain: Option<bool>,
     ) -> String {
         let limit = limit.unwrap_or(5);
         let detail_level = detail_level.unwrap_or("l2");
         let max_tokens = max_tokens.unwrap_or(0);
+        let explain = explain.unwrap_or(false);
         let mut budget = TokenBudget::new(max_tokens);
+        // Non-spread paths surface direct store hits — provenance-wise they
+        // are seeds by definition.
+        let seed_tag = if explain { "   ↳ [seed]\n" } else { "" };
 
         // ── Hippocampus path: spreading activation (联想检索) ──
         // The graph does associative retrieval: from seed matches, activation
@@ -312,9 +340,15 @@ impl Memory {
         // would miss. Falls through to BM25/semantic if graph is unavailable
         // or finds nothing.
         if let Some(query) = query.filter(|q| !q.trim().is_empty()) {
-            if let Some(hippo_result) =
-                self.hippocampus_search(query, task_tag, false, limit, detail_level, max_tokens)
-            {
+            if let Some(hippo_result) = self.hippocampus_search(
+                query,
+                task_tag,
+                false,
+                limit,
+                detail_level,
+                max_tokens,
+                explain,
+            ) {
                 return hippo_result;
             }
 
@@ -348,7 +382,17 @@ impl Memory {
                             ));
                             break;
                         }
-                        out.push_str(&line);
+                        if explain {
+                            // Tag hugs its entry: the layered line ends in
+                            // a blank separator, so trim + re-add it after
+                            // the tag. (explain=false keeps the raw line.)
+                            out.push_str(line.trim_end());
+                            out.push('\n');
+                            out.push_str(seed_tag);
+                            out.push('\n');
+                        } else {
+                            out.push_str(&line);
+                        }
                     }
                     return out;
                 }
@@ -382,7 +426,16 @@ impl Memory {
                     ));
                     break;
                 }
-                out.push_str(&line);
+                if explain {
+                    // Tag hugs its entry: the layered line ends in a blank
+                    // separator, so trim + re-add it after the tag.
+                    out.push_str(line.trim_end());
+                    out.push('\n');
+                    out.push_str(seed_tag);
+                    out.push('\n');
+                } else {
+                    out.push_str(&line);
+                }
             }
             return out;
         } // end hippocampus if let Some(query) block
@@ -405,7 +458,7 @@ impl Memory {
         );
         for (i, entry) in results.iter().take(limit).enumerate() {
             out.push_str(&format!(
-                "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n\n",
+                "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n",
                 i + 1,
                 entry.task_tag.as_deref().unwrap_or("untagged"),
                 entry.decision_text,
@@ -413,6 +466,10 @@ impl Memory {
                 entry.outcome_text,
                 entry.confidence * 100.0,
             ));
+            if explain {
+                out.push_str("   ↳ [seed]\n");
+            }
+            out.push('\n');
         }
         out
     }
@@ -633,15 +690,45 @@ impl Memory {
         // types, one spreading-activation run, typed hits. The dual-pool
         // RRF path is the fallback (and the regression control for A/B
         // comparison). Both paths produce the same ranked-pair shape, so
-        // hit materialization is shared.
-        let (facts, causal, mode) = self.ranked_hits(query, task_tag, scope, limit);
-        (hits_from_ranked(&facts, &causal), mode)
+        // hit materialization is shared. Structured hits are explain-free
+        // by contract (benchmarks consume content verbatim).
+        let hits = self.ranked_hits(query, task_tag, scope, limit);
+        let mode = hits.mode;
+        (hits_from_ranked(&hits.facts, &hits.causal), mode)
+    }
+
+    /// Observability (/debug/recall): run one recall and return the full
+    /// trace as JSON — seeds with sources, hop summary, and per-result
+    /// provenance tags. Read-only; the audit row is written as for any
+    /// recall.
+    pub fn recall_trace(&self, query: &str, limit: usize) -> serde_json::Value {
+        let t0 = std::time::Instant::now();
+        let hits = self.ranked_hits(query, None, None, limit);
+        let structured = hits_from_ranked(&hits.facts, &hits.causal);
+        serde_json::json!({
+            "query": query,
+            "mode": hits.mode,
+            "latency_ms": t0.elapsed().as_secs_f64() * 1000.0,
+            "seeds": hits.seeds.iter().map(|(id, s)| serde_json::json!({"id": id, "source": s})).collect::<Vec<_>>(),
+            "activated_nodes": hits.activated_nodes,
+            "max_hop": hits.max_hop,
+            "hop_counts_surfaced": hits.hop_counts,
+            "results": structured.iter().map(|h| serde_json::json!({
+                "key": h.key,
+                "rank": h.rank,
+                "explain": hits.explains.get(&h.key),
+                "content": h.content,
+            })).collect::<Vec<_>>(),
+        })
     }
 
     /// `search_memory` — unified retrieval: facts + causal lessons fused by
     /// Reciprocal Rank Fusion (RRF) in one call. `detail_level` (l0/l1/l2,
     /// default l2) picks the per-item verbosity; `max_tokens` (default 0 =
-    /// unlimited) truncates the rendered pool against a shared token budget.
+    /// unlimited) truncates the rendered pool against a shared token budget;
+    /// `explain` (default false) appends a provenance tag per hit — default
+    /// output is byte-identical to the pre-explain format.
+    #[allow(clippy::too_many_arguments)]
     pub fn search_memory(
         &self,
         query: &str,
@@ -650,6 +737,7 @@ impl Memory {
         limit: Option<usize>,
         detail_level: Option<&str>,
         max_tokens: Option<usize>,
+        explain: Option<bool>,
     ) -> String {
         let limit = limit.unwrap_or(10);
         if let Some(s) = scope {
@@ -666,21 +754,28 @@ impl Memory {
         // the fallback and the regression control for A/B comparison.
         // Both produce the same ranked-pair shape, so D4 routing and the
         // grouped display are shared.
-        let (facts, causal, mode) = self.ranked_hits(query, task_tag, scope, limit);
+        let hits = self.ranked_hits(query, task_tag, scope, limit);
         render_unified(
             query,
-            &facts,
-            &causal,
-            mode,
+            &hits.facts,
+            &hits.causal,
+            hits.mode,
             detail_level,
             max_tokens.unwrap_or(0),
+            if explain.unwrap_or(false) {
+                Some(&hits.explains)
+            } else {
+                None
+            },
         )
     }
 
     /// One retrieval story, two presentations: the unified spread engine
     /// when it can serve the query, the dual-pool RRF path otherwise.
     /// Returns facts and causal entries as (rank, item) pairs — facts in
-    /// activation/fused order, causal likewise — plus the mode tag.
+    /// activation/fused order, causal likewise — plus the mode tag and the
+    /// per-hit explain map. Every call is a recall: record metrics and a
+    /// best-effort audit row (audit failures never break retrieval).
     fn ranked_hits(
         &self,
         query: &str,
@@ -688,23 +783,135 @@ impl Memory {
         scope: Option<&str>,
         limit: usize,
     ) -> RankedHits {
-        if let Some(spread) = self.unified_spread_hits(query, task_tag, scope, limit) {
+        let t0 = std::time::Instant::now();
+        let out = if let Some(spread) = self.unified_spread_hits(query, task_tag, scope, limit) {
+            let mut explains = HashMap::new();
+            let mut hop_counts = vec![0usize; spread.max_hop as usize + 1];
             let base = spread.facts.len();
             let facts: Vec<(usize, AgentFact)> = spread
                 .facts
                 .into_iter()
                 .enumerate()
-                .map(|(i, f)| (i + 1, f))
+                .map(|(i, (f, p))| {
+                    let key = format!("fact:{}", f.id);
+                    explains.insert(key, p.tag());
+                    hop_counts[p.hop as usize] += 1;
+                    let source = if p.hop == 0 { "seed" } else { "spread" };
+                    crate::observability::metrics().record_recall_result("facts", source);
+                    (i + 1, f)
+                })
                 .collect();
             let causal: Vec<(usize, CausalEntry)> = spread
                 .causal
                 .into_iter()
                 .enumerate()
-                .map(|(i, e)| (base + i + 1, e))
+                .map(|(i, (e, p))| {
+                    let key = format!("causal:{}", e.edge_id);
+                    explains.insert(key, p.tag());
+                    hop_counts[p.hop as usize] += 1;
+                    let source = if p.hop == 0 { "seed" } else { "spread" };
+                    crate::observability::metrics().record_recall_result("causal", source);
+                    (base + i + 1, e)
+                })
                 .collect();
-            return (facts, causal, "spread");
+            crate::observability::metrics().record_activated_nodes(spread.activated_nodes);
+            RankedHits {
+                facts,
+                causal,
+                mode: "spread",
+                explains,
+                seeds: spread.seeds,
+                activated_nodes: spread.activated_nodes,
+                hop_counts,
+                max_hop: spread.max_hop,
+            }
+        } else {
+            let (facts, causal, mode) = self.dual_pool_fused(query, task_tag, scope, limit);
+            // Direct store hits: every result is a literal/semantic seed.
+            let mut explains = HashMap::new();
+            for (_, f) in &facts {
+                explains.insert(format!("fact:{}", f.id), "[seed]".to_string());
+                crate::observability::metrics().record_recall_result("facts", "seed");
+            }
+            for (_, e) in &causal {
+                explains.insert(format!("causal:{}", e.edge_id), "[seed]".to_string());
+                crate::observability::metrics().record_recall_result("causal", "seed");
+            }
+            let n = facts.len() + causal.len();
+            RankedHits {
+                facts,
+                causal,
+                mode,
+                explains,
+                seeds: Vec::new(),
+                activated_nodes: 0,
+                hop_counts: vec![n],
+                max_hop: 0,
+            }
+        };
+        self.write_recall_audit(
+            query,
+            task_tag,
+            out.mode,
+            &out.seeds,
+            out.activated_nodes,
+            out.max_hop,
+            &out.explains,
+            out.facts.len() + out.causal.len(),
+            t0.elapsed().as_secs_f64() * 1000.0,
+        );
+        out
+    }
+
+    /// Best-effort recall audit (v13 `recall_audit` table): one row per
+    /// recall with seeds, hop summary and per-result explain tags. A write
+    /// failure increments a metrics counter and logs a warning — retrieval
+    /// is NEVER affected.
+    #[allow(clippy::too_many_arguments)]
+    fn write_recall_audit(
+        &self,
+        query: &str,
+        task_tag: Option<&str>,
+        mode: &str,
+        seeds: &[(String, &'static str)],
+        activated_nodes: usize,
+        max_hop: u8,
+        explains: &HashMap<String, String>,
+        result_count: usize,
+        latency_ms: f64,
+    ) {
+        let seeds_json = serde_json::to_string(
+            &seeds
+                .iter()
+                .map(|(id, s)| serde_json::json!({ "id": id, "source": s }))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_string());
+        let mut result_keys: Vec<String> = explains.keys().cloned().collect();
+        result_keys.sort();
+        let results_json = serde_json::to_string(
+            &result_keys
+                .iter()
+                .map(|k| serde_json::json!({ "key": k, "explain": explains[k] }))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_string());
+        let row = crate::store::RecallAuditRow {
+            query,
+            task_tag,
+            server: self.server_label(),
+            mode,
+            seeds_json: &seeds_json,
+            activated_nodes,
+            max_hop,
+            results_json: &results_json,
+            latency_ms,
+            result_count,
+        };
+        if let Err(e) = self.store.insert_recall_audit(&row) {
+            crate::observability::metrics().record_audit_error();
+            tracing::warn!("recall audit write failed (recall unaffected): {e}");
         }
-        self.dual_pool_fused(query, task_tag, scope, limit)
     }
 
     /// The dual-pool RRF fallback: per-layer retrieval (semantic → BM25
@@ -717,7 +924,7 @@ impl Memory {
         task_tag: Option<&str>,
         scope: Option<&str>,
         limit: usize,
-    ) -> RankedHits {
+    ) -> DualPoolHits {
         // Pull more than needed per layer so the fusion has real candidates.
         let per_layer = limit.saturating_mul(2).max(10);
 
@@ -933,7 +1140,7 @@ impl Memory {
         // reverse causal edges, surfacing decisions that keyword search
         // would miss (e.g., a decision phrased differently from the query).
         if let Some(hippo_result) =
-            self.hippocampus_search(outcome_description, None, true, 5, "l1", 0)
+            self.hippocampus_search(outcome_description, None, true, 5, "l1", 0, false)
         {
             return hippo_result;
         }
@@ -1760,6 +1967,9 @@ fn hits_from_ranked(
 /// fact/causal rendering with per-item ranks. `detail_level` picks the
 /// per-item verbosity (l2 = the historical format, byte-identical);
 /// `max_tokens` > 0 truncates both sections against one shared budget.
+/// `explain` (None by default → byte-identical output) appends a
+/// provenance tag per hit (Flip-path marking).
+#[allow(clippy::too_many_arguments)]
 fn render_unified(
     query: &str,
     facts: &[(usize, AgentFact)],
@@ -1767,6 +1977,7 @@ fn render_unified(
     mode: &str,
     detail_level: &str,
     max_tokens: usize,
+    explain: Option<&HashMap<String, String>>,
 ) -> String {
     if facts.is_empty() && causal.is_empty() {
         return format!("[unified/{mode}] 📭 No memories found matching your query in any layer.");
@@ -1796,6 +2007,9 @@ fn render_unified(
                 continue;
             }
             out.push_str(&line);
+            if let Some(tag) = explain.and_then(|m| m.get(&format!("fact:{}", fact.id))) {
+                out.push_str(&format!("    ↳ {tag}\n"));
+            }
         }
         out.push('\n');
     }
@@ -1808,6 +2022,9 @@ fn render_unified(
                 continue;
             }
             out.push_str(&line);
+            if let Some(tag) = explain.and_then(|m| m.get(&format!("causal:{}", entry.edge_id))) {
+                out.push_str(&format!("    ↳ {tag}\n"));
+            }
         }
     }
     if truncated > 0 {

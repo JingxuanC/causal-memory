@@ -238,6 +238,20 @@ cargo build --release
 ./target/release/causal-memory http --port 9938   # MCP Streamable HTTP
 ```
 
+Observability endpoints on the same port (UNAUTHENTICATED — do not expose
+to the public internet):
+
+```
+GET /metrics                    Prometheus text (RED + recall metrics)
+GET /healthz / /readyz          liveness / readiness (readiness probes the store)
+GET /debug/recall?query=...     run a recall now, return the full JSON trace
+                                (seeds, hop summary, per-result provenance)
+GET /debug/recalls              newest-first recall audit rows (persisted,
+                                schema v13 recall_audit table; survives restarts)
+```
+
+Structured JSON logs on stderr: `CAUSAL_MEMORY_LOG_FORMAT=json`.
+
 ### With local embeddings (no API key needed)
 
 ```bash

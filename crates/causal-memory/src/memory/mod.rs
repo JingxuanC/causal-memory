@@ -16,7 +16,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use format::{format_activation_layered, TokenBudget};
+use format::{format_activation_layered, provenance_tag, TokenBudget};
 
 /// C7: rebuild the hippocampus graph only after enough writes accumulated
 /// (or enough time passed) — a full from_store per write is O(store) and
@@ -60,11 +60,20 @@ pub struct Memory {
     /// cooccurrence_edges table when the graph rebuilds. Keeps Hebbian
     /// learning off the read path (batched, low-frequency writes).
     cooc_buffer: Mutex<Vec<(String, String)>>,
+    /// Observability: which frontend this instance serves ("core" default;
+    /// "mcp-stdio" / "mcp-http" / "amc" when the server sets it). Labels
+    /// the recall_audit rows and request metrics.
+    server_label: &'static str,
 }
 
 impl Memory {
     /// Wrap an existing store.
     pub fn new(store: CausalStore) -> Self {
+        Self::new_with_label(store, "core")
+    }
+
+    /// Wrap an existing store with a server label (observability).
+    pub fn new_with_label(store: CausalStore, server_label: &'static str) -> Self {
         // Load the hippocampus graph from the store on startup.
         let graph = CausalGraph::from_store(&store).ok();
         Self {
@@ -73,7 +82,14 @@ impl Memory {
             graph_writes: AtomicUsize::new(0),
             graph_last_rebuild: AtomicI64::new(chrono::Utc::now().timestamp()),
             cooc_buffer: Mutex::new(Vec::new()),
+            server_label,
         }
+    }
+
+    /// The observability label of this instance ("core" unless a server
+    /// set one).
+    pub(crate) fn server_label(&self) -> &'static str {
+        self.server_label
     }
 
     /// Open (or create) a memory database at `path`, running migrations.
@@ -282,7 +298,9 @@ impl Memory {
     /// Returns None if graph is empty, missing, or finds nothing.
     /// Honors the same detail_level/max_tokens contract as the BM25 and
     /// semantic paths — these were dead parameters on this path until the
-    /// budget was threaded through here.
+    /// budget was threaded through here. `explain` appends a provenance
+    /// tag per hit (Flip-path marking); false = historical output.
+    #[allow(clippy::too_many_arguments)]
     fn hippocampus_search(
         &self,
         query: &str,
@@ -291,6 +309,7 @@ impl Memory {
         limit: usize,
         detail_level: &str,
         max_tokens: usize,
+        explain: bool,
     ) -> Option<String> {
         self.maybe_rebuild_graph();
         let mut guard = self.graph.lock().ok()?;
@@ -337,6 +356,14 @@ impl Memory {
                 break;
             }
             out.push_str(&line);
+            if explain {
+                let tag = provenance_tag(
+                    r.hop,
+                    r.via.map(|v| v.relation.as_str()),
+                    r.via.map(|v| graph.node_text(v.from as usize)),
+                );
+                out.push_str(&format!("   ↳ {tag}\n"));
+            }
         }
         Some(out)
     }
