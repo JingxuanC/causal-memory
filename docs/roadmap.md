@@ -77,12 +77,12 @@ Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
   hippocampus spreading path (threaded 2026-08-24 — the params were
   silently dead on that path before) and on `search_memory` (facts +
   causal sections share one budget; default output byte-identical)
-- [~] **Formal ablation** — harness + engine switches shipped
-  2026-08-24 (`disable_inhibition` / `disable_spread`,
-  `benches/ablation`). First run (n=100, LongMemEval distill store):
-  no-spread −1pt evidence hit / −186 pool tokens; no-inhibition and
-  no-swr vacuous on that store (1 `prevented` edge; never consolidated,
-  all q_value=0.5) — rerun on a consolidated store still owed
+- [x] **Formal ablation** — ✅ shipped 2026-08-24: harness + engine
+  switches (`disable_inhibition` / `disable_spread`, `benches/ablation`),
+  spread-flooding fix + fan-out constraint (real-DB baseline 14.2% →
+  95.0%, LongMemEval 84.0% no regression), paraphrase negative result
+  recorded honestly. Full writeup:
+  [docs/evaluations/spread-flooding-ablation-2026-08.md](evaluations/spread-flooding-ablation-2026-08.md)
 - [~] **Token-efficiency benchmark** — per-question token accounting
   shipped in the LongMemEval harness (avg ctx/ans tokens in every run
   summary); the dedicated cross-system comparison vs OpenViking's
@@ -178,8 +178,8 @@ Benchmark-driven:
   answer contracts (knowledge-update / multi-session / preference
   rules); preference 13.3% → 56.7% → 80.0%
 - [x] `max_tokens` budget param on `search_causal` — ✅ (see mechanism
-  absorption above); [ ] `causal-memory stats` (Claude Code `/context`
-  analogue) still open
+  absorption above); [x] `causal-memory stats` — ✅ shipped 2026-08-25
+  (Claude Code `/context` analogue)
 
 Memory-quality:
 
@@ -207,11 +207,13 @@ Memory-quality:
 
 Ecosystem:
 
-- [ ] **Hermes Agent memory provider** — the first agent runtime with a
-  first-class memory plugin slot; no current provider stores causal edges.
-  Entry ticket: our benchmark suite (see
-  [docs/research/computational-ai/hermes-provider-ecosystem.md](research/computational-ai/hermes-provider-ecosystem.md)).
-  Requires PyO3 bindings — reprioritized above HTTP transport
+- [x] **Hermes Agent memory provider** — ✅ shipped 2026-08-25
+  (`hermes-plugin/`, `hermes-causal-memory` on the
+  `hermes_agent.memory_providers` entry point): full MemoryProvider ABC
+  lifecycle verified against a real Hermes v0.20.5 install (discover →
+  initialize → write → prefetch → shutdown). Entry ticket: our benchmark
+  suite (see
+  [docs/research/computational-ai/hermes-provider-ecosystem.md](research/computational-ai/hermes-provider-ecosystem.md))
 - [ ] **L0 file injection**: generate `CAUSAL_MEMORY.md` (< 200 lines,
   pointer-style) for constant system-prompt pinning — proactive, vs the
   on-demand `causal_directory` tool
@@ -227,8 +229,11 @@ Ecosystem:
   (`causal_memory::memory::Memory`, 15 ops, MCP behavior preserved 1:1);
   `crates/causal-memory-py` binds it as the `causal_memory` Python module
   (abi3 ≥ 3.9, maturin build, `CausalMemory` class mirroring all 15 tools,
-  pytest smoke suite). Remaining for the ecosystem entry: PyPI publishing +
-  CI wheels, then the Hermes provider slot
+  pytest smoke suite). PyPI shipped 2026-08-24: `pip install
+  causal-memory` (0.9.x, 4-platform abi3 wheels + sdist via trusted
+  publishing; wheel includes the MCP server console script +
+  `setconfig` CLI since 0.9.2) — and the Hermes provider slot above
+  is done too.
 - [ ] TS bindings (after Python)
 - [x] MCP HTTP transport — ✅ shipped (`causal-memory http`, Streamable
   HTTP, stateless mode); auth/multi-tenant hardening still open
