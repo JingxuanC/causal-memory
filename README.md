@@ -242,6 +242,16 @@ cargo build --release
 }
 ```
 
+No Rust toolchain? `pip install causal-memory` puts the same `causal-memory`
+console script on your PATH (the full CLI — bare invocation is the stdio MCP
+server), so `"command": "causal-memory"` works as the MCP entry too.
+
+To teach the agent *when* to use the memory tools (agents don't call them
+proactively without instruction), install the bundled agent skill
+[skills/causal-memory/SKILL.md](skills/causal-memory/SKILL.md) into your
+agent's skills directory (e.g. `~/.agents/skills/causal-memory/`), or paste
+[CLAUDE.md](CLAUDE.md) into your system prompt / `AGENTS.md`.
+
 ### HTTP transport (remote agents, multi-agent shared memory)
 
 ```bash
