@@ -40,14 +40,24 @@ compaction cannot touch it.
 
 ## Demo
 
+**30-second single scene** — the agent is about to `git push --no-verify`;
+`intervention_query` fires a DANGER chain citing the lesson it recorded last
+time ("production login failed for 40 minutes; emergency rollback"):
+
+<!-- GitHub's CSP (media-src) only allows GitHub-hosted media, so an
+     external <video> never plays on the repo page. An animated GIF goes
+     through the camo image proxy and plays inline. Click for the mp4. -->
+[![30-second danger-warning demo](docs/demo/causal-memory-danger-30s.gif)](docs/demo/causal-memory-danger-30s.mp4)
+
+[Download video](docs/demo/causal-memory-danger-30s.mp4) ·
+[DANGER-scene screenshot](docs/demo/demo30_danger.png) ·
+Regenerate: `scripts/capture_demo30.py` → `scripts/render_demo30.py`
+
 A 21-second hands-on demo (real memory store, no mocks): pre-action warning
 (`intervention_query` → DANGER chain) → experience recall (`search_causal`)
 → counterfactual comparison (`counterfactual_query`) → write loop
 (`record_decision` → immediately searchable).
 
-<!-- GitHub's CSP (media-src) only allows GitHub-hosted media, so an
-     external <video> never plays on the repo page. An animated GIF goes
-     through the camo image proxy and plays inline. Click for the mp4. -->
 [![21-second demo](docs/demo/causal-memory-demo.gif)](docs/demo/causal-memory-demo.mp4)
 
 [Download video](docs/demo/causal-memory-demo.mp4) ·
