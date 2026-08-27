@@ -1,80 +1,84 @@
 ---
 name: causal-memory
-description: Causal memory for agents — record decisions/outcomes and recall them before acting. Trigger when the agent has causal-memory MCP tools available and is about to make a non-trivial decision (architecture, debugging approach, library/deployment choice), when something fails unexpectedly, or when the user asks to "remember" something.
-version: v1.0
+description: Causal memory for agents — install/setup the causal-memory MCP server, then record decisions/outcomes and recall them before acting. Trigger when the user asks to install or set up causal-memory/agent memory, when causal-memory MCP tools are available and the agent faces a non-trivial decision (architecture, debugging approach, library/deployment choice), when something fails unexpectedly, or when the user asks to "remember" something.
+version: v1.1
 ---
 
-# Causal Memory Integration
+# Causal Memory
 
-You have access to a **causal memory layer** via MCP tools (`record_decision`,
-`search_causal`, …). It records your past decisions and their outcomes as
-causal edges, so you learn from experience across sessions and survive
-context compaction.
+Causal memory records your past decisions and their outcomes as causal edges,
+so you learn from experience across sessions and survive context compaction.
 
-## Setup (if the tools are not configured yet)
+This skill has two parts:
+- **§1 Setup** — when the `record_decision` / `search_causal` MCP tools are
+  NOT available yet: install and configure them yourself.
+- **§2 Usage** — once the tools exist: the proactive recall/record loop.
 
-`pip install causal-memory` puts the full CLI on PATH as `causal-memory`.
-Point any MCP client at it — bare invocation runs the stdio MCP server:
+## 1. Setup (do this yourself, then tell the user to restart the client)
 
-```json
-{
-  "mcpServers": {
-    "causal-memory": {
-      "command": "causal-memory",
-      "env": { "CAUSAL_MEMORY_DB": "~/.local/share/causal-memory/causal.db" }
-    }
-  }
-}
-```
+1. **Install the package** (ships the full CLI as `causal-memory` on PATH):
 
-Remote / multi-agent shared memory: `causal-memory http --port 9938`
-(Streamable HTTP at `/mcp`; set `CAUSAL_MEMORY_ALLOWED_HOSTS` for non-localhost
-access). The console script is the full CLI: `stats`, `sleep`, `distill`,
-`export`/`import` — see `causal-memory --help`.
+   ```bash
+   pip install causal-memory        # or: pipx install causal-memory
+   causal-memory --help | head -5   # verify the console script works
+   ```
 
-## The core loop (four tools cover 90% of usage)
+2. **Register it as an MCP server** in the user's client. Bare
+   `causal-memory` runs the stdio MCP server; the only env worth setting is
+   `CAUSAL_MEMORY_DB` (SQLite location, default `~/.causal-memory/causal.db`).
 
-**Before any non-trivial decision** (architecture choice, debugging approach,
-library selection, deployment strategy):
+   - **Claude Code** (CLI does the config for you):
+     ```bash
+     claude mcp add causal-memory -- causal-memory
+     ```
+   - **Cursor** — edit `~/.cursor/mcp.json` (merge into `mcpServers`):
+     ```json
+     { "mcpServers": { "causal-memory": { "command": "causal-memory" } } }
+     ```
+   - **Claude Desktop** — edit
+     `~/Library/Application Support/Claude/claude_desktop_config.json`
+     (same `mcpServers` shape as above).
+   - **Kimi Code** — add to `config.toml`:
+     ```toml
+     [mcp.servers.causal-memory]
+     command = "causal-memory"
+     ```
 
-1. Call `search_memory` with your query — it RRF-fuses facts AND causal
-   lessons in one call. Need causal lessons specifically? `search_causal`
-   with the relevant `task_tag`.
-2. For risky or irreversible actions, also call `intervention_query` — it
-   forward-simulates what similar past actions caused (safe / warning /
-   **danger**).
-3. If past experience is relevant, incorporate it into your approach.
+   When editing JSON configs, merge — never overwrite the whole file.
 
-**After acting on a decision and observing the result:**
+3. **Tell the user to restart the client** (MCP servers load at startup).
+   After restart, verify by calling `causal_directory` — an empty directory
+   is fine, an error means the server didn't come up.
 
-4. Call `record_decision` with `decision`, `outcome`, `relation`
-   (caused / enabled / prevented / no_effect), `task_tag`, and
-   `confidence_source` (temporal / rule / llm_inferred / user_feedback).
-   **Record surprising outcomes especially — those are the most valuable
-   lessons.**
+4. Optional shared/remote mode: `causal-memory http --port 9938` serves MCP
+   over Streamable HTTP at `/mcp` (multi-agent shared memory; set
+   `CAUSAL_MEMORY_ALLOWED_HOSTS` for non-localhost access).
 
-**Stable facts** (preferences, tech stack, config): `record_fact` with
-`key` / `value` / `scope` (user / session / agent). Replacing an older fact?
-`replace_same_key: true`. Retrieve with `search_facts` / `search_memory`.
+## 2. Usage (once the tools are available)
 
-## Failure postmortem
+**Do NOT ask the user before searching or recording — do it proactively.**
 
-5. Something failed unexpectedly → `trace_cause` (which past decision caused
-   this); root cause more than one hop away → `trace_cause_chain`.
+The core loop (four tools cover 90% of usage):
 
-## Corrections
+- **Before any non-trivial decision** (architecture, debugging approach,
+  library selection, deployment strategy): call `search_memory` (facts +
+  causal lessons, RRF-fused). For risky or irreversible actions, also call
+  `intervention_query` — it forward-simulates what similar past actions
+  caused (safe / warning / **danger**).
+- **After acting on a decision and observing the result**: call
+  `record_decision` with `decision`, `outcome`, `relation`
+  (caused / enabled / prevented / no_effect), `task_tag`,
+  `confidence_source`. **Record surprising outcomes especially — those are
+  the most valuable lessons.**
+- **Stable facts** (preferences, tech stack, config): `record_fact` with
+  `key` / `value` / `scope`; `replace_same_key: true` when superseding.
+- **Failure postmortem**: `trace_cause` (single hop) /
+  `trace_cause_chain` (multi-hop root cause).
+- **Corrections**: `invalidate_decision` / `invalidate_pattern` (soft-delete,
+  kept for audit).
 
-6. A recorded lesson turned out wrong → `invalidate_decision` (soft-delete:
-   hidden from search, kept for audit). Wrong cross-task pattern →
-   `invalidate_pattern`.
+Keep `task_tag` consistent within a domain (e.g. `deployment`,
+`git-workflow`) — stratified pattern mining depends on it.
 
-## Rules of engagement
-
-- **Do NOT ask the user before searching or recording — do it proactively.**
-- Keep `task_tag` consistent within a domain (e.g. `deployment`,
-  `git-workflow`) — stratified mining depends on it.
-- Prefer `search_memory` when unsure which layer holds what you need.
-
-Full tool reference (16 tools): `causal_directory`, `search_patterns`,
-`counterfactual_query`, `reconstruct_lesson`, `remember`, `resolve_updates`
-and the rest — see the repo README "Sixteen MCP tools" section.
+Full reference (16 tools): repo README "Sixteen MCP tools" —
+github.com/JingxuanC/causal-memory.
