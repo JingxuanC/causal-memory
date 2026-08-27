@@ -27,7 +27,7 @@ fn timeout_secs(env_value: Option<&str>) -> u64 {
         .unwrap_or(DEFAULT_HTTP_TIMEOUT_SECS)
 }
 
-fn http_timeout() -> std::time::Duration {
+pub(crate) fn http_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(timeout_secs(
         crate::config::get("CAUSAL_MEMORY_HTTP_TIMEOUT_SECS").as_deref(),
     ))
@@ -256,6 +256,22 @@ pub async fn chat(
     max_tokens: u32,
     temperature: f32,
 ) -> Result<String> {
+    chat_with_timeout(config, system_prompt, user_msg, max_tokens, temperature, http_timeout()).await
+}
+
+/// `chat` with an explicit per-call timeout. The 8s default suits the
+/// interactive MCP path; long-batch offline calls (distill over a full
+/// session can take 30-120s on deepseek-v4-flash) must pass a larger one —
+/// otherwise reqwest aborts mid-body with a misleading "error decoding
+/// response body".
+pub async fn chat_with_timeout(
+    config: &LlmConfig,
+    system_prompt: &str,
+    user_msg: &str,
+    max_tokens: u32,
+    temperature: f32,
+    timeout: std::time::Duration,
+) -> Result<String> {
     let req = ChatRequest {
         model: config.model.clone(),
         messages: vec![
@@ -273,7 +289,7 @@ pub async fn chat(
     };
 
     let client = reqwest::Client::builder()
-        .timeout(http_timeout())
+        .timeout(timeout)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
     let url = format!("{}/chat/completions", config.api_base.trim_end_matches('/'));
