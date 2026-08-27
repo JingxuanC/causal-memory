@@ -80,5 +80,36 @@ The core loop (four tools cover 90% of usage):
 Keep `task_tag` consistent within a domain (e.g. `deployment`,
 `git-workflow`) — stratified pattern mining depends on it.
 
+## 3. Offline session extraction (CLI — backfill memory from past sessions)
+
+All four commands need an LLM: `CAUSAL_MEMORY_LLM_API` +
+`CAUSAL_MEMORY_LLM_KEY` (or `DEEPSEEK_API_KEY`). They write into the same
+`CAUSAL_MEMORY_DB` store the MCP server reads.
+
+Agent-native session files (`--agent grok|claude|kimi|codex`; kimi = OpenClaw
+format — kimi-code wire protocol 1.5 is NOT supported yet):
+
+- **`extract <session-file|dir>`** — the default choice. Batches 15 assistant
+  messages per LLM call; one call yields facts/preferences (→ fact layer)
+  AND lessons/causal edges in all layers. Cheapest full-coverage path.
+- **`judge <session-file|dir>`** — rule-based: pairs tool calls with their
+  results into decision→outcome edges, then LLM re-judges only the top-20
+  by confidence. Fewest LLM calls; causal edges only.
+- **`reasoning <session-file|dir> [max_messages]`** — one LLM call PER
+  assistant message, extracting decisions that never became tool calls
+  (rejected designs, debated trade-offs). Most thorough, most expensive
+  (calls = messages; default cap 30).
+
+Normalized conversation JSON (`{"date": "YYYY-MM-DD", "turns": [[speaker,
+message], ...]}` — hand-curated corpora, benchmark ingest):
+
+- **`distill <session.json|dir> [--dry-run]`** — same Distiller as
+  `extract`, for non-agent-native input. `--mode recurrence` switches to
+  the RecMem flow (embeddings + recurrence gate).
+
+Rule of thumb: backfilling an agent's history → `extract`; tight LLM budget
+→ `judge`; hunting "decisions that never became actions" → `reasoning`;
+own-format corpora → `distill`.
+
 Full reference (16 tools): repo README "Sixteen MCP tools" —
 github.com/JingxuanC/causal-memory.
