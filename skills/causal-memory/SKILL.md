@@ -111,5 +111,14 @@ Rule of thumb: backfilling an agent's history → `extract`; tight LLM budget
 → `judge`; hunting "decisions that never became actions" → `reasoning`;
 own-format corpora → `distill`.
 
+**Unsupported session format? Convert it yourself.** The turns JSON is the
+universal interchange format — any agent can emit it and run `distill`, no
+Rust parser needed. `scripts/session_to_turns.py` is the reference
+converter (kimi-code wire v1.5 → turns JSON, ~60 lines) and its docstring
+IS the format spec: ordered `["speaker", message]` pairs, stitch streaming
+deltas, keep the assistant's reasoning prefixed `[think] `, inline
+outcome-bearing tool results. Adapt the `convert_*` function to your own
+session format (~1 hour of work), then `distill --dry-run` to verify.
+
 Full reference (16 tools): repo README "Sixteen MCP tools" —
 github.com/JingxuanC/causal-memory.
