@@ -11,6 +11,8 @@
 [![Status: v0.9.2](https://img.shields.io/badge/status-v0.9.2--alpha-orange.svg)](#项目状态)
 [![Tests: 368](https://img.shields.io/badge/tests-368-brightgreen.svg)](#构建与测试)
 [![Release: v0.9.2](https://img.shields.io/badge/release-v0.9.2-blue.svg)](https://github.com/JingxuanC/causal-memory/releases)
+[![Hermes plugin](https://img.shields.io/badge/hermes-plugin-blue.svg)](hermes-plugin/)
+[![DSH plugin](https://img.shields.io/badge/deepseek--harness-plugin-blue.svg)](dsh-plugin/)
 
 [English](README.md) · **简体中文**
 
@@ -289,6 +291,30 @@ print(mem.intervention_query("skip the test suite before shipping"))
 
 ---
 
+## 集成
+
+### Hermes memory provider
+
+[hermes-plugin/](hermes-plugin/) 把 causal-memory 变成 Hermes 的即插即用
+`MemoryProvider`——扁平事实 + `决策 → 结果` 因果教训，落在同一份本地
+SQLite 上，按 profile 天然隔离（`<hermes_home>/causal-memory/causal.db`）。
+已接好的 hook：系统提示词因果目录、带预算的 prefetch 召回、不阻塞轮次的
+`sync_turn` 后台写入，以及 `hermes causal-memory stats` CLI。存储活在
+上下文窗口之外，Hermes 的压缩碰不到它。安装与配置见
+[hermes-plugin/README.md](hermes-plugin/README.md)。
+
+### DeepSeek Harness（DSH）原生插件
+
+[dsh-plugin/](dsh-plugin/) 把全部 16 个 causal-memory 工具以干净命名
+（无 `mcp__` 前缀）挂到 DSH 的 `ctx.tools`，并注入一段系统提示词，
+告诉模型何时查阅因果记忆库。零运行时依赖——JSON-RPC over stdio 直连
+causal-memory 二进制。一行安装：
+`dsh plugin --profile web add "$PWD/dsh-plugin"`（需要 `causal-memory` 二进制：
+`pip install causal-memory`，或在仓库内 `cargo build --release`）。
+详见 [dsh-plugin/README.md](dsh-plugin/README.md)。
+
+---
+
 ## 十四个 MCP 工具
 
 | 工具 | 何时调用 | 作用 |
@@ -440,6 +466,7 @@ Docker 路线：`docker build -t causal-memory-amc . && docker run -p 8787:8787 
 - ✅ Vela 风格半衰期衰减分层（90 天 / 7 天 / 旧版每日 0.99）
 - ✅ 多会话多趟检索（LongMemEval multi-session 42.9% → 57.9%，同代码库）
 - ✅ PyO3 Python 绑定（crates/causal-memory-py）
+- ✅ Hermes memory-provider 插件（hermes-plugin/）
 - ✅ DSH 原生插件（dsh-plugin/）+ 架构可视化（docs/architecture.html）
 - ✅ 368/368 测试通过 + clippy 干净
 

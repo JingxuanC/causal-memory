@@ -12,6 +12,8 @@
 [![Status: v0.9.2](https://img.shields.io/badge/status-v0.9.2--alpha-orange.svg)](#status)
 [![Tests: 368](https://img.shields.io/badge/tests-368-brightgreen.svg)](#build--test)
 [![Release: v0.9.2](https://img.shields.io/badge/release-v0.9.2-blue.svg)](https://github.com/JingxuanC/causal-memory/releases)
+[![Hermes plugin](https://img.shields.io/badge/hermes-plugin-blue.svg)](hermes-plugin/)
+[![DSH plugin](https://img.shields.io/badge/deepseek--harness-plugin-blue.svg)](dsh-plugin/)
 
 **English** · [简体中文](README.zh-CN.md)
 
@@ -328,6 +330,32 @@ BM25-only retrieval. Smoke tests: `maturin develop && pytest tests/`.
 
 ---
 
+## Integrations
+
+### Hermes memory provider
+
+[hermes-plugin/](hermes-plugin/) turns causal-memory into a drop-in Hermes
+`MemoryProvider` — flat facts + decision→outcome causal lessons on one local
+SQLite store, per-profile by construction
+(`<hermes_home>/causal-memory/causal.db`). Wired hooks: system-prompt causal
+directory, budgeted prefetch recall, non-blocking `sync_turn` write-behind,
+and a `hermes causal-memory stats` CLI. Because the store lives outside the
+context window, Hermes compaction can't touch it. Install and configuration:
+[hermes-plugin/README.md](hermes-plugin/README.md).
+
+### DeepSeek Harness (DSH) native plugin
+
+[dsh-plugin/](dsh-plugin/) mounts all 16 causal-memory tools onto DSH's
+`ctx.tools` with clean names (no `mcp__` prefix) and injects a system-prompt
+block telling the model when to consult the causal store. Zero runtime
+dependencies — JSON-RPC over stdio straight to the causal-memory binary.
+One-line install: `dsh plugin --profile web add "$PWD/dsh-plugin"` (needs the
+`causal-memory` binary — `pip install causal-memory`, or a repo
+`cargo build --release`).
+Details: [dsh-plugin/README.md](dsh-plugin/README.md).
+
+---
+
 ## Fourteen MCP tools
 
 | Tool | When to call | What it does |
@@ -480,6 +508,7 @@ What works (16/16 layers with end-to-end validation):
 - ✅ Vela-style half-life decay tiers (90d / 7d / legacy 0.99-per-day)
 - ✅ Multi-session multi-pass retrieval (LongMemEval multi-session 42.9% → 57.9%, same-codebase)
 - ✅ PyO3 Python bindings (crates/causal-memory-py)
+- ✅ Hermes memory-provider plugin (hermes-plugin/)
 - ✅ DSH native plugin (dsh-plugin/) + architecture visualization (docs/architecture.html)
 - ✅ 368/368 tests passing + clippy clean
 

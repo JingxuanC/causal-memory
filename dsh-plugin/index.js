@@ -38,8 +38,8 @@ const DEFAULT_TIMEOUT_MS = 60_000
  *   2. CAUSAL_MEMORY_BIN     (ambient env override)
  *   3. <plugin>/../target/release/causal-memory  (this repo checked out
  *      anywhere — the dev workflow: cargo build --release --bin causal-memory)
- *   4. bare `causal-memory`  (resolved from PATH — the release-binary install:
- *      copy the GitHub release asset somewhere on PATH)
+ *   4. bare `causal-memory`  (resolved from PATH — `pip install causal-memory`
+ *      puts the console script there; no Rust toolchain needed)
  */
 function resolveCommand(explicit) {
   if (explicit) return explicit
@@ -146,7 +146,7 @@ export async function apply(ctx, config = {}) {
   const dbPath = config.dbPath ?? process.env.CAUSAL_MEMORY_DB ?? DEFAULT_DB()
   const timeoutMs = config.toolCallTimeoutMs ?? DEFAULT_TIMEOUT_MS
   const exclude = new Set(Array.isArray(config.exclude) ? config.exclude : [])
-  const failOnStartupError = config.failOnStartupError === true
+  const failOnStartupError = config.failOnStartupError !== false
 
   const client = createMcpClient(command, { ...process.env, CAUSAL_MEMORY_DB: dbPath }, timeoutMs)
 
@@ -182,9 +182,11 @@ export async function apply(ctx, config = {}) {
   try {
     tools = await client.connect()
   } catch (error) {
-    ctx.logger.error(`causal-memory: connection or tool discovery failed: ${error.message}`)
+    ctx.logger.error(`causal-memory: connection or tool discovery failed: ${error.message}`
+      + ' — install the binary with `pip install causal-memory` (or `cargo build --release`'
+      + ' in the causal-memory repo), or point config.command / CAUSAL_MEMORY_BIN at it')
     if (failOnStartupError) throw error
-    return // activated with the prompt section but no tools
+    return // failOnStartupError: false — activated with the prompt section but no tools
   }
 
   const selected = tools.filter((tool) => !exclude.has(tool.name))
