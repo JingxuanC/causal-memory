@@ -195,10 +195,30 @@ export async function apply(ctx, config = {}) {
   for (const tool of selected) {
     const definition = {
       name: tool.name,
-      description: tool.description,
-      parameters: tool.inputSchema ?? {},
+      description: tool.description ?? '',
+      parameters: tool.inputSchema ?? { type: 'object', properties: {} },
+      // Current dsh tool API: a mandatory canonical output contract. The
+      // canonical value is MCP-shaped ({ content: [...] }); render projects
+      // it to the model-facing text blocks (mirrors dsh-mcp-client).
+      output: {
+        schema: {
+          type: 'object',
+          properties: { content: { type: 'array', items: {} } },
+          required: ['content'],
+          additionalProperties: false,
+        },
+        render(_args, value) {
+          const blocks = Array.isArray(value?.content) ? value.content : []
+          const text = blocks
+            .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+            .map((b) => b.text)
+            .join('\n')
+          return [{ type: 'text', text: text || '(no output)' }]
+        },
+      },
       execute: async (args, exec) => {
-        return client.call(tool.name, args, exec?.signal)
+        const text = await client.call(tool.name, args, exec?.signal)
+        return { content: [{ type: 'text', text }] }
       },
     }
     disposers.push(ctx.tools.register(definition))
