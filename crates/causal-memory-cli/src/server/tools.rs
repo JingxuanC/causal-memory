@@ -472,7 +472,7 @@ impl CausalMemoryServer {
 
     #[tool(
         name = "counterfactual_query",
-        description = "Contrastive (empirical) counterfactual: compare the recorded outcomes of a decision vs an alternative in similar past situations. Call when choosing between two concrete options BEFORE acting. Reports recorded evidence only — this is NOT a Pearl Rung-3 SCM counterfactual."
+        description = "Contrastive (empirical) counterfactual: compare the recorded outcomes of a decision vs an alternative in similar past situations, with same-context branch (fork) evidence when available. Call when choosing between two concrete options BEFORE acting. Every verdict is logged as a falsifiable prediction that resolves automatically when either option is later recorded (see prediction_report). Reports recorded evidence — this is NOT a Pearl Rung-3 SCM counterfactual."
     )]
     fn counterfactual_query(&self, Parameters(params): Parameters<CounterfactualParams>) -> String {
         self.timed("counterfactual_query", || {
@@ -483,6 +483,14 @@ impl CausalMemoryServer {
                 params.limit,
             )
         })
+    }
+
+    #[tool(
+        name = "prediction_report",
+        description = "Prediction-ledger calibration dashboard: every counterfactual_query verdict is logged as a falsifiable prediction and auto-resolves when either option is later recorded. This reports accuracy overall, per method, and per task_tag, plus pending predictions. Call periodically to check whether the system's counterfactual advice is actually any good."
+    )]
+    fn prediction_report(&self) -> String {
+        self.timed("prediction_report", || self.memory.prediction_report())
     }
 
     #[tool(

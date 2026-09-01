@@ -9,7 +9,10 @@ use super::format::{
     truncate_chars, TokenBudget,
 };
 use super::output::*;
-use super::{block_on, Memory, INTERVENTION_MIN_SIMILARITY, SEMANTIC_CONTRADICTION_MIN_SIMILARITY};
+use super::{
+    block_on, Memory, CLOSED_WORLD_TAGS, INTERVENTION_MIN_SIMILARITY,
+    SEMANTIC_CONTRADICTION_MIN_SIMILARITY,
+};
 use crate::store::{AgentFact, CausalEntry, ChainHop};
 
 /// One structured retrieval hit — the machine-readable form of
@@ -121,6 +124,20 @@ impl Memory {
                 if let Ok(Some(entry)) = self.store.get_edge(edge_id) {
                     self.patch_graph_new_edge(&entry);
                 }
+                // v14 prediction ledger: a recorded outcome for a decision
+                // text that a pending counterfactual predicted resolves it.
+                // Best-effort — resolution must never block recording.
+                let resolved = self
+                    .store
+                    .resolve_predictions_for_decision(decision, Some(&polarity))
+                    .unwrap_or(0);
+                let ledger_note = if resolved > 0 {
+                    format!(
+                        "\n📐 Resolved {resolved} pending prediction(s) about this decision — see prediction_report."
+                    )
+                } else {
+                    String::new()
+                };
                 // Opportunistically embed the new edge so semantic search
                 // finds it. Silent on any failure — embedding must never
                 // block recording; the `causal-memory embed` CLI backfills
@@ -142,7 +159,7 @@ impl Memory {
                     );
                 }
                 format!(
-                    "✅ Recorded: [{}] {} →({})→ {} (confidence: {:.2}, id: {})",
+                    "✅ Recorded: [{}] {} →({})→ {} (confidence: {:.2}, id: {}){ledger_note}",
                     task_tag,
                     truncate_chars(decision, 60),
                     relation,
@@ -1668,6 +1685,71 @@ impl Memory {
         self.counterfactual_inner(decision, alternative, task_tag, limit.unwrap_or(5))
     }
 
+    /// `prediction_report` (v14) — the prediction-ledger calibration
+    /// dashboard: resolved/correct/ambiguous/pending overall, per method and
+    /// per task_tag, plus the newest pending predictions. This is how the
+    /// system's counterfactual claims stay falsifiable instead of rhetorical.
+    pub fn prediction_report(&self) -> String {
+        let Ok(stats) = self.store.prediction_stats() else {
+            return "❌ Prediction report failed".to_string();
+        };
+        if stats.resolved == 0 && stats.pending == 0 {
+            return "📐 Prediction ledger is empty — counterfactual_query logs a \
+                    prediction every time it issues a verdict; predictions resolve \
+                    automatically when either option is later recorded."
+                .to_string();
+        }
+        let judged = stats.resolved - stats.ambiguous;
+        let mut out = format!(
+            "📐 Prediction ledger: {} resolved / {} pending\n",
+            stats.resolved, stats.pending
+        );
+        if stats.resolved > 0 {
+            out.push_str(&format!(
+                "   accuracy {}/{} ({:.0}%{}), {} ambiguous excluded\n",
+                stats.correct,
+                judged,
+                if judged > 0 {
+                    stats.correct as f64 / judged as f64 * 100.0
+                } else {
+                    0.0
+                },
+                if judged > 0 {
+                    ""
+                } else {
+                    ", no judged predictions yet"
+                },
+                stats.ambiguous
+            ));
+        }
+        let fmt_entry = |label: &str, e: &crate::store::PredictionStatsEntry| {
+            let denom = e.resolved - e.ambiguous;
+            format!(
+                "   {label}: {}/{} correct ({} ambiguous)\n",
+                e.correct, denom, e.ambiguous
+            )
+        };
+        for (method, e) in &stats.by_method {
+            out.push_str(&fmt_entry(&format!("method={method}"), e));
+        }
+        for (tag, e) in &stats.by_task_tag {
+            out.push_str(&fmt_entry(&format!("task_tag={tag}"), e));
+        }
+        if let Ok(pending) = self.store.pending_predictions(5) {
+            for p in pending {
+                out.push_str(&format!(
+                    "   pending #{} \"{}\" vs \"{}\" ({}, {})\n",
+                    p.id,
+                    truncate_chars(&p.option_a, 40),
+                    truncate_chars(&p.option_b, 40),
+                    p.task_tag,
+                    p.method
+                ));
+            }
+        }
+        out
+    }
+
     /// Counterfactual comparison with the embedder injected (None = keyword
     /// path, identical to unconfigured — keeps tests hermetic).
     pub fn counterfactual_inner(
@@ -1767,6 +1849,53 @@ impl Memory {
                 None => counterfactual_verdict(&dist_a, &dist_b),
             }
         ));
+        // v14 prediction ledger: every verdict becomes a falsifiable
+        // prediction, auto-resolved when either option is later recorded.
+        // The verdict string maps to prefer_a/prefer_b/no_difference for the
+        // ledger while the human-readable line stays as-is above.
+        let verdict_code = match &paired {
+            Some(p) if p.contains("favors A") => "prefer_a",
+            Some(p) if p.contains("favors B") => "prefer_b",
+            Some(_) => "no_difference", // tied contrasting pairs
+            None => match counterfactual_verdict(&dist_a, &dist_b) {
+                v if v.contains("favors A") => "prefer_a",
+                v if v.contains("favors B") => "prefer_b",
+                v if dist_a.total() > 0 && dist_b.total() > 0 => "no_difference",
+                _ => "",
+            },
+        };
+        if !verdict_code.is_empty() {
+            let strength = ((dist_a.score() - dist_b.score()).abs() / 4.0).clamp(0.1, 1.0);
+            if let Ok(id) = self.store.log_prediction(
+                decision,
+                alternative,
+                task_tag,
+                verdict_code,
+                "contrastive",
+                strength,
+                None,
+            ) {
+                out.push_str(&format!(
+                    "📐 Prediction #{id} logged — resolved automatically when either option is recorded.\n"
+                ));
+                // Phase-4 interface (executable replay routing): closed-world
+                // tags route to a replay plan instead of only an estimate.
+                // The engine (stepback-style trace + dirty-set rerun) is future
+                // work; this defines the routing + the ledger feedback path so
+                // method='executable' predictions can exist from day one.
+                if let Some(tag) = task_tag {
+                    if CLOSED_WORLD_TAGS.contains(&tag.to_lowercase().as_str()) {
+                        out.push_str(&format!(
+                            "🧪 Closed-world decision (task_tag={tag}): instead of estimating — replay it. \
+                             Apply the alternative in a sandbox, execute, then record the outcome with \
+                             record_decision(…, context=<same as the original edge>). The prediction \
+                             resolves automatically; over time prediction_report separates replayed facts \
+                             from estimates.\n"
+                        ));
+                    }
+                }
+            }
+        }
         out
     }
 

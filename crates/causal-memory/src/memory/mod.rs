@@ -28,6 +28,12 @@ const GRAPH_REBUILD_SECS: i64 = 30;
 
 /// Cosine floor for semantic seeding in intervention_query (recall-oriented).
 pub(crate) const INTERVENTION_MIN_SIMILARITY: f64 = 0.5;
+
+/// Phase-4 interface: task tags whose consequences live in deterministic
+/// environments (builds, tests, configs, benches). counterfactual_query
+/// routes these to an executable-replay plan — rerunning the alternative
+/// in a sandbox beats any estimate when the world is code.
+pub(crate) const CLOSED_WORLD_TAGS: [&str; 4] = ["build", "test", "config", "bench"];
 /// Cosine floor for the semantic contradiction scan on record (precision-
 /// oriented: only paraphrase-level duplicates of the same decision).
 pub(crate) const SEMANTIC_CONTRADICTION_MIN_SIMILARITY: f64 = 0.85;

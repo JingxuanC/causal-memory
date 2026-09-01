@@ -1062,3 +1062,118 @@ fn test_counterfactual_no_forks_output_unchanged() {
     );
     assert!(out.contains("recorded evidence favors B"), "{out}");
 }
+
+// ── v14 prediction ledger e2e ────────────────────────────────────
+
+#[test]
+fn test_prediction_ledger_e2e_log_resolve_report() {
+    let memory = Memory::open_in_memory().expect("memory");
+    // Seed evidence so a verdict fires (B wins: 2 negative vs 1 positive).
+    for (dec, out, _pol) in [
+        (
+            "used redis mutex for cache",
+            "deadlock under load",
+            "negative",
+        ),
+        ("used redis mutex for queue", "deadlock again", "negative"),
+        (
+            "switched to channel ownership",
+            "race fixed, all tests pass",
+            "positive",
+        ),
+    ] {
+        memory.record_decision(dec, out, "caused", "concurrency", None, None);
+    }
+    let out = memory.counterfactual_inner(
+        "used redis mutex for cache",
+        "switched to channel ownership",
+        Some("concurrency"),
+        5,
+    );
+    assert!(
+        out.contains("📐 Prediction #1 logged"),
+        "footer must report the ledger id: {out}"
+    );
+    // Reality: the agent actually takes the preferred option and wins.
+    let rec = memory.record_decision(
+        "switched to channel ownership",
+        "cutover succeeded, no deadlocks",
+        "caused",
+        "concurrency",
+        None,
+        None,
+    );
+    assert!(
+        rec.contains("Resolved 1 pending prediction"),
+        "record must report the auto-resolution: {rec}"
+    );
+    let report = memory.prediction_report();
+    assert!(
+        report.contains("1 resolved / 0 pending"),
+        "report header: {report}"
+    );
+    assert!(
+        report.contains("accuracy 1/1 (100%)"),
+        "preferred option won ⇒ correct: {report}"
+    );
+    assert!(
+        report.contains("method=contrastive: 1/1 correct"),
+        "per-method split: {report}"
+    );
+    assert!(
+        report.contains("task_tag=concurrency: 1/1 correct"),
+        "per-tag split: {report}"
+    );
+}
+
+#[test]
+fn test_prediction_report_empty_ledger() {
+    let memory = Memory::open_in_memory().expect("memory");
+    let report = memory.prediction_report();
+    assert!(
+        report.contains("Prediction ledger is empty"),
+        "empty ledger guidance: {report}"
+    );
+}
+
+#[test]
+fn test_counterfactual_closed_world_replay_routing() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "enabled lto in release profile",
+        "build time doubled, size -2%",
+        "caused",
+        "build",
+        None,
+        None,
+    );
+    memory.record_decision(
+        "kept default release profile",
+        "build time unchanged",
+        "caused",
+        "build",
+        None,
+        None,
+    );
+    let out = memory.counterfactual_inner(
+        "enabled lto in release profile",
+        "kept default release profile",
+        Some("build"),
+        5,
+    );
+    assert!(
+        out.contains("🧪 Closed-world decision"),
+        "closed-world tags must route to the replay plan: {out}"
+    );
+    // Open-world tag: no routing note.
+    let out2 = memory.counterfactual_inner(
+        "enabled lto in release profile",
+        "kept default release profile",
+        Some("release"),
+        5,
+    );
+    assert!(
+        !out2.contains("🧪"),
+        "open-world stays estimate-only: {out2}"
+    );
+}

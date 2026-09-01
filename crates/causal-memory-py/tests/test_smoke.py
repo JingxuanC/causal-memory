@@ -154,3 +154,31 @@ def test_tilde_expansion(tmp_path, monkeypatch):
     mem = CausalMemory("~/cm-test/sub/causal.db")
     assert (tmp_path / "cm-test" / "sub" / "causal.db").exists()
     assert mem is not None
+
+
+def test_record_decision_context_and_prediction_ledger(mem):
+    # v14: context param creates comparable branches (forks)…
+    mem.record_decision(
+        "used mysql for sessions",
+        "migration locks blocked deploys",
+        "caused",
+        "database",
+        context="rust agent, sqlite store, single node",
+    )
+    mem.record_decision(
+        "used postgres for sessions",
+        "clean cutover",
+        "caused",
+        "database",
+        context="RUST agent,   sqlite store, single node",  # same after normalization
+    )
+    out = mem.counterfactual_query("used mysql for sessions", "used postgres for sessions")
+    assert "Same-context branches" in out
+    assert "Prediction #" in out
+    # …and recording an option resolves the prediction automatically.
+    mem.record_decision(
+        "used postgres for sessions", "second migration also clean", "caused", "database"
+    )
+    report = mem.prediction_report()
+    assert "1 resolved" in report
+    assert "accuracy 1/1 (100%)" in report

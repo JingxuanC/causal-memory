@@ -8,8 +8,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
     containment_similarity, date_tokens, effective_polarity, entry_from_row, is_retraction_record,
-    CausalStore, ForkPair, ENTRY_COLUMNS, ID_COUNTER, SUPERSEDES_MIN_SHARED_TOKENS,
-    SUPERSEDES_SIM_THRESHOLD,
+    CausalStore, ForkPair, PendingPrediction, PredictionStats, ENTRY_COLUMNS, ID_COUNTER,
+    SUPERSEDES_MIN_SHARED_TOKENS, SUPERSEDES_SIM_THRESHOLD,
 };
 
 /// One C7 falsification candidate: (old_edge_id, new_edge_id, old_decision,
@@ -950,5 +950,168 @@ impl CausalStore {
             }
         }
         anyhow::bail!("chunk id collision after 4 retries")
+    }
+
+    // ─── v14 prediction ledger (Rung-3 Phase A) ──────────────────────────
+
+    /// Log a counterfactual verdict as a falsifiable prediction. Returns
+    /// the prediction id (the footer reports it). Best-effort by contract:
+    /// the caller (counterfactual_inner) ignores errors so a ledger failure
+    /// never breaks the query itself.
+    pub fn log_prediction(
+        &self,
+        option_a: &str,
+        option_b: &str,
+        task_tag: Option<&str>,
+        verdict: &str,
+        method: &str,
+        confidence: f64,
+        evidence: Option<&str>,
+    ) -> Result<i64> {
+        let conn = self.acquire()?;
+        conn.execute(
+            "INSERT INTO pending_predictions
+             (created_at, option_a, option_b, task_tag, verdict, method, confidence, evidence)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                chrono::Utc::now().timestamp(),
+                option_a,
+                option_b,
+                task_tag,
+                verdict,
+                method,
+                confidence,
+                evidence
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Resolve predictions whose option_a/option_b matches `decision_text`
+    /// (exact text — consistent with chunk-reuse matching). First matching
+    /// record wins: only still-pending rows update, so re-records never
+    /// re-resolve. `correct` semantics (see the design doc §5):
+    ///   prefer_X + took X → 1 iff positive, 0 iff negative, else NULL
+    ///   prefer_X + took Y → 1 iff negative, 0 iff positive, else NULL
+    ///   no_difference     → resolves with NULL (weak evidence either way)
+    /// Returns the number of predictions resolved.
+    pub fn resolve_predictions_for_decision(
+        &self,
+        decision_text: &str,
+        actual_polarity: Option<&str>,
+    ) -> Result<usize> {
+        let conn = self.acquire()?;
+        let now = chrono::Utc::now().timestamp();
+        let mut stmt = conn.prepare(
+            "SELECT id, verdict, option_a, option_b FROM pending_predictions
+             WHERE resolved_at IS NULL AND (option_a = ?1 OR option_b = ?2)",
+        )?;
+        let pending: Vec<(i64, String, String, String)> = stmt
+            .query_map(params![decision_text, decision_text], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        let polarity = actual_polarity.unwrap_or("neutral");
+        let mut n = 0;
+        for (id, verdict, opt_a, _opt_b) in pending {
+            let took_a = opt_a == decision_text;
+            let correct: Option<i64> = match verdict.as_str() {
+                "no_difference" => None,
+                v => {
+                    let preferred_a = v == "prefer_a";
+                    // Followed the preferred option? Correct iff it paid off.
+                    // Took the rejected one? Correct iff it failed.
+                    let followed = preferred_a == took_a;
+                    match polarity {
+                        "positive" => Some((followed) as i64),
+                        "negative" => Some((!followed) as i64),
+                        _ => None, // mixed/neutral actual → ambiguous
+                    }
+                }
+            };
+            conn.execute(
+                "UPDATE pending_predictions
+                 SET resolved_at = ?2, resolved_option = ?3, actual_polarity = ?4, correct = ?5
+                 WHERE id = ?1 AND resolved_at IS NULL",
+                params![id, now, if took_a { "a" } else { "b" }, polarity, correct],
+            )?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    /// Calibration stats for `prediction_report`: (resolved, correct,
+    /// ambiguous, pending) overall plus per-method and per-task_tag splits.
+    /// Ambiguous rows (correct IS NULL after resolution) count as resolved
+    /// but excluded from accuracy denominators — reporting them separately
+    /// is the honest read.
+    pub fn prediction_stats(&self) -> Result<PredictionStats> {
+        let conn = self.acquire()?;
+        let pending: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pending_predictions WHERE resolved_at IS NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        let mut stmt = conn.prepare(
+            "SELECT method, COALESCE(task_tag, ''), COUNT(*),
+                    SUM(CASE WHEN correct = 1 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN correct IS NULL AND resolved_at IS NOT NULL THEN 1 ELSE 0 END)
+             FROM pending_predictions
+             WHERE resolved_at IS NOT NULL
+             GROUP BY method, COALESCE(task_tag, '')",
+        )?;
+        let rows: Vec<(String, String, i64, i64, i64)> = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stats = PredictionStats {
+            pending,
+            ..PredictionStats::default()
+        };
+        for (method, tag, resolved, correct, ambiguous) in rows {
+            stats.resolved += resolved;
+            stats.correct += correct;
+            stats.ambiguous += ambiguous;
+            let entry = stats.by_method.entry(method).or_default();
+            entry.resolved += resolved;
+            entry.correct += correct;
+            entry.ambiguous += ambiguous;
+            let entry = stats
+                .by_task_tag
+                .entry(if tag.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    tag
+                })
+                .or_default();
+            entry.resolved += resolved;
+            entry.correct += correct;
+            entry.ambiguous += ambiguous;
+        }
+        Ok(stats)
+    }
+
+    /// Recent still-pending predictions for the report footer.
+    pub fn pending_predictions(&self, limit: usize) -> Result<Vec<PendingPrediction>> {
+        let conn = self.acquire()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, created_at, option_a, option_b, COALESCE(task_tag, ''), method
+             FROM pending_predictions WHERE resolved_at IS NULL
+             ORDER BY created_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok(PendingPrediction {
+                id: r.get(0)?,
+                created_at: r.get(1)?,
+                option_a: r.get(2)?,
+                option_b: r.get(3)?,
+                task_tag: r.get(4)?,
+                method: r.get(5)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 }

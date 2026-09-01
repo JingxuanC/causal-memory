@@ -196,3 +196,37 @@ pub struct ForkPair {
     pub b_relation: String,
     pub b_polarity: Option<String>,
 }
+
+/// One still-pending prediction row (v14 ledger, for the report footer).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingPrediction {
+    pub id: i64,
+    pub created_at: i64,
+    pub option_a: String,
+    pub option_b: String,
+    pub task_tag: String,
+    pub method: String,
+}
+
+/// Per-slice (method or task_tag) rollup of resolved predictions.
+/// `correct` counts correct=1 rows only; accuracy = correct / (resolved −
+/// ambiguous) — ambiguous rows resolve but carry no truth value.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct PredictionStatsEntry {
+    pub resolved: i64,
+    pub correct: i64,
+    pub ambiguous: i64,
+}
+
+/// Calibration stats over the prediction ledger (v14): the
+/// counterfactual-honesty dashboard — over time it shows which method is
+/// trustworthy in which stratum.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct PredictionStats {
+    pub resolved: i64,
+    pub correct: i64,
+    pub ambiguous: i64,
+    pub pending: i64,
+    pub by_method: std::collections::HashMap<String, PredictionStatsEntry>,
+    pub by_task_tag: std::collections::HashMap<String, PredictionStatsEntry>,
+}

@@ -96,12 +96,13 @@ Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
 
 ## Current state — v0.9.0+ (main)
 
-**Sixteen MCP tools**: `record_decision` / `search_causal` / `record_fact` /
+**Seventeen MCP tools**: `record_decision` / `search_causal` / `record_fact` /
 `search_facts` / `search_memory` / `trace_cause` / `trace_cause_chain` /
 `invalidate_decision` / `invalidate_pattern` / `resolve_updates` /
 `search_patterns` / `causal_directory` / `intervention_query` /
-`counterfactual_query` / `reconstruct_lesson` / `remember` — over stdio
-**and** HTTP transport (`causal-memory-http --port 9938`).
+`counterfactual_query` / `reconstruct_lesson` / `remember` /
+`prediction_report` — over stdio **and** HTTP transport
+(`causal-memory-http --port 9938`).
 
 Core capabilities (all shipped, all tested):
 

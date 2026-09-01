@@ -3406,3 +3406,133 @@ fn test_fork_lookup_skips_invalidated_edges() {
         "a pair whose edge was invalidated must not surface"
     );
 }
+
+// ─── v14 prediction ledger (Rung-3 Phase A: falsifiability) ─────────
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_prediction_resolution_matrix() {
+    // (verdict, which option gets recorded, actual polarity, expected correct)
+    let matrix = [
+        ("prefer_a", "a", "positive", Some(1)),
+        ("prefer_a", "a", "negative", Some(0)),
+        ("prefer_a", "b", "positive", Some(0)), // rejected option won
+        ("prefer_a", "b", "negative", Some(1)), // rival failed as predicted
+        ("prefer_a", "a", "mixed", None),       // ambiguous actual
+        ("no_difference", "a", "positive", None),
+    ];
+    for (i, (verdict, took, pol, expected)) in matrix.iter().enumerate() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let id = store
+            .log_prediction(
+                "option A text",
+                "option B text",
+                Some("t"),
+                verdict,
+                "contrastive",
+                0.5,
+                None,
+            )
+            .unwrap();
+        let recorded = if *took == "a" {
+            "option A text"
+        } else {
+            "option B text"
+        };
+        assert_eq!(
+            store
+                .resolve_predictions_for_decision(recorded, Some(pol))
+                .unwrap(),
+            1,
+            "case {i}: one prediction must resolve"
+        );
+        let correct: Option<i64> = store
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT correct FROM pending_predictions WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(
+            correct, *expected,
+            "case {i} ({verdict}, took {took}, {pol})"
+        );
+        // Single resolution: a second matching record must not re-resolve.
+        store
+            .record_decision_full(
+                recorded,
+                "later different outcome",
+                "caused",
+                Some("t"),
+                0.8,
+                "rule",
+                2000,
+                Some("negative"),
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .resolve_predictions_for_decision(recorded, Some("positive"))
+                .unwrap(),
+            0,
+            "case {i}: already resolved"
+        );
+    }
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_prediction_stats_and_pending_list() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // 2 correct, 1 wrong, 1 ambiguous (resolved); 2 pending.
+    store
+        .log_prediction("a1", "b1", Some("x"), "prefer_a", "contrastive", 0.5, None)
+        .unwrap();
+    store
+        .log_prediction("a2", "b2", Some("x"), "prefer_a", "contrastive", 0.5, None)
+        .unwrap();
+    store
+        .log_prediction("a3", "b3", Some("y"), "prefer_b", "contrastive", 0.5, None)
+        .unwrap();
+    store
+        .log_prediction("a4", "b4", Some("y"), "prefer_a", "contrastive", 0.5, None)
+        .unwrap();
+    store
+        .log_prediction("a5", "b5", Some("y"), "prefer_a", "contrastive", 0.5, None)
+        .unwrap();
+    store
+        .log_prediction("a6", "b6", None, "prefer_b", "contrastive", 0.5, None)
+        .unwrap();
+    store
+        .resolve_predictions_for_decision("a1", Some("positive"))
+        .unwrap(); // correct
+    store
+        .resolve_predictions_for_decision("a2", Some("positive"))
+        .unwrap(); // correct
+    store
+        .resolve_predictions_for_decision("a3", Some("positive"))
+        .unwrap(); // preferred B, took A positive → wrong
+    store
+        .resolve_predictions_for_decision("a4", Some("mixed"))
+        .unwrap(); // ambiguous
+    let stats = store.prediction_stats().unwrap();
+    assert_eq!(stats.resolved, 4);
+    assert_eq!(stats.correct, 2);
+    assert_eq!(stats.ambiguous, 1);
+    assert_eq!(stats.pending, 2);
+    assert_eq!(stats.by_method["contrastive"].resolved, 4);
+    assert_eq!(stats.by_task_tag["x"].correct, 2);
+    assert_eq!(stats.by_task_tag["y"].correct, 0);
+    let pending = store.pending_predictions(10).unwrap();
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].option_a, "a6", "newest first");
+}
