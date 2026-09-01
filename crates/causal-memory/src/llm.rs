@@ -256,7 +256,15 @@ pub async fn chat(
     max_tokens: u32,
     temperature: f32,
 ) -> Result<String> {
-    chat_with_timeout(config, system_prompt, user_msg, max_tokens, temperature, http_timeout()).await
+    chat_with_timeout(
+        config,
+        system_prompt,
+        user_msg,
+        max_tokens,
+        temperature,
+        http_timeout(),
+    )
+    .await
 }
 
 /// `chat` with an explicit per-call timeout. The 8s default suits the

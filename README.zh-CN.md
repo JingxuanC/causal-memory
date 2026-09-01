@@ -230,7 +230,7 @@ cargo build --release
 ./target/release/causal-memory http --port 9938   # MCP Streamable HTTP
 ```
 
-同一端口的可观测性端点（**无鉴权——请勿暴露公网**）：
+同一端口的可观测性端点：
 
 ```
 GET /metrics                    Prometheus 文本（RED + 召回指标）
@@ -240,6 +240,15 @@ GET /debug/recall?query=...     现场执行一次召回，返回完整 JSON tra
 GET /debug/recalls              最近的召回审计记录（落库持久化，
                                 schema v13 recall_audit 表，重启不丢）
 ```
+
+`/metrics` 和 `/debug/*` 会暴露召回内容，因此支持可选的 Bearer 鉴权：
+设置 `CAUSAL_MEMORY_HTTP_AUTH_TOKEN`（环境变量或
+`causal-memory setconfig`）后，这些端点要求
+`Authorization: Bearer <token>`（不设置 = 保持开放，即原有行为）。
+`/healthz` / `/readyz` 有意保持开放——kubelet 探针无法携带 bearer 头，
+且这两个端点不泄露内容。`/mcp` 不在此 token 的保护范围内
+（rmcp 2.2.0 默认已将其限制为 loopback Host；MCP 客户端鉴权见 roadmap）。
+未设置 token 时请勿将该端口暴露公网。
 
 stderr 结构化 JSON 日志：`CAUSAL_MEMORY_LOG_FORMAT=json`。
 

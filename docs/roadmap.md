@@ -242,7 +242,10 @@ Ecosystem:
   is done too.
 - [ ] TS bindings (after Python)
 - [x] MCP HTTP transport — ✅ shipped (`causal-memory http`, Streamable
-  HTTP, stateless mode); auth/multi-tenant hardening still open
+  HTTP, stateless mode). Bearer auth for the observability routes
+  shipped 2026-09-01 (`CAUSAL_MEMORY_HTTP_AUTH_TOKEN` gates `/metrics` +
+  `/debug/*`; probes intentionally open; AMC `/metrics` too) — MCP
+  endpoint auth + multi-tenant hardening still open
 - [ ] Multi-tenant support
 - [ ] Backup / restore tooling (migrations already done)
 - [x] Observability (Prometheus, OpenTelemetry) — ✅ shipped the core:

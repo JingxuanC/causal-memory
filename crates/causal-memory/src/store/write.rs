@@ -777,6 +777,9 @@ impl CausalStore {
         let code = crate::hippocampus::utils::simhash(text);
         // Near-duplicate observability (long texts only — short texts collide
         // in 128-bit simhash buckets far too often to be meaningful).
+        // Rows written before 0.9.3 carry old-scheme (whitespace-token) codes;
+        // mixed-era hamming comparisons may miss a near-dup log line until the
+        // old rows age out. Observability only — real dedup is exact-text.
         if text.chars().count() >= 20 {
             let mut stmt = conn.prepare(
                 "SELECT id, sparse_code FROM chunks

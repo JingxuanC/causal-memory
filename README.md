@@ -268,8 +268,7 @@ into your system prompt / `AGENTS.md`.
 ./target/release/causal-memory http --port 9938   # MCP Streamable HTTP
 ```
 
-Observability endpoints on the same port (UNAUTHENTICATED — do not expose
-to the public internet):
+Observability endpoints on the same port:
 
 ```
 GET /metrics                    Prometheus text (RED + recall metrics)
@@ -279,6 +278,16 @@ GET /debug/recall?query=...     run a recall now, return the full JSON trace
 GET /debug/recalls              newest-first recall audit rows (persisted,
                                 schema v13 recall_audit table; survives restarts)
 ```
+
+`/metrics` and `/debug/*` expose the recall corpus, so they accept opt-in
+bearer auth: set `CAUSAL_MEMORY_HTTP_AUTH_TOKEN` (env or
+`causal-memory setconfig`) and they require
+`Authorization: Bearer <token>` (unset = open, the previous behavior).
+`/healthz` / `/readyz` stay open on purpose — kubelet probes cannot send
+bearer headers and leak nothing. `/mcp` auth is not covered by the token
+(rmcp 2.2.0 already restricts it to loopback Host headers by default; MCP
+client auth is tracked in the roadmap). Without the token, do not expose
+the port to the public internet.
 
 Structured JSON logs on stderr: `CAUSAL_MEMORY_LOG_FORMAT=json`.
 
