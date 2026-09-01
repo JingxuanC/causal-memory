@@ -21,6 +21,7 @@ pub const ALLOWED_KEYS: &[&str] = &[
     "CAUSAL_MEMORY_LLM_KEY",
     "CAUSAL_MEMORY_LLM_MODEL",
     "CAUSAL_MEMORY_HTTP_TIMEOUT_SECS",
+    "CAUSAL_MEMORY_HTTP_AUTH_TOKEN",
 ];
 
 /// Resolved config-file path.
@@ -114,7 +115,7 @@ fn load(path: &Path) -> HashMap<String, String> {
 const USAGE: &str = "causal-memory — config management
 USAGE:
   causal-memory setconfig KEY=VALUE [KEY=VALUE...]   write config keys (empty VALUE deletes)
-  causal-memory getconfig                            list configured values (*_KEY masked)
+  causal-memory getconfig                            list configured values (*_KEY / *_TOKEN masked)
   causal-memory config-path                          print the config file path
 Config file: $CAUSAL_MEMORY_CONFIG or ~/.local/share/causal-memory/config.json
 Process env vars always override the file.";
@@ -172,10 +173,10 @@ pub fn cli_main(args: &[String]) -> i32 {
     }
 }
 
-/// `*_KEY` values are masked (first 4 chars + ***) so getconfig is safe to
-/// paste into chats/issues.
+/// Secret-bearing values (`*_KEY`, `*_TOKEN`) are masked (first 4 chars +
+/// ***) so getconfig is safe to paste into chats/issues.
 fn display_value(key: &str, value: &str) -> String {
-    if key.ends_with("_KEY") {
+    if key.ends_with("_KEY") || key.ends_with("_TOKEN") {
         let head: String = value.chars().take(4).collect();
         format!("{head}***")
     } else {
@@ -325,5 +326,32 @@ mod tests {
         assert_eq!(cli_main(&["frobnicate".to_string()]), 2);
         assert_eq!(cli_main(&["getconfig".to_string()]), 0);
         assert_eq!(cli_main(&["config-path".to_string()]), 0);
+    }
+
+    #[test]
+    fn auth_token_is_allowlisted_and_masked() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = dir.path().join("config.json");
+        let _cfg = EnvGuard::set("CAUSAL_MEMORY_CONFIG", cfg.to_str().unwrap());
+        let _k = EnvGuard::unset("CAUSAL_MEMORY_HTTP_AUTH_TOKEN");
+
+        // Allowlisted: setconfig accepts it, get resolves env-then-file.
+        assert_eq!(
+            cli_main(&[
+                "setconfig".to_string(),
+                "CAUSAL_MEMORY_HTTP_AUTH_TOKEN=s3cret-bearer-token".to_string(),
+            ]),
+            0
+        );
+        assert_eq!(
+            get("CAUSAL_MEMORY_HTTP_AUTH_TOKEN").as_deref(),
+            Some("s3cret-bearer-token")
+        );
+        // getconfig must not print the secret in clear.
+        assert_eq!(
+            display_value("CAUSAL_MEMORY_HTTP_AUTH_TOKEN", "s3cret-bearer-token"),
+            "s3cr***"
+        );
     }
 }
