@@ -134,8 +134,11 @@ def test_reconstruct_lesson_no_llm(mem):
 
 def test_remember_no_llm(mem):
     out = mem.remember("user: I prefer tabs over spaces")
-    # Without an LLM endpoint, remember stores raw and says so.
-    assert "no LLM" in out or "Stored raw" in out
+    # Without an LLM endpoint the rule extractor still runs: preferences
+    # land as facts (the "no LLM → store raw" fallback predates the v0.9
+    # rule extractor).
+    assert "Extracted" in out or "no LLM" in out or "Stored raw" in out
+    assert "tabs" in out
 
 
 def test_causal_directory(mem):
@@ -154,3 +157,39 @@ def test_tilde_expansion(tmp_path, monkeypatch):
     mem = CausalMemory("~/cm-test/sub/causal.db")
     assert (tmp_path / "cm-test" / "sub" / "causal.db").exists()
     assert mem is not None
+
+
+def test_record_decision_context_and_prediction_ledger(mem):
+    # v14: context param creates comparable branches (forks)…
+    # All four texts use disjoint vocabularies: BM25 matches decision AND
+    # outcome text, so any shared token pools both sides into both
+    # distributions (documented limitation — competitive separation is a
+    # Phase-3 refinement in the rung-3 design doc §4).
+    mem.record_decision(
+        "picked mysql",
+        "migration deadlock",
+        "caused",
+        "database",
+        context="rust agent, sqlite store, single node",
+    )
+    mem.record_decision(
+        "adopted postgres",
+        "cutover passed",
+        "caused",
+        "database",
+        context="RUST agent,   sqlite store, single node",  # same after normalization
+    )
+    out = mem.counterfactual_query("picked mysql", "adopted postgres")
+    assert "Same-context branches" in out
+    assert "Prediction #" in out
+    # …and recording an option resolves the prediction automatically.
+    # ("passed" is a success token for the write-time polarity judge.)
+    mem.record_decision(
+        "adopted postgres",
+        "second migration passed",
+        "caused",
+        "database",
+    )
+    report = mem.prediction_report()
+    assert "1 resolved" in report
+    assert "accuracy 1/1 (100%)" in report

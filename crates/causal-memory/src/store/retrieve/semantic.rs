@@ -30,7 +30,7 @@ impl CausalStore {
         let mut stmt = conn.prepare(&sql)?;
         let bind_refs: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
         let rows = stmt.query_map(bind_refs.as_slice(), |row| {
-            Ok((entry_from_row(row)?, row.get::<_, Vec<u8>>(16)?))
+            Ok((entry_from_row(row)?, row.get::<_, Vec<u8>>(18)?))
         })?;
 
         let mut scored: Vec<(crate::store::CausalEntry, f64)> = Vec::new();
@@ -89,7 +89,7 @@ impl CausalStore {
         let mut stmt = conn.prepare(&sql)?;
         let bind_refs: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
         let rows = stmt.query_map(rusqlite::params_from_iter(bind_refs), |row| {
-            Ok((entry_from_row(row)?, row.get::<_, Vec<u8>>(16)?))
+            Ok((entry_from_row(row)?, row.get::<_, Vec<u8>>(18)?))
         })?;
         let mut scored: Vec<(crate::store::CausalEntry, f64)> = Vec::new();
         for row in rows {

@@ -789,6 +789,8 @@ fn expand_and_inject(
             discovered_at: 0,
             outcome_polarity: None,
             superseded_by: None,
+            context_fingerprint: None,
+            context_text: None,
         });
         synth_id -= 1;
     }

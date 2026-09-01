@@ -9,7 +9,10 @@ use super::format::{
     truncate_chars, TokenBudget,
 };
 use super::output::*;
-use super::{block_on, Memory, INTERVENTION_MIN_SIMILARITY, SEMANTIC_CONTRADICTION_MIN_SIMILARITY};
+use super::{
+    block_on, Memory, CLOSED_WORLD_TAGS, INTERVENTION_MIN_SIMILARITY,
+    SEMANTIC_CONTRADICTION_MIN_SIMILARITY,
+};
 use crate::store::{AgentFact, CausalEntry, ChainHop};
 
 /// One structured retrieval hit — the machine-readable form of
@@ -78,6 +81,9 @@ fn multi_pass_top_sessions() -> usize {
 
 impl Memory {
     /// `record_decision` — log a decision → outcome causal edge.
+    /// `context` (v14, optional): short description of the situation the
+    /// decision was made in — same task_tag+context becomes a comparable
+    /// branch (fork) for counterfactual queries.
     pub fn record_decision(
         &self,
         decision: &str,
@@ -85,6 +91,7 @@ impl Memory {
         relation: &str,
         task_tag: &str,
         confidence_source: Option<&str>,
+        context: Option<&str>,
     ) -> String {
         let confidence = match confidence_source {
             Some("temporal") => 0.4,
@@ -109,6 +116,7 @@ impl Memory {
             source,
             chrono::Utc::now().timestamp(),
             Some(&polarity),
+            context,
         ) {
             Ok((_dec_id, edge_id)) => {
                 // Phase C: patch the live graph so the new lesson is
@@ -116,6 +124,20 @@ impl Memory {
                 if let Ok(Some(entry)) = self.store.get_edge(edge_id) {
                     self.patch_graph_new_edge(&entry);
                 }
+                // v14 prediction ledger: a recorded outcome for a decision
+                // text that a pending counterfactual predicted resolves it.
+                // Best-effort — resolution must never block recording.
+                let resolved = self
+                    .store
+                    .resolve_predictions_for_decision(decision, Some(&polarity))
+                    .unwrap_or(0);
+                let ledger_note = if resolved > 0 {
+                    format!(
+                        "\n📐 Resolved {resolved} pending prediction(s) about this decision — see prediction_report."
+                    )
+                } else {
+                    String::new()
+                };
                 // Opportunistically embed the new edge so semantic search
                 // finds it. Silent on any failure — embedding must never
                 // block recording; the `causal-memory embed` CLI backfills
@@ -137,7 +159,7 @@ impl Memory {
                     );
                 }
                 format!(
-                    "✅ Recorded: [{}] {} →({})→ {} (confidence: {:.2}, id: {})",
+                    "✅ Recorded: [{}] {} →({})→ {} (confidence: {:.2}, id: {}){ledger_note}",
                     task_tag,
                     truncate_chars(decision, 60),
                     relation,
@@ -1663,6 +1685,71 @@ impl Memory {
         self.counterfactual_inner(decision, alternative, task_tag, limit.unwrap_or(5))
     }
 
+    /// `prediction_report` (v14) — the prediction-ledger calibration
+    /// dashboard: resolved/correct/ambiguous/pending overall, per method and
+    /// per task_tag, plus the newest pending predictions. This is how the
+    /// system's counterfactual claims stay falsifiable instead of rhetorical.
+    pub fn prediction_report(&self) -> String {
+        let Ok(stats) = self.store.prediction_stats() else {
+            return "❌ Prediction report failed".to_string();
+        };
+        if stats.resolved == 0 && stats.pending == 0 {
+            return "📐 Prediction ledger is empty — counterfactual_query logs a \
+                    prediction every time it issues a verdict; predictions resolve \
+                    automatically when either option is later recorded."
+                .to_string();
+        }
+        let judged = stats.resolved - stats.ambiguous;
+        let mut out = format!(
+            "📐 Prediction ledger: {} resolved / {} pending\n",
+            stats.resolved, stats.pending
+        );
+        if stats.resolved > 0 {
+            out.push_str(&format!(
+                "   accuracy {}/{} ({:.0}%{}), {} ambiguous excluded\n",
+                stats.correct,
+                judged,
+                if judged > 0 {
+                    stats.correct as f64 / judged as f64 * 100.0
+                } else {
+                    0.0
+                },
+                if judged > 0 {
+                    ""
+                } else {
+                    ", no judged predictions yet"
+                },
+                stats.ambiguous
+            ));
+        }
+        let fmt_entry = |label: &str, e: &crate::store::PredictionStatsEntry| {
+            let denom = e.resolved - e.ambiguous;
+            format!(
+                "   {label}: {}/{} correct ({} ambiguous)\n",
+                e.correct, denom, e.ambiguous
+            )
+        };
+        for (method, e) in &stats.by_method {
+            out.push_str(&fmt_entry(&format!("method={method}"), e));
+        }
+        for (tag, e) in &stats.by_task_tag {
+            out.push_str(&fmt_entry(&format!("task_tag={tag}"), e));
+        }
+        if let Ok(pending) = self.store.pending_predictions(5) {
+            for p in pending {
+                out.push_str(&format!(
+                    "   pending #{} \"{}\" vs \"{}\" ({}, {})\n",
+                    p.id,
+                    truncate_chars(&p.option_a, 40),
+                    truncate_chars(&p.option_b, 40),
+                    p.task_tag,
+                    p.method
+                ));
+            }
+        }
+        out
+    }
+
     /// Counterfactual comparison with the embedder injected (None = keyword
     /// path, identical to unconfigured — keeps tests hermetic).
     pub fn counterfactual_inner(
@@ -1679,13 +1766,21 @@ impl Memory {
             let fb = self.side_evidence(alternative, task_tag, limit);
             tokio::join!(fa, fb)
         });
-        let (dist_a, reps_a, tag_a) = a;
-        let (dist_b, reps_b, tag_b) = b;
+        let (dist_a, reps_a, tag_a, ids_a) = a;
+        let (dist_b, reps_b, tag_b, ids_b) = b;
         let tag = if tag_a == "semantic" && tag_b == "semantic" {
             "[semantic]"
         } else {
             "[bm25]"
         };
+
+        // v14 fork section: same-context siblings of any retrieved edge are
+        // natural experiments — evidence about ONE world state rather than a
+        // cross-context aggregate. Best-effort: lookup failures just skip
+        // the section (output stays distribution-only).
+        let mut ids = ids_a.clone();
+        ids.extend_from_slice(&ids_b);
+        let forks = self.store.fork_siblings_for_edges(&ids).unwrap_or_default();
 
         let mut out = String::from(
             "⚠️ contrastive/empirical counterfactual over recorded alternatives — not a Pearl Rung-3 SCM counterfactual\n",
@@ -1708,22 +1803,114 @@ impl Memory {
                 out.push_str(&format!("   → {r}\n"));
             }
         }
+        if !forks.is_empty() {
+            out.push_str(&format!(
+                "\n🔀 Same-context branches (natural experiments, {} pair(s)):\n",
+                forks.len()
+            ));
+            for f in &forks {
+                // Which query side each endpoint matched (if any): label
+                // only when the endpoint was retrieved BY that side.
+                let side = |id: i64, decision_ids: &[i64], label: &'static str| {
+                    if decision_ids.contains(&id) {
+                        label
+                    } else {
+                        ""
+                    }
+                };
+                let sa = side(f.edge_id_a, &ids_a, "A");
+                let sb = side(f.edge_id_b, &ids_b, "B");
+                fn pol(p: &Option<String>) -> &str {
+                    p.as_deref().unwrap_or("?")
+                }
+                out.push_str(&format!(
+                    "   [{}] {}{} →({})→ \"{}\" [{}]  vs  {}{} →({})→ \"{}\" [{}]\n",
+                    truncate_chars(&f.fingerprint, 48),
+                    sa,
+                    truncate_chars(&f.a_decision, 40),
+                    f.a_relation,
+                    truncate_chars(&f.a_outcome, 40),
+                    pol(&f.a_polarity),
+                    sb,
+                    truncate_chars(&f.b_decision, 40),
+                    f.b_relation,
+                    truncate_chars(&f.b_outcome, 40),
+                    pol(&f.b_polarity),
+                ));
+            }
+        }
+        // Conclusion: paired (same-context) evidence outranks the pooled
+        // distributions when both exist — a fork pair is evidence about one
+        // world; distributions mix many.
+        let paired = paired_verdict(&forks, &ids_a, &ids_b);
         out.push_str(&format!(
             "\nConclusion: {}\n",
-            counterfactual_verdict(&dist_a, &dist_b)
+            match &paired {
+                Some(p) => format!("{p} (outranks the pooled distribution)"),
+                None => counterfactual_verdict(&dist_a, &dist_b),
+            }
         ));
+        // v14 prediction ledger: every verdict becomes a falsifiable
+        // prediction, auto-resolved when either option is later recorded.
+        // The verdict string maps to prefer_a/prefer_b/no_difference for the
+        // ledger while the human-readable line stays as-is above.
+        let verdict_code = match &paired {
+            Some(p) if p.contains("favors A") => "prefer_a",
+            Some(p) if p.contains("favors B") => "prefer_b",
+            Some(_) => "no_difference", // tied contrasting pairs
+            None => match counterfactual_verdict(&dist_a, &dist_b) {
+                v if v.contains("favors A") => "prefer_a",
+                v if v.contains("favors B") => "prefer_b",
+                v if dist_a.total() > 0 && dist_b.total() > 0 => "no_difference",
+                _ => "",
+            },
+        };
+        if !verdict_code.is_empty() {
+            let strength = ((dist_a.score() - dist_b.score()).abs() / 4.0).clamp(0.1, 1.0);
+            if let Ok(id) = self.store.log_prediction(
+                decision,
+                alternative,
+                task_tag,
+                verdict_code,
+                "contrastive",
+                strength,
+                None,
+            ) {
+                out.push_str(&format!(
+                    "📐 Prediction #{id} logged — resolved automatically when either option is recorded.\n"
+                ));
+                // Phase-4 interface (executable replay routing): closed-world
+                // tags route to a replay plan instead of only an estimate.
+                // The engine (stepback-style trace + dirty-set rerun) is future
+                // work; this defines the routing + the ledger feedback path so
+                // method='executable' predictions can exist from day one.
+                if let Some(tag) = task_tag {
+                    if CLOSED_WORLD_TAGS.contains(&tag.to_lowercase().as_str()) {
+                        out.push_str(&format!(
+                            "🧪 Closed-world decision (task_tag={tag}): instead of estimating — replay it. \
+                             Apply the alternative in a sandbox, execute, then record the outcome with \
+                             record_decision(…, context=<same as the original edge>). The prediction \
+                             resolves automatically; over time prediction_report separates replayed facts \
+                             from estimates.\n"
+                        ));
+                    }
+                }
+            }
+        }
         out
     }
 
     /// One side of the counterfactual: retrieve similar past decision edges
     /// (semantic with BM25 fallback, same pattern as search_causal) and
     /// aggregate their outcome distribution + representative outcomes.
+    /// v14: also returns the retrieved edge ids — the fork-section lookup
+    /// needs them to find same-context siblings.
     async fn side_evidence(
         &self,
         query: &str,
         task_tag: Option<&str>,
         limit: usize,
-    ) -> (CfDist, Vec<String>, &'static str) {
+    ) -> (CfDist, Vec<String>, &'static str, Vec<i64>) {
         let semantic = crate::embed::embed_shared(query).await.and_then(|r| {
             let vec = r.ok()?;
             let hits = self
@@ -1768,7 +1955,8 @@ impl Memory {
                 )
             })
             .collect();
-        (dist, reps, path)
+        let edge_ids = entries.iter().map(|e| e.edge_id).collect();
+        (dist, reps, path, edge_ids)
     }
 
     /// `reconstruct_lesson` — reconstructive retrieval: Markov-blanket

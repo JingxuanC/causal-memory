@@ -227,6 +227,59 @@ pub(crate) fn counterfactual_verdict(a: &CfDist, b: &CfDist) -> String {
     }
 }
 
+/// v14 paired (same-context) verdict over fork pairs. A pair votes for the
+/// query side whose branch ended positive while the other ended negative —
+/// a direct same-world-state contrast. `ids_a`/`ids_b` map pair endpoints
+/// to the query's A/B sides (an endpoint retrieved by neither side still
+/// renders in the display but casts no vote). None = no cross-side votes
+/// (caller falls back to the pooled-distribution verdict).
+pub(crate) fn paired_verdict(
+    forks: &[crate::store::ForkPair],
+    ids_a: &[i64],
+    ids_b: &[i64],
+) -> Option<String> {
+    let side_of = |id: i64| -> Option<char> {
+        if ids_a.contains(&id) {
+            Some('A')
+        } else if ids_b.contains(&id) {
+            Some('B')
+        } else {
+            None
+        }
+    };
+    let (mut va, mut vb, mut contrast) = (0usize, 0usize, 0usize);
+    for f in forks {
+        let (Some(sa), Some(sb)) = (side_of(f.edge_id_a), side_of(f.edge_id_b)) else {
+            continue;
+        };
+        if sa == sb {
+            continue; // both branches landed on the same query side
+        }
+        let (pa, pb) = (
+            f.a_polarity.as_deref().unwrap_or("?"),
+            f.b_polarity.as_deref().unwrap_or("?"),
+        );
+        let winner = match (pa, pb) {
+            ("positive", "negative") => Some(sa),
+            ("negative", "positive") => Some(sb),
+            _ => None,
+        };
+        contrast += 1;
+        match winner {
+            Some('A') => va += 1,
+            Some('B') => vb += 1,
+            _ => {}
+        }
+    }
+    if contrast == 0 || va == vb {
+        return None;
+    }
+    let (w, n) = if va > vb { ('A', va) } else { ('B', vb) };
+    Some(format!(
+        "same-context evidence favors {w} ({n}/{contrast} contrasting pair(s))"
+    ))
+}
+
 /// Char-safe truncation to at most `n` chars, appending "…" when cut.
 pub(crate) fn edge_stub(e: &crate::store::CausalEntry) -> String {
     let pol = e.outcome_polarity.as_deref().unwrap_or("?");

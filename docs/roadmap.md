@@ -96,12 +96,13 @@ Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
 
 ## Current state — v0.9.0+ (main)
 
-**Sixteen MCP tools**: `record_decision` / `search_causal` / `record_fact` /
+**Seventeen MCP tools**: `record_decision` / `search_causal` / `record_fact` /
 `search_facts` / `search_memory` / `trace_cause` / `trace_cause_chain` /
 `invalidate_decision` / `invalidate_pattern` / `resolve_updates` /
 `search_patterns` / `causal_directory` / `intervention_query` /
-`counterfactual_query` / `reconstruct_lesson` / `remember` — over stdio
-**and** HTTP transport (`causal-memory-http --port 9938`).
+`counterfactual_query` / `reconstruct_lesson` / `remember` /
+`prediction_report` — over stdio **and** HTTP transport
+(`causal-memory-http --port 9938`).
 
 Core capabilities (all shipped, all tested):
 
@@ -204,6 +205,13 @@ Memory-quality:
   (today an external caller must still start `sleep`)
 - [ ] **LLM update-resolver**: replace rule-based contradiction detection
   with the LLM judge for invalidation decisions (polarity plumbing ready)
+- [ ] **Rung-3 Phase A (abduction + forks + prediction ledger)** —
+  [design](design/counterfactual-rung3.md): context fingerprints on
+  `record_decision` (schema v14), write-time `decision_forks` natural
+  experiments, `counterfactual_query` fork section + logged predictions
+  auto-resolved by later `record_decision` calls, `prediction_report`
+  (17th tool) calibration dashboard. Phase B (micro-SCM / LLM replay)
+  gated on fork density; Phase C (executable replay) interface-routed
 - [x] **Meta-edge invalidation tool** — ✅ shipped 2026-08-24
   (`invalidate_pattern`, 16th MCP tool): soft-deletes via the existing
   `meta_causal_edges.valid_to` (readers already filtered it), live graph
@@ -258,10 +266,19 @@ Ecosystem:
 
 ## Explicitly out of scope
 
-- **Rung 3 SCM counterfactuals** (structural-causal-model reasoning): per
-  [insights/11](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md),
-  practically impossible for agents. The honest engineering subset shipped:
-  `counterfactual_query` is contrastive/empirical over recorded
-  alternatives, labeled as such on every output.
-  *Watch: Executable Counterfactuals (arXiv:2510.01539) challenges this;
-  revisit if the technique matures.*
+- **Rung-3 SCM ground truth** (structural-causal-model certainty in open
+  worlds): per
+  [insights/11](https://github.com/JingxuanC/causal-memory/blob/main/insights/11-causal-state-store.md),
+  not achievable for agents acting in open, nonstationary worlds. The R3
+  **engineering subset** is in scope since 2026-09-01 — see
+  [docs/design/counterfactual-rung3.md](design/counterfactual-rung3.md)
+  and the prior-art survey
+  ([research/computational-ai/rung3-prior-art.md](research/computational-ai/rung3-prior-art.md)):
+  abduction substrate (context fingerprints, schema v14) → fork edges
+  (natural-experiment graph) → prediction ledger (counterfactual_query
+  logs falsifiable predictions, auto-resolved when either branch is
+  recorded) → deferred micro-SCM/LLM replay (gated on fork density) →
+  closed-world executable replay (stepback-style rerun; interface only).
+  *Watch: Executable Counterfactuals (arXiv:2510.01539) confirmed the
+  abduction gap is real and measurable — its synthetic-data recipe is the
+  candidate eval set when Phase 3 starts.*

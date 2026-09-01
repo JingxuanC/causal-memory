@@ -32,6 +32,8 @@ mod tests {
             discovered_at: 0,
             outcome_polarity: None,
             superseded_by: None,
+            context_fingerprint: None,
+            context_text: None,
         };
         let (l0, t0) = format_entry_layered(&entry, 1, "l0");
         let (l2, t2) = format_entry_layered(&entry, 1, "l2");
@@ -323,6 +325,7 @@ mod tests {
                     "rule",
                     1000 + i as i64,
                     Some(pol),
+                    None,
                 )
                 .unwrap();
         }
@@ -378,6 +381,7 @@ mod tests {
                 "rule",
                 1000,
                 Some("mixed"),
+                None,
             )
             .unwrap();
         let edge = store.get_edge(1).unwrap().unwrap();
@@ -495,7 +499,7 @@ mod tests {
         let memory = Memory::open_in_memory().expect("memory");
         // 1 causal write + 5 fact writes ≥ GRAPH_REBUILD_WRITES (5): the
         // next hippocampus query must rebuild and see the fresh facts.
-        memory.record_decision("cfg", "zsh plugins load", "caused", "shell", None);
+        memory.record_decision("cfg", "zsh plugins load", "caused", "shell", None, None);
         for i in 0..5 {
             memory.record_fact(
                 &format!("pref_{i}"),
@@ -536,12 +540,14 @@ mod tests {
             "caused",
             "locking",
             None,
+            None,
         );
         memory.record_decision(
             "ran backup migration",
             "backup completed",
             "caused",
             "backup",
+            None,
             None,
         );
         memory.record_fact("tech_stack", "Redis 7.2", Some("user"), None, None);
@@ -572,6 +578,7 @@ mod tests {
             "compile errors dropped",
             "caused",
             "rust",
+            None,
             None,
         );
         memory.record_fact(
@@ -634,6 +641,7 @@ mod tests {
             "compile errors dropped",
             "caused",
             "rust",
+            None,
             None,
         );
         m1.record_fact(
@@ -702,6 +710,7 @@ fn multi_pass_sinks_bench_optimizations() {
             "caused",
             "garden",
             None,
+            None,
         );
     }
     let out = memory.search_memory_multi_pass("how many plants did I buy", None, None, Some(10));
@@ -731,6 +740,7 @@ fn search_memory_detail_levels_and_default_compat() {
         "deadlock under concurrent load",
         "caused",
         "concurrency",
+        None,
         None,
     );
 
@@ -780,6 +790,7 @@ fn search_memory_max_tokens_truncates() {
             "caused",
             "deploy",
             None,
+            None,
         );
     }
     let full = memory.search_memory(
@@ -820,6 +831,7 @@ fn invalidate_pattern_soft_deletes_meta_edge() {
         "alpine build stabilized",
         "caused",
         "docker",
+        None,
         None,
     );
     // Mine a pattern between the two chunks of that lesson.
@@ -888,12 +900,14 @@ fn search_explain_tags_and_default_invariance() {
         "caused",
         "release",
         None,
+        None,
     );
     memory.record_decision(
         "deployed without env check",
         "crash loop in production",
         "caused",
         "release",
+        None,
         None,
     );
 
@@ -954,4 +968,212 @@ fn search_explain_tags_and_default_invariance() {
         .expect("audit row");
     assert!(row.result_count > 0);
     assert!(!row.results.as_array().unwrap().is_empty());
+}
+
+// ── v14 fork-aware counterfactual ────────────────────────────────
+
+#[test]
+fn test_counterfactual_fork_section_and_paired_verdict() {
+    let store = crate::store::CausalStore::open_in_memory().unwrap();
+    // One shared context, two branches — a natural experiment.
+    let ctx = Some("rust agent, cache redesign, v0.9");
+    for (dec, out, pol) in [
+        (
+            "used redis mutex for cache",
+            "deadlock under load",
+            "negative",
+        ),
+        (
+            "switched to channel ownership",
+            "race fixed, all tests pass",
+            "positive",
+        ),
+    ] {
+        store
+            .record_decision_full(
+                dec,
+                out,
+                "caused",
+                Some("concurrency"),
+                0.8,
+                "rule",
+                1000,
+                Some(pol),
+                ctx,
+            )
+            .unwrap();
+    }
+    let memory = Memory::new(store);
+    let out = memory.counterfactual_inner("redis mutex", "channel", None, 5);
+    assert!(
+        out.contains("🔀 Same-context branches (natural experiments, 1 pair(s))"),
+        "fork section must render: {out}"
+    );
+    assert!(
+        out.contains("same-context evidence favors B"),
+        "paired verdict must favor B (channel won in the same world): {out}"
+    );
+    assert!(
+        out.contains("(outranks the pooled distribution)"),
+        "paired evidence must be flagged as outranking: {out}"
+    );
+}
+
+#[test]
+fn test_counterfactual_no_forks_output_unchanged() {
+    // Records WITHOUT context ⇒ no fork section, verdict stays
+    // distribution-based (byte-shape compatibility with pre-v14).
+    let store = crate::store::CausalStore::open_in_memory().unwrap();
+    for (i, (dec, out, pol)) in [
+        (
+            "used redis mutex for cache",
+            "deadlock under load",
+            "negative",
+        ),
+        ("used redis mutex for queue", "deadlock again", "negative"),
+        (
+            "switched to channel ownership",
+            "race fixed, all tests pass",
+            "positive",
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        store
+            .record_decision_full(
+                dec,
+                out,
+                "caused",
+                Some("concurrency"),
+                0.8,
+                "rule",
+                1000 + i as i64,
+                Some(pol),
+                None,
+            )
+            .unwrap();
+    }
+    let memory = Memory::new(store);
+    let out = memory.counterfactual_inner("redis mutex", "channel", None, 5);
+    assert!(
+        !out.contains("🔀"),
+        "no fork section without context: {out}"
+    );
+    assert!(out.contains("recorded evidence favors B"), "{out}");
+}
+
+// ── v14 prediction ledger e2e ────────────────────────────────────
+
+#[test]
+fn test_prediction_ledger_e2e_log_resolve_report() {
+    let memory = Memory::open_in_memory().expect("memory");
+    // Seed evidence so a verdict fires (B wins: 2 negative vs 1 positive).
+    for (dec, out, _pol) in [
+        (
+            "used redis mutex for cache",
+            "deadlock under load",
+            "negative",
+        ),
+        ("used redis mutex for queue", "deadlock again", "negative"),
+        (
+            "switched to channel ownership",
+            "race fixed, all tests pass",
+            "positive",
+        ),
+    ] {
+        memory.record_decision(dec, out, "caused", "concurrency", None, None);
+    }
+    let out = memory.counterfactual_inner(
+        "used redis mutex for cache",
+        "switched to channel ownership",
+        Some("concurrency"),
+        5,
+    );
+    assert!(
+        out.contains("📐 Prediction #1 logged"),
+        "footer must report the ledger id: {out}"
+    );
+    // Reality: the agent actually takes the preferred option and wins.
+    let rec = memory.record_decision(
+        "switched to channel ownership",
+        "cutover succeeded, no deadlocks",
+        "caused",
+        "concurrency",
+        None,
+        None,
+    );
+    assert!(
+        rec.contains("Resolved 1 pending prediction"),
+        "record must report the auto-resolution: {rec}"
+    );
+    let report = memory.prediction_report();
+    assert!(
+        report.contains("1 resolved / 0 pending"),
+        "report header: {report}"
+    );
+    assert!(
+        report.contains("accuracy 1/1 (100%)"),
+        "preferred option won ⇒ correct: {report}"
+    );
+    assert!(
+        report.contains("method=contrastive: 1/1 correct"),
+        "per-method split: {report}"
+    );
+    assert!(
+        report.contains("task_tag=concurrency: 1/1 correct"),
+        "per-tag split: {report}"
+    );
+}
+
+#[test]
+fn test_prediction_report_empty_ledger() {
+    let memory = Memory::open_in_memory().expect("memory");
+    let report = memory.prediction_report();
+    assert!(
+        report.contains("Prediction ledger is empty"),
+        "empty ledger guidance: {report}"
+    );
+}
+
+#[test]
+fn test_counterfactual_closed_world_replay_routing() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "enabled lto in release profile",
+        "build time doubled, size -2%",
+        "caused",
+        "build",
+        None,
+        None,
+    );
+    memory.record_decision(
+        "kept default release profile",
+        "build time unchanged",
+        "caused",
+        "build",
+        None,
+        None,
+    );
+    let out = memory.counterfactual_inner(
+        "enabled lto in release profile",
+        "kept default release profile",
+        Some("build"),
+        5,
+    );
+    assert!(
+        out.contains("🧪 Closed-world decision"),
+        "closed-world tags must route to the replay plan: {out}"
+    );
+    // Open-world tag: no routing note.
+    let out2 = memory.counterfactual_inner(
+        "enabled lto in release profile",
+        "kept default release profile",
+        Some("release"),
+        5,
+    );
+    assert!(
+        !out2.contains("🧪"),
+        "open-world stays estimate-only: {out2}"
+    );
 }

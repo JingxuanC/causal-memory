@@ -785,6 +785,7 @@ mod obs_tests {
                 "rule",
                 1000,
                 Some("negative"),
+            None,
             )
             .unwrap();
         let store = std::sync::Arc::new(store);
