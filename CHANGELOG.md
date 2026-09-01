@@ -26,6 +26,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows). Structured JSON logs on stderr via `CAUSAL_MEMORY_LOG_FORMAT=json`.
   OTLP export deferred until a collector exists.
 
+### Security
+- **Opt-in bearer auth for observability endpoints** — setting
+  `CAUSAL_MEMORY_HTTP_AUTH_TOKEN` (env or `setconfig`; unset = open, the
+  previous behavior) requires `Authorization: Bearer <token>` on
+  `/metrics` and `/debug/*` of the MCP HTTP server and `/metrics` of the
+  AMC server. Constant-time comparison; scheme case-insensitive; 401s
+  carry `WWW-Authenticate: Bearer`. Health probes (`/health` `/healthz`
+  `/readyz`) stay open by design (kubelet probes cannot send bearer
+  headers, and those routes leak nothing). `/mcp` auth is out of scope
+  (rmcp 2.2.0 already restricts it to loopback Host headers by default).
+  `getconfig` now masks `*_TOKEN` values like `*_KEY`.
+
 ### Fixed
 - **`stats` on an empty database** no longer errors (`MIN/MAX/AVG` return
   NULL on zero rows; now COALESCEd to the initial q_value 0.5).
@@ -33,6 +45,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SIGPIPE's default disposition (Rust ignores it by default), so both the
   cargo binary and the pip console script die quietly like normal Unix
   tools instead of panicking on `println!`.
+- **CJK text in hippocampus SimHash/Jaccard** — `simhash` and
+  `text_jaccard_similarity` had their own whitespace tokenization while
+  every retrieval path uses `patterns::tokenize` (ASCII words + CJK
+  character bigrams). For unspaced text each sentence collapsed into one
+  giant token: novelty detection scored surprise ≈ 1.0 for every Chinese
+  outcome (the gate recorded everything; Hybrid mode never consulted the
+  LLM), prediction-gap similarity was ~0, and SimHash lost pattern
+  separation. Both now route through `patterns::tokenize`. Note: new
+  writes persist `sparse_code` under the new scheme; rows written before
+  0.9.3 keep old-scheme codes, so mixed-era comparisons may miss a
+  near-duplicate log line (observability only — real dedup is exact-text).
 
 ## [0.9.2] - 2026-08-25
 

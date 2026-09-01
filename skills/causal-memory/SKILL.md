@@ -51,8 +51,10 @@ This skill has two parts:
    is fine, an error means the server didn't come up.
 
 4. Optional shared/remote mode: `causal-memory http --port 9938` serves MCP
-   over Streamable HTTP at `/mcp` (multi-agent shared memory; set
-   `CAUSAL_MEMORY_ALLOWED_HOSTS` for non-localhost access).
+   over Streamable HTTP at `/mcp` (multi-agent shared memory; bind
+   `--host 0.0.0.0` for non-localhost access, and set
+   `CAUSAL_MEMORY_HTTP_AUTH_TOKEN` to protect the observability routes
+   `/metrics` and `/debug/*` when the port is reachable beyond loopback).
 
 ## 2. Usage (once the tools are available)
 
