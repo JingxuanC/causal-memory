@@ -64,13 +64,18 @@ impl CausalStore {
             discovered_by,
             event_time,
             None,
+            None,
         )
     }
 
-    /// Record with an explicit event_time and a pre-judged outcome polarity
+    /// Record with an explicit event_time, a pre-judged outcome polarity
     /// (v4: positive/negative/mixed/neutral, judged by the LLM or the
-    /// heuristic at the caller). `None` stores NULL — read paths then fall
-    /// back to the signal-word heuristic.
+    /// heuristic at the caller), and an optional decision context
+    /// (v14: the world state the decision was made in — the abduction
+    /// substrate; same task_tag+context ⇒ comparable branch).
+    /// `None` polarity stores NULL — read paths then fall back to the
+    /// signal-word heuristic. `None` context stores NULL — legacy
+    /// behavior, excluded from fork detection.
     #[allow(clippy::too_many_arguments)]
     pub fn record_decision_full(
         &self,
@@ -82,6 +87,7 @@ impl CausalStore {
         discovered_by: &str,
         event_time: i64,
         outcome_polarity: Option<&str>,
+        context: Option<&str>,
     ) -> Result<(String, i64)> {
         let conn = self.acquire()?;
         let db_time = chrono::Utc::now().timestamp();
@@ -103,10 +109,24 @@ impl CausalStore {
         // the old lesson is falsified by the new evidence — soft-invalidate it.
         // Must run BEFORE inserting the new edge so the new edge is never matched.
         Self::invalidate_contradicted_edges(&conn, decision, outcome, outcome_polarity, db_time)?;
+        let fingerprint = context
+            .map(|c| super::context_fingerprint(task_tag, c));
         conn.execute(
-            "INSERT INTO causal_edges (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag, outcome_polarity)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![&dec_id, &out_id, relation, confidence, discovered_by, event_time, db_time, task_tag, outcome_polarity],
+            "INSERT INTO causal_edges (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag, outcome_polarity, context_fingerprint, context_text)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                &dec_id,
+                &out_id,
+                relation,
+                confidence,
+                discovered_by,
+                event_time,
+                db_time,
+                task_tag,
+                outcome_polarity,
+                fingerprint,
+                context
+            ],
         )?;
         // C3: return the edge id too — callers no longer need a follow-up
         // SELECT to resolve it (the server used to re-query by from_id).

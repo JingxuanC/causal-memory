@@ -809,6 +809,7 @@ fn test_record_with_polarity_and_cte_propagation() {
             "rule",
             1000,
             Some("mixed"),
+        None,
         )
         .unwrap();
     store
@@ -833,6 +834,7 @@ fn test_contradiction_stored_polarity() {
                 "rule",
                 1000,
                 polarity,
+            None,
             )
             .unwrap();
     };
@@ -878,6 +880,7 @@ fn test_semantic_contradiction_stored_polarity() {
             "rule",
             1000,
             Some("mixed"),
+        None,
         )
         .unwrap();
     // Edge 2: stored 'negative' with a neutral-looking text — stored wins,
@@ -892,6 +895,7 @@ fn test_semantic_contradiction_stored_polarity() {
             "rule",
             1001,
             Some("negative"),
+        None,
         )
         .unwrap();
     store.put_embedding(1, "test", &[1.0, 0.0]).unwrap();
@@ -3162,4 +3166,119 @@ fn test_recall_audit_roundtrip_newest_first() {
     // JSON fields decode back.
     assert_eq!(entries[0].results[0]["explain"], "[seed]");
     assert_eq!(entries[1].seeds[0]["source"], "bm25");
+}
+
+// ─── v14 context fingerprint (Rung-3 Phase A: abduction substrate) ───
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_context_fingerprint_normalization() {
+    use super::context_fingerprint;
+    // Case + whitespace runs collapse; order preserved.
+    assert_eq!(
+        context_fingerprint(Some("Rust"), "SQLite,  WAL   OFF"),
+        context_fingerprint(Some("rust"), "sqlite, wal off")
+    );
+    // Different task_tag ⇒ different world state.
+    assert_ne!(
+        context_fingerprint(Some("a"), "same ctx"),
+        context_fingerprint(Some("b"), "same ctx")
+    );
+    // Separator keeps tag and context from colliding.
+    let fp = context_fingerprint(None, "x");
+    assert!(fp.starts_with('\u{1f}'), "no-tag fingerprint: {fp:?}");
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_record_with_context_persists_fingerprint() {
+    let store = CausalStore::open_in_memory().unwrap();
+    store
+        .record_decision_full(
+            "used mysql for sessions",
+            "migration locks blocked deploys",
+            "caused",
+            Some("database"),
+            0.8,
+            "rule",
+            1000,
+            Some("negative"),
+            Some("rust agent, sqlite store, single node"),
+        )
+        .unwrap();
+    store
+        .record_decision_at(
+            "used postgres for sessions",
+            "clean cutover",
+            "caused",
+            Some("database"),
+            0.9,
+            "rule",
+            2000,
+        )
+        .unwrap();
+    let edges = store.all_valid_edges().unwrap();
+    let with_ctx = edges
+        .iter()
+        .find(|e| e.decision_text.contains("mysql"))
+        .unwrap();
+    let without_ctx = edges
+        .iter()
+        .find(|e| e.decision_text.contains("postgres"))
+        .unwrap();
+    assert_eq!(
+        with_ctx.context_fingerprint.as_deref(),
+        Some("database\u{1f}rust agent, sqlite store, single node"),
+        "fingerprint = task_tag US normalized context"
+    );
+    assert_eq!(
+        with_ctx.context_text.as_deref(),
+        Some("rust agent, sqlite store, single node")
+    );
+    assert!(
+        without_ctx.context_fingerprint.is_none() && without_ctx.context_text.is_none(),
+        "no context given ⇒ NULL columns (legacy behavior)"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_migration_v14_adds_columns_and_tables_idempotently() {
+    // Build a pre-v14 DB by hand: causal_edges WITHOUT the context columns,
+    // user_version=13 — then run migrate and check the upgrade.
+    let store = CausalStore::open_in_memory().unwrap();
+    store
+        .with_conn(|conn| {
+            // Simulate the legacy shape: drop the new columns is impossible
+            // (SQLite), so instead verify the fresh-DB path has them and the
+            // tables exist, then re-run migrate() — must be a no-op success.
+            let cols: Vec<String> = {
+                let mut stmt = conn.prepare("PRAGMA table_info(causal_edges)")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            assert!(cols.contains(&"context_fingerprint".to_string()));
+            assert!(cols.contains(&"context_text".to_string()));
+            for table in ["decision_forks", "pending_predictions"] {
+                let n: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    rusqlite::params![table],
+                    |r| r.get(0),
+                )?;
+                assert_eq!(n, 1, "{table} must exist at v14");
+            }
+            // Idempotent: migrating an already-current DB must succeed.
+            crate::migrate::migrate(conn)?;
+            Ok(())
+        })
+        .unwrap();
 }

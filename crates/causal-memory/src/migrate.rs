@@ -31,7 +31,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 13;
+pub const SCHEMA_VERSION: u32 = 14;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -82,6 +82,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 13 {
         migrate_to_v13(&tx)?;
+    }
+    if version < 14 {
+        migrate_to_v14(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -968,5 +971,41 @@ fn migrate_to_v12(conn: &Connection) -> Result<()> {
 /// step covers existing DBs (idempotent).
 fn migrate_to_v13(conn: &Connection) -> Result<()> {
     conn.execute_batch(crate::store::RECALL_AUDIT_DDL)?;
+    Ok(())
+}
+
+/// v13 → v14: Rung-3 Phase A (counterfactual rung-3 design, 2026-09).
+///
+/// - `causal_edges.context_fingerprint` + `context_text`: the abduction
+///   substrate — records the world state a decision was made in so
+///   same-context decisions become comparable branches. NULL on all
+///   legacy rows (excluded from fork logic by construction).
+/// - `decision_forks` + `pending_predictions`: created by
+///   RUNG3_PHASE_A_TABLES_DDL (idempotent; fresh DBs also get them from
+///   CAUSAL_SCHEMA_SQL).
+/// - The fingerprint index is a partial index (WHERE … IS NOT NULL) so
+///   legacy-heavy DBs don't index a sea of NULLs.
+fn migrate_to_v14(conn: &Connection) -> Result<()> {
+    if table_exists(conn, "causal_edges")? {
+        let cols = table_columns(conn, "causal_edges")?;
+        if !cols.contains("context_fingerprint") {
+            conn.execute_batch(
+                "ALTER TABLE causal_edges ADD COLUMN context_fingerprint TEXT",
+            )?;
+        }
+        if !cols.contains("context_text") {
+            conn.execute_batch("ALTER TABLE causal_edges ADD COLUMN context_text TEXT")?;
+        }
+    }
+    conn.execute_batch(crate::store::RUNG3_PHASE_A_TABLES_DDL)?;
+    // The index needs causal_edges to exist; partial fixture DBs (e.g. the
+    // v6→v7 test) may not have it — CAUSAL_SCHEMA_SQL creates both the table
+    // and the index right after the per-version steps.
+    if table_exists(conn, "causal_edges")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_causal_fingerprint
+             ON causal_edges(context_fingerprint) WHERE context_fingerprint IS NOT NULL;",
+        )?;
+    }
     Ok(())
 }

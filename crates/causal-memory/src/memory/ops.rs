@@ -78,6 +78,9 @@ fn multi_pass_top_sessions() -> usize {
 
 impl Memory {
     /// `record_decision` — log a decision → outcome causal edge.
+    /// `context` (v14, optional): short description of the situation the
+    /// decision was made in — same task_tag+context becomes a comparable
+    /// branch (fork) for counterfactual queries.
     pub fn record_decision(
         &self,
         decision: &str,
@@ -85,6 +88,7 @@ impl Memory {
         relation: &str,
         task_tag: &str,
         confidence_source: Option<&str>,
+        context: Option<&str>,
     ) -> String {
         let confidence = match confidence_source {
             Some("temporal") => 0.4,
@@ -109,6 +113,7 @@ impl Memory {
             source,
             chrono::Utc::now().timestamp(),
             Some(&polarity),
+            context,
         ) {
             Ok((_dec_id, edge_id)) => {
                 // Phase C: patch the live graph so the new lesson is

@@ -29,6 +29,14 @@ pub struct RecordDecisionParams {
         description = "Confidence source. Use: temporal, rule, llm_inferred, or user_feedback"
     )]
     pub confidence_source: Option<String>,
+    /// Short description of the situation the decision was made in
+    /// (environment, constraints, key parameters). Decisions recorded with
+    /// the same task_tag + context become comparable branches for
+    /// counterfactual queries.
+    #[schemars(
+        description = "Short description of the situation the decision was made in (environment, constraints, key parameters). Same task_tag + context ⇒ comparable branch (fork)"
+    )]
+    pub context: Option<String>,
 }
 
 /// Parameters for the `remember` tool — mem0-style auto-extraction.
@@ -275,6 +283,7 @@ impl CausalMemoryServer {
                 &params.relation,
                 &params.task_tag,
                 params.confidence_source.as_deref(),
+                params.context.as_deref(),
             )
         })
     }

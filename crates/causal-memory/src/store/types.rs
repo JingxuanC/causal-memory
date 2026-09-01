@@ -38,12 +38,19 @@ pub struct CausalEntry {
     /// v8: id of the edge that superseded this one (reversible consolidation).
     /// Non-NULL implies `valid_to` is also set; `restore_edge` clears both.
     pub superseded_by: Option<i64>,
+    /// v14 (Rung-3 Phase A): task_tag + US + normalized context — the
+    /// recorded world state this decision was made in. Same fingerprint ⇒
+    /// comparable branch (see `decision_forks`). None = no context recorded.
+    pub context_fingerprint: Option<String>,
+    /// v14: the raw context description as given (display/audit).
+    pub context_text: Option<String>,
 }
 
 /// Columns selected when materializing a `CausalEntry` (order matters, see `entry_from_row`).
 pub const ENTRY_COLUMNS: &str = "ce.id, cf.id, cf.text, ct.id, ct.text, ce.relation, ce.confidence,
          ce.task_tag, ce.event_time, ce.valid_to, ce.access_count, ce.last_accessed_at,
-         ce.discovered_by, ce.discovered_at, ce.outcome_polarity, ce.superseded_by";
+         ce.discovered_by, ce.discovered_at, ce.outcome_polarity, ce.superseded_by,
+         ce.context_fingerprint, ce.context_text";
 
 /// Map a row selected with `ENTRY_COLUMNS` (plus the standard chunk joins) to a `CausalEntry`.
 pub fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<CausalEntry> {
@@ -64,6 +71,8 @@ pub fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<CausalEntry> {
         discovered_at: row.get(13)?,
         outcome_polarity: row.get(14)?,
         superseded_by: row.get(15)?,
+        context_fingerprint: row.get(16)?,
+        context_text: row.get(17)?,
     })
 }
 

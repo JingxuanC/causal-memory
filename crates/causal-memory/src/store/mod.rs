@@ -80,6 +80,14 @@ CREATE TABLE IF NOT EXISTS causal_edges (
     -- supersession marks instead of deletes; `restore_edge` clears both this
     -- and valid_to when later evidence proves the old memory right.
     superseded_by INTEGER,
+    -- v14 (Rung-3 Phase A): the abduction substrate. `context_fingerprint`
+    -- = task_tag + US + normalize(context) — same fingerprint ⇒ the two
+    -- decisions were made in (recorded as) the same world state, making
+    -- them comparable branches (decision_forks). NULL = no context given
+    -- (legacy rows; excluded from fork logic). `context_text` keeps the
+    -- raw description for display/audit.
+    context_fingerprint TEXT,
+    context_text TEXT,
     FOREIGN KEY (from_id) REFERENCES chunks(id),
     FOREIGN KEY (to_id) REFERENCES chunks(id)
 );
@@ -88,6 +96,8 @@ CREATE INDEX IF NOT EXISTS idx_causal_to ON causal_edges(to_id);
 CREATE INDEX IF NOT EXISTS idx_causal_task ON causal_edges(task_tag);
 CREATE INDEX IF NOT EXISTS idx_causal_event_time ON causal_edges(event_time);
 CREATE INDEX IF NOT EXISTS idx_causal_valid ON causal_edges(valid_to);
+CREATE INDEX IF NOT EXISTS idx_causal_fingerprint
+    ON causal_edges(context_fingerprint) WHERE context_fingerprint IS NOT NULL;
 
 -- Meta causal edges: decision → decision (cross-task patterns)
 -- Stratification fields (v5): the miner's replication test fills them;
@@ -197,6 +207,50 @@ CREATE TABLE IF NOT EXISTS recall_audit (
     result_count INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_recall_audit_created ON recall_audit(created_at);
+
+-- Decision forks (schema v14, Rung-3 Phase A): pairs of valid causal edges
+-- that share a context_fingerprint but chose DIFFERENT decisions — natural
+-- experiments. Written opportunistically by record_decision_full; the pair
+-- is stored id-ordered and UNIQUE-deduped. Counterfactual_query reads these
+-- to compare same-context branches instead of pooling cross-context
+-- distributions. Keep in sync with RUNG3_PHASE_A_TABLES_DDL below.
+CREATE TABLE IF NOT EXISTS decision_forks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    edge_id_a INTEGER NOT NULL,
+    edge_id_b INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    discovered_at INTEGER NOT NULL,
+    UNIQUE(edge_id_a, edge_id_b),
+    FOREIGN KEY (edge_id_a) REFERENCES causal_edges(id),
+    FOREIGN KEY (edge_id_b) REFERENCES causal_edges(id)
+);
+CREATE INDEX IF NOT EXISTS idx_forks_a ON decision_forks(edge_id_a);
+CREATE INDEX IF NOT EXISTS idx_forks_b ON decision_forks(edge_id_b);
+
+-- Prediction ledger (schema v14, Rung-3 Phase A): every counterfactual_query
+-- verdict becomes a falsifiable prediction. Resolved automatically when
+-- either option is later recorded via record_decision (exact-text match,
+-- consistent with chunk reuse); `correct` is NULL while pending or when the
+-- actual outcome polarity is ambiguous (mixed/neutral). Powers the
+-- prediction_report calibration dashboard. Keep in sync with
+-- RUNG3_PHASE_A_TABLES_DDL below.
+CREATE TABLE IF NOT EXISTS pending_predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    option_a TEXT NOT NULL,
+    option_b TEXT NOT NULL,
+    task_tag TEXT,
+    verdict TEXT NOT NULL CHECK(verdict IN ('prefer_a','prefer_b','no_difference')),
+    method TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    evidence TEXT,
+    resolved_at INTEGER,
+    resolved_option TEXT CHECK(resolved_option IS NULL OR resolved_option IN ('a','b')),
+    actual_polarity TEXT,
+    correct INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_predictions_pending
+    ON pending_predictions(resolved_at) WHERE resolved_at IS NULL;
 "#;
 
 /// Recall audit table (schema v13, observability): one best-effort row per
@@ -220,6 +274,63 @@ CREATE TABLE IF NOT EXISTS recall_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_recall_audit_created ON recall_audit(created_at);
 "#;
+
+/// Rung-3 Phase A tables (schema v14): decision forks + the prediction
+/// ledger. Single source of truth for their DDL; the v14 migration replays
+/// this for existing DBs (idempotent IF NOT EXISTS). The context columns on
+/// `causal_edges` cannot live here (ALTER ADD COLUMN), so migrate_to_v14
+/// adds them inline.
+pub const RUNG3_PHASE_A_TABLES_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS decision_forks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    edge_id_a INTEGER NOT NULL,
+    edge_id_b INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    discovered_at INTEGER NOT NULL,
+    UNIQUE(edge_id_a, edge_id_b),
+    FOREIGN KEY (edge_id_a) REFERENCES causal_edges(id),
+    FOREIGN KEY (edge_id_b) REFERENCES causal_edges(id)
+);
+CREATE INDEX IF NOT EXISTS idx_forks_a ON decision_forks(edge_id_a);
+CREATE INDEX IF NOT EXISTS idx_forks_b ON decision_forks(edge_id_b);
+CREATE TABLE IF NOT EXISTS pending_predictions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at INTEGER NOT NULL,
+    option_a TEXT NOT NULL,
+    option_b TEXT NOT NULL,
+    task_tag TEXT,
+    verdict TEXT NOT NULL CHECK(verdict IN ('prefer_a','prefer_b','no_difference')),
+    method TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    evidence TEXT,
+    resolved_at INTEGER,
+    resolved_option TEXT CHECK(resolved_option IS NULL OR resolved_option IN ('a','b')),
+    actual_polarity TEXT,
+    correct INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_predictions_pending
+    ON pending_predictions(resolved_at) WHERE resolved_at IS NULL;
+"#;
+
+/// Normalize a context description into the fingerprint contribution:
+/// lowercase, collapse runs of whitespace. Order-preserving on purpose —
+/// context is a short structured description ("rust, sqlite, wal off"),
+/// not free prose where word order is arbitrary.
+pub(crate) fn normalize_context_text(context: &str) -> String {
+    context.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Build the v14 context fingerprint: `task_tag + US + normalized context`
+/// (both sides lowercased/whitespace-collapsed). Same fingerprint ⇒
+/// recorded as the same world state (the abduction anchor for forks and
+/// counterfactuals).
+pub(crate) fn context_fingerprint(task_tag: Option<&str>, context: &str) -> String {
+    format!(
+        "{}\u{1f}{}",
+        normalize_context_text(task_tag.unwrap_or("")),
+        normalize_context_text(context)
+    )
+}
 
 /// Thread-safe causal store backed by SQLite.
 ///

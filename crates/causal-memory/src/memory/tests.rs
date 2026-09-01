@@ -32,6 +32,8 @@ mod tests {
             discovered_at: 0,
             outcome_polarity: None,
             superseded_by: None,
+            context_fingerprint: None,
+            context_text: None,
         };
         let (l0, t0) = format_entry_layered(&entry, 1, "l0");
         let (l2, t2) = format_entry_layered(&entry, 1, "l2");
@@ -323,6 +325,7 @@ mod tests {
                     "rule",
                     1000 + i as i64,
                     Some(pol),
+                    None,
                 )
                 .unwrap();
         }
@@ -378,6 +381,7 @@ mod tests {
                 "rule",
                 1000,
                 Some("mixed"),
+            None,
             )
             .unwrap();
         let edge = store.get_edge(1).unwrap().unwrap();
@@ -495,7 +499,8 @@ mod tests {
         let memory = Memory::open_in_memory().expect("memory");
         // 1 causal write + 5 fact writes ≥ GRAPH_REBUILD_WRITES (5): the
         // next hippocampus query must rebuild and see the fresh facts.
-        memory.record_decision("cfg", "zsh plugins load", "caused", "shell", None);
+        memory.record_decision("cfg", "zsh plugins load", "caused", "shell", None,
+            None,);
         for i in 0..5 {
             memory.record_fact(
                 &format!("pref_{i}"),
@@ -536,14 +541,14 @@ mod tests {
             "caused",
             "locking",
             None,
-        );
+            None,);
         memory.record_decision(
             "ran backup migration",
             "backup completed",
             "caused",
             "backup",
             None,
-        );
+            None,);
         memory.record_fact("tech_stack", "Redis 7.2", Some("user"), None, None);
         memory.record_fact("tech_stack", "Redis 8.0", Some("user"), None, Some(true));
 
@@ -573,7 +578,7 @@ mod tests {
             "caused",
             "rust",
             None,
-        );
+            None,);
         memory.record_fact(
             "editor_preference",
             "user prefers TypeScript for module rewrites",
@@ -635,7 +640,7 @@ mod tests {
             "caused",
             "rust",
             None,
-        );
+            None,);
         m1.record_fact(
             "editor_preference",
             "user prefers TypeScript for module rewrites",
@@ -702,7 +707,7 @@ fn multi_pass_sinks_bench_optimizations() {
             "caused",
             "garden",
             None,
-        );
+            None,);
     }
     let out = memory.search_memory_multi_pass("how many plants did I buy", None, None, Some(10));
     // Flat-id store: no session expansion (documented), but the
@@ -732,7 +737,7 @@ fn search_memory_detail_levels_and_default_compat() {
         "caused",
         "concurrency",
         None,
-    );
+        None,);
 
     let l2 = memory.search_memory("redis mutex", None, None, Some(10), None, None, None);
     let l0 = memory.search_memory("redis mutex", None, None, Some(10), Some("l0"), None, None);
@@ -780,7 +785,7 @@ fn search_memory_max_tokens_truncates() {
             "caused",
             "deploy",
             None,
-        );
+            None,);
     }
     let full = memory.search_memory(
         "cache warmup deploy",
@@ -821,7 +826,7 @@ fn invalidate_pattern_soft_deletes_meta_edge() {
         "caused",
         "docker",
         None,
-    );
+        None,);
     // Mine a pattern between the two chunks of that lesson.
     let (from_id, to_id) = {
         let store = memory.store();
@@ -888,14 +893,14 @@ fn search_explain_tags_and_default_invariance() {
         "caused",
         "release",
         None,
-    );
+        None,);
     memory.record_decision(
         "deployed without env check",
         "crash loop in production",
         "caused",
         "release",
         None,
-    );
+        None,);
 
     // Default == explicit explain=false, byte-identical, no ↳ markers.
     let default = memory.search_causal(None, Some("test suite release"), Some(5), None, None, None);

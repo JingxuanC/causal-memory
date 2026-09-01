@@ -63,7 +63,9 @@ impl PyCausalMemory {
     /// Call AFTER acting on a decision and observing the result.
     /// relation: caused / enabled / prevented / no_effect.
     /// confidence_source: temporal / rule / llm_inferred / user_feedback.
-    #[pyo3(signature = (decision, outcome, relation, task_tag, confidence_source=None))]
+    /// context: short situation description — same task_tag+context
+    /// becomes a comparable branch (fork) for counterfactual queries.
+    #[pyo3(signature = (decision, outcome, relation, task_tag, confidence_source=None, context=None))]
     fn record_decision(
         &self,
         py: Python<'_>,
@@ -72,10 +74,11 @@ impl PyCausalMemory {
         relation: &str,
         task_tag: &str,
         confidence_source: Option<&str>,
+        context: Option<&str>,
     ) -> String {
         py.allow_threads(|| {
             self.inner
-                .record_decision(decision, outcome, relation, task_tag, confidence_source)
+                .record_decision(decision, outcome, relation, task_tag, confidence_source, context)
         })
     }
 
