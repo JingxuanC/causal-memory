@@ -260,7 +260,7 @@ mod tests {
                 "rule",
                 1000,
                 Some("negative"),
-            None,
+                None,
             )
             .unwrap();
         store
@@ -273,7 +273,7 @@ mod tests {
                 "user_feedback",
                 2000,
                 Some("positive"),
-            None,
+                None,
             )
             .unwrap();
         // A meta edge over the two real decision chunks.
@@ -403,7 +403,7 @@ mod tests {
                 "rule",
                 1000,
                 Some("positive"),
-            None,
+                None,
             )
             .unwrap();
         store
@@ -416,6 +416,7 @@ mod tests {
                 "rule",
                 1000,
                 Some("neutral"),
+                None,
             )
             .unwrap();
 

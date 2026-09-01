@@ -1010,7 +1010,7 @@ fn test_counterfactual_fork_section_and_paired_verdict() {
         "fork section must render: {out}"
     );
     assert!(
-        out.contains("same-context branches favor B"),
+        out.contains("same-context evidence favors B"),
         "paired verdict must favor B (channel won in the same world): {out}"
     );
     assert!(

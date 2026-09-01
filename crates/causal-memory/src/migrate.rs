@@ -989,9 +989,7 @@ fn migrate_to_v14(conn: &Connection) -> Result<()> {
     if table_exists(conn, "causal_edges")? {
         let cols = table_columns(conn, "causal_edges")?;
         if !cols.contains("context_fingerprint") {
-            conn.execute_batch(
-                "ALTER TABLE causal_edges ADD COLUMN context_fingerprint TEXT",
-            )?;
+            conn.execute_batch("ALTER TABLE causal_edges ADD COLUMN context_fingerprint TEXT")?;
         }
         if !cols.contains("context_text") {
             conn.execute_batch("ALTER TABLE causal_edges ADD COLUMN context_text TEXT")?;

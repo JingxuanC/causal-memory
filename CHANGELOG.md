@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.3] - Unreleased
 
 ### Added
+- **Rung-3 Phase A: abduction substrate + natural experiments + prediction
+  ledger** (schema v14, [design](docs/design/counterfactual-rung3.md),
+  [prior-art survey](docs/research/computational-ai/rung3-prior-art.md)):
+  - `record_decision` gains an optional `context` param (MCP + Python):
+    the world state the decision was made in. Same task_tag + normalized
+    context ⇒ same fingerprint ⇒ comparable branch. Legacy rows/records
+    without context are unaffected.
+  - **Decision forks**: write-time detection links same-fingerprint edges
+    that took different decisions (natural experiments, capped pairs).
+    `counterfactual_query` renders a "🔀 Same-context branches" section
+    and a paired verdict that outranks the pooled distribution when
+    contrasting same-world pairs exist.
+  - **Prediction ledger**: every `counterfactual_query` verdict is logged
+    as a falsifiable prediction and auto-resolves when either option is
+    later recorded (first record wins; mixed/neutral actuals resolve
+    ambiguous, excluded from accuracy). New `prediction_report` (17th MCP
+    tool, Python binding mirrored): accuracy overall / per method / per
+    task_tag + pending list — the calibration dashboard.
+  - **Executable-replay routing (Phase-4 interface)**: closed-world
+    task_tags (build/test/config/bench) get a replay-plan note instead of
+    estimate-only advice; the trace/rerun engine stays future work.
+  - 17 new tests (fingerprint normalization, fork semantics, resolution
+    matrix, stats math, e2e log→resolve→report, closed-world routing);
+    workspace regression 430/430 green.
 - **Flip-path marking (recall provenance)** — every spreading-activation
   result now carries `hop` (0 = direct seed, N = lit in hop N) and `via`
   (the winning edge's relation + source). `search_causal` / `search_memory`

@@ -130,6 +130,15 @@ evidence about many) — the verdict function takes paired evidence first,
 falls back to distribution diff. Pairs also render standalone (sibling not
 on the other side) at reduced weight, since they still pin the context.
 
+**Known limitation (found while testing)**: `side_evidence` retrieves on
+decision AND outcome text, so two options that share vocabulary (e.g.
+"use the main model" vs "use a small model" — and outcomes that share
+words like "migration") contaminate each other's pools, flattening the
+distribution contrast toward a tie. Fork pairs are immune (they compare
+recorded same-context branches, not query-side pools). Competitive
+separation — dropping from each side the entries the other side ranks
+higher — is a Phase-3 refinement.
+
 ## 5. Phase 2 — prediction ledger
 
 ```sql

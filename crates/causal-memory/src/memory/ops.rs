@@ -1809,16 +1809,17 @@ impl Memory {
                 forks.len()
             ));
             for f in &forks {
-                // Which query side each endpoint matched (if any).
-                let side = |id: i64, decision_ids: &[i64]| {
+                // Which query side each endpoint matched (if any): label
+                // only when the endpoint was retrieved BY that side.
+                let side = |id: i64, decision_ids: &[i64], label: &'static str| {
                     if decision_ids.contains(&id) {
-                        "A"
+                        label
                     } else {
                         ""
                     }
                 };
-                let sa = side(f.edge_id_a, &ids_a);
-                let sb = side(f.edge_id_b, &ids_b);
+                let sa = side(f.edge_id_a, &ids_a, "A");
+                let sb = side(f.edge_id_b, &ids_b, "B");
                 fn pol(p: &Option<String>) -> &str {
                     p.as_deref().unwrap_or("?")
                 }

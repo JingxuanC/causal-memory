@@ -317,7 +317,11 @@ CREATE INDEX IF NOT EXISTS idx_predictions_pending
 /// context is a short structured description ("rust, sqlite, wal off"),
 /// not free prose where word order is arbitrary.
 pub(crate) fn normalize_context_text(context: &str) -> String {
-    context.to_lowercase().split_whitespace().collect::<Vec<_>>().join(" ")
+    context
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Build the v14 context fingerprint: `task_tag + US + normalized context`

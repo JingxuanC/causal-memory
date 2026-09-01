@@ -276,7 +276,7 @@ pub(crate) fn paired_verdict(
     }
     let (w, n) = if va > vb { ('A', va) } else { ('B', vb) };
     Some(format!(
-        "same-context branches favor {w} ({n}/{contrast} contrasting pair(s))"
+        "same-context evidence favors {w} ({n}/{contrast} contrasting pair(s))"
     ))
 }
 

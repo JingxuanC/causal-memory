@@ -771,8 +771,8 @@ fn semantic_search(
                         discovered_at: 0,
                         outcome_polarity: None,
                         superseded_by: None,
-            context_fingerprint: None,
-            context_text: None,
+                        context_fingerprint: None,
+                        context_text: None,
                     },
                     sim,
                 ));
