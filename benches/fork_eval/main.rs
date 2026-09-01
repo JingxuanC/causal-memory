@@ -2,9 +2,11 @@
 //! ON vs OFF (docs/design/counterfactual-rung3.md §8).
 //!
 //! Protocol: N deterministic scenarios. Each has a shared context, a bad
-//! option and a good option (vocabulary disjoint per side so BM25 pools
-//! stay clean), with outcome texts carrying explicit polarity signal
-//! words. The same episodes are recorded twice:
+//! option and a good option (some pairs share a content token — e.g.
+//! "join", "index" — deliberately, since competitive separation plus rank
+//! ordering keep the pools clean; that interaction is part of what this
+//! harness exercises), with outcome texts carrying explicit polarity
+//! signal words. The same episodes are recorded twice:
 //!
 //!   fork-on  DB — every record carries the shared context ⇒ write-time
 //!                 fork detection links the branches as natural experiments
@@ -230,6 +232,18 @@ fn main() {
     println!("  outranks but falls back to the distribution when pairs don't contrast).");
     if on.correct < off.correct {
         eprintln!("REGRESSION: fork-on scored below fork-off");
+        std::process::exit(1);
+    }
+    // Absolute accuracy floor (review finding on PR #19): the relative gate
+    // above passes vacuously when BOTH modes collapse to 0/20 — exactly the
+    // hand-copied-contract drift ("favors B" literal vs the verdict phrase)
+    // this repo has already suffered once. A curated table with explicit
+    // polarity signals must never score zero in either mode.
+    if on.correct == 0 || off.correct == 0 {
+        eprintln!(
+            "REGRESSION: verdict accuracy floor breached (fork-on {}/{}, fork-off {}/{}) — the 'favors B' literal may have drifted from the verdict phrase",
+            on.correct, on.total, off.correct, off.total
+        );
         std::process::exit(1);
     }
     if on.fork_sections != on.total {

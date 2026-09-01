@@ -41,7 +41,7 @@ library selection, deployment strategy):
 
 ### When you learn a stable fact (preference, tech stack, config):
 
-5. Call `record_fact` with `key` (category), `value` (the fact), and
+6. Call `record_fact` with `key` (category), `value` (the fact), and
    `scope` (user / session / agent). If the fact replaces an older one
    (e.g. the user switched package managers), set `replace_same_key: true`
    to retire the outdated value. Retrieve later with `search_facts` or
@@ -49,7 +49,7 @@ library selection, deployment strategy):
 
 ### When something fails unexpectedly:
 
-6. Call `trace_cause` with a description of what went wrong; use
+7. Call `trace_cause` with a description of what went wrong; use
    `trace_cause_chain` when the root cause is more than one hop away
 
 ### When a recorded lesson turns out to be wrong:
