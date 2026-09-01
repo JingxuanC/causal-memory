@@ -428,6 +428,104 @@ mod tests {
         assert!((text_jaccard_similarity("aaa", "zzz") - 0.0).abs() < 0.001);
     }
 
+    // ─── CJK: tokenize-based hashing/similarity (0.9.3) ────────────────
+    // Before the fix, whitespace tokenization collapsed each unspaced
+    // Chinese sentence into one giant token: simhash hashed the whole
+    // sentence as a unit (hamming ~random for any edit) and jaccard
+    // similarity was ~0 for any two different sentences (surprise 1.0 for
+    // everything → the novelty gate recorded all Chinese outcomes).
+
+    #[test]
+    fn test_simhash_chinese_distance() {
+        let h1 = simhash("用Redis做缓存");
+        let h2 = simhash("用Redis做缓存了");
+        assert_eq!(h1, simhash("用Redis做缓存"), "deterministic");
+        // Old scheme: two one-giant-token hashes differ in ~64 of 128 bits.
+        // Bigram tokens make a one-char edit a small perturbation.
+        assert!(
+            (h1 ^ h2).count_ones() < 32,
+            "near-identical Chinese should be close, got {}",
+            (h1 ^ h2).count_ones()
+        );
+    }
+
+    #[test]
+    fn test_simhash_chinese_similar_vs_different() {
+        let h1 = simhash("用互斥锁解决并发问题");
+        let h2 = simhash("用互斥锁解决死锁问题");
+        let h3 = simhash("今天买了新鲜的蔬菜");
+        let d12 = (h1 ^ h2).count_ones();
+        let d13 = (h1 ^ h3).count_ones();
+        assert!(d12 < d13, "similar Chinese texts should be closer");
+    }
+
+    #[test]
+    fn test_jaccard_chinese() {
+        // tokens {用, redis, 做缓, 缓存} vs {用, redis, 做缓, 缓存, 存了}
+        // → 4/5 = 0.8 (was ~0.0 before bigram tokenization).
+        let sim = text_jaccard_similarity("用Redis做缓存", "用Redis做缓存了");
+        assert!(
+            (sim - 0.8).abs() < 0.001,
+            "expected 0.8 by the bigram convention, got {sim}"
+        );
+        assert!(text_jaccard_similarity("用Redis做缓存", "重写数据库连接池") < 0.3);
+    }
+
+    #[test]
+    fn test_jaccard_mixed_language() {
+        // English stop-word removal on one side, CJK bigrams on the other:
+        // mixed text still scores high against a near-identical pair.
+        let sim = text_jaccard_similarity("used Redis for caching", "used Redis for caching了");
+        assert!(sim > 0.6, "got {sim}");
+    }
+
+    #[test]
+    fn test_detect_novelty_chinese() {
+        // Regression: with whitespace tokenization the predicted text (a
+        // whole Chinese sentence = one token) never overlapped the actual
+        // outcome → surprise 1.0, should_record always true. Bigrams make
+        // the word-order-varied outcome recognizable → low surprise.
+        let nodes = vec![
+            NodeData {
+                id: "d1".into(),
+                text: "用Redis做缓存".into(),
+                event_time: 1000,
+                q_value: 0.8,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: Some("caching".into()),
+                scope: None,
+            },
+            NodeData {
+                id: "o1".into(),
+                text: "缓存命中率恢复成功".into(),
+                event_time: 1001,
+                q_value: 0.8,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: Some("caching".into()),
+                scope: None,
+            },
+        ];
+        let edges = vec![EdgeData {
+            from_id: "d1".into(),
+            to_id: "o1".into(),
+            relation: Relation::Caused,
+            weight: 0.9,
+            valid: true,
+        }];
+        let mut graph = CausalGraph::build(&nodes, &edges);
+        // The recorded outcome, verbatim: predicted (activated o1) vs actual
+        // share every bigram → similarity 1.0, surprise 0.
+        let known = graph.detect_novelty("用Redis做缓存", "缓存命中率恢复成功");
+        assert!(known.surprise < 0.5, "got {}", known.surprise);
+        assert!(!known.should_record);
+        // A genuinely different outcome must stay surprising (gate intact).
+        let novel = graph.detect_novelty("用Redis做缓存", "数据库连接池耗尽报错");
+        assert!(novel.surprise > 0.5, "got {}", novel.surprise);
+        assert!(novel.should_record);
+    }
+
     #[test]
     fn test_relation_spread_coefficients() {
         assert_eq!(Relation::Caused.spread_coeff(), 1.0);
