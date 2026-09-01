@@ -238,11 +238,10 @@ pub fn downscale(
             config.gc_threshold
         };
         let weak = new_conf < threshold;
-        let dormant =
-            now - e.discovered_at >= i64::from(config.gc_min_age_hours) * 3600;
-        let untouched = e.last_accessed_at.is_none_or(|last| {
-            now - last >= i64::from(config.gc_access_grace_hours) * 3600
-        });
+        let dormant = now - e.discovered_at >= i64::from(config.gc_min_age_hours) * 3600;
+        let untouched = e
+            .last_accessed_at
+            .is_none_or(|last| now - last >= i64::from(config.gc_access_grace_hours) * 3600);
         let collect = weak && dormant && untouched && e.discovered_by != "user_feedback";
         pendings.push(Pending {
             edge_id: e.edge_id,
