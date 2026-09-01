@@ -215,9 +215,28 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
 
         // Each connection gets a fresh server instance backed by the same store.
         let shared_store = store.clone();
+        // rmcp 默认只放行 loopback Host（localhost/127.0.0.1/::1）防 DNS rebinding。
+        // Docker 容器经 host.docker.internal 访问宿主机时 Host 头不在白名单 → 403。
+        // 这里合并默认白名单 + host.docker.internal + 环境变量追加
+        // （CAUSAL_MEMORY_ALLOWED_HOSTS，逗号分隔，供其他部署形态使用）。
+        let mut allowed_hosts = vec![
+            "localhost".to_string(),
+            "127.0.0.1".to_string(),
+            "::1".to_string(),
+            "host.docker.internal".to_string(),
+        ];
+        if let Ok(extra) = std::env::var("CAUSAL_MEMORY_ALLOWED_HOSTS") {
+            allowed_hosts.extend(
+                extra
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
+            );
+        }
         let config = StreamableHttpServerConfig::default()
             .with_stateful_mode(false)
-            .with_json_response(true);
+            .with_json_response(true)
+            .with_allowed_hosts(allowed_hosts);
         let service = StreamableHttpService::new(
             move || {
                 Ok(CausalMemoryServer::new_with_label(
