@@ -1017,6 +1017,31 @@ fn test_counterfactual_fork_section_and_paired_verdict() {
         out.contains("(outranks the pooled distribution)"),
         "paired evidence must be flagged as outranking: {out}"
     );
+    // v14.1 regression: the paired verdict string must map to ledger code
+    // prefer_b — the pre-constant era's "favor"/"favors" mismatch silently
+    // coded every paired verdict no_difference. Reality takes B and wins,
+    // so the prediction must resolve correct (not ambiguous).
+    assert!(
+        out.contains("📐 Prediction #"),
+        "paired verdict must still log a prediction: {out}"
+    );
+    let rec = memory.record_decision(
+        "channel",
+        "rollout succeeded, no regressions",
+        "caused",
+        "concurrency",
+        None,
+        None,
+    );
+    assert!(
+        rec.contains("Resolved 1 pending prediction"),
+        "recording option B must auto-resolve the prediction: {rec}"
+    );
+    let report = memory.prediction_report();
+    assert!(
+        report.contains("accuracy 1/1 (100%)"),
+        "prefer_b + B succeeded ⇒ correct, not ambiguous: {report}"
+    );
 }
 
 #[test]
@@ -1175,5 +1200,52 @@ fn test_counterfactual_closed_world_replay_routing() {
     assert!(
         !out2.contains("🧪"),
         "open-world stays estimate-only: {out2}"
+    );
+}
+
+// ── v14.1 competitive separation ─────────────────────────────────
+
+#[test]
+fn test_counterfactual_competitive_separation_shared_vocab() {
+    // The contamination scenario from the design doc: options share
+    // vocabulary ("store", "migration"), BM25 matches decision AND
+    // outcome text, so pre-separation both sides pooled BOTH episodes
+    // and the verdict collapsed to a tie.
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "chose mysql for the session store",
+        "migration deadlock during cutover",
+        "caused",
+        "database",
+        None,
+        None,
+    );
+    memory.record_decision(
+        "switched the store to postgres",
+        "cutover passed, zero downtime",
+        "caused",
+        "database",
+        None,
+        None,
+    );
+    let out = memory.counterfactual_inner(
+        "chose mysql for the session store",
+        "switched the store to postgres",
+        None,
+        5,
+    );
+    // Post-separation each side must own exactly its own episode:
+    // A = 1 negative, B = 1 positive → a real verdict, not a tie.
+    assert!(
+        out.contains("A. \"chose mysql for the session store\" (n=1): 0 positive / 1 negative"),
+        "side A must hold only the mysql episode: {out}"
+    );
+    assert!(
+        out.contains("B. \"switched the store to postgres\" (n=1): 1 positive / 0 negative"),
+        "side B must hold only the postgres episode: {out}"
+    );
+    assert!(
+        out.contains("recorded evidence favors B"),
+        "separated pools must produce a verdict instead of a tie: {out}"
     );
 }

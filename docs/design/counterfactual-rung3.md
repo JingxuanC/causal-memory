@@ -1,6 +1,10 @@
 # Counterfactual Rung 3 — Design
 
-> Status: **Phase A implementing** (2026-09-01). Prior art:
+> Status: **Phase A shipped (PR #18) + v14.1 follow-ups** (2026-09-02):
+> competitive separation (the §4 contamination fix), shared verdict
+> constants (paired-verdict ledger mis-coding fix), ForkEval harness
+> (§8), `stats` Rung-3 gauges. Phase 3 stays deferred until fork density
+> crosses the trigger. Prior art:
 > [research/computational-ai/rung3-prior-art.md](../research/computational-ai/rung3-prior-art.md).
 >
 > One-line thesis: Pearl's third rung needs **abduction** (conditioning on
@@ -130,14 +134,20 @@ evidence about many) — the verdict function takes paired evidence first,
 falls back to distribution diff. Pairs also render standalone (sibling not
 on the other side) at reduced weight, since they still pin the context.
 
-**Known limitation (found while testing)**: `side_evidence` retrieves on
+**Known limitation (fixed in v14.1)**: `side_evidence` retrieves on
 decision AND outcome text, so two options that share vocabulary (e.g.
 "use the main model" vs "use a small model" — and outcomes that share
 words like "migration") contaminate each other's pools, flattening the
 distribution contrast toward a tie. Fork pairs are immune (they compare
-recorded same-context branches, not query-side pools). Competitive
-separation — dropping from each side the entries the other side ranks
-higher — is a Phase-3 refinement.
+recorded same-context branches, not query-side pools). v14.1 shipped the
+fix ahead of Phase 3: **competitive separation** — after both retrievals
+land, an edge present in both pools stays only on the side that ranks it
+higher (`separate_sides` in `memory/ops.rs`), then distributions are
+computed from the separated pools. Measured by **ForkEval**
+(`causal-memory-fork-eval`, 20 deterministic same-context scenarios):
+20/20 verdict accuracy in both fork-on and fork-off modes with clean
+pools; the harness's regression gate is "fork evidence never scores
+below fork-off".
 
 ## 5. Phase 2 — prediction ledger
 

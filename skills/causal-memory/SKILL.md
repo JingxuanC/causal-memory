@@ -60,24 +60,35 @@ This skill has two parts:
 
 **Do NOT ask the user before searching or recording — do it proactively.**
 
-The core loop (four tools cover 90% of usage):
+The core loop (five tools cover 90% of usage):
 
 - **Before any non-trivial decision** (architecture, debugging approach,
   library selection, deployment strategy): call `search_memory` (facts +
   causal lessons, RRF-fused). For risky or irreversible actions, also call
   `intervention_query` — it forward-simulates what similar past actions
   caused (safe / warning / **danger**).
+- **When choosing between two concrete options**: `counterfactual_query`
+  with both option texts — recorded-outcome comparison, same-context
+  branches (natural experiments) when they exist, and a logged falsifiable
+  prediction that auto-resolves when either option is later recorded.
 - **After acting on a decision and observing the result**: call
   `record_decision` with `decision`, `outcome`, `relation`
   (caused / enabled / prevented / no_effect), `task_tag`,
-  `confidence_source`. **Record surprising outcomes especially — those are
-  the most valuable lessons.**
+  `confidence_source`, and **`context`** — a short description of the
+  situation (environment, constraints, key parameters). Same task_tag +
+  context ⇒ comparable branch: this is the abduction substrate that makes
+  counterfactuals same-world. If you weighed multiple options at this
+  decision point, ALWAYS record the context. **Record surprising outcomes
+  especially — those are the most valuable lessons.**
 - **Stable facts** (preferences, tech stack, config): `record_fact` with
   `key` / `value` / `scope`; `replace_same_key: true` when superseding.
 - **Failure postmortem**: `trace_cause` (single hop) /
   `trace_cause_chain` (multi-hop root cause).
 - **Corrections**: `invalidate_decision` / `invalidate_pattern` (soft-delete,
   kept for audit).
+- **Calibration check** (periodic): `prediction_report` — accuracy of past
+  counterfactual verdicts per method / per task_tag, plus pending
+  predictions.
 
 Keep `task_tag` consistent within a domain (e.g. `deployment`,
 `git-workflow`) — stratified pattern mining depends on it.

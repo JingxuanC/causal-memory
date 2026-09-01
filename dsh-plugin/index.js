@@ -172,9 +172,13 @@ export async function apply(ctx, config = {}) {
       + 'restart. Use it: before a non-trivial decision, query past episodes '
       + 'with search_causal or compare alternatives with counterfactual_query; '
       + 'before acting, forecast outcomes with intervention_query; after acting '
-      + 'on a decision, record the outcome with record_decision; record stable '
+      + 'on a decision, record the outcome with record_decision — and when you '
+      + 'weighed multiple options, ALWAYS pass the context param (a short '
+      + 'description of the situation): same task_tag + context becomes a '
+      + 'comparable branch for same-world counterfactual evidence; record stable '
       + 'user or project facts with record_fact; when something fails, trace '
-      + 'the cause with trace_cause or trace_cause_chain.',
+      + 'the cause with trace_cause or trace_cause_chain; periodically check '
+      + 'prediction_report to see whether past counterfactual advice held up.',
   })
 
   // Discover tools; activation blocks until this settles.

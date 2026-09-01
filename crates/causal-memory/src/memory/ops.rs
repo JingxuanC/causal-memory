@@ -1737,12 +1737,17 @@ impl Memory {
         }
         if let Ok(pending) = self.store.pending_predictions(5) {
             for p in pending {
+                let tag = if p.task_tag.is_empty() {
+                    "(none)"
+                } else {
+                    &p.task_tag
+                };
                 out.push_str(&format!(
                     "   pending #{} \"{}\" vs \"{}\" ({}, {})\n",
                     p.id,
                     truncate_chars(&p.option_a, 40),
                     truncate_chars(&p.option_b, 40),
-                    p.task_tag,
+                    tag,
                     p.method
                 ));
             }
@@ -1760,19 +1765,26 @@ impl Memory {
         limit: usize,
     ) -> String {
         // C2: run both sides' embedding + retrieval concurrently (the two
-        // side_evidence calls used to serialize two HTTP round-trips).
+        // retrieval calls used to serialize two HTTP round-trips).
         let (a, b) = block_on(async {
-            let fa = self.side_evidence(decision, task_tag, limit);
-            let fb = self.side_evidence(alternative, task_tag, limit);
+            let fa = self.side_entries(decision, task_tag, limit);
+            let fb = self.side_entries(alternative, task_tag, limit);
             tokio::join!(fa, fb)
         });
-        let (dist_a, reps_a, tag_a, ids_a) = a;
-        let (dist_b, reps_b, tag_b, ids_b) = b;
+        let (entries_a, tag_a) = a;
+        let (entries_b, tag_b) = b;
         let tag = if tag_a == "semantic" && tag_b == "semantic" {
             "[semantic]"
         } else {
             "[bm25]"
         };
+        // Competitive separation before aggregation (v14.1): shared
+        // vocabulary must not pool both sides into both distributions.
+        let (entries_a, entries_b) = Self::separate_sides(&entries_a, &entries_b);
+        let (dist_a, reps_a) = Self::dist_and_reps(&entries_a);
+        let (dist_b, reps_b) = Self::dist_and_reps(&entries_b);
+        let ids_a: Vec<i64> = entries_a.iter().map(|e| e.edge_id).collect();
+        let ids_b: Vec<i64> = entries_b.iter().map(|e| e.edge_id).collect();
 
         // v14 fork section: same-context siblings of any retrieved edge are
         // natural experiments — evidence about ONE world state rather than a
@@ -1852,15 +1864,17 @@ impl Memory {
         ));
         // v14 prediction ledger: every verdict becomes a falsifiable
         // prediction, auto-resolved when either option is later recorded.
-        // The verdict string maps to prefer_a/prefer_b/no_difference for the
-        // ledger while the human-readable line stays as-is above.
+        // Verdict codes come from the shared VERDICT_* constants — the
+        // formatters and this matcher read the same strings by construction
+        // (the "favor"/"favors" mismatch bug this replaces was exactly a
+        // hand-copied-contract failure).
         let verdict_code = match &paired {
-            Some(p) if p.contains("favors A") => "prefer_a",
-            Some(p) if p.contains("favors B") => "prefer_b",
+            Some(p) if p.contains(VERDICT_FAVORS_A) => "prefer_a",
+            Some(p) if p.contains(VERDICT_FAVORS_B) => "prefer_b",
             Some(_) => "no_difference", // tied contrasting pairs
             None => match counterfactual_verdict(&dist_a, &dist_b) {
-                v if v.contains("favors A") => "prefer_a",
-                v if v.contains("favors B") => "prefer_b",
+                v if v.contains(VERDICT_FAVORS_A) => "prefer_a",
+                v if v.contains(VERDICT_FAVORS_B) => "prefer_b",
                 v if dist_a.total() > 0 && dist_b.total() > 0 => "no_difference",
                 _ => "",
             },
@@ -1903,14 +1917,16 @@ impl Memory {
     /// One side of the counterfactual: retrieve similar past decision edges
     /// (semantic with BM25 fallback, same pattern as search_causal) and
     /// aggregate their outcome distribution + representative outcomes.
-    /// v14: also returns the retrieved edge ids — the fork-section lookup
-    /// needs them to find same-context siblings.
-    async fn side_evidence(
+    /// v14.1: returns the raw ranked entries — competitive separation (an
+    /// edge retrieved by BOTH queries stays only on the side that ranks it
+    /// higher) runs in counterfactual_inner AFTER both retrievals land,
+    /// then distribution/reps are computed from the separated pools.
+    async fn side_entries(
         &self,
         query: &str,
         task_tag: Option<&str>,
         limit: usize,
-    ) -> (CfDist, Vec<String>, &'static str, Vec<i64>) {
+    ) -> (Vec<crate::store::CausalEntry>, &'static str) {
         let semantic = crate::embed::embed_shared(query).await.and_then(|r| {
             let vec = r.ok()?;
             let hits = self
@@ -1925,7 +1941,7 @@ impl Memory {
                 .collect();
             (!entries.is_empty()).then_some(entries)
         });
-        let (entries, path) = match semantic {
+        match semantic {
             Some(e) => (e, "semantic"),
             None => {
                 let entries = self
@@ -1934,10 +1950,14 @@ impl Memory {
                     .unwrap_or_default();
                 (entries, "bm25")
             }
-        };
+        }
+    }
 
+    /// Distribution + representative outcomes over (already separated)
+    /// side entries.
+    fn dist_and_reps(entries: &[crate::store::CausalEntry]) -> (CfDist, Vec<String>) {
         let mut dist = CfDist::default();
-        for e in &entries {
+        for e in entries {
             dist.add(polarity_bucket(
                 e.outcome_polarity.as_deref(),
                 &e.outcome_text,
@@ -1955,8 +1975,41 @@ impl Memory {
                 )
             })
             .collect();
-        let edge_ids = entries.iter().map(|e| e.edge_id).collect();
-        (dist, reps, path, edge_ids)
+        (dist, reps)
+    }
+
+    /// Competitive separation (v14.1, the cross-side-contamination fix):
+    /// retrieval matches decision AND outcome text, so two options that
+    /// share vocabulary pull each other's episodes into both pools,
+    /// flattening the contrast toward a tie. An edge retrieved by BOTH
+    /// queries stays only on the side that ranks it earlier (both paths
+    /// return rank-ordered entries; earlier = stronger match) and is
+    /// dropped from the other. Returns the separated pools.
+    fn separate_sides(
+        a: &[crate::store::CausalEntry],
+        b: &[crate::store::CausalEntry],
+    ) -> (
+        Vec<crate::store::CausalEntry>,
+        Vec<crate::store::CausalEntry>,
+    ) {
+        let rank_of = |id: i64, entries: &[crate::store::CausalEntry]| {
+            entries.iter().position(|e| e.edge_id == id)
+        };
+        let mut a_kept = Vec::with_capacity(a.len());
+        for (ia, e) in a.iter().enumerate() {
+            match rank_of(e.edge_id, b) {
+                Some(ib) if ib < ia => {} // B ranks it stronger → B keeps it
+                _ => a_kept.push(e.clone()),
+            }
+        }
+        let mut b_kept = Vec::with_capacity(b.len());
+        for (ib, e) in b.iter().enumerate() {
+            match rank_of(e.edge_id, a) {
+                Some(ia) if ia <= ib => {} // A ranks it stronger (or tie → A) → A keeps it
+                _ => b_kept.push(e.clone()),
+            }
+        }
+        (a_kept, b_kept)
     }
 
     /// `reconstruct_lesson` — reconstructive retrieval: Markov-blanket

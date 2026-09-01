@@ -206,6 +206,14 @@ impl CfDist {
     }
 }
 
+/// Verdict phrase fragments (v14.1): the formatters embed them in
+/// human-readable conclusions and the ledger's verdict-code matcher reads
+/// them back. ONE source of truth — the pre-constant era had paired output
+/// "favor" while the matcher expected "favors", silently mis-coding every
+/// paired verdict as no_difference.
+pub(crate) const VERDICT_FAVORS_A: &str = "favors A";
+pub(crate) const VERDICT_FAVORS_B: &str = "favors B";
+
 /// Conclusion of a counterfactual comparison between two outcome
 /// distributions. Deterministic: the side with the higher net evidence score
 /// wins; equal scores (or missing data) are honestly "insufficient".
@@ -217,9 +225,9 @@ pub(crate) fn counterfactual_verdict(a: &CfDist, b: &CfDist) -> String {
         (false, false) => {
             let (sa, sb) = (a.score(), b.score());
             if sa > sb {
-                format!("recorded evidence favors A (net {sa:+.1} vs {sb:+.1})")
+                format!("recorded evidence {VERDICT_FAVORS_A} (net {sa:+.1} vs {sb:+.1})")
             } else if sb > sa {
-                format!("recorded evidence favors B (net {sb:+.1} vs {sa:+.1})")
+                format!("recorded evidence {VERDICT_FAVORS_B} (net {sb:+.1} vs {sa:+.1})")
             } else {
                 format!("insufficient evidence to distinguish (both net {sa:+.1})")
             }
@@ -275,8 +283,13 @@ pub(crate) fn paired_verdict(
         return None;
     }
     let (w, n) = if va > vb { ('A', va) } else { ('B', vb) };
+    let frag = if w == 'A' {
+        VERDICT_FAVORS_A
+    } else {
+        VERDICT_FAVORS_B
+    };
     Some(format!(
-        "same-context evidence favors {w} ({n}/{contrast} contrasting pair(s))"
+        "same-context evidence {frag} ({n}/{contrast} contrasting pair(s))"
     ))
 }
 

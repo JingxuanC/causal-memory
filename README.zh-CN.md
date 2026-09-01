@@ -269,7 +269,7 @@ export CAUSAL_MEMORY_EMBED_MODEL=embedding-3
 
 ### Python 绑定（PyO3）
 
-全部 14 个记忆操作也以 Python 包形式提供，构建于 MCP server 使用的
+全部 17 个记忆操作也以 Python 包形式提供，构建于 MCP server 使用的
 同一个 `causal_memory::memory::Memory` 外观之上：
 
 ```bash
@@ -282,13 +282,13 @@ maturin develop          # 构建并安装到当前 venv
 from causal_memory import CausalMemory
 
 mem = CausalMemory("~/.local/share/causal-memory/causal.db")  # 或 CausalMemory.in_memory()
-mem.record_decision("used Redis mutex for cache stampede protection",
+mem.record_decision("used Redis mutex for cache stampede protection",  # context= 可选：记录决策情境
                     "deadlock under load", "caused", "concurrency")
 print(mem.search_causal(query="cache stampede protection"))
 print(mem.intervention_query("skip the test suite before shipping"))
 ```
 
-方法与 14 个 MCP 工具一一对应，返回相同文本。Embedding 与 LLM 特性
+方法与 17 个 MCP 工具一一对应，返回相同文本。Embedding 与 LLM 特性
 使用相同的 `CAUSAL_MEMORY_EMBED_*` / `CAUSAL_MEMORY_LLM_*` 环境变量；
 没有它们时绑定会优雅降级为仅 BM25 检索。冒烟测试：
 `maturin develop && pytest tests/`。
@@ -324,11 +324,11 @@ causal-memory 二进制。一行安装：
 
 ---
 
-## 十四个 MCP 工具
+## 十七个 MCP 工具
 
 | 工具 | 何时调用 | 作用 |
 |---|---|---|
-| `record_decision` | 执行决策之后 | 把 `决策 → 结果` 记为带关系类型的因果边 |
+| `record_decision` | 执行决策之后 | 把 `决策 → 结果` 记为带关系类型的因果边；可选 `context` 记录决策情境——同 task_tag + context 成为可比分枝（fork） |
 | `remember` | 任何有意义的交流之后 | 零摩擦替代方案：粘贴对话文本，LLM 自动抽取事实/教训/因果边 |
 | `search_causal` | 做非平凡决策之前 | BM25 + 语义检索过往因果片段 |
 | `record_fact` | 学到稳定事实时 | 记录带 scope + confidence 的扁平事实；幂等 |
@@ -337,10 +337,13 @@ causal-memory 二进制。一行安装：
 | `trace_cause` | 出故障时 | 单跳反向：哪个决策导致了这个结果 |
 | `trace_cause_chain` | 深度故障分析 | 因果图上的多跳反向遍历 |
 | `invalidate_decision` | 教训有误时 | 软作废（检索中隐藏，保留审计） |
+| `invalidate_pattern` | 挖掘出的模式有误时 | 软作废 meta 边（search_patterns 输出的 #N 句柄） |
+| `resolve_updates` | 结果与旧教训矛盾后 | LLM 评审发散的重复决策并取代旧教训 |
 | `search_patterns` | 回忆跨任务教训时 | 挖掘出的 meta 边：similar_to / repeated / contradicts / refines |
 | `causal_directory` | 钉在系统 prompt 里 | L0 紧凑指针列表：agent 都知道些什么 |
 | `intervention_query` | **采取行动之前** | 前向模拟：预测结果（safe/warning/danger） |
-| `counterfactual_query` | 在选项间抉择时 | 对比式：比较两个备选方案已记录的结果 |
+| `counterfactual_query` | 在选项间抉择时 | 对比式：比较两个备选方案已记录的结果；有同境分支（自然实验）时直接展示；每个判定都会落一条可证伪的预测 |
+| `prediction_report` | 周期性校准检查 | 预测账本准确率（总览/按方法/按 task_tag）+ 待结算列表 |
 | `reconstruct_lesson` | 想要蒸馏后的教训时 | 重构式检索：Markov 毯子图 → 连贯叙述，可选 N 路校准 |
 
 ---

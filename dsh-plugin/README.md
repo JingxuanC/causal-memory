@@ -57,13 +57,13 @@ dsh plugin --profile web add "$PWD/dsh-plugin"
 | `exclude` | `[]` | 不挂载的工具名数组 |
 | `failOnStartupError` | `true` | 启动连接失败时是否让插件激活失败（默认失败并附安装提示；显式设 `false` 则降级为仅记日志） |
 
-## 工具清单（16 个）
+## 工具清单（17 个）
 
 `record_decision` · `record_fact` · `remember` · `search_causal` ·
 `search_facts` · `search_memory` · `search_patterns` · `causal_directory` ·
 `trace_cause` · `trace_cause_chain` · `intervention_query` ·
-`counterfactual_query` · `invalidate_decision` · `invalidate_pattern` ·
-`resolve_updates` · `reconstruct_lesson`
+`counterfactual_query` · `prediction_report` · `invalidate_decision` ·
+`invalidate_pattern` · `resolve_updates` · `reconstruct_lesson`
 
 （工具列表运行时从服务端动态发现，服务端升级后无需改插件。）
 
