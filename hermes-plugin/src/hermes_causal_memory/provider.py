@@ -102,6 +102,16 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
                         "enum": ["caused", "enabled", "prevented", "no_effect"],
                     },
                     "task_tag": {"type": "string", "description": "Task category"},
+                    "context": {
+                        "type": "string",
+                        "description": (
+                            "Short description of the situation the decision was "
+                            "made in (environment, constraints, key parameters). "
+                            "Same task_tag + context => comparable branch for "
+                            "counterfactuals. Always set it when multiple options "
+                            "were weighed."
+                        ),
+                    },
                     "confidence_source": {
                         "type": "string",
                         "enum": ["temporal", "rule", "llm_inferred", "user_feedback"],
@@ -192,6 +202,7 @@ class CausalMemoryProvider(_MemoryProvider):
                 args["relation"],
                 args["task_tag"],
                 confidence_source=args.get("confidence_source"),
+                context=args.get("context"),
             )
         if tool_name == "causal_trace":
             return mem.trace_cause(args["outcome"])

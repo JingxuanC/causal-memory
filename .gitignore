@@ -42,3 +42,4 @@ graph-*.html
 .pytest_cache/
 benches/longmemeval/db/*.db-shm
 benches/longmemeval/db/*.db-wal
+__pycache__/

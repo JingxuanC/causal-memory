@@ -322,12 +322,13 @@ from causal_memory import CausalMemory
 
 mem = CausalMemory("~/.local/share/causal-memory/causal.db")  # or CausalMemory.in_memory()
 mem.record_decision("used Redis mutex for cache stampede protection",
-                    "deadlock under load", "caused", "concurrency")
+                    "deadlock under load", "caused", "concurrency",
+                    context="go 1.22, single redis, 5k rps")
 print(mem.search_causal(query="cache stampede protection"))
 print(mem.intervention_query("skip the test suite before shipping"))
 ```
 
-Methods mirror the 14 MCP tools one-to-one and return the same text. Embedding
+Methods mirror the 17 MCP tools one-to-one and return the same text. Embedding
 and LLM features use the same `CAUSAL_MEMORY_EMBED_*` / `CAUSAL_MEMORY_LLM_*`
 environment variables; without them the bindings degrade gracefully to
 BM25-only retrieval. Smoke tests: `maturin develop && pytest tests/`.
@@ -365,11 +366,11 @@ Details: [dsh-plugin/README.md](dsh-plugin/README.md).
 
 ---
 
-## Fourteen MCP tools
+## Seventeen MCP tools
 
 | Tool | When to call | What it does |
 |---|---|---|
-| `record_decision` | After acting on a decision | Logs `decision → outcome` as a causal edge with relation type |
+| `record_decision` | After acting on a decision | Logs `decision → outcome` as a causal edge with relation type; optional `context` records the world state — same task_tag + context becomes a comparable branch (fork) |
 | `remember` | After any meaningful exchange | Zero-friction alternative: paste conversation text, LLM auto-extracts facts/lessons/causal edges |
 | `search_causal` | Before a non-trivial decision | BM25 + semantic retrieval of past causal episodes |
 | `record_fact` | When learning a stable fact | Records flat facts with scope + confidence; idempotent |
@@ -378,10 +379,13 @@ Details: [dsh-plugin/README.md](dsh-plugin/README.md).
 | `trace_cause` | When something fails | Single-hop reverse: which decision caused this outcome |
 | `trace_cause_chain` | Deep failure analysis | Multi-hop backward traversal through the causal graph |
 | `invalidate_decision` | When a lesson is wrong | Soft-invalidate (hidden from search, kept for audit) |
+| `invalidate_pattern` | When a mined pattern is wrong | Soft-invalidate a meta edge (the #N handle from search_patterns) |
+| `resolve_updates` | After contradicting outcomes | LLM-judged supersession pass over diverged repeated decisions |
 | `search_patterns` | To recall cross-task lessons | Mined meta edges: similar_to / repeated / contradicts / refines |
 | `causal_directory` | Pinned in system prompt | L0 compact pointer list of what the agent knows |
 | `intervention_query` | **Before taking an action** | Forward simulation: predicts outcomes (safe/warning/danger) |
-| `counterfactual_query` | When choosing between options | Contrastive: compares recorded outcomes of two alternatives |
+| `counterfactual_query` | When choosing between options | Contrastive: compares recorded outcomes of two alternatives; renders same-context branches (natural experiments) when they exist; every verdict logs a falsifiable prediction |
+| `prediction_report` | Periodic calibration check | Prediction-ledger accuracy overall / per method / per task_tag + pending list |
 | `reconstruct_lesson` | When you want the distilled lesson | Reconstructive retrieval: Markov-blanket subgraph → coherent narrative, with optional N-way calibration |
 
 ---
@@ -501,7 +505,7 @@ research papers. Key references:
 
 What works (16/16 layers with end-to-end validation):
 
-- ✅ 14 MCP tools (stdio + HTTP transport)
+- ✅ 17 MCP tools (stdio + HTTP transport)
 - ✅ Write-time gatekeeping (session_logs separation, V3 distill prompt)
 - ✅ BM25 + semantic RRF unified retrieval
 - ✅ Hippocampus engine: CSR spreading activation, DG SimHash, CA1 novelty, SWR 2.0

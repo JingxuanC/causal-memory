@@ -80,5 +80,9 @@ name = "causal-memory-causal-eval"
 path = "../../benches/causal_eval/main.rs"
 
 [[bin]]
+name = "causal-memory-fork-eval"
+path = "../../benches/fork_eval/main.rs"
+
+[[bin]]
 name = "causal-memory-ablation"
 path = "../../benches/ablation/main.rs"

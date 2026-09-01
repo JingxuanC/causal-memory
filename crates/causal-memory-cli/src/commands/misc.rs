@@ -746,6 +746,58 @@ pub(crate) fn run_stats(args: &[String]) -> anyhow::Result<()> {
                 .unwrap_or_else(|| ts.to_string());
             println!("  latest memory:     {dt}");
         }
+
+        // ── Rung-3 Phase A gauges (v14): fork density is the Phase-3
+        // trigger (micro-SCM fits once a stratum holds enough same-context
+        // pairs); the ledger shows whether counterfactual advice is any
+        // good yet. Guards keep stats working on pre-v14 DBs.
+        let has_forks = q1(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='decision_forks'",
+        )? == 1;
+        if has_forks {
+            let forks = q1("SELECT COUNT(*) FROM decision_forks")?;
+            let ctx_edges = q1(
+                "SELECT COUNT(*) FROM causal_edges WHERE context_fingerprint IS NOT NULL AND valid_to IS NULL",
+            )?;
+            println!("  context edges:     {ctx_edges} (v14 abduction substrate)");
+            println!("  fork pairs:        {forks} (same-context natural experiments)");
+            let mut stmt = c.prepare(
+                "SELECT COALESCE(e.task_tag,'untagged'), COUNT(*)
+                 FROM decision_forks f
+                 JOIN causal_edges e ON e.id = f.edge_id_a
+                 GROUP BY e.task_tag HAVING COUNT(*) >= 1 ORDER BY 2 DESC LIMIT 5",
+            )?;
+            let ftags = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            if !ftags.is_empty() {
+                let line: Vec<String> =
+                    ftags.iter().map(|(t, n)| format!("{t} ({n})")).collect();
+                println!("      fork density:  {}", line.join(", "));
+                println!("      (Phase-3 trigger: >= 30 pairs in one task_tag)");
+            }
+        }
+        let has_pred = q1(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pending_predictions'",
+        )? == 1;
+        if has_pred {
+            if let Ok(ps) = store.prediction_stats() {
+                let judged = ps.resolved - ps.ambiguous;
+                if ps.resolved > 0 {
+                    let acc = if judged > 0 {
+                        format!("{:.0}%", ps.correct as f64 / judged as f64 * 100.0)
+                    } else {
+                        "n/a".to_string()
+                    };
+                    println!(
+                        "  predictions:       {} resolved ({acc} accuracy, {} ambiguous) · {} pending",
+                        ps.resolved, ps.ambiguous, ps.pending
+                    );
+                } else if ps.pending > 0 {
+                    println!("  predictions:       0 resolved · {} pending", ps.pending);
+                }
+            }
+        }
         Ok(())
     })
 }
@@ -785,7 +837,7 @@ mod obs_tests {
                 "rule",
                 1000,
                 Some("negative"),
-            None,
+                None,
             )
             .unwrap();
         let store = std::sync::Arc::new(store);

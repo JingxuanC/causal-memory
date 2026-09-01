@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.3] - Unreleased
 
 ### Added
+- **Rung-3 activation pass** (post-Phase-A): all five integration surfaces
+  now teach the `context` param and `prediction_report` (Claude.md paste
+  prompt, SKILL.md, dsh-plugin system prompt + README, Hermes provider
+  schema + passthrough, README/README.zh-CN — tool tables caught up from
+  14 to the actual 17). Without agents recording context, Phase A's fork
+  graph stays empty by construction.
+- **Competitive separation (v14.1)** — `counterfactual_query` no longer
+  pools both options' episodes into both distributions when the option
+  texts share vocabulary: an edge retrieved by both queries stays only on
+  the side that ranks it higher. Verdict contract strings
+  (`favors A/B`) centralized as constants shared by the formatters and
+  the ledger's verdict-code matcher (the "favor"/"favors" mismatch bug
+  this replaces was a hand-copied-contract failure).
+- **ForkEval** (`causal-memory-fork-eval`) — 20 deterministic
+  same-context scenarios, verdict accuracy fork-on vs fork-off; guards
+  "fork evidence never scores below fork-off". Current: 20/20 both modes.
+- **Stats gauges** (`causal-memory stats`): context edges, fork pairs,
+  fork density by task_tag with the Phase-3 trigger threshold (≥ 30
+  pairs), and prediction-ledger accuracy — the Phase-3 dashboard.
 - **Rung-3 Phase A: abduction substrate + natural experiments + prediction
   ledger** (schema v14, [design](docs/design/counterfactual-rung3.md),
   [prior-art survey](docs/research/computational-ai/rung3-prior-art.md)):
@@ -32,6 +51,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 17 new tests (fingerprint normalization, fork semantics, resolution
     matrix, stats math, e2e log→resolve→report, closed-world routing);
     workspace regression 430/430 green.
+- **Rung-3 v14.1 follow-ups**:
+  - **Competitive separation in `counterfactual_query`** — retrieval
+    matches decision AND outcome text, so two options sharing vocabulary
+    used to pull each other's episodes into both pools and flatten the
+    contrast toward a tie. An edge retrieved by both queries now stays
+    only on the side that ranks it higher before distributions are
+    computed.
+  - **ForkEval harness** (`causal-memory-fork-eval`, 20 deterministic
+    scenarios): same-context verdict accuracy with fork evidence ON vs
+    OFF; asserts fork-on ≥ fork-off AND that the 🔀 section actually
+    renders in every fork-on scenario (and never in fork-off), so a
+    silently dead fork path can't hide behind clean pools.
+  - **`stats` Rung-3 gauges**: context-edge count, fork-pair count and
+    per-task_tag fork density (the Phase-3 trigger: ≥ 30 pairs in one
+    stratum), plus prediction-ledger accuracy/pending. Guards keep it
+    working on pre-v14 databases.
+- **MCP HTTP server: configurable Host allowlist** — rmcp only allows
+    loopback Host headers by default (DNS-rebinding protection), which
+    403'd Docker containers reaching the host via `host.docker.internal`.
+    The default list now includes it, and `CAUSAL_MEMORY_ALLOWED_HOSTS`
+    (comma-separated) extends it for other deployment shapes.
 - **Flip-path marking (recall provenance)** — every spreading-activation
   result now carries `hop` (0 = direct seed, N = lit in hop N) and `via`
   (the winning edge's relation + source). `search_causal` / `search_memory`
@@ -63,6 +103,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `getconfig` now masks `*_TOKEN` values like `*_KEY`.
 
 ### Fixed
+- **Paired-verdict ledger mis-coding** — the fork section's conclusion said
+  "same-context evidence favor A/B" while the prediction-ledger matcher
+  looked for "favors A/B", so every paired verdict was silently logged as
+  `no_difference` and resolved ambiguous. Both formatters and the matcher
+  now share `VERDICT_FAVORS_A/B` constants; regression test asserts a
+  paired verdict resolves correct (not ambiguous).
 - **`stats` on an empty database** no longer errors (`MIN/MAX/AVG` return
   NULL on zero rows; now COALESCEd to the initial q_value 0.5).
 - **Broken-pipe panic when piping to `head`/`less`** — the CLI restores
