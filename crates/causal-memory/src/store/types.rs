@@ -168,11 +168,31 @@ pub struct SessionSegment {
     pub task_tag: Option<String>,
     pub hops: Vec<ChainHop>,
 }
-
 /// Cross-session causal chain: multiple session segments linked by
 /// meta-causal edges (pattern-miner bridges).
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct CrossSessionChain {
     pub segments: Vec<SessionSegment>,
     pub overall_confidence: f64,
+}
+
+/// A natural experiment (v14, Rung-3 Phase A): two valid edges that share
+/// a context fingerprint but took different decisions. `a`/`b` echo the
+/// id-ordered pair; endpoint texts + polarities are joined in for direct
+/// display. This is same-world-state evidence — stronger for
+/// counterfactuals than pooling cross-context distributions.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct ForkPair {
+    pub pair_id: i64,
+    pub edge_id_a: i64,
+    pub edge_id_b: i64,
+    pub fingerprint: String,
+    pub a_decision: String,
+    pub a_outcome: String,
+    pub a_relation: String,
+    pub a_polarity: Option<String>,
+    pub b_decision: String,
+    pub b_outcome: String,
+    pub b_relation: String,
+    pub b_polarity: Option<String>,
 }

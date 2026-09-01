@@ -1684,13 +1684,21 @@ impl Memory {
             let fb = self.side_evidence(alternative, task_tag, limit);
             tokio::join!(fa, fb)
         });
-        let (dist_a, reps_a, tag_a) = a;
-        let (dist_b, reps_b, tag_b) = b;
+        let (dist_a, reps_a, tag_a, ids_a) = a;
+        let (dist_b, reps_b, tag_b, ids_b) = b;
         let tag = if tag_a == "semantic" && tag_b == "semantic" {
             "[semantic]"
         } else {
             "[bm25]"
         };
+
+        // v14 fork section: same-context siblings of any retrieved edge are
+        // natural experiments — evidence about ONE world state rather than a
+        // cross-context aggregate. Best-effort: lookup failures just skip
+        // the section (output stays distribution-only).
+        let mut ids = ids_a.clone();
+        ids.extend_from_slice(&ids_b);
+        let forks = self.store.fork_siblings_for_edges(&ids).unwrap_or_default();
 
         let mut out = String::from(
             "⚠️ contrastive/empirical counterfactual over recorded alternatives — not a Pearl Rung-3 SCM counterfactual\n",
@@ -1713,9 +1721,51 @@ impl Memory {
                 out.push_str(&format!("   → {r}\n"));
             }
         }
+        if !forks.is_empty() {
+            out.push_str(&format!(
+                "\n🔀 Same-context branches (natural experiments, {} pair(s)):\n",
+                forks.len()
+            ));
+            for f in &forks {
+                // Which query side each endpoint matched (if any).
+                let side = |id: i64, decision_ids: &[i64]| {
+                    if decision_ids.contains(&id) {
+                        "A"
+                    } else {
+                        ""
+                    }
+                };
+                let sa = side(f.edge_id_a, &ids_a);
+                let sb = side(f.edge_id_b, &ids_b);
+                fn pol(p: &Option<String>) -> &str {
+                    p.as_deref().unwrap_or("?")
+                }
+                out.push_str(&format!(
+                    "   [{}] {}{} →({})→ \"{}\" [{}]  vs  {}{} →({})→ \"{}\" [{}]\n",
+                    truncate_chars(&f.fingerprint, 48),
+                    sa,
+                    truncate_chars(&f.a_decision, 40),
+                    f.a_relation,
+                    truncate_chars(&f.a_outcome, 40),
+                    pol(&f.a_polarity),
+                    sb,
+                    truncate_chars(&f.b_decision, 40),
+                    f.b_relation,
+                    truncate_chars(&f.b_outcome, 40),
+                    pol(&f.b_polarity),
+                ));
+            }
+        }
+        // Conclusion: paired (same-context) evidence outranks the pooled
+        // distributions when both exist — a fork pair is evidence about one
+        // world; distributions mix many.
+        let paired = paired_verdict(&forks, &ids_a, &ids_b);
         out.push_str(&format!(
             "\nConclusion: {}\n",
-            counterfactual_verdict(&dist_a, &dist_b)
+            match &paired {
+                Some(p) => format!("{p} (outranks the pooled distribution)"),
+                None => counterfactual_verdict(&dist_a, &dist_b),
+            }
         ));
         out
     }
@@ -1723,12 +1773,14 @@ impl Memory {
     /// One side of the counterfactual: retrieve similar past decision edges
     /// (semantic with BM25 fallback, same pattern as search_causal) and
     /// aggregate their outcome distribution + representative outcomes.
+    /// v14: also returns the retrieved edge ids — the fork-section lookup
+    /// needs them to find same-context siblings.
     async fn side_evidence(
         &self,
         query: &str,
         task_tag: Option<&str>,
         limit: usize,
-    ) -> (CfDist, Vec<String>, &'static str) {
+    ) -> (CfDist, Vec<String>, &'static str, Vec<i64>) {
         let semantic = crate::embed::embed_shared(query).await.and_then(|r| {
             let vec = r.ok()?;
             let hits = self
@@ -1773,7 +1825,8 @@ impl Memory {
                 )
             })
             .collect();
-        (dist, reps, path)
+        let edge_ids = entries.iter().map(|e| e.edge_id).collect();
+        (dist, reps, path, edge_ids)
     }
 
     /// `reconstruct_lesson` — reconstructive retrieval: Markov-blanket

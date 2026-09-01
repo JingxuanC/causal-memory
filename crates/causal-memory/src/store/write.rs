@@ -8,7 +8,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
     containment_similarity, date_tokens, effective_polarity, entry_from_row, is_retraction_record,
-    CausalStore, ENTRY_COLUMNS, ID_COUNTER, SUPERSEDES_MIN_SHARED_TOKENS, SUPERSEDES_SIM_THRESHOLD,
+    CausalStore, ForkPair, ENTRY_COLUMNS, ID_COUNTER, SUPERSEDES_MIN_SHARED_TOKENS,
+    SUPERSEDES_SIM_THRESHOLD,
 };
 
 /// One C7 falsification candidate: (old_edge_id, new_edge_id, old_decision,
@@ -109,8 +110,7 @@ impl CausalStore {
         // the old lesson is falsified by the new evidence — soft-invalidate it.
         // Must run BEFORE inserting the new edge so the new edge is never matched.
         Self::invalidate_contradicted_edges(&conn, decision, outcome, outcome_polarity, db_time)?;
-        let fingerprint = context
-            .map(|c| super::context_fingerprint(task_tag, c));
+        let fingerprint = context.map(|c| super::context_fingerprint(task_tag, c));
         conn.execute(
             "INSERT INTO causal_edges (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag, outcome_polarity, context_fingerprint, context_text)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
@@ -130,7 +130,99 @@ impl CausalStore {
         )?;
         // C3: return the edge id too — callers no longer need a follow-up
         // SELECT to resolve it (the server used to re-query by from_id).
-        Ok((dec_id, conn.last_insert_rowid()))
+        let edge_id = conn.last_insert_rowid();
+        // v14 fork detection (Rung-3 Phase A): same fingerprint + a
+        // DIFFERENT decision chunk ⇒ natural experiment. Best-effort — a
+        // failure here must never fail the record (same discipline as the
+        // embedding path). Cap: link at most the 10 most recent siblings so
+        // a hot fingerprint stays O(n) not O(n²) pairs.
+        if let Some(fp) = &fingerprint {
+            let _ = Self::link_forks(&conn, edge_id, &dec_id, fp, db_time);
+        }
+        Ok((dec_id, edge_id))
+    }
+
+    /// v14: find same-fingerprint siblings with a different decision chunk
+    /// and insert id-ordered fork pairs (UNIQUE-deduped). Same decision text
+    /// re-recorded is the contradiction/supersession path, NOT a fork —
+    /// hence the `from_id !=` guard.
+    fn link_forks(
+        conn: &rusqlite::Connection,
+        edge_id: i64,
+        from_id: &str,
+        fingerprint: &str,
+        db_time: i64,
+    ) -> Result<usize> {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM causal_edges
+             WHERE context_fingerprint = ?1 AND valid_to IS NULL AND from_id != ?2
+             ORDER BY discovered_at DESC, id DESC LIMIT 10",
+        )?;
+        let siblings: Vec<i64> = stmt
+            .query_map(params![fingerprint, from_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        let mut n = 0;
+        for sib in siblings {
+            let (a, b) = if sib < edge_id {
+                (sib, edge_id)
+            } else {
+                (edge_id, sib)
+            };
+            n += conn.execute(
+                "INSERT OR IGNORE INTO decision_forks (edge_id_a, edge_id_b, fingerprint, discovered_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![a, b, fingerprint, db_time],
+            )?;
+        }
+        Ok(n)
+    }
+
+    /// v14: fork pairs touching any of `edge_ids`, joined to both edges'
+    /// endpoint texts and polarities (for the counterfactual same-context
+    /// section). Only pairs where BOTH edges are still valid are returned.
+    pub fn fork_siblings_for_edges(&self, edge_ids: &[i64]) -> Result<Vec<ForkPair>> {
+        if edge_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.acquire()?;
+        let placeholders = vec!["?"; edge_ids.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT f.id, f.edge_id_a, f.edge_id_b, f.fingerprint,
+                    da.text, oa.text, ea.relation, ea.outcome_polarity,
+                    db.text, ob.text, eb.relation, eb.outcome_polarity
+             FROM decision_forks f
+             JOIN causal_edges ea ON ea.id = f.edge_id_a AND ea.valid_to IS NULL
+             JOIN causal_edges eb ON eb.id = f.edge_id_b AND eb.valid_to IS NULL
+             JOIN chunks da ON da.id = ea.from_id
+             JOIN chunks oa ON oa.id = ea.to_id
+             JOIN chunks db ON db.id = eb.from_id
+             JOIN chunks ob ON ob.id = eb.to_id
+             WHERE f.edge_id_a IN ({placeholders}) OR f.edge_id_b IN ({placeholders})"
+        ))?;
+        let bind: Vec<&dyn rusqlite::ToSql> = edge_ids
+            .iter()
+            .chain(edge_ids.iter())
+            .map(|i| i as &dyn rusqlite::ToSql)
+            .collect();
+        let rows = stmt.query_map(bind.as_slice(), |row| {
+            Ok(ForkPair {
+                pair_id: row.get(0)?,
+                edge_id_a: row.get(1)?,
+                edge_id_b: row.get(2)?,
+                fingerprint: row.get(3)?,
+                a_decision: row.get(4)?,
+                a_outcome: row.get(5)?,
+                a_relation: row.get(6)?,
+                a_polarity: row.get(7)?,
+                b_decision: row.get(8)?,
+                b_outcome: row.get(9)?,
+                b_relation: row.get(10)?,
+                b_polarity: row.get(11)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
     /// C7 update-resolver candidate scan: valid edges whose decision chunk
     /// is REUSED (exact same decision text — record_decision reuses chunks)

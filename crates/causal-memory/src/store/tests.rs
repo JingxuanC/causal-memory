@@ -809,7 +809,7 @@ fn test_record_with_polarity_and_cte_propagation() {
             "rule",
             1000,
             Some("mixed"),
-        None,
+            None,
         )
         .unwrap();
     store
@@ -834,7 +834,7 @@ fn test_contradiction_stored_polarity() {
                 "rule",
                 1000,
                 polarity,
-            None,
+                None,
             )
             .unwrap();
     };
@@ -880,7 +880,7 @@ fn test_semantic_contradiction_stored_polarity() {
             "rule",
             1000,
             Some("mixed"),
-        None,
+            None,
         )
         .unwrap();
     // Edge 2: stored 'negative' with a neutral-looking text — stored wins,
@@ -895,7 +895,7 @@ fn test_semantic_contradiction_stored_polarity() {
             "rule",
             1001,
             Some("negative"),
-        None,
+            None,
         )
         .unwrap();
     store.put_embedding(1, "test", &[1.0, 0.0]).unwrap();
@@ -3281,4 +3281,128 @@ fn test_migration_v14_adds_columns_and_tables_idempotently() {
             Ok(())
         })
         .unwrap();
+}
+
+// ─── v14 decision forks (Rung-3 Phase A: natural experiments) ────────
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_fork_pairs_created_for_same_context_different_decisions() {
+    let store = CausalStore::open_in_memory().unwrap();
+    let ctx = Some("rust agent, sqlite, single node");
+    for dec in ["used mysql", "used postgres", "used sqlite"] {
+        store
+            .record_decision_full(
+                dec,
+                &format!("outcome of {dec}"),
+                "caused",
+                Some("database"),
+                0.8,
+                "rule",
+                1000,
+                Some("positive"),
+                ctx,
+            )
+            .unwrap();
+    }
+    let pairs = store.fork_siblings_for_edges(&[1, 2, 3]).unwrap();
+    assert_eq!(
+        pairs.len(),
+        3,
+        "three same-context decisions ⇒ C(3,2) pairs: {pairs:?}"
+    );
+    // Id-ordered storage.
+    for p in &pairs {
+        assert!(p.edge_id_a < p.edge_id_b);
+        assert!(p.fingerprint.contains("sqlite"));
+        assert!(!p.a_decision.is_empty() && !p.b_decision.is_empty());
+    }
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_no_fork_for_same_decision_rerecord_or_missing_context() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Same decision text re-recorded in the same context: chunk reuse makes
+    // from_id identical — contradiction territory, NOT a fork.
+    for outcome in ["first try failed", "second try failed"] {
+        store
+            .record_decision_full(
+                "used mysql",
+                outcome,
+                "caused",
+                Some("database"),
+                0.8,
+                "rule",
+                1000,
+                Some("negative"),
+                Some("same context"),
+            )
+            .unwrap();
+    }
+    // Different decisions WITHOUT context: no fingerprint ⇒ no fork logic.
+    for dec in ["used mysql", "used postgres"] {
+        store
+            .record_decision_at(
+                dec,
+                "some outcome",
+                "caused",
+                Some("database"),
+                0.8,
+                "rule",
+                1000,
+            )
+            .unwrap();
+    }
+    let pairs = store.fork_siblings_for_edges(&[1, 2, 3, 4]).unwrap();
+    assert!(pairs.is_empty(), "no pairs expected: {pairs:?}");
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_fork_lookup_skips_invalidated_edges() {
+    let store = CausalStore::open_in_memory().unwrap();
+    let ctx = Some("shared ctx");
+    store
+        .record_decision_full(
+            "opt A",
+            "worked",
+            "caused",
+            Some("t"),
+            0.9,
+            "rule",
+            1000,
+            Some("positive"),
+            ctx,
+        )
+        .unwrap();
+    let b = store
+        .record_decision_full(
+            "opt B",
+            "broke",
+            "caused",
+            Some("t"),
+            0.9,
+            "rule",
+            2000,
+            Some("negative"),
+            ctx,
+        )
+        .unwrap()
+        .1;
+    assert_eq!(store.fork_siblings_for_edges(&[b]).unwrap().len(), 1);
+    store.invalidate_edge(b).unwrap();
+    assert!(
+        store.fork_siblings_for_edges(&[b]).unwrap().is_empty(),
+        "a pair whose edge was invalidated must not surface"
+    );
 }

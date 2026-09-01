@@ -381,7 +381,7 @@ mod tests {
                 "rule",
                 1000,
                 Some("mixed"),
-            None,
+                None,
             )
             .unwrap();
         let edge = store.get_edge(1).unwrap().unwrap();
@@ -499,8 +499,7 @@ mod tests {
         let memory = Memory::open_in_memory().expect("memory");
         // 1 causal write + 5 fact writes ≥ GRAPH_REBUILD_WRITES (5): the
         // next hippocampus query must rebuild and see the fresh facts.
-        memory.record_decision("cfg", "zsh plugins load", "caused", "shell", None,
-            None,);
+        memory.record_decision("cfg", "zsh plugins load", "caused", "shell", None, None);
         for i in 0..5 {
             memory.record_fact(
                 &format!("pref_{i}"),
@@ -541,14 +540,16 @@ mod tests {
             "caused",
             "locking",
             None,
-            None,);
+            None,
+        );
         memory.record_decision(
             "ran backup migration",
             "backup completed",
             "caused",
             "backup",
             None,
-            None,);
+            None,
+        );
         memory.record_fact("tech_stack", "Redis 7.2", Some("user"), None, None);
         memory.record_fact("tech_stack", "Redis 8.0", Some("user"), None, Some(true));
 
@@ -578,7 +579,8 @@ mod tests {
             "caused",
             "rust",
             None,
-            None,);
+            None,
+        );
         memory.record_fact(
             "editor_preference",
             "user prefers TypeScript for module rewrites",
@@ -640,7 +642,8 @@ mod tests {
             "caused",
             "rust",
             None,
-            None,);
+            None,
+        );
         m1.record_fact(
             "editor_preference",
             "user prefers TypeScript for module rewrites",
@@ -707,7 +710,8 @@ fn multi_pass_sinks_bench_optimizations() {
             "caused",
             "garden",
             None,
-            None,);
+            None,
+        );
     }
     let out = memory.search_memory_multi_pass("how many plants did I buy", None, None, Some(10));
     // Flat-id store: no session expansion (documented), but the
@@ -737,7 +741,8 @@ fn search_memory_detail_levels_and_default_compat() {
         "caused",
         "concurrency",
         None,
-        None,);
+        None,
+    );
 
     let l2 = memory.search_memory("redis mutex", None, None, Some(10), None, None, None);
     let l0 = memory.search_memory("redis mutex", None, None, Some(10), Some("l0"), None, None);
@@ -785,7 +790,8 @@ fn search_memory_max_tokens_truncates() {
             "caused",
             "deploy",
             None,
-            None,);
+            None,
+        );
     }
     let full = memory.search_memory(
         "cache warmup deploy",
@@ -826,7 +832,8 @@ fn invalidate_pattern_soft_deletes_meta_edge() {
         "caused",
         "docker",
         None,
-        None,);
+        None,
+    );
     // Mine a pattern between the two chunks of that lesson.
     let (from_id, to_id) = {
         let store = memory.store();
@@ -893,14 +900,16 @@ fn search_explain_tags_and_default_invariance() {
         "caused",
         "release",
         None,
-        None,);
+        None,
+    );
     memory.record_decision(
         "deployed without env check",
         "crash loop in production",
         "caused",
         "release",
         None,
-        None,);
+        None,
+    );
 
     // Default == explicit explain=false, byte-identical, no ↳ markers.
     let default = memory.search_causal(None, Some("test suite release"), Some(5), None, None, None);
@@ -959,4 +968,97 @@ fn search_explain_tags_and_default_invariance() {
         .expect("audit row");
     assert!(row.result_count > 0);
     assert!(!row.results.as_array().unwrap().is_empty());
+}
+
+// ── v14 fork-aware counterfactual ────────────────────────────────
+
+#[test]
+fn test_counterfactual_fork_section_and_paired_verdict() {
+    let store = crate::store::CausalStore::open_in_memory().unwrap();
+    // One shared context, two branches — a natural experiment.
+    let ctx = Some("rust agent, cache redesign, v0.9");
+    for (dec, out, pol) in [
+        (
+            "used redis mutex for cache",
+            "deadlock under load",
+            "negative",
+        ),
+        (
+            "switched to channel ownership",
+            "race fixed, all tests pass",
+            "positive",
+        ),
+    ] {
+        store
+            .record_decision_full(
+                dec,
+                out,
+                "caused",
+                Some("concurrency"),
+                0.8,
+                "rule",
+                1000,
+                Some(pol),
+                ctx,
+            )
+            .unwrap();
+    }
+    let memory = Memory::new(store);
+    let out = memory.counterfactual_inner("redis mutex", "channel", None, 5);
+    assert!(
+        out.contains("🔀 Same-context branches (natural experiments, 1 pair(s))"),
+        "fork section must render: {out}"
+    );
+    assert!(
+        out.contains("same-context branches favor B"),
+        "paired verdict must favor B (channel won in the same world): {out}"
+    );
+    assert!(
+        out.contains("(outranks the pooled distribution)"),
+        "paired evidence must be flagged as outranking: {out}"
+    );
+}
+
+#[test]
+fn test_counterfactual_no_forks_output_unchanged() {
+    // Records WITHOUT context ⇒ no fork section, verdict stays
+    // distribution-based (byte-shape compatibility with pre-v14).
+    let store = crate::store::CausalStore::open_in_memory().unwrap();
+    for (i, (dec, out, pol)) in [
+        (
+            "used redis mutex for cache",
+            "deadlock under load",
+            "negative",
+        ),
+        ("used redis mutex for queue", "deadlock again", "negative"),
+        (
+            "switched to channel ownership",
+            "race fixed, all tests pass",
+            "positive",
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        store
+            .record_decision_full(
+                dec,
+                out,
+                "caused",
+                Some("concurrency"),
+                0.8,
+                "rule",
+                1000 + i as i64,
+                Some(pol),
+                None,
+            )
+            .unwrap();
+    }
+    let memory = Memory::new(store);
+    let out = memory.counterfactual_inner("redis mutex", "channel", None, 5);
+    assert!(
+        !out.contains("🔀"),
+        "no fork section without context: {out}"
+    );
+    assert!(out.contains("recorded evidence favors B"), "{out}");
 }
