@@ -231,6 +231,10 @@ cargo build --release
 
 ### MCP integration (Claude Code, Cursor, grok-build, etc.)
 
+First-class installers: **Claude Code** (`integrations/claude-code/`) and
+**Codex CLI** (`integrations/codex/`) — MCP registration + activation
+prompt/skill in one idempotent script each.
+
 ```json
 {
   "mcpServers": {
