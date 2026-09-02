@@ -19,8 +19,10 @@ Storage is profile-isolated: the DB lives under
 
 from __future__ import annotations
 
+import inspect
 import json
 import threading
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -102,6 +104,16 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
                         "enum": ["caused", "enabled", "prevented", "no_effect"],
                     },
                     "task_tag": {"type": "string", "description": "Task category"},
+                    "context": {
+                        "type": "string",
+                        "description": (
+                            "Short description of the situation the decision was "
+                            "made in (environment, constraints, key parameters). "
+                            "Same task_tag + context => comparable branch for "
+                            "counterfactuals. Always set it when multiple options "
+                            "were weighed."
+                        ),
+                    },
                     "confidence_source": {
                         "type": "string",
                         "enum": ["temporal", "rule", "llm_inferred", "user_feedback"],
@@ -133,6 +145,21 @@ _TOOL_SCHEMAS: List[Dict[str, Any]] = [
         },
     },
 ]
+
+
+@lru_cache(maxsize=4)
+def _record_supports_context(mem: Any) -> bool:
+    """True when the installed causal-memory binding accepts `context=`.
+
+    The kwarg exists on the workspace/facade builds and on wheels released
+    after py-v0.9.2; the unpinned PyPI dependency may resolve older. Cached
+    per binding object (the pyo3 module or an instance).
+    """
+    try:
+        params = inspect.signature(mem.record_decision).parameters
+        return "context" in params
+    except (TypeError, ValueError):  # exotic callables — fail closed
+        return False
 
 
 class CausalMemoryProvider(_MemoryProvider):
@@ -186,12 +213,22 @@ class CausalMemoryProvider(_MemoryProvider):
                 max_tokens=args.get("max_tokens"),
             )
         if tool_name == "causal_record":
+            # `context` landed on the pyo3 facade after the last published
+            # wheel (py-v0.9.2). The dependency is unpinned, so feature-
+            # detect instead of passing the kwarg unconditionally — an
+            # older wheel would raise TypeError on EVERY causal_record
+            # call (review finding on PR #19).
+            kwargs: Dict[str, Any] = {
+                "confidence_source": args.get("confidence_source"),
+            }
+            if _record_supports_context(mem):
+                kwargs["context"] = args.get("context")
             return mem.record_decision(
                 args["decision"],
                 args["outcome"],
                 args["relation"],
                 args["task_tag"],
-                confidence_source=args.get("confidence_source"),
+                **kwargs,
             )
         if tool_name == "causal_trace":
             return mem.trace_cause(args["outcome"])

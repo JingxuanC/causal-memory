@@ -332,16 +332,24 @@ async fn handle_health() -> Json<HealthResponse> {
 
 type AppState = Arc<UserMemories>;
 
-fn build_app(users: AppState) -> Router {
+fn build_app(users: AppState, auth_token: Option<String>) -> Router {
+    // Observability: liveness/readiness + Prometheus text. /health stays
+    // for backward compatibility; probes stay open (kubelet can't send
+    // bearer headers); /metrics takes optional bearer auth — the challenge
+    // harness contract covers /add /search only and never sets the token.
+    let obs = Router::new()
+        .route("/health", get(handle_health))
+        .route("/healthz", get(|| async { "ok" }))
+        .route("/readyz", get(handle_readyz));
+    let metrics = causal_memory_cli::http_auth::protected(
+        Router::new().route("/metrics", get(handle_metrics)),
+        auth_token,
+    );
     Router::new()
         .route("/add", post(handle_add))
         .route("/search", post(handle_search))
-        .route("/health", get(handle_health))
-        // Observability: liveness/readiness + Prometheus text. /health
-        // stays for backward compatibility.
-        .route("/healthz", get(|| async { "ok" }))
-        .route("/readyz", get(handle_readyz))
-        .route("/metrics", get(handle_metrics))
+        .merge(obs)
+        .merge(metrics)
         .with_state(users)
 }
 
@@ -417,6 +425,7 @@ fn main() -> Result<()> {
         None => println!("causal-memory-amc embedding: none (BM25-only retrieval)"),
     }
     let users = Arc::new(UserMemories::new(db_dir, mode));
+    let auth_token = causal_memory_cli::http_auth::token_from_config();
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse()?;
     println!(
         "causal-memory-amc listening on http://{addr} (write-mode: {}, one store per user_id)",
@@ -425,12 +434,16 @@ fn main() -> Result<()> {
             WriteMode::Raw => "raw",
         }
     );
+    match &auth_token {
+        Some(_) => println!("Auth: /metrics requires 'Authorization: Bearer <token>' (CAUSAL_MEMORY_HTTP_AUTH_TOKEN); /add /search /health* stay open"),
+        None => println!("NOTE: /metrics is unauthenticated (bound on 0.0.0.0); set CAUSAL_MEMORY_HTTP_AUTH_TOKEN to lock it down"),
+    }
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         let listener = tokio::net::TcpListener::bind(addr)
             .await
             .map_err(|e| anyhow::anyhow!("bind {addr}: {e}"))?;
-        axum::serve(listener, build_app(users))
+        axum::serve(listener, build_app(users, auth_token))
             .await
             .map_err(|e| anyhow::anyhow!("serve: {e}"))?;
         Ok(())
@@ -470,14 +483,17 @@ mod tests {
         panic!("server did not become ready");
     }
 
-    async fn spawn_server(mode: WriteMode) -> (String, tokio::task::JoinHandle<()>, PathBuf) {
+    async fn spawn_server(
+        mode: WriteMode,
+        auth_token: Option<String>,
+    ) -> (String, tokio::task::JoinHandle<()>, PathBuf) {
         let dir = std::env::temp_dir().join(format!(
             "amc-test-{}-{:?}",
             std::process::id(),
             std::time::Instant::now()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let app = build_app(Arc::new(UserMemories::new(dir.clone(), mode)));
+        let app = build_app(Arc::new(UserMemories::new(dir.clone(), mode)), auth_token);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -497,7 +513,7 @@ mod tests {
 
     #[tokio::test]
     async fn raw_roundtrip_isolation_and_topk() {
-        let (base, _server, dir) = spawn_server(WriteMode::Raw).await;
+        let (base, _server, dir) = spawn_server(WriteMode::Raw, None).await;
         let client = test_client();
         wait_ready(&client, &base).await;
 
@@ -587,7 +603,7 @@ mod tests {
 
     #[tokio::test]
     async fn empty_search_and_unknown_user() {
-        let (base, _server, dir) = spawn_server(WriteMode::Raw).await;
+        let (base, _server, dir) = spawn_server(WriteMode::Raw, None).await;
         let client = test_client();
         wait_ready(&client, &base).await;
         let resp = client
@@ -609,12 +625,52 @@ mod tests {
         // (remember's own fallback stores a raw stub). The contract's
         // synchronous-searchable rule holds either way.
         std::env::remove_var("CAUSAL_MEMORY_LLM_API");
-        let (base, _server, dir) = spawn_server(WriteMode::Distill).await;
+        let (base, _server, dir) = spawn_server(WriteMode::Distill, None).await;
         let client = test_client();
         wait_ready(&client, &base).await;
         let resp = client
             .post(format!("{base}/add"))
             .json(&add_body("dave", "s1", &[("user", "hello there")]))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn metrics_bearer_gated_when_token_set() {
+        // Opt-in auth: token set → /metrics 401s without (or with a wrong)
+        // bearer and serves with the right one; the challenge-contract
+        // routes (/add /search) and probes stay open either way.
+        let (base, _server, dir) =
+            spawn_server(WriteMode::Raw, Some("amc-bearer-token".into())).await;
+        let client = test_client();
+        wait_ready(&client, &base).await;
+
+        let no_auth = client.get(format!("{base}/metrics")).send().await.unwrap();
+        assert_eq!(no_auth.status(), axum::http::StatusCode::UNAUTHORIZED);
+
+        let wrong = client
+            .get(format!("{base}/metrics"))
+            .header("Authorization", "Bearer nope")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(wrong.status(), axum::http::StatusCode::UNAUTHORIZED);
+
+        let ok = client
+            .get(format!("{base}/metrics"))
+            .header("Authorization", "Bearer amc-bearer-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), axum::http::StatusCode::OK);
+
+        // Contract routes unaffected by the token.
+        let resp = client
+            .post(format!("{base}/add"))
+            .json(&add_body("eve", "s1", &[("user", "hello there")]))
             .send()
             .await
             .unwrap();

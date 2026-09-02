@@ -15,9 +15,6 @@
 //! - Pre-multiplied spread coefficients in values[]
 //!
 //! Limitations:
-//! - text_jaccard_similarity uses whitespace tokenization; Chinese text (no
-//!   spaces) produces one giant token, making novelty detection unreliable.
-//!   Future: switch to character bigrams or a real tokenizer.
 //! - rand_seed uses a fixed-seed xorshift for deterministic testing. Set
 //!   CAUSAL_GRAPH_RANDOM_SEED to enable true randomness in production.
 
@@ -692,11 +689,9 @@ impl CausalGraph {
 
     /// CA1 novelty detection: compare predicted outcomes with actual.
     ///
-    /// WARNING: text_jaccard_similarity uses whitespace tokenization.
-    /// Chinese text (no spaces) produces one giant token, making similarity
-    /// near-zero and surprise near-1.0 for everything. This is a known
-    /// limitation (#10 in review). For Chinese-heavy use, switch to
-    /// character bigrams or a real tokenizer.
+    /// Similarity uses `patterns::tokenize` (lowercased ASCII words minus
+    /// stop words, CJK character bigrams), so surprise is meaningful for
+    /// whitespace-free text too.
     pub fn detect_novelty(&mut self, decision_text: &str, actual_outcome: &str) -> NoveltyReport {
         // Internal computation: use run_hebbian=false so novelty detection
         // doesn't have the side effect of strengthening co-occurrence edges.

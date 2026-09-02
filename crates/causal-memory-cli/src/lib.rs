@@ -11,6 +11,7 @@ pub mod bench;
 pub mod bench_agent;
 pub mod bench_tokens;
 pub mod commands;
+pub mod http_auth;
 pub mod server;
 
 use commands::distill::{run_distill, run_novelty};
@@ -198,11 +199,13 @@ fn print_help() {
          \n\
          Server modes (default: MCP over stdio):\n\
          \x20 (no args)              MCP server via stdio\n\
-         \x20 http [--port N]       MCP server over HTTP\n\
+         \x20 http [--port N] [--host H]  MCP server over HTTP\n\
+         \x20                          (set CAUSAL_MEMORY_HTTP_AUTH_TOKEN to\n\
+         \x20                           protect /metrics and /debug/*)\n\
          \n\
          Configuration:\n\
          \x20 setconfig K=V [K=V...] write config keys (empty value deletes)\n\
-         \x20 getconfig             list configured values (*_KEY masked)\n\
+         \x20 getconfig             list configured values (*_KEY / *_TOKEN masked)\n\
          \x20 config-path           print the config file path\n\
          \n\
          Extraction & maintenance:\n\
@@ -257,6 +260,7 @@ mod tests {
                 "rule",
                 1000,
                 Some("negative"),
+                None,
             )
             .unwrap();
         store
@@ -269,6 +273,7 @@ mod tests {
                 "user_feedback",
                 2000,
                 Some("positive"),
+                None,
             )
             .unwrap();
         // A meta edge over the two real decision chunks.
@@ -398,6 +403,7 @@ mod tests {
                 "rule",
                 1000,
                 Some("positive"),
+                None,
             )
             .unwrap();
         store
@@ -410,6 +416,7 @@ mod tests {
                 "rule",
                 1000,
                 Some("neutral"),
+                None,
             )
             .unwrap();
 

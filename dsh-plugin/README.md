@@ -6,16 +6,22 @@ DeepSeek Harness 原生记忆插件：把 causal-memory 的 16 个工具以**干
 
 ## 前置：causal-memory 二进制
 
-插件按 DSH 惯例解析服务端二进制（不写死路径），二选一：
+插件按 DSH 惯例解析服务端二进制（不写死路径），四选一：
 
-1. **本仓库开发构建**（克隆到任意位置即可）：
+1. **pip 安装（推荐，无需 Rust 工具链）**：
+   ```bash
+   pip install causal-memory
+   ```
+   会把 `causal-memory` 命令装到 PATH 上，插件自动解析到它。
+2. **下载预编译二进制**：从 [GitHub Releases](https://github.com/JingxuanC/causal-memory/releases)
+   下载对应平台（Windows / macOS / Linux × x64 / arm64）的压缩包，解压后把
+   `causal-memory` 放到 PATH 上（如 `~/bin` 或 `/usr/local/bin`）。
+3. **本仓库开发构建**（克隆到任意位置即可）：
    ```bash
    cargo build --release --bin causal-memory
    ```
    插件会自动找到 `<仓库>/target/release/causal-memory`。
-2. **PATH 全局安装**（发布二进制）：从 GitHub Releases 下载对应平台的
-   `causal-memory` 放到 PATH 上（如 `~/bin` 或 `/usr/local/bin`），插件回退到
-   PATH 查找裸名 `causal-memory`。
+4. **显式指定**：`config.command` 配置项或 `CAUSAL_MEMORY_BIN` 环境变量。
 
 ## 安装
 
@@ -49,15 +55,15 @@ dsh plugin --profile web add "$PWD/dsh-plugin"
 | `dbPath` | `~/.local/share/causal-memory/causal.db` | SQLite 路径（或 `CAUSAL_MEMORY_DB`） |
 | `toolCallTimeoutMs` | `60000` | 单次工具调用超时 |
 | `exclude` | `[]` | 不挂载的工具名数组 |
-| `failOnStartupError` | `false` | 启动连接失败时是否让插件激活失败（默认仅记日志） |
+| `failOnStartupError` | `true` | 启动连接失败时是否让插件激活失败（默认失败并附安装提示；显式设 `false` 则降级为仅记日志） |
 
-## 工具清单（16 个）
+## 工具清单（17 个）
 
 `record_decision` · `record_fact` · `remember` · `search_causal` ·
 `search_facts` · `search_memory` · `search_patterns` · `causal_directory` ·
 `trace_cause` · `trace_cause_chain` · `intervention_query` ·
-`counterfactual_query` · `invalidate_decision` · `invalidate_pattern` ·
-`resolve_updates` · `reconstruct_lesson`
+`counterfactual_query` · `prediction_report` · `invalidate_decision` ·
+`invalidate_pattern` · `resolve_updates` · `reconstruct_lesson`
 
 （工具列表运行时从服务端动态发现，服务端升级后无需改插件。）
 

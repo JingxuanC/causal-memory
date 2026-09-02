@@ -63,7 +63,9 @@ impl PyCausalMemory {
     /// Call AFTER acting on a decision and observing the result.
     /// relation: caused / enabled / prevented / no_effect.
     /// confidence_source: temporal / rule / llm_inferred / user_feedback.
-    #[pyo3(signature = (decision, outcome, relation, task_tag, confidence_source=None))]
+    /// context: short situation description — same task_tag+context
+    /// becomes a comparable branch (fork) for counterfactual queries.
+    #[pyo3(signature = (decision, outcome, relation, task_tag, confidence_source=None, context=None))]
     fn record_decision(
         &self,
         py: Python<'_>,
@@ -72,10 +74,17 @@ impl PyCausalMemory {
         relation: &str,
         task_tag: &str,
         confidence_source: Option<&str>,
+        context: Option<&str>,
     ) -> String {
         py.allow_threads(|| {
-            self.inner
-                .record_decision(decision, outcome, relation, task_tag, confidence_source)
+            self.inner.record_decision(
+                decision,
+                outcome,
+                relation,
+                task_tag,
+                confidence_source,
+                context,
+            )
         })
     }
 
@@ -257,6 +266,8 @@ impl PyCausalMemory {
 
     /// Contrastive (empirical) counterfactual: compare the recorded outcomes
     /// of a decision vs an alternative. NOT a Pearl Rung-3 SCM counterfactual.
+    /// Every verdict is logged as a falsifiable prediction (see
+    /// prediction_report); same-context branches (forks) render when present.
     #[pyo3(signature = (decision, alternative, task_tag=None, limit=None))]
     fn counterfactual_query(
         &self,
@@ -270,6 +281,13 @@ impl PyCausalMemory {
             self.inner
                 .counterfactual_query(decision, alternative, task_tag, limit)
         })
+    }
+
+    /// Prediction-ledger calibration dashboard: accuracy of past
+    /// counterfactual verdicts (overall / per method / per task_tag) plus
+    /// pending predictions that will resolve when either option is recorded.
+    fn prediction_report(&self, py: Python<'_>) -> String {
+        py.allow_threads(|| self.inner.prediction_report())
     }
 
     /// Reconstructive retrieval: Markov-blanket causal subgraph around a

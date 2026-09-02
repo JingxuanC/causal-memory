@@ -194,6 +194,8 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // Opt-in bearer auth for the observability routes (empty/unset = open).
+    let auth_token = crate::http_auth::token_from_config();
 
     eprintln!("Opening causal memory DB at {}", db_path.display());
     // A3: one shared store for the whole process — every connection works
@@ -213,9 +215,28 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
 
         // Each connection gets a fresh server instance backed by the same store.
         let shared_store = store.clone();
+        // rmcp 默认只放行 loopback Host（localhost/127.0.0.1/::1）防 DNS rebinding。
+        // Docker 容器经 host.docker.internal 访问宿主机时 Host 头不在白名单 → 403。
+        // 这里合并默认白名单 + host.docker.internal + 环境变量追加
+        // （CAUSAL_MEMORY_ALLOWED_HOSTS，逗号分隔，供其他部署形态使用）。
+        let mut allowed_hosts = vec![
+            "localhost".to_string(),
+            "127.0.0.1".to_string(),
+            "::1".to_string(),
+            "host.docker.internal".to_string(),
+        ];
+        if let Ok(extra) = std::env::var("CAUSAL_MEMORY_ALLOWED_HOSTS") {
+            allowed_hosts.extend(
+                extra
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
+            );
+        }
         let config = StreamableHttpServerConfig::default()
             .with_stateful_mode(false)
-            .with_json_response(true);
+            .with_json_response(true)
+            .with_allowed_hosts(allowed_hosts);
         let service = StreamableHttpService::new(
             move || {
                 Ok(CausalMemoryServer::new_with_label(
@@ -236,14 +257,10 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
 
         let app = axum::Router::new()
             .route_service("/mcp", service)
-            // /health kept for backward compatibility.
-            .route("/health", axum::routing::get(|| async { "ok" }))
-            .route("/healthz", axum::routing::get(|| async { "ok" }))
-            .route("/readyz", axum::routing::get(obs_readyz))
-            .route("/metrics", axum::routing::get(obs_metrics))
-            .route("/debug/recall", axum::routing::get(obs_debug_recall))
-            .route("/debug/recalls", axum::routing::get(obs_debug_recalls))
-            .with_state(ObsState { store, debug_memory });
+            .merge(build_obs_router(
+                ObsState { store, debug_memory },
+                auth_token.clone(),
+            ));
 
         let listener = tokio::net::TcpListener::bind(format!("{host}:{port}"))
             .await
@@ -252,7 +269,26 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
         eprintln!("Health check: http://{host}:{port}/healthz (legacy: /health)");
         eprintln!("Metrics:      http://{host}:{port}/metrics");
         eprintln!("Recall debug: http://{host}:{port}/debug/recall?query=... (+ /debug/recalls)");
-        eprintln!("NOTE: /metrics and /debug/* are unauthenticated — do not expose to the public internet");
+        let loopback_host =
+            host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]";
+        match (&auth_token, loopback_host) {
+            (Some(token), _) => {
+                eprintln!(
+                    "Auth: /metrics and /debug/* require 'Authorization: Bearer <token>' (CAUSAL_MEMORY_HTTP_AUTH_TOKEN)"
+                );
+                if token.len() < 16 {
+                    eprintln!("WARNING: bearer token is shorter than 16 chars — brute-forceable; use a longer one");
+                }
+            }
+            (None, false) => {
+                eprintln!(
+                    "WARNING: /metrics and /debug/* are unauthenticated and the server is bound on {host} — set CAUSAL_MEMORY_HTTP_AUTH_TOKEN or bind --host 127.0.0.1 before exposing this port"
+                );
+            }
+            (None, true) => {
+                eprintln!("NOTE: /metrics and /debug/* are unauthenticated (loopback bind); set CAUSAL_MEMORY_HTTP_AUTH_TOKEN to lock them down");
+            }
+        }
 
         axum::serve(listener, app)
             .await
@@ -266,6 +302,28 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
 struct ObsState {
     store: std::sync::Arc<CausalStore>,
     debug_memory: std::sync::Arc<causal_memory::memory::Memory>,
+}
+
+/// The observability routes (everything except `/mcp`). Health probes
+/// (`/health`, `/healthz`, `/readyz`) stay open on purpose — kubelet
+/// liveness/readiness probes cannot attach bearer headers and these routes
+/// leak nothing. `/metrics` and `/debug/*` carry the recall corpus behind
+/// optional bearer auth (`CAUSAL_MEMORY_HTTP_AUTH_TOKEN`; unset = open,
+/// the pre-auth behavior). Extracted from `run_http_server` so the router
+/// can be exercised end-to-end in tests without an rmcp service.
+fn build_obs_router(state: ObsState, auth_token: Option<String>) -> axum::Router {
+    let secret_routes = axum::Router::new()
+        .route("/metrics", axum::routing::get(obs_metrics))
+        .route("/debug/recall", axum::routing::get(obs_debug_recall))
+        .route("/debug/recalls", axum::routing::get(obs_debug_recalls));
+    let secret_routes = crate::http_auth::protected(secret_routes, auth_token);
+    // /health kept for backward compatibility.
+    axum::Router::new()
+        .route("/health", axum::routing::get(|| async { "ok" }))
+        .route("/healthz", axum::routing::get(|| async { "ok" }))
+        .route("/readyz", axum::routing::get(obs_readyz))
+        .merge(secret_routes)
+        .with_state(state)
 }
 
 /// Readiness: a light DB probe (count chunks). 503 when the store is down.
@@ -707,6 +765,58 @@ pub(crate) fn run_stats(args: &[String]) -> anyhow::Result<()> {
                 .unwrap_or_else(|| ts.to_string());
             println!("  latest memory:     {dt}");
         }
+
+        // ── Rung-3 Phase A gauges (v14): fork density is the Phase-3
+        // trigger (micro-SCM fits once a stratum holds enough same-context
+        // pairs); the ledger shows whether counterfactual advice is any
+        // good yet. Guards keep stats working on pre-v14 DBs.
+        let has_forks = q1(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='decision_forks'",
+        )? == 1;
+        if has_forks {
+            let forks = q1("SELECT COUNT(*) FROM decision_forks")?;
+            let ctx_edges = q1(
+                "SELECT COUNT(*) FROM causal_edges WHERE context_fingerprint IS NOT NULL AND valid_to IS NULL",
+            )?;
+            println!("  context edges:     {ctx_edges} (v14 abduction substrate)");
+            println!("  fork pairs:        {forks} (same-context natural experiments)");
+            let mut stmt = c.prepare(
+                "SELECT COALESCE(e.task_tag,'untagged'), COUNT(*)
+                 FROM decision_forks f
+                 JOIN causal_edges e ON e.id = f.edge_id_a
+                 GROUP BY e.task_tag HAVING COUNT(*) >= 1 ORDER BY 2 DESC LIMIT 5",
+            )?;
+            let ftags = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            if !ftags.is_empty() {
+                let line: Vec<String> =
+                    ftags.iter().map(|(t, n)| format!("{t} ({n})")).collect();
+                println!("      fork density:  {}", line.join(", "));
+                println!("      (Phase-3 trigger: >= 30 pairs in one task_tag)");
+            }
+        }
+        let has_pred = q1(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pending_predictions'",
+        )? == 1;
+        if has_pred {
+            if let Ok(ps) = store.prediction_stats() {
+                let judged = ps.resolved - ps.ambiguous;
+                if ps.resolved > 0 {
+                    let acc = if judged > 0 {
+                        format!("{:.0}%", ps.correct as f64 / judged as f64 * 100.0)
+                    } else {
+                        "n/a".to_string()
+                    };
+                    println!(
+                        "  predictions:       {} resolved ({acc} accuracy, {} ambiguous) · {} pending",
+                        ps.resolved, ps.ambiguous, ps.pending
+                    );
+                } else if ps.pending > 0 {
+                    println!("  predictions:       0 resolved · {} pending", ps.pending);
+                }
+            }
+        }
         Ok(())
     })
 }
@@ -746,6 +856,7 @@ mod obs_tests {
                 "rule",
                 1000,
                 Some("negative"),
+                None,
             )
             .unwrap();
         let store = std::sync::Arc::new(store);
@@ -793,5 +904,133 @@ mod obs_tests {
         let text = obs_metrics(axum::extract::State(s)).await;
         assert!(text.contains("causal_memory_store_chunks 2"), "{text}");
         assert!(text.contains("causal_memory_uptime_seconds"), "{text}");
+    }
+
+    // ─── Bearer auth on the real router (ephemeral port + reqwest, the
+    // amc.rs self-test pattern) ─────────────────────────────────────────
+
+    /// No keep-alive reuse: on the current-thread tokio runtime the reqwest
+    /// pool can reset a reused idle connection between requests (a
+    /// test-harness artifact — see amc.rs's test_client note).
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .build()
+            .unwrap()
+    }
+
+    async fn spawn_obs(auth_token: Option<String>) -> String {
+        let app = build_obs_router(state(), auth_token);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base = format!("http://{addr}");
+        let client = test_client();
+        for _ in 0..100 {
+            if client
+                .get(format!("{base}/health"))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+            {
+                return base;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("obs server did not become ready");
+    }
+
+    #[tokio::test]
+    async fn obs_router_no_token_all_open() {
+        let base = spawn_obs(None).await;
+        let client = test_client();
+        for path in [
+            "/health",
+            "/healthz",
+            "/readyz",
+            "/metrics",
+            "/debug/recalls",
+        ] {
+            let status = client
+                .get(format!("{base}{path}"))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, axum::http::StatusCode::OK, "{path} -> {status}");
+        }
+    }
+
+    #[tokio::test]
+    async fn obs_router_rejects_missing_or_wrong_bearer() {
+        let base = spawn_obs(Some("s3cret-bearer-token".into())).await;
+        let client = test_client();
+        // No header.
+        for path in ["/metrics", "/debug/recall?query=x", "/debug/recalls"] {
+            let resp = client.get(format!("{base}{path}")).send().await.unwrap();
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+                "{path} without header"
+            );
+            assert_eq!(
+                resp.headers().get("www-authenticate").unwrap(),
+                "Bearer",
+                "RFC 6750 challenge on {path}"
+            );
+        }
+        // Wrong token.
+        let resp = client
+            .get(format!("{base}/metrics"))
+            .header("Authorization", "Bearer wrong-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn obs_router_accepts_correct_bearer() {
+        let base = spawn_obs(Some("s3cret-bearer-token".into())).await;
+        let client = test_client();
+        let resp = client
+            .get(format!("{base}/metrics"))
+            .header("Authorization", "Bearer s3cret-bearer-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("causal_memory_uptime_seconds"), "{body}");
+        // The query-string debug route works through the middleware (the
+        // middleware only reads the Authorization header).
+        let resp = client
+            .get(format!("{base}/debug/recall?query=test+suite+release"))
+            .header("Authorization", "bearer s3cret-bearer-token") // scheme case-insensitive
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("\"results\""), "{body}");
+    }
+
+    #[tokio::test]
+    async fn obs_router_health_probes_open_when_token_set() {
+        let base = spawn_obs(Some("s3cret-bearer-token".into())).await;
+        let client = test_client();
+        // kubelet liveness/readiness probes cannot attach bearer headers.
+        for path in ["/health", "/healthz", "/readyz"] {
+            let status = client
+                .get(format!("{base}{path}"))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, axum::http::StatusCode::OK, "{path} -> {status}");
+        }
     }
 }

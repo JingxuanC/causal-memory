@@ -809,6 +809,7 @@ fn test_record_with_polarity_and_cte_propagation() {
             "rule",
             1000,
             Some("mixed"),
+            None,
         )
         .unwrap();
     store
@@ -833,6 +834,7 @@ fn test_contradiction_stored_polarity() {
                 "rule",
                 1000,
                 polarity,
+                None,
             )
             .unwrap();
     };
@@ -878,6 +880,7 @@ fn test_semantic_contradiction_stored_polarity() {
             "rule",
             1000,
             Some("mixed"),
+            None,
         )
         .unwrap();
     // Edge 2: stored 'negative' with a neutral-looking text — stored wins,
@@ -892,6 +895,7 @@ fn test_semantic_contradiction_stored_polarity() {
             "rule",
             1001,
             Some("negative"),
+            None,
         )
         .unwrap();
     store.put_embedding(1, "test", &[1.0, 0.0]).unwrap();
@@ -3162,4 +3166,373 @@ fn test_recall_audit_roundtrip_newest_first() {
     // JSON fields decode back.
     assert_eq!(entries[0].results[0]["explain"], "[seed]");
     assert_eq!(entries[1].seeds[0]["source"], "bm25");
+}
+
+// ─── v14 context fingerprint (Rung-3 Phase A: abduction substrate) ───
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_context_fingerprint_normalization() {
+    use super::context_fingerprint;
+    // Case + whitespace runs collapse; order preserved.
+    assert_eq!(
+        context_fingerprint(Some("Rust"), "SQLite,  WAL   OFF"),
+        context_fingerprint(Some("rust"), "sqlite, wal off")
+    );
+    // Different task_tag ⇒ different world state.
+    assert_ne!(
+        context_fingerprint(Some("a"), "same ctx"),
+        context_fingerprint(Some("b"), "same ctx")
+    );
+    // Separator keeps tag and context from colliding.
+    let fp = context_fingerprint(None, "x");
+    assert!(fp.starts_with('\u{1f}'), "no-tag fingerprint: {fp:?}");
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_record_with_context_persists_fingerprint() {
+    let store = CausalStore::open_in_memory().unwrap();
+    store
+        .record_decision_full(
+            "used mysql for sessions",
+            "migration locks blocked deploys",
+            "caused",
+            Some("database"),
+            0.8,
+            "rule",
+            1000,
+            Some("negative"),
+            Some("rust agent, sqlite store, single node"),
+        )
+        .unwrap();
+    store
+        .record_decision_at(
+            "used postgres for sessions",
+            "clean cutover",
+            "caused",
+            Some("database"),
+            0.9,
+            "rule",
+            2000,
+        )
+        .unwrap();
+    let edges = store.all_valid_edges().unwrap();
+    let with_ctx = edges
+        .iter()
+        .find(|e| e.decision_text.contains("mysql"))
+        .unwrap();
+    let without_ctx = edges
+        .iter()
+        .find(|e| e.decision_text.contains("postgres"))
+        .unwrap();
+    assert_eq!(
+        with_ctx.context_fingerprint.as_deref(),
+        Some("database\u{1f}rust agent, sqlite store, single node"),
+        "fingerprint = task_tag US normalized context"
+    );
+    assert_eq!(
+        with_ctx.context_text.as_deref(),
+        Some("rust agent, sqlite store, single node")
+    );
+    assert!(
+        without_ctx.context_fingerprint.is_none() && without_ctx.context_text.is_none(),
+        "no context given ⇒ NULL columns (legacy behavior)"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_migration_v14_adds_columns_and_tables_idempotently() {
+    // Build a pre-v14 DB by hand: causal_edges WITHOUT the context columns,
+    // user_version=13 — then run migrate and check the upgrade.
+    let store = CausalStore::open_in_memory().unwrap();
+    store
+        .with_conn(|conn| {
+            // Simulate the legacy shape: drop the new columns is impossible
+            // (SQLite), so instead verify the fresh-DB path has them and the
+            // tables exist, then re-run migrate() — must be a no-op success.
+            let cols: Vec<String> = {
+                let mut stmt = conn.prepare("PRAGMA table_info(causal_edges)")?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(1))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            assert!(cols.contains(&"context_fingerprint".to_string()));
+            assert!(cols.contains(&"context_text".to_string()));
+            for table in ["decision_forks", "pending_predictions"] {
+                let n: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    rusqlite::params![table],
+                    |r| r.get(0),
+                )?;
+                assert_eq!(n, 1, "{table} must exist at v14");
+            }
+            // Idempotent: migrating an already-current DB must succeed.
+            crate::migrate::migrate(conn)?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+// ─── v14 decision forks (Rung-3 Phase A: natural experiments) ────────
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_fork_pairs_created_for_same_context_different_decisions() {
+    let store = CausalStore::open_in_memory().unwrap();
+    let ctx = Some("rust agent, sqlite, single node");
+    for dec in ["used mysql", "used postgres", "used sqlite"] {
+        store
+            .record_decision_full(
+                dec,
+                &format!("outcome of {dec}"),
+                "caused",
+                Some("database"),
+                0.8,
+                "rule",
+                1000,
+                Some("positive"),
+                ctx,
+            )
+            .unwrap();
+    }
+    let pairs = store.fork_siblings_for_edges(&[1, 2, 3]).unwrap();
+    assert_eq!(
+        pairs.len(),
+        3,
+        "three same-context decisions ⇒ C(3,2) pairs: {pairs:?}"
+    );
+    // Id-ordered storage.
+    for p in &pairs {
+        assert!(p.edge_id_a < p.edge_id_b);
+        assert!(p.fingerprint.contains("sqlite"));
+        assert!(!p.a_decision.is_empty() && !p.b_decision.is_empty());
+    }
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_no_fork_for_same_decision_rerecord_or_missing_context() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Same decision text re-recorded in the same context: chunk reuse makes
+    // from_id identical — contradiction territory, NOT a fork.
+    for outcome in ["first try failed", "second try failed"] {
+        store
+            .record_decision_full(
+                "used mysql",
+                outcome,
+                "caused",
+                Some("database"),
+                0.8,
+                "rule",
+                1000,
+                Some("negative"),
+                Some("same context"),
+            )
+            .unwrap();
+    }
+    // Different decisions WITHOUT context: no fingerprint ⇒ no fork logic.
+    for dec in ["used mysql", "used postgres"] {
+        store
+            .record_decision_at(
+                dec,
+                "some outcome",
+                "caused",
+                Some("database"),
+                0.8,
+                "rule",
+                1000,
+            )
+            .unwrap();
+    }
+    let pairs = store.fork_siblings_for_edges(&[1, 2, 3, 4]).unwrap();
+    assert!(pairs.is_empty(), "no pairs expected: {pairs:?}");
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_fork_lookup_skips_invalidated_edges() {
+    let store = CausalStore::open_in_memory().unwrap();
+    let ctx = Some("shared ctx");
+    store
+        .record_decision_full(
+            "opt A",
+            "worked",
+            "caused",
+            Some("t"),
+            0.9,
+            "rule",
+            1000,
+            Some("positive"),
+            ctx,
+        )
+        .unwrap();
+    let b = store
+        .record_decision_full(
+            "opt B",
+            "broke",
+            "caused",
+            Some("t"),
+            0.9,
+            "rule",
+            2000,
+            Some("negative"),
+            ctx,
+        )
+        .unwrap()
+        .1;
+    assert_eq!(store.fork_siblings_for_edges(&[b]).unwrap().len(), 1);
+    store.invalidate_edge(b).unwrap();
+    assert!(
+        store.fork_siblings_for_edges(&[b]).unwrap().is_empty(),
+        "a pair whose edge was invalidated must not surface"
+    );
+}
+
+// ─── v14 prediction ledger (Rung-3 Phase A: falsifiability) ─────────
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_prediction_resolution_matrix() {
+    // (verdict, which option gets recorded, actual polarity, expected correct)
+    let matrix = [
+        ("prefer_a", "a", "positive", Some(1)),
+        ("prefer_a", "a", "negative", Some(0)),
+        ("prefer_a", "b", "positive", Some(0)), // rejected option won
+        ("prefer_a", "b", "negative", Some(1)), // rival failed as predicted
+        ("prefer_a", "a", "mixed", None),       // ambiguous actual
+        ("no_difference", "a", "positive", None),
+    ];
+    for (i, (verdict, took, pol, expected)) in matrix.iter().enumerate() {
+        let store = CausalStore::open_in_memory().unwrap();
+        let id = store
+            .log_prediction(
+                "option A text",
+                "option B text",
+                Some("t"),
+                verdict,
+                "contrastive",
+                0.5,
+                None,
+            )
+            .unwrap();
+        let recorded = if *took == "a" {
+            "option A text"
+        } else {
+            "option B text"
+        };
+        assert_eq!(
+            store
+                .resolve_predictions_for_decision(recorded, Some(pol))
+                .unwrap(),
+            1,
+            "case {i}: one prediction must resolve"
+        );
+        let correct: Option<i64> = store
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT correct FROM pending_predictions WHERE id = ?1",
+                    rusqlite::params![id],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(
+            correct, *expected,
+            "case {i} ({verdict}, took {took}, {pol})"
+        );
+        // Single resolution: a second matching record must not re-resolve.
+        store
+            .record_decision_full(
+                recorded,
+                "later different outcome",
+                "caused",
+                Some("t"),
+                0.8,
+                "rule",
+                2000,
+                Some("negative"),
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .resolve_predictions_for_decision(recorded, Some("positive"))
+                .unwrap(),
+            0,
+            "case {i}: already resolved"
+        );
+    }
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+fn test_prediction_stats_and_pending_list() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // 2 correct, 1 wrong, 1 ambiguous (resolved); 2 pending.
+    store
+        .log_prediction("a1", "b1", Some("x"), "prefer_a", "contrastive", 0.5, None)
+        .unwrap();
+    store
+        .log_prediction("a2", "b2", Some("x"), "prefer_a", "contrastive", 0.5, None)
+        .unwrap();
+    store
+        .log_prediction("a3", "b3", Some("y"), "prefer_b", "contrastive", 0.5, None)
+        .unwrap();
+    store
+        .log_prediction("a4", "b4", Some("y"), "prefer_a", "contrastive", 0.5, None)
+        .unwrap();
+    store
+        .log_prediction("a5", "b5", Some("y"), "prefer_a", "contrastive", 0.5, None)
+        .unwrap();
+    store
+        .log_prediction("a6", "b6", None, "prefer_b", "contrastive", 0.5, None)
+        .unwrap();
+    store
+        .resolve_predictions_for_decision("a1", Some("positive"))
+        .unwrap(); // correct
+    store
+        .resolve_predictions_for_decision("a2", Some("positive"))
+        .unwrap(); // correct
+    store
+        .resolve_predictions_for_decision("a3", Some("positive"))
+        .unwrap(); // preferred B, took A positive → wrong
+    store
+        .resolve_predictions_for_decision("a4", Some("mixed"))
+        .unwrap(); // ambiguous
+    let stats = store.prediction_stats().unwrap();
+    assert_eq!(stats.resolved, 4);
+    assert_eq!(stats.correct, 2);
+    assert_eq!(stats.ambiguous, 1);
+    assert_eq!(stats.pending, 2);
+    assert_eq!(stats.by_method["contrastive"].resolved, 4);
+    assert_eq!(stats.by_task_tag["x"].correct, 2);
+    assert_eq!(stats.by_task_tag["y"].correct, 0);
+    let pending = store.pending_predictions(10).unwrap();
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].option_a, "a6", "newest first");
 }

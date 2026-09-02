@@ -760,6 +760,8 @@ mod tests {
             discovered_at: 0,
             outcome_polarity: None,
             superseded_by: None,
+            context_fingerprint: None,
+            context_text: None,
         };
         // Rank-ordered pool: 5 episodes above 5 originals (the §4 shape —
         // BM25 length normalization floats the summaries).

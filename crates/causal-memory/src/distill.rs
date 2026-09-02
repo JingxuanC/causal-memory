@@ -838,7 +838,11 @@ mod tests {
             {"kind": "lesson", "text": "2025-06-03: Always run tests first.", "date": "2025-06-03"}
         ]"#;
         let items = Distiller::parse_items(raw, "2025-06-03");
-        assert_eq!(items.len(), 2, "exact repeats collapse, distinct items stay");
+        assert_eq!(
+            items.len(),
+            2,
+            "exact repeats collapse, distinct items stay"
+        );
         assert_eq!(items[0].kind, ItemKind::Event);
         assert_eq!(items[1].kind, ItemKind::Lesson);
     }

@@ -120,12 +120,12 @@ impl Default for ConsolidateConfig {
             replay_gc_threshold: 0.1,
             max_gc_fraction: 0.2,
             gc_floor: 50,
-            gc_min_age_hours: 168,       // 7d dormancy (aligned with temporal tier)
-            gc_access_grace_hours: 168,  // 7d access grace (aligned with boost window)
+            gc_min_age_hours: 168, // 7d dormancy (aligned with temporal tier)
+            gc_access_grace_hours: 168, // 7d access grace (aligned with boost window)
             half_life_user_feedback_hours: 2160, // 90d
-            half_life_llm_hours: 2160,           // 90d (same magnitude as legacy ~69d)
-            half_life_temporal_hours: 168,       // 7d
-            half_life_fact_hours: 2160,          // 90d — facts fade slowest
+            half_life_llm_hours: 2160, // 90d (same magnitude as legacy ~69d)
+            half_life_temporal_hours: 168, // 7d
+            half_life_fact_hours: 2160, // 90d — facts fade slowest
             supersession_limit: 20,
             supersession_action: SupersessionAction::Retire,
             q_alpha: 0.1,

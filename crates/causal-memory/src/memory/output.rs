@@ -206,6 +206,14 @@ impl CfDist {
     }
 }
 
+/// Verdict phrase fragments (v14.1): the formatters embed them in
+/// human-readable conclusions and the ledger's verdict-code matcher reads
+/// them back. ONE source of truth — the pre-constant era had paired output
+/// "favor" while the matcher expected "favors", silently mis-coding every
+/// paired verdict as no_difference.
+pub(crate) const VERDICT_FAVORS_A: &str = "favors A";
+pub(crate) const VERDICT_FAVORS_B: &str = "favors B";
+
 /// Conclusion of a counterfactual comparison between two outcome
 /// distributions. Deterministic: the side with the higher net evidence score
 /// wins; equal scores (or missing data) are honestly "insufficient".
@@ -217,14 +225,72 @@ pub(crate) fn counterfactual_verdict(a: &CfDist, b: &CfDist) -> String {
         (false, false) => {
             let (sa, sb) = (a.score(), b.score());
             if sa > sb {
-                format!("recorded evidence favors A (net {sa:+.1} vs {sb:+.1})")
+                format!("recorded evidence {VERDICT_FAVORS_A} (net {sa:+.1} vs {sb:+.1})")
             } else if sb > sa {
-                format!("recorded evidence favors B (net {sb:+.1} vs {sa:+.1})")
+                format!("recorded evidence {VERDICT_FAVORS_B} (net {sb:+.1} vs {sa:+.1})")
             } else {
                 format!("insufficient evidence to distinguish (both net {sa:+.1})")
             }
         }
     }
+}
+
+/// v14 paired (same-context) verdict over fork pairs. A pair votes for the
+/// query side whose branch ended positive while the other ended negative —
+/// a direct same-world-state contrast. `ids_a`/`ids_b` map pair endpoints
+/// to the query's A/B sides (an endpoint retrieved by neither side still
+/// renders in the display but casts no vote). None = no cross-side votes
+/// (caller falls back to the pooled-distribution verdict).
+pub(crate) fn paired_verdict(
+    forks: &[crate::store::ForkPair],
+    ids_a: &[i64],
+    ids_b: &[i64],
+) -> Option<String> {
+    let side_of = |id: i64| -> Option<char> {
+        if ids_a.contains(&id) {
+            Some('A')
+        } else if ids_b.contains(&id) {
+            Some('B')
+        } else {
+            None
+        }
+    };
+    let (mut va, mut vb, mut contrast) = (0usize, 0usize, 0usize);
+    for f in forks {
+        let (Some(sa), Some(sb)) = (side_of(f.edge_id_a), side_of(f.edge_id_b)) else {
+            continue;
+        };
+        if sa == sb {
+            continue; // both branches landed on the same query side
+        }
+        let (pa, pb) = (
+            f.a_polarity.as_deref().unwrap_or("?"),
+            f.b_polarity.as_deref().unwrap_or("?"),
+        );
+        let winner = match (pa, pb) {
+            ("positive", "negative") => Some(sa),
+            ("negative", "positive") => Some(sb),
+            _ => None,
+        };
+        contrast += 1;
+        match winner {
+            Some('A') => va += 1,
+            Some('B') => vb += 1,
+            _ => {}
+        }
+    }
+    if contrast == 0 || va == vb {
+        return None;
+    }
+    let (w, n) = if va > vb { ('A', va) } else { ('B', vb) };
+    let frag = if w == 'A' {
+        VERDICT_FAVORS_A
+    } else {
+        VERDICT_FAVORS_B
+    };
+    Some(format!(
+        "same-context evidence {frag} ({n}/{contrast} contrasting pair(s))"
+    ))
 }
 
 /// Char-safe truncation to at most `n` chars, appending "…" when cut.
