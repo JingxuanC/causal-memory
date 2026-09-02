@@ -85,7 +85,6 @@ CREATE TABLE IF NOT EXISTS decision_forks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     edge_id_a INTEGER NOT NULL,   -- lower edge id
     edge_id_b INTEGER NOT NULL,   -- higher edge id
-    fingerprint TEXT NOT NULL,    -- shared context_fingerprint
     discovered_at INTEGER NOT NULL,
     UNIQUE(edge_id_a, edge_id_b),
     FOREIGN KEY (edge_id_a) REFERENCES causal_edges(id),
@@ -94,6 +93,11 @@ CREATE TABLE IF NOT EXISTS decision_forks (
 CREATE INDEX IF NOT EXISTS idx_forks_a ON decision_forks(edge_id_a);
 CREATE INDEX IF NOT EXISTS idx_forks_b ON decision_forks(edge_id_b);
 ```
+
+> v15: the denormalized `fingerprint` column was dropped — it was written on
+> every pair insert but never read (both consumers already JOIN
+> `causal_edges`, where the fingerprint lives as `context_fingerprint`):
+> duplicated normalized context text per pair for zero read benefit.
 
 ### Semantics
 

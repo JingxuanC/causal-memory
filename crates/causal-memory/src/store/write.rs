@@ -135,7 +135,10 @@ impl CausalStore {
         // DIFFERENT decision chunk ⇒ natural experiment. Best-effort — a
         // failure here must never fail the record (same discipline as the
         // embedding path). Cap: link at most the 10 most recent siblings so
-        // a hot fingerprint stays O(n) not O(n²) pairs.
+        // a hot fingerprint stays O(n) not O(n²) pairs. The pair rows store
+        // only the two edge ids — the fingerprint itself is never read back
+        // from decision_forks (both consumers JOIN causal_edges, where it
+        // lives as context_fingerprint), so it is not duplicated here.
         if let Some(fp) = &fingerprint {
             let _ = Self::link_forks(&conn, edge_id, &dec_id, fp, db_time);
         }
@@ -170,9 +173,9 @@ impl CausalStore {
                 (edge_id, sib)
             };
             n += conn.execute(
-                "INSERT OR IGNORE INTO decision_forks (edge_id_a, edge_id_b, fingerprint, discovered_at)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![a, b, fingerprint, db_time],
+                "INSERT OR IGNORE INTO decision_forks (edge_id_a, edge_id_b, discovered_at)
+                 VALUES (?1, ?2, ?3)",
+                params![a, b, db_time],
             )?;
         }
         Ok(n)
@@ -181,6 +184,9 @@ impl CausalStore {
     /// v14: fork pairs touching any of `edge_ids`, joined to both edges'
     /// endpoint texts and polarities (for the counterfactual same-context
     /// section). Only pairs where BOTH edges are still valid are returned.
+    /// The fingerprint comes from `ea.context_fingerprint` — both edges of a
+    /// pair share it by construction, and the JOIN is already there; the
+    /// forks table itself no longer duplicates it (schema v15).
     pub fn fork_siblings_for_edges(&self, edge_ids: &[i64]) -> Result<Vec<ForkPair>> {
         if edge_ids.is_empty() {
             return Ok(Vec::new());
@@ -188,7 +194,7 @@ impl CausalStore {
         let conn = self.acquire()?;
         let placeholders = vec!["?"; edge_ids.len()].join(",");
         let mut stmt = conn.prepare(&format!(
-            "SELECT f.id, f.edge_id_a, f.edge_id_b, f.fingerprint,
+            "SELECT f.id, f.edge_id_a, f.edge_id_b, ea.context_fingerprint,
                     da.text, oa.text, ea.relation, ea.outcome_polarity,
                     db.text, ob.text, eb.relation, eb.outcome_polarity
              FROM decision_forks f

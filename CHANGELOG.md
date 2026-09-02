@@ -90,6 +90,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rows). Structured JSON logs on stderr via `CAUSAL_MEMORY_LOG_FORMAT=json`.
   OTLP export deferred until a collector exists.
 
+### Removed
+- **`decision_forks.fingerprint` column** (schema v15) — denormalized copy
+  of the shared `context_fingerprint` that was written on every pair insert
+  but never read: both consumers (`fork_siblings_for_edges`, `stats`
+  gauges) already JOIN `causal_edges`, which carries the fingerprint, so
+  the column duplicated normalized context text per pair for zero read
+  benefit. `migrate_to_v15` drops it on v14 DBs (pairs preserved);
+  `fork_siblings_for_edges` now selects `ea.context_fingerprint` — the
+  JOIN was already there, no query-plan change.
+
 ### Security
 - **Opt-in bearer auth for observability endpoints** — setting
   `CAUSAL_MEMORY_HTTP_AUTH_TOKEN` (env or `setconfig`; unset = open, the

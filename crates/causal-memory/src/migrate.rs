@@ -31,7 +31,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 14;
+pub const SCHEMA_VERSION: u32 = 15;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -85,6 +85,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 14 {
         migrate_to_v14(&tx)?;
+    }
+    if version < 15 {
+        migrate_to_v15(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -841,6 +844,60 @@ mod tests {
         migrate(&conn).unwrap();
         assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
     }
+
+    #[test]
+    fn test_migrate_v15_drops_fork_fingerprint_and_keeps_pairs() {
+        // Hand-build a v14-shape DB: decision_forks WITH the denormalized
+        // fingerprint column, user_version = 14. migrate() must drop the
+        // column and preserve existing pair rows.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE chunks (id TEXT PRIMARY KEY, text TEXT NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE causal_edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_id TEXT NOT NULL, to_id TEXT NOT NULL,
+                relation TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0.5,
+                discovered_by TEXT NOT NULL DEFAULT 'llm_inferred',
+                task_tag TEXT, created_at INTEGER NOT NULL,
+                event_time INTEGER, valid_to INTEGER,
+                context_fingerprint TEXT, context_text TEXT
+             );
+             CREATE TABLE decision_forks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                edge_id_a INTEGER NOT NULL,
+                edge_id_b INTEGER NOT NULL,
+                fingerprint TEXT NOT NULL,
+                discovered_at INTEGER NOT NULL,
+                UNIQUE(edge_id_a, edge_id_b)
+             );
+             INSERT INTO chunks (id, text, created_at) VALUES
+                ('d1','decision one',1000),('o1','outcome one',1000),
+                ('d2','decision two',2000),('o2','outcome two',2000);
+             INSERT INTO causal_edges (from_id, to_id, relation, task_tag, created_at)
+             VALUES ('d1','o1','caused','tag',1000),('d2','o2','enabled','tag',2000);
+             INSERT INTO decision_forks (edge_id_a, edge_id_b, fingerprint, discovered_at)
+             VALUES (1, 2, 'tag\x1frust agent', 3000);
+             PRAGMA user_version = 14;",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
+        assert!(
+            !table_columns(&conn, "decision_forks")
+                .unwrap()
+                .contains("fingerprint"),
+            "v15 must drop the denormalized fingerprint column"
+        );
+        let pairs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM decision_forks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(pairs, 1, "existing fork pairs must survive the drop");
+
+        // Idempotent: re-running on an already-v15 DB is a no-op success.
+        migrate(&conn).unwrap();
+    }
 }
 
 /// v8 → v9: chunk-level learning state. `q_value` persists the hippocampus
@@ -1004,6 +1061,24 @@ fn migrate_to_v14(conn: &Connection) -> Result<()> {
             "CREATE INDEX IF NOT EXISTS idx_causal_fingerprint
              ON causal_edges(context_fingerprint) WHERE context_fingerprint IS NOT NULL;",
         )?;
+    }
+    Ok(())
+}
+
+/// v15: drop the denormalized `fingerprint` column from `decision_forks`.
+/// It was written on every pair insert but never read — both consumers
+/// (`fork_siblings_for_edges`, the `stats` gauges) already JOIN
+/// `causal_edges`, where the fingerprint lives as `context_fingerprint`, so
+/// the column duplicated normalized context text per pair for zero read
+/// benefit. Fresh DBs (and pre-v14 DBs, whose forks table is created from
+/// the updated DDL const) never have it; this only rewrites DBs that ran
+/// v14 before this fix. Idempotent via the column probe; DROP COLUMN needs
+/// SQLite ≥ 3.35 (bundled rusqlite is far newer).
+fn migrate_to_v15(conn: &Connection) -> Result<()> {
+    if table_exists(conn, "decision_forks")?
+        && table_columns(conn, "decision_forks")?.contains("fingerprint")
+    {
+        conn.execute_batch("ALTER TABLE decision_forks DROP COLUMN fingerprint")?;
     }
     Ok(())
 }
