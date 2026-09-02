@@ -1875,7 +1875,7 @@ impl Memory {
             None => match counterfactual_verdict(&dist_a, &dist_b) {
                 v if v.contains(VERDICT_FAVORS_A) => "prefer_a",
                 v if v.contains(VERDICT_FAVORS_B) => "prefer_b",
-                v if dist_a.total() > 0 && dist_b.total() > 0 => "no_difference",
+                _ if dist_a.total() > 0 && dist_b.total() > 0 => "no_difference",
                 _ => "",
             },
         };
