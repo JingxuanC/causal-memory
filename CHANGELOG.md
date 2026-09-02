@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.9.3] - Unreleased
 
 ### Added
+- **Native Claude Code plugin + marketplace** (`plugins/claude-code/` +
+  root `.claude-plugin/marketplace.json`): install with
+  `claude plugin marketplace add JingxuanC/causal-memory &&
+  claude plugin install causal-memory@causal-memory`. Ships the MCP server
+  (stdio from PATH), the activation skill, `/recall <task>` (experience
+  check before acting) and `/memory-report` (prediction-ledger calibration
+  + inventory). Verified locally: marketplace add → install → `✔
+  Connected`, ~229-token always-on cost. Prerequisite: `pip install
+  causal-memory` (or build from repo and put the binary on PATH).
+- **Codex native surface** (`plugins/codex/prompts/causal-memory.md`):
+  `/causal-memory <task>` custom prompt; `integrations/codex` installer
+  now installs it alongside the MCP registration + AGENTS.md guidance.
 - **Rung-3 activation pass** (post-Phase-A): all five integration surfaces
   now teach the `context` param and `prediction_report` (Claude.md paste
   prompt, SKILL.md, dsh-plugin system prompt + README, Hermes provider
