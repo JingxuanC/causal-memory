@@ -41,6 +41,12 @@ The DB lives at `~/.local/share/causal-memory/causal.db` by default
 causal-memory integration (Codex, kimi CLI, Hermes, Python) — lessons
 cross-pollinate across agents.
 
+## Privacy (what the reviewer wants to know)
+
+- All memory lives in a **local SQLite file** (`~/.local/share/causal-memory/`) — no telemetry, no analytics, no third-party endpoints by default.
+- The plugin payload itself is markdown + JSON only; the `causal-memory` binary comes from this repo / PyPI and runs locally.
+- Embedding / LLM features are opt-in via your own API config and call only the endpoints you configure; without them, retrieval is pure local BM25.
+
 ## Memory hygiene
 
 - `causal-memory sleep` periodically consolidates (decay, pattern mining);

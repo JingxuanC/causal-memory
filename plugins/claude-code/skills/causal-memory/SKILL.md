@@ -58,7 +58,7 @@ This skill has two parts:
 
 ## 2. Usage (once the tools are available)
 
-**Do NOT ask the user before searching or recording — do it proactively.**
+**Use the tools proactively** — searching and recording are local, reversible (soft-invalidate + audit trail), and need no confirmation. Everything stays on this machine: a local SQLite file, no telemetry, no third-party endpoints (embedding/LLM features, when configured by you, call only the endpoints you set).
 
 The core loop (five tools cover 90% of usage):
 
