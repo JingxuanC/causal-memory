@@ -228,6 +228,13 @@ Ecosystem:
   initialize → write → prefetch → shutdown). Entry ticket: our benchmark
   suite (see
   [docs/research/computational-ai/hermes-provider-ecosystem.md](research/computational-ai/hermes-provider-ecosystem.md))
+- [ ] **Cloud context restore** (session commit/archive) —
+  [design](design/cloud-context-restore.md): upgrade `session_logs` from an
+  audit table into a commit/archive/restore loop (OpenViking-style session
+  lifecycle) — `commit_session` / `restore_session` tools, tiered L0/L1/L2
+  loading on the existing `detail_level` path, object-store sync, plus the
+  still-open `/mcp` auth + multi-tenant hardening. fork stays orthogonal:
+  it compares same-context branches, it does not snapshot context.
 - [ ] **L0 file injection**: generate `CAUSAL_MEMORY.md` (< 200 lines,
   pointer-style) for constant system-prompt pinning — proactive, vs the
   on-demand `causal_directory` tool
