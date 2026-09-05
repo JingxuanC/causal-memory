@@ -92,11 +92,19 @@ fn ensure_cm(cm: &Path) -> anyhow::Result<()> {
 }
 
 /// Atomic write: temp file in the same dir + rename.
+/// Sensitive content (refs, HEAD, and above all .cm/config.json which holds
+/// cloud bearer tokens) must not be world-readable — force 0600 regardless
+/// of umask (review finding: token/config were 0644).
 fn atomic_write(path: &Path, content: &str) -> anyhow::Result<()> {
     let dir = path.parent().context("path has no parent dir")?;
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".tmp-{}-{}", std::process::id(), rand_suffix()));
     std::fs::write(&tmp, content)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
     std::fs::rename(&tmp, path)?;
     Ok(())
 }

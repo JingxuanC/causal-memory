@@ -515,8 +515,10 @@ class CausalMemoryProvider(_MemoryProvider):
     def _remember_safe(self, text: str) -> None:
         try:
             self._mem.remember(text)
-        except Exception:
-            pass  # background hook — never raise into a turn
+        except Exception as e:  # noqa: BLE001 — background hook, never raise
+            # Log at debug, not silent: a swallowing background hook is how
+            # whole stores quietly stop learning (review lesson).
+            logger.debug("causal-memory remember failed: %s", e)
 
     def _cli_binary(self) -> Optional[str]:
         """causal-memory CLI binary: CAUSAL_MEMORY_CLI override, else PATH."""

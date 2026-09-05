@@ -271,6 +271,13 @@ fn atomic_write_file(path: &Path, content: &[u8]) -> std::io::Result<()> {
     }
     let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
     std::fs::write(&tmp, content)?;
+    // 0600: object-store contents are private memory; the token file above
+    // all must not be world-readable (review finding).
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    }
     std::fs::rename(&tmp, path)
 }
 
@@ -300,6 +307,13 @@ async fn put_object(
     AxumPath((agent, hash)): AxumPath<(String, String)>,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
+    // Snapshot cap: full-state exports stay well under this; a larger body
+    // is either a corrupted client or a DoS attempt (review finding — no
+    // limit before).
+    const MAX_OBJECT_BYTES: usize = 64 * 1024 * 1024;
+    if body.len() > MAX_OBJECT_BYTES {
+        return Err(err(StatusCode::PAYLOAD_TOO_LARGE, "object exceeds 64 MiB"));
+    }
     let dir =
         agent_dir(&root, &agent).ok_or_else(|| err(StatusCode::BAD_REQUEST, "bad agent id"))?;
     if !valid_hash(&hash) {
@@ -353,6 +367,9 @@ async fn put_ref(
     AxumPath(agent): AxumPath<String>,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
+    if body.len() > 4096 {
+        return Err(err(StatusCode::PAYLOAD_TOO_LARGE, "ref body exceeds 4 KiB"));
+    }
     let dir =
         agent_dir(&root, &agent).ok_or_else(|| err(StatusCode::BAD_REQUEST, "bad agent id"))?;
     let content = String::from_utf8(body.to_vec())
@@ -641,6 +658,16 @@ mod tests {
         let t1 = v["token"].as_str().unwrap().to_string();
         assert_eq!(t1.len(), 48);
         assert_eq!(v["rotated"], false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(root.path().join("agents/newbie/token"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "agent token must not be world-readable");
+        }
 
         // Per-agent token now guards the repo (global no longer suffices).
         let resp = client
@@ -726,5 +753,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+    #[tokio::test]
+    async fn oversized_ref_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let base = spawn(root.path().to_path_buf(), None).await;
+        let client = test_client();
+        // Oversized ref body → 413 before any parse.
+        let big = "a".repeat(8192);
+        let resp = client
+            .put(format!("{base}/agents/x/refs/heads/main"))
+            .body(big)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        // No ref file was written.
+        assert!(!root.path().join("agents/x/refs/heads/main").exists());
     }
 }
