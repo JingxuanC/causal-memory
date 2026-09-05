@@ -268,7 +268,7 @@ fn print_help() {
          \x20 cloud list <server-url>                 list registered agents\n\
          \x20 cloud revoke <agent_id> <server-url>    revoke agent token\n\
          \x20 record <decision> <outcome> [--tag T]   log a lesson (CLI hook)\n\
-         \x20 session-commit <session> [--push R]     snapshot + push a session's\n\
+         \x20 session-commit [<session>] [--push R]    snapshot + push a session's\n\
          \x20                                         lessons (auto-commit hook)\n\
          \x20   (state in <db>.cm/; commits are sha256 content-addressed)\n\
          \n\

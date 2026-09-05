@@ -1899,14 +1899,17 @@ fn llm_l0(
     }
 }
 
-/// `session-commit <session-file|dir>` — the `on_session_end` hook of P2
-/// auto-commit: parse the agent session (best-effort), snapshot whatever
-/// lessons the session recorded (via `record` / MCP record_decision) with a
-/// generated L0 message, and optionally push to a remote so the cloud copy
-/// never goes stale.
+/// `session-commit [<session-file|dir>]` — the `on_session_end` hook of P2
+/// auto-commit: snapshot whatever lessons the session recorded (via `record`
+/// / MCP record_decision) with a generated L0 message, and optionally push to
+/// a remote so the cloud copy never goes stale.
 ///
-///   session-commit <session> [--agent grok|claude|codex|kimi] [-m <msg>]
+///   session-commit [<session>] [--agent grok|claude|codex|kimi] [-m <msg>]
 ///                 [--l0-llm] [--push <remote>] [--db P]
+///
+/// The session argument is OPTIONAL: hosts that drive the hook themselves
+/// (Hermes memory provider `on_session_end`) hold the conversation in memory,
+/// not in a session file — they pass a real L0 via `-m` and no session path.
 ///
 /// Message resolution order: `-m` (host-provided L0) > `--l0-llm` (LLM
 /// one-line summary of the parsed session, ≤256 chars) > heuristic fallback
@@ -1914,7 +1917,7 @@ fn llm_l0(
 /// unparseable/foreign session file does NOT block the commit — the hook must
 /// never lose a session's recorded lessons to a format nit.
 pub(crate) fn run_session_commit(args: &[String]) -> anyhow::Result<()> {
-    const USAGE: &str = "Usage: causal-memory session-commit <session-file|dir> [--agent grok|claude|codex|kimi] [-m <msg>] [--l0-llm] [--push <remote>] [--db P]";
+    const USAGE: &str = "Usage: causal-memory session-commit [<session-file|dir>] [--agent grok|claude|codex|kimi] [-m <msg>] [--l0-llm] [--push <remote>] [--db P]";
     let mut db: Option<PathBuf> = None;
     let mut push: Option<String> = None;
     let mut message: Option<String> = None;
@@ -1958,35 +1961,46 @@ pub(crate) fn run_session_commit(args: &[String]) -> anyhow::Result<()> {
         }
         i += 1;
     }
-    let Some(session_path) = pos.first() else {
-        bail!("session-commit requires a <session-file|dir>\n{USAGE}");
-    };
+    if pos.len() > 1 {
+        bail!("unexpected extra argument: {}\n{USAGE}", pos[1]);
+    }
+    let session_path: Option<&String> = pos.first();
     let db_path = db.unwrap_or_else(get_db_path);
     let cm = cm_dir_for(&db_path);
 
-    // Best-effort parse → parsed material (for LLM L0) + counts (fallback msg).
-    let stem = Path::new(session_path)
-        .file_name()
-        .map(|f| f.to_string_lossy().into_owned())
-        .unwrap_or_else(|| session_path.clone());
-    let parsed: Option<causal_memory::session::ParsedSession> = {
-        use causal_memory::session::{agent_kind_from_str, parser_for, SessionSource};
-        let kind = agent
-            .as_deref()
-            .and_then(agent_kind_from_str)
-            .unwrap_or(causal_memory::session::AgentKind::Grok);
-        let src = if Path::new(session_path).is_dir() {
-            SessionSource::dir(session_path)
-        } else {
-            SessionSource::file(session_path)
-        };
-        match parser_for(kind).parse(&src) {
-            Ok(p) => Some(p),
-            Err(e) => {
-                eprintln!("session-commit: parse warning ({e}); committing with fallback message");
-                None
+    // Best-effort parse (only when a session path was given) → parsed
+    // material (for LLM L0) + counts (fallback msg). Host-driven commits
+    // pass no path: nothing to parse, no warning.
+    let stem = match session_path {
+        Some(sp) => Path::new(sp)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_else(|| sp.clone()),
+        None => "(auto)".to_string(),
+    };
+    let parsed: Option<causal_memory::session::ParsedSession> = match session_path {
+        Some(sp) => {
+            use causal_memory::session::{agent_kind_from_str, parser_for, SessionSource};
+            let kind = agent
+                .as_deref()
+                .and_then(agent_kind_from_str)
+                .unwrap_or(causal_memory::session::AgentKind::Grok);
+            let src = if Path::new(sp).is_dir() {
+                SessionSource::dir(sp)
+            } else {
+                SessionSource::file(sp)
+            };
+            match parser_for(kind).parse(&src) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!(
+                        "session-commit: parse warning ({e}); committing with fallback message"
+                    );
+                    None
+                }
             }
         }
+        None => None,
     };
     let (decisions, events) = parsed
         .as_ref()
