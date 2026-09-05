@@ -23,7 +23,6 @@ use commands::io::{run_export, run_import};
 use commands::maintenance::{
     run_embed, run_judge, run_migrate, run_polarity, run_resolve_updates, run_restore, run_sleep,
 };
-use commands::misc::run_record;
 use commands::misc::run_refute;
 use commands::misc::run_stats;
 use commands::misc::{run_extract, run_http_server, run_link, run_mcp_server, run_reasoning};
@@ -180,8 +179,6 @@ fn dispatch(args: &[String]) -> anyhow::Result<()> {
             "cloud" => return run_cloud(&args[1..]),
             // session-commit <session> — end-of-session auto commit (P2)
             "session-commit" => return run_session_commit(&args[1..]),
-            // record <decision> <outcome> — CLI lesson hook (P2)
-            "record" => return run_record(&args[1..]),
             // Subcommand: bench-compaction — reproducible
             // compaction-degradation bench
             "bench-compaction" => {
@@ -267,7 +264,6 @@ fn print_help() {
          \x20 cloud register <agent_id> <server-url>  mint agent token + save remote\n\
          \x20 cloud list <server-url>                 list registered agents\n\
          \x20 cloud revoke <agent_id> <server-url>    revoke agent token\n\
-         \x20 record <decision> <outcome> [--tag T]   log a lesson (CLI hook)\n\
          \x20 session-commit [<session>] [--push R]    snapshot + push a session's\n\
          \x20                                         lessons (auto-commit hook)\n\
          \x20   (state in <db>.cm/; commits are sha256 content-addressed)\n\
