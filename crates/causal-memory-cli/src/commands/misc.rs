@@ -260,6 +260,14 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
             .merge(build_obs_router(
                 ObsState { store, debug_memory },
                 auth_token.clone(),
+            ))
+            // Git-sync object store: /agents/<id>/objects|refs (https remote,
+            // memory-git-sync §7 P1). Layout mirrors the file remote 1:1.
+            .merge(crate::server::sync::build_sync_router(
+                crate::server::sync::SyncState {
+                    root: crate::server::sync::sync_root(),
+                    global_token: auth_token.clone(),
+                },
             ));
 
         let listener = tokio::net::TcpListener::bind(format!("{host}:{port}"))
@@ -269,6 +277,10 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
         eprintln!("Health check: http://{host}:{port}/healthz (legacy: /health)");
         eprintln!("Metrics:      http://{host}:{port}/metrics");
         eprintln!("Recall debug: http://{host}:{port}/debug/recall?query=... (+ /debug/recalls)");
+        eprintln!(
+            "Git sync:     http://{host}:{port}/agents/<agent_id>/objects|refs (root: {})",
+            crate::server::sync::sync_root().display()
+        );
         let loopback_host =
             host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]";
         match (&auth_token, loopback_host) {

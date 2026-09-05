@@ -57,6 +57,7 @@ impl CausalMemoryServer {
     }
 }
 
+pub mod sync;
 pub mod tools;
 
 #[cfg(test)]

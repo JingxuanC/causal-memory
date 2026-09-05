@@ -151,46 +151,37 @@ fn remotes_of(cfg: &serde_json::Value) -> BTreeMap<String, String> {
     out
 }
 
-/// Resolve a push/pull/clone target to a local path. Resolution order:
-/// named remote from config (or default "origin") > literal path (file://
-/// stripped, "~" expanded). Anything else that looks like a bare agent_id
-/// (no slash, not an existing path) is a P1 registry concern.
-fn resolve_target(cm: &Path, target: Option<&str>, default_name: &str) -> anyhow::Result<PathBuf> {
-    let cfg = read_config(cm)?;
-    let remotes = remotes_of(&cfg);
-    let t = match target {
-        None => {
-            let url = remotes.get(default_name).context(format!(
-                "no remote named '{default_name}' configured (remote add {default_name} <path> or pass a path)"
-            ))?;
-            url.clone()
-        }
-        Some(t) => {
-            if let Some(url) = remotes.get(t) {
-                url.clone()
-            } else if looks_like_path(t) {
-                t.to_string()
-            } else {
-                bail!(
-                    "'{t}' is neither a configured remote ({}) nor a path; \
-                     bare agent_id resolution is a P1 registry feature (https)",
-                    remotes.keys().cloned().collect::<Vec<_>>().join(", ")
-                )
-            }
-        }
-    };
-    Ok(normalize_path(&t))
+/// One named remote's full config: url + optional per-remote bearer token
+/// (set by `cloud register`, P1-3).
+fn remote_entry(cfg: &serde_json::Value, name: &str) -> Option<(String, Option<String>)> {
+    let v = cfg.get("remotes")?.get(name)?;
+    let url = v.get("url")?.as_str()?.to_string();
+    let token = v.get("token").and_then(|t| t.as_str()).map(String::from);
+    Some((url, token))
+}
+
+/// A remote memory repo. Two transports, one layout (design §2.3):
+/// a local directory (file remote) or an https object-store whose base URL
+/// is the agent namespace (e.g. `https://cm.example.com/agents/athena`).
+enum Remote {
+    File(PathBuf),
+    Http { base: String, token: Option<String> },
+}
+
+fn is_http_url(t: &str) -> bool {
+    t.starts_with("http://") || t.starts_with("https://")
 }
 
 fn looks_like_path(t: &str) -> bool {
-    t.starts_with("file://")
-        || t.contains('/')
-        || t == "."
-        || t == ".."
-        || t.starts_with("./")
-        || t.starts_with("../")
-        || t.starts_with('~')
-        || Path::new(t).exists()
+    !is_http_url(t)
+        && (t.starts_with("file://")
+            || t.contains('/')
+            || t == "."
+            || t == ".."
+            || t.starts_with("./")
+            || t.starts_with("../")
+            || t.starts_with('~')
+            || Path::new(t).exists())
 }
 
 fn normalize_path(t: &str) -> PathBuf {
@@ -202,27 +193,230 @@ fn normalize_path(t: &str) -> PathBuf {
     PathBuf::from(t)
 }
 
+fn env_auth_token() -> Option<String> {
+    std::env::var("CAUSAL_MEMORY_HTTP_AUTH_TOKEN")
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// Build a Remote from a resolved url + optional configured token. HTTP urls
+/// fall back to the shared env token; file urls carry no token.
+fn remote_from_url(url: String, token: Option<String>) -> Remote {
+    if is_http_url(&url) {
+        Remote::Http {
+            base: url.trim_end_matches('/').to_string(),
+            token: token.or_else(env_auth_token),
+        }
+    } else {
+        Remote::File(normalize_path(&url))
+    }
+}
+
+impl Remote {
+    fn display(&self) -> String {
+        match self {
+            Remote::File(p) => p.display().to_string(),
+            Remote::Http { base, .. } => base.clone(),
+        }
+    }
+
+    fn http() -> reqwest::blocking::Client {
+        reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("reqwest blocking client")
+    }
+
+    fn auth<'a>(
+        req: reqwest::blocking::RequestBuilder,
+        token: &Option<String>,
+    ) -> reqwest::blocking::RequestBuilder {
+        match token {
+            Some(t) => req.bearer_auth(t),
+            None => req,
+        }
+    }
+
+    /// Current mainline ref; None = unborn remote (no refs/heads/main yet).
+    fn read_ref(&self) -> anyhow::Result<Option<String>> {
+        match self {
+            Remote::File(p) => Ok(read_ref(&p.join("refs/heads/main"))),
+            Remote::Http { base, token } => {
+                let resp = Self::auth(Self::http().get(format!("{base}/refs/heads/main")), token)
+                    .send()
+                    .context("sync server unreachable")?;
+                match resp.status().as_u16() {
+                    200 => {
+                        let body = resp.text()?;
+                        let t = body.trim();
+                        if t.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some(t.to_string()))
+                        }
+                    }
+                    404 => Ok(None), // empty remote
+                    s => bail!(
+                        "GET refs → HTTP {s}: {}",
+                        body_snippet(resp.text().await_ok())
+                    ),
+                }
+            }
+        }
+    }
+
+    fn write_ref(&self, hash: &str) -> anyhow::Result<()> {
+        match self {
+            Remote::File(p) => atomic_write(&p.join("refs/heads/main"), hash),
+            Remote::Http { base, token } => {
+                let resp = Self::auth(
+                    Self::http()
+                        .put(format!("{base}/refs/heads/main"))
+                        .body(hash.to_string()),
+                    token,
+                )
+                .send()
+                .context("sync server unreachable")?;
+                if !resp.status().is_success() {
+                    bail!(
+                        "PUT refs → HTTP {}: {}",
+                        resp.status().as_u16(),
+                        body_snippet(resp.text().await_ok())
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Raw commit object text; errors mention the remote so users know which
+    /// side is missing/corrupt.
+    fn read_object_raw(&self, hash: &str) -> anyhow::Result<String> {
+        match self {
+            Remote::File(p) => {
+                std::fs::read_to_string(p.join("objects").join(hash)).with_context(|| {
+                    format!(
+                        "commit {:.8} not found on remote (pull first?)",
+                        short(hash)
+                    )
+                })
+            }
+            Remote::Http { base, token } => {
+                let resp = Self::auth(Self::http().get(format!("{base}/objects/{hash}")), token)
+                    .send()
+                    .context("sync server unreachable")?;
+                match resp.status().as_u16() {
+                    200 => Ok(resp.text()?),
+                    404 => bail!(
+                        "commit {:.8} not found on remote (pull first?)",
+                        short(hash)
+                    ),
+                    s => bail!(
+                        "GET object → HTTP {s}: {}",
+                        body_snippet(resp.text().await_ok())
+                    ),
+                }
+            }
+        }
+    }
+
+    fn write_object(&self, hash: &str, content: &str) -> anyhow::Result<()> {
+        match self {
+            Remote::File(p) => atomic_write(&p.join("objects").join(hash), content),
+            Remote::Http { base, token } => {
+                let resp = Self::auth(
+                    Self::http()
+                        .put(format!("{base}/objects/{hash}"))
+                        .body(content.to_string()),
+                    token,
+                )
+                .send()
+                .context("sync server unreachable")?;
+                if !resp.status().is_success() {
+                    bail!(
+                        "PUT object → HTTP {}: {}",
+                        resp.status().as_u16(),
+                        body_snippet(resp.text().await_ok())
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+trait RespTextFallback {
+    fn await_ok(self) -> String;
+}
+impl RespTextFallback for std::result::Result<String, reqwest::Error> {
+    fn await_ok(self) -> String {
+        self.unwrap_or_default()
+    }
+}
+
+fn body_snippet(body: String) -> String {
+    let b: String = body.chars().take(200).collect();
+    if b.is_empty() {
+        "(empty body)".to_string()
+    } else {
+        b
+    }
+}
+
+/// Resolve a push/pull/clone target to a [`Remote`]. Resolution order: named
+/// remote from config (or default "origin") > http(s) URL > literal path.
+/// Anything else that looks like a bare agent_id is the cloud registry's job
+/// (P1-3).
+fn resolve_remote(cm: &Path, target: Option<&str>, default_name: &str) -> anyhow::Result<Remote> {
+    let cfg = read_config(cm)?;
+    let remotes = remotes_of(&cfg);
+    let (url, token) = match target {
+        None => {
+            let (url, token) = remote_entry(&cfg, default_name).context(format!(
+                "no remote named '{default_name}' configured (remote add {default_name} <path|url> or pass one)"
+            ))?;
+            (url, token)
+        }
+        Some(t) => {
+            if let Some((url, token)) = remote_entry(&cfg, t) {
+                (url, token)
+            } else if is_http_url(t) {
+                (t.to_string(), None)
+            } else if looks_like_path(t) {
+                (t.to_string(), None)
+            } else {
+                bail!(
+                    "'{t}' is neither a configured remote ({}) nor a path/URL; \
+                     bare agent_id resolution needs `cloud register` (P1)",
+                    remotes.keys().cloned().collect::<Vec<_>>().join(", ")
+                )
+            }
+        }
+    };
+    Ok(remote_from_url(url, token))
+}
+
 /// Mirror commit object files from a remote into the local `.cm/objects` so
 /// `log` / `checkout` work offline afterwards (git fetch semantics: refs only
 /// point at objects you actually hold).
-fn mirror_objects(src_dir: &Path, dst_dir: &Path, hashes: &[String]) -> anyhow::Result<()> {
+fn mirror_objects(remote: &Remote, dst_dir: &Path, hashes: &[String]) -> anyhow::Result<()> {
     for h in hashes {
         let dst = dst_dir.join("objects").join(h);
         if !dst.exists() {
-            std::fs::copy(src_dir.join("objects").join(h), &dst)?;
+            let raw = remote.read_object_raw(h)?;
+            atomic_write(&dst, &raw)?;
         }
     }
     Ok(())
 }
 
-/// Read a commit object's (meta, data lines). Verifies hash == filename.
-fn read_object(cm: &Path, hash: &str) -> anyhow::Result<(CommitMeta, Vec<String>)> {
+/// Parse a commit object's raw text (meta line + data lines). Verifies
+/// sha256(data) == meta.hash == the requested hash.
+fn parse_object(raw: &str, hash: &str) -> anyhow::Result<(CommitMeta, Vec<String>)> {
     if !hash.chars().all(|c| c.is_ascii_hexdigit()) || hash.len() != 64 {
         bail!("invalid commit hash: {hash}");
     }
-    let path = cm.join("objects").join(hash);
-    let raw = std::fs::read_to_string(&path)
-        .with_context(|| format!("commit {:.8} not found locally (pull first?)", short(hash)))?;
     let mut lines = raw.lines();
     let meta_line = lines.next().context("empty commit object")?;
     let meta: CommitMeta = serde_json::from_str(meta_line)
@@ -236,6 +430,15 @@ fn read_object(cm: &Path, hash: &str) -> anyhow::Result<(CommitMeta, Vec<String>
         );
     }
     Ok((meta, data))
+}
+
+/// Read a commit object from a local `.cm/objects` dir (the local side always
+/// stores raw files — this is not a [`Remote`]).
+fn read_object(cm: &Path, hash: &str) -> anyhow::Result<(CommitMeta, Vec<String>)> {
+    let path = cm.join("objects").join(hash);
+    let raw = std::fs::read_to_string(&path)
+        .with_context(|| format!("commit {:.8} not found locally (pull first?)", short(hash)))?;
+    parse_object(&raw, hash)
 }
 
 /// Resolve `hash | HEAD | HEAD~N` to a full 64-hex hash, or an unambiguous
@@ -557,7 +760,7 @@ pub(crate) fn run_push(args: &[String]) -> anyhow::Result<()> {
     }
     let db_path = db.unwrap_or_else(get_db_path);
     let cm = cm_dir_for(&db_path);
-    let remote = resolve_target(&cm, target.as_deref(), "origin")?;
+    let remote = resolve_remote(&cm, target.as_deref(), "origin")?;
     let local_head = match read_ref(&cm.join("refs/heads/main")) {
         Some(h) => h,
         None => {
@@ -565,8 +768,7 @@ pub(crate) fn run_push(args: &[String]) -> anyhow::Result<()> {
             return Ok(());
         }
     };
-    let remote_ref_file = remote.join("refs/heads/main");
-    let remote_head = read_ref(&remote_ref_file);
+    let remote_head = remote.read_ref()?;
 
     // Collect the local-only chain: walk parents from HEAD until we hit the
     // remote ref (fast-forward) or genesis. An empty remote (no ref yet) is
@@ -600,20 +802,20 @@ pub(crate) fn run_push(args: &[String]) -> anyhow::Result<()> {
         );
     }
     // Upload oldest → newest.
-    std::fs::create_dir_all(remote.join("objects"))?;
-    std::fs::create_dir_all(
-        remote_ref_file
-            .parent()
-            .context("remote ref has no parent")?,
-    )?;
     for h in to_push.iter().rev() {
         let raw = std::fs::read_to_string(cm.join("objects").join(h))
             .with_context(|| format!("local object {:.8} missing (corrupt .cm?)", short(h)))?;
-        atomic_write(&remote.join("objects").join(h), &raw)?;
+        remote.write_object(h, &raw)?;
     }
-    atomic_write(&remote_ref_file, &local_head)?;
+    remote.write_ref(&local_head)?;
     println!("pushed {} commit(s) → {}", to_push.len(), remote.display());
     Ok(())
+}
+
+/// Read + integrity-verify a commit object from any remote transport.
+fn read_remote_object(remote: &Remote, hash: &str) -> anyhow::Result<(CommitMeta, Vec<String>)> {
+    let raw = remote.read_object_raw(hash)?;
+    parse_object(&raw, hash)
 }
 
 /// Import a chain of commit snapshots (oldest first) into `store`. Returns
@@ -626,12 +828,12 @@ pub(crate) fn run_push(args: &[String]) -> anyhow::Result<()> {
 /// (design §4/§9 R6): pull is now real state alignment, not just additions.
 fn import_chain(
     store: &CausalStore,
-    remote_dir: &Path,
+    remote: &Remote,
     chain_oldest_first: &[String],
 ) -> anyhow::Result<ImportStatsSum> {
     let mut sum = ImportStatsSum::default();
     for h in chain_oldest_first {
-        let (meta, data) = read_object(remote_dir, h)?; // verify integrity
+        let (meta, data) = read_remote_object(remote, h)?; // verify integrity
         if meta.format_version != FORMAT_VERSION {
             bail!("unsupported commit format_version {}", meta.format_version);
         }
@@ -678,12 +880,14 @@ pub(crate) fn run_pull(args: &[String]) -> anyhow::Result<()> {
     let db_path = db.unwrap_or_else(get_db_path);
     let cm = cm_dir_for(&db_path);
     ensure_cm(&cm)?;
-    let remote = resolve_target(&cm, target.as_deref(), "origin")?;
-    if !remote.join("refs/heads/main").exists() {
-        println!("nothing to pull (remote is empty)");
-        return Ok(());
-    }
-    let remote_head = read_ref(&remote.join("refs/heads/main")).context("remote ref unreadable")?;
+    let remote = resolve_remote(&cm, target.as_deref(), "origin")?;
+    let remote_head = match remote.read_ref()? {
+        Some(h) => h,
+        None => {
+            println!("nothing to pull (remote is empty)");
+            return Ok(());
+        }
+    };
     let local_head = read_ref(&cm.join("refs/heads/main"));
 
     // Chain from remote HEAD back until local HEAD or genesis.
@@ -696,7 +900,7 @@ pub(crate) fn run_pull(args: &[String]) -> anyhow::Result<()> {
             break;
         }
         remote_chain.push(cur.clone());
-        let (meta, _) = read_object(&remote, &cur)?;
+        let (meta, _) = read_remote_object(&remote, &cur)?;
         match meta.parent {
             Some(p) => cur = p,
             None => break,
@@ -791,25 +995,27 @@ pub(crate) fn run_clone(args: &[String]) -> anyhow::Result<()> {
     }
     let cm = cm_dir_for(&db_path);
     ensure_cm(&cm)?;
-    // Named-remote or agent_id resolution happens against an empty config
-    // (fresh clone) — only paths/URLs make sense pre-config.
-    let remote = if let Some(url) = remotes_of(&read_config(&cm)?).get(&target) {
-        normalize_path(url)
+    // Fresh clone: no named remotes yet — the target is a path/URL, or (P1-3)
+    // a bare agent_id resolved through the cloud registry config.
+    let remote = if is_http_url(&target) {
+        remote_from_url(target.clone(), env_auth_token())
     } else if looks_like_path(&target) {
-        normalize_path(&target)
+        remote_from_url(target.clone(), None)
     } else {
-        bail!("'{target}' is not a path; bare agent_id resolution is a P1 registry feature (https)")
+        bail!(
+            "'{target}' is not a path or URL; bare agent_id resolution needs `cloud register` (P1)"
+        )
     };
-    if !remote.join("refs/heads/main").exists() {
-        bail!("nothing to clone (remote is empty): {}", remote.display());
-    }
+    let remote_head = match remote.read_ref()? {
+        Some(h) => h,
+        None => bail!("nothing to clone (remote is empty): {}", remote.display()),
+    };
     let store = CausalStore::open(&db_path)?;
-    let remote_head = read_ref(&remote.join("refs/heads/main")).context("remote ref unreadable")?;
     let mut chain: Vec<String> = Vec::new();
     let mut cur = remote_head.clone();
     loop {
         chain.push(cur.clone());
-        let (meta, _) = read_object(&remote, &cur)?;
+        let (meta, _) = read_remote_object(&remote, &cur)?;
         match meta.parent {
             Some(p) => cur = p,
             None => break,
@@ -822,20 +1028,28 @@ pub(crate) fn run_clone(args: &[String]) -> anyhow::Result<()> {
     let sum = import_chain(&store, &remote, &chain)?;
     let counts = db_counts(&store)?;
     write_local_refs(&cm, &remote_head)?;
-    // Remember the source as origin (git clone semantics).
+    // Remember the source as origin (git clone semantics), including the
+    // bearer token when this remote is HTTP-authenticated.
+    let (origin_url, origin_token) = match &remote {
+        Remote::File(p) => (format!("file://{}", p.display()), None),
+        Remote::Http { base, token } => (base.clone(), token.clone()),
+    };
     let mut cfg = read_config(&cm)?;
-    cfg["remotes"]["origin"] = serde_json::json!({ "url": format!("file://{}", remote.display()) });
+    cfg["remotes"]["origin"] = serde_json::json!({
+        "url": origin_url,
+        "token": origin_token,
+    });
     write_config(&cm, &cfg)?;
 
     // Bootstrap summary: newest commit meta + last 3 valid lessons.
-    let (head_meta, _) = read_object(&cm, &remote_head)?;
+    let (head_meta, _) = read_remote_object(&remote, &remote_head)?;
     let lessons: Vec<(String, String)> = store.with_conn(|conn: &Connection| {
         let mut stmt = conn.prepare(
             "SELECT cf.text, ct.text FROM causal_edges ce
-             JOIN chunks cf ON cf.id = ce.from_id
-             JOIN chunks ct ON ct.id = ce.to_id
-             WHERE ce.valid_to IS NULL
-             ORDER BY ce.discovered_at DESC, ce.id DESC LIMIT 3",
+            JOIN chunks cf ON cf.id = ce.from_id
+            JOIN chunks ct ON ct.id = ce.to_id
+            WHERE ce.valid_to IS NULL
+            ORDER BY ce.discovered_at DESC, ce.id DESC LIMIT 3",
         )?;
         let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
@@ -850,7 +1064,7 @@ pub(crate) fn run_clone(args: &[String]) -> anyhow::Result<()> {
         sum.imported,
         short(&remote_head)
     );
-    println!("  origin → file://{}", remote.display());
+    println!("  origin → {}", remote.display());
     if lessons.is_empty() {
         println!("  (no lessons yet)");
     } else {

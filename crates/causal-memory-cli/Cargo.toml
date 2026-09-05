@@ -60,7 +60,9 @@ rusqlite.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
-reqwest.workspace = true
+# blocking: the git-sync CLI client (push/pull/clone over https) runs in sync
+# commands and uses reqwest's blocking client on a short per-request timeout.
+reqwest = { workspace = true, features = ["blocking"] }
 futures.workspace = true
 sha2.workspace = true
 
