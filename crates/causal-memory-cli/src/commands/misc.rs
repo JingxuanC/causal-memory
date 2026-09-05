@@ -3,6 +3,7 @@
 use crate::get_db_path;
 use crate::server::CausalMemoryServer;
 use causal_memory::store::CausalStore;
+use std::path::PathBuf;
 
 pub(crate) fn run_mcp_server() -> anyhow::Result<()> {
     let db_path = get_db_path();
@@ -1045,4 +1046,71 @@ mod obs_tests {
             assert_eq!(status, axum::http::StatusCode::OK, "{path} -> {status}");
         }
     }
+}
+
+/// `record <decision> <outcome>` — CLI hook for the shared memory facade
+/// (P2 auto-commit: agent-side `on_session_end` pipelines call this to log a
+/// lesson, then `session-commit` snapshots + pushes). Same code path as the
+/// MCP `record_decision` tool, label "cli".
+pub(crate) fn run_record(args: &[String]) -> anyhow::Result<()> {
+    const USAGE: &str = "Usage: causal-memory record <decision> <outcome> [--tag T] [--relation caused] [--source llm_inferred|temporal|rule|user_feedback] [--db P]";
+    let mut db: Option<PathBuf> = None;
+    let mut tag = String::new();
+    let mut relation = "caused".to_string();
+    let mut source: Option<String> = None;
+    let mut pos: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--db" => {
+                i += 1;
+                let Some(p) = args.get(i) else {
+                    anyhow::bail!("--db requires a path\n{USAGE}")
+                };
+                db = Some(PathBuf::from(p));
+            }
+            "--tag" => {
+                i += 1;
+                let Some(t) = args.get(i) else {
+                    anyhow::bail!("--tag requires a value\n{USAGE}")
+                };
+                tag = t.clone();
+            }
+            "--relation" => {
+                i += 1;
+                let Some(r) = args.get(i) else {
+                    anyhow::bail!("--relation requires a value\n{USAGE}")
+                };
+                relation = r.clone();
+            }
+            "--source" => {
+                i += 1;
+                let Some(s) = args.get(i) else {
+                    anyhow::bail!("--source requires a value\n{USAGE}")
+                };
+                source = Some(s.clone());
+            }
+            s if s.starts_with("--") => anyhow::bail!("unknown flag: {s}\n{USAGE}"),
+            other => pos.push(other.to_string()),
+        }
+        i += 1;
+    }
+    let (Some(decision), Some(outcome)) = (pos.first(), pos.get(1)) else {
+        anyhow::bail!("record requires <decision> and <outcome>\n{USAGE}");
+    };
+    if pos.len() > 2 {
+        anyhow::bail!("unexpected extra argument: {}\n{USAGE}", pos[2]);
+    }
+    let db_path = db.unwrap_or_else(get_db_path);
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let store = CausalStore::open(&db_path)?;
+    let memory = causal_memory::memory::Memory::new_with_label(store, "cli");
+    let out = memory.record_decision(decision, outcome, &relation, &tag, source.as_deref(), None);
+    if out.trim_start().starts_with('❌') {
+        anyhow::bail!("{out}");
+    }
+    println!("{out}");
+    Ok(())
 }

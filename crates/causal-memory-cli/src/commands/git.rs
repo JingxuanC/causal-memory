@@ -1824,3 +1824,143 @@ mod tests {
         assert_eq!(head_of(&db_b), head_of(&db_a));
     }
 }
+
+/// Best-effort L0 one-liner for an end-of-session commit message (P2). Kept
+/// single-line and ≤256 chars — it is a *fallback*: hosts that can produce a
+/// real L0 summary (Hermes session title etc.) pass it via `-m`.
+fn l0_message(stem: &str, decisions: usize, events: usize, lessons: usize) -> String {
+    let msg =
+        format!("session {stem}: {lessons} new lesson(s) ({decisions} decisions, {events} events)");
+    msg.chars().take(256).collect()
+}
+
+/// `session-commit <session-file|dir>` — the `on_session_end` hook of P2
+/// auto-commit: parse the agent session (best-effort), snapshot whatever
+/// lessons the session recorded (via `record` / MCP record_decision) with a
+/// generated L0 message, and optionally push to a remote so the cloud copy
+/// never goes stale.
+///
+///   session-commit <session> [--agent grok|claude|codex|kimi] [-m <msg>]
+///                 [--push <remote>] [--db P]
+///
+/// The parse is advisory: an unparseable/foreign session file does NOT block
+/// the commit (message falls back to the file name) — the hook must never
+/// lose a session's recorded lessons to a format nit.
+pub(crate) fn run_session_commit(args: &[String]) -> anyhow::Result<()> {
+    const USAGE: &str = "Usage: causal-memory session-commit <session-file|dir> [--agent grok|claude|codex|kimi] [-m <msg>] [--push <remote>] [--db P]";
+    let mut db: Option<PathBuf> = None;
+    let mut push: Option<String> = None;
+    let mut message: Option<String> = None;
+    let mut agent: Option<String> = None;
+    let mut pos: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--db" => {
+                i += 1;
+                let Some(p) = args.get(i) else {
+                    bail!("--db requires a path\n{USAGE}")
+                };
+                db = Some(PathBuf::from(p));
+            }
+            "--push" => {
+                i += 1;
+                let Some(r) = args.get(i) else {
+                    bail!("--push requires a remote name/path\n{USAGE}")
+                };
+                push = Some(r.clone());
+            }
+            "-m" | "--message" => {
+                i += 1;
+                let Some(m) = args.get(i) else {
+                    bail!("-m requires a message\n{USAGE}")
+                };
+                message = Some(m.clone());
+            }
+            "--agent" => {
+                i += 1;
+                let Some(a) = args.get(i) else {
+                    bail!("--agent requires a kind\n{USAGE}")
+                };
+                agent = Some(a.clone());
+            }
+            s if s.starts_with("--") => bail!("unknown flag: {s}\n{USAGE}"),
+            other => pos.push(other.to_string()),
+        }
+        i += 1;
+    }
+    let Some(session_path) = pos.first() else {
+        bail!("session-commit requires a <session-file|dir>\n{USAGE}");
+    };
+    let db_path = db.unwrap_or_else(get_db_path);
+    let cm = cm_dir_for(&db_path);
+
+    // Best-effort parse → counts for the L0 fallback message.
+    let stem = Path::new(session_path)
+        .file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| session_path.clone());
+    let (decisions, events) = {
+        use causal_memory::session::{agent_kind_from_str, parser_for, SessionSource};
+        let kind = agent
+            .as_deref()
+            .and_then(agent_kind_from_str)
+            .unwrap_or(causal_memory::session::AgentKind::Grok);
+        let src = if Path::new(session_path).is_dir() {
+            SessionSource::dir(session_path)
+        } else {
+            SessionSource::file(session_path)
+        };
+        match parser_for(kind).parse(&src) {
+            Ok(p) => (p.decisions.len(), p.events.len()),
+            Err(e) => {
+                eprintln!("session-commit: parse warning ({e}); committing with fallback message");
+                (0, 0)
+            }
+        }
+    };
+
+    // How many uncommitted lessons does the working tree hold?
+    let pending = CausalStore::open(&db_path)
+        .ok()
+        .map(|store| snapshot_data_lines(&store))
+        .transpose()?
+        .map(|(_, stats)| {
+            // Distinguish "nothing ever committed" from "clean": compare
+            // against the head snapshot if one exists.
+            match read_ref(&cm.join("refs/heads/main")) {
+                Some(head) => read_object(&cm, &head)
+                    .ok()
+                    .map(|(_, old)| stats.edges.saturating_sub(snapshot_edges(&old)))
+                    .unwrap_or(stats.edges),
+                None => stats.edges,
+            }
+        })
+        .unwrap_or(0);
+    fn snapshot_edges(old: &[String]) -> usize {
+        old.iter()
+            .filter(|l| l.contains("\"type\":\"edge\""))
+            .count()
+    }
+
+    let msg = message.unwrap_or_else(|| l0_message(&stem, decisions, events, pending));
+    if msg.is_empty() {
+        bail!("empty commit message");
+    }
+
+    run_commit(&[
+        "-m".into(),
+        msg.clone(),
+        "--db".into(),
+        db_path.to_string_lossy().into_owned(),
+    ])?;
+    if let Some(remote) = push {
+        run_push(&[
+            remote.clone(),
+            "--db".into(),
+            db_path.to_string_lossy().into_owned(),
+        ])?;
+    }
+    println!("session-commit: {msg}");
+    Ok(())
+}
