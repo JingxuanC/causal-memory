@@ -210,14 +210,14 @@ fn env_auth_token() -> Option<String> {
 
 /// Build a Remote from a resolved url + optional configured token. HTTP urls
 /// fall back to the shared env token; file urls carry no token.
-fn remote_from_url(url: String, token: Option<String>) -> Remote {
-    if is_http_url(&url) {
+fn remote_from_url(url: &str, token: Option<String>) -> Remote {
+    if is_http_url(url) {
         Remote::Http {
             base: url.trim_end_matches('/').to_string(),
             token: token.or_else(env_auth_token),
         }
     } else {
-        Remote::File(normalize_path(&url))
+        Remote::File(normalize_path(url))
     }
 }
 
@@ -233,10 +233,10 @@ impl Remote {
         reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .expect("reqwest blocking client")
+            .unwrap_or_else(|e| panic!("failed to build HTTP client: {e}"))
     }
 
-    fn auth<'a>(
+    fn auth(
         req: reqwest::blocking::RequestBuilder,
         token: &Option<String>,
     ) -> reqwest::blocking::RequestBuilder {
@@ -267,7 +267,7 @@ impl Remote {
                     404 => Ok(None), // empty remote
                     s => bail!(
                         "GET refs → HTTP {s}: {}",
-                        body_snippet(resp.text().await_ok())
+                        body_snippet(&resp.text().await_ok())
                     ),
                 }
             }
@@ -290,7 +290,7 @@ impl Remote {
                     bail!(
                         "PUT refs → HTTP {}: {}",
                         resp.status().as_u16(),
-                        body_snippet(resp.text().await_ok())
+                        body_snippet(&resp.text().await_ok())
                     );
                 }
                 Ok(())
@@ -322,7 +322,7 @@ impl Remote {
                     ),
                     s => bail!(
                         "GET object → HTTP {s}: {}",
-                        body_snippet(resp.text().await_ok())
+                        body_snippet(&resp.text().await_ok())
                     ),
                 }
             }
@@ -345,7 +345,7 @@ impl Remote {
                     bail!(
                         "PUT object → HTTP {}: {}",
                         resp.status().as_u16(),
-                        body_snippet(resp.text().await_ok())
+                        body_snippet(&resp.text().await_ok())
                     );
                 }
                 Ok(())
@@ -363,7 +363,7 @@ impl RespTextFallback for std::result::Result<String, reqwest::Error> {
     }
 }
 
-fn body_snippet(body: String) -> String {
+fn body_snippet(body: &str) -> String {
     let b: String = body.chars().take(200).collect();
     if b.is_empty() {
         "(empty body)".to_string()
@@ -389,9 +389,7 @@ fn resolve_remote(cm: &Path, target: Option<&str>, default_name: &str) -> anyhow
         Some(t) => {
             if let Some((url, token)) = remote_entry(&cfg, t) {
                 (url, token)
-            } else if is_http_url(t) {
-                (t.to_string(), None)
-            } else if looks_like_path(t) {
+            } else if is_http_url(t) || looks_like_path(t) {
                 (t.to_string(), None)
             } else {
                 bail!(
@@ -402,7 +400,7 @@ fn resolve_remote(cm: &Path, target: Option<&str>, default_name: &str) -> anyhow
             }
         }
     };
-    Ok(remote_from_url(url, token))
+    Ok(remote_from_url(&url, token))
 }
 
 /// Mirror commit object files from a remote into the local `.cm/objects` so
@@ -1007,11 +1005,11 @@ pub(crate) fn run_clone(args: &[String]) -> anyhow::Result<()> {
     // agent_id (config holds agent remotes with their bearer token).
     let cfg = read_config(&cm)?;
     let remote = if is_http_url(&target) {
-        remote_from_url(target.clone(), env_auth_token())
+        remote_from_url(&target, env_auth_token())
     } else if let Some((url, token)) = remote_entry(&cfg, &target) {
-        remote_from_url(url, token.filter(|t| !t.is_empty()))
+        remote_from_url(&url, token.filter(|t| !t.is_empty()))
     } else if looks_like_path(&target) {
-        remote_from_url(target.clone(), None)
+        remote_from_url(&target, None)
     } else {
         bail!(
             "'{target}' is neither a path/URL nor a registered agent — run `cloud register {target} <server-url>` first"
@@ -1239,7 +1237,7 @@ pub(crate) fn run_cloud(args: &[String]) -> anyhow::Result<()> {
                 let body = resp.text().unwrap_or_default();
                 bail!(
                     "register failed → HTTP {status}: {} (server needs CAUSAL_MEMORY_ADMIN_TOKEN to mint tokens)",
-                    body_snippet(body)
+                    body_snippet(&body)
                 );
             }
             let v: serde_json::Value = resp.json()?;
@@ -1275,7 +1273,7 @@ pub(crate) fn run_cloud(args: &[String]) -> anyhow::Result<()> {
                 let status = resp.status().as_u16();
                 bail!(
                     "list failed → HTTP {status}: {}",
-                    body_snippet(resp.text().unwrap_or_default())
+                    body_snippet(&resp.text().unwrap_or_default())
                 );
             }
             let v: serde_json::Value = resp.json()?;
@@ -1318,7 +1316,7 @@ pub(crate) fn run_cloud(args: &[String]) -> anyhow::Result<()> {
                 let status = resp.status().as_u16();
                 bail!(
                     "revoke failed → HTTP {status}: {}",
-                    body_snippet(resp.text().unwrap_or_default())
+                    body_snippet(&resp.text().unwrap_or_default())
                 );
             }
             // Drop the local named remote (url + token) for that agent.
@@ -2075,7 +2073,7 @@ pub(crate) fn run_session_commit(args: &[String]) -> anyhow::Result<()> {
     ])?;
     if let Some(remote) = push {
         run_push(&[
-            remote.clone(),
+            remote,
             "--db".into(),
             db_path.to_string_lossy().into_owned(),
         ])?;
