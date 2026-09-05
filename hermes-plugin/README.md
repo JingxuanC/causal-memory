@@ -9,6 +9,37 @@ Hermes memory-provider plugin backed by [causal-memory](https://github.com/Jingx
 - **Compaction survival.** Lessons are extracted OUTSIDE the context window — Hermes compaction can drop conversation history, but the causal store is untouched. `on_pre_compress` is wired as the differentiation hook (currently a conservative no-op; see below).
 - **Profile isolation.** The store lives under `<hermes_home>/causal-memory/causal.db` — per-profile by construction.
 
+## Cloud sync — session-end auto-commit
+
+When the session ends (CLI exit, `/reset`, gateway session expiry) and the
+store has a **remote** provisioned for this agent, the provider snapshots the
+session's recorded lessons and pushes them on a background thread —
+`causal-memory session-commit -m '<L0>' --push <agent_id> --db <store>`.
+Nothing recorded this session → `nothing to commit`, silent no-op. The hook
+never raises or blocks teardown.
+
+Provision once per store (config `agent_id` = the remote name):
+
+```
+# Cloud: register an agent namespace on your sync server (mints a per-agent token)
+causal-memory cloud register athena https://cm.example.com --db <this store>
+
+# …or file remote (NAS / shared disk / USB sneaker-net)
+causal-memory remote add athena /Volumes/backup/causal-memory --db <this store>
+```
+
+Then configure the provider (via `hermes memory setup` or the config keys):
+
+| key | meaning |
+|---|---|
+| `agent_id` | remote to push to (empty = disable auto-commit) |
+| `server_url` | informational (the CLI resolves the remote from the store's config) |
+| `auto_commit` | set false to keep snapshots manual |
+
+Requires the `causal-memory` CLI on `PATH` (dev override:
+`CAUSAL_MEMORY_CLI=/path/to/binary`). Missing CLI / no agent_id / disabled →
+silent no-op.
+
 ## Install
 
 ### Development (directory layout)

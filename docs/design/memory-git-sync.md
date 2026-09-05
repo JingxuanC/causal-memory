@@ -318,8 +318,11 @@ objects/refs 布局已为其留位。
 - [x] Docker 部署一页文档：[deploy-docker.md](deploy-docker.md)
 
 **P2**
-- [ ] Hermes provider 云模式（provider 指向 https remote 而非本地 wheel；
-      跨仓集成，on_session_end 调 `session-commit --l0-llm --push <agent>`）
+- [x] Hermes provider 云模式（hermes-plugin 现有 `on_session_end` 钩子接线：
+      配置 `agent_id`( + 可选 server_url) → 会话结束时后台跑
+      `session-commit -m <L0> --push <agent_id>`，复用 CLI 全部机制；
+      CLI 缺失/未配置 → 静默 no-op。启用步骤见 hermes-plugin README：
+      `cloud register`/`remote add` 一次 + `memory.provider: causal-memory`）
 - [x] **自动 commit**：`record` + `session-commit` CLI 钩子（27b81d8）——
       session 结束时快照 + 可选 push，云端不再过期；record 走 MCP
       record_decision 同一条 facade 路径

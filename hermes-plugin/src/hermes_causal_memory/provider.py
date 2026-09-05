@@ -9,9 +9,13 @@ Maps the Hermes MemoryProvider surface onto the `causal_memory` facade:
 - system_prompt_block → causal_directory (L0 pointer list)
 - sync_turn  → remember() on a daemon thread (NEVER blocks the turn)
 - on_memory_write → mirrored into the fact layer (scope="agent")
-- on_pre_compress / on_session_end → conservative no-ops (see TODOs:
-  LLM-backed distill is the differentiating hook but must not run
+- on_pre_compress → conservative no-op (LLM-backed distill must not run
   without a configured key)
+- on_session_end → cloud auto-commit (P2): when the provider is configured
+  with a sync server (server_url + agent_id via `cloud register`) and the
+  causal-memory CLI is installed, snapshots the session's recorded lessons
+  and pushes them to the agent's cloud remote on a background thread. No
+  cloud config / no CLI → silent no-op (never blocks session teardown).
 
 Storage is profile-isolated: the DB lives under
 `<hermes_home>/causal-memory/causal.db` unless config overrides db_path.
@@ -31,10 +35,16 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import logging
+import os
+import shutil
+import subprocess
 import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 try:  # Hermes installed → subclass the real ABC.
     from agent.memory_provider import MemoryProvider as _MemoryProvider
@@ -44,6 +54,9 @@ except Exception:  # Dev/test without Hermes — duck-typed stand-in.
 
 
 _DEFAULT_PREFETCH_BUDGET = 500
+# Session-end cloud commit: 90s covers a real push; a stuck CLI must not
+# outlive the drain join in shutdown() by much.
+_SESSION_COMMIT_TIMEOUT_S = 90
 
 # Config schema is deliberately minimal (the guide's explicit advice):
 # no secrets, two keys, everything else derived from hermes_home.
@@ -66,6 +79,27 @@ _CONFIG_SCHEMA = {
             "default": [],
             "description": "Gateway user_ids that share the main causal.db (owner/allowlist). "
             "Users NOT listed get an isolated tenant DB per user_id.",
+        },
+        "server_url": {
+            "type": "string",
+            "default": "",
+            "description": "Sync server base URL (e.g. https://cm.example.com). "
+            "Informational once the remote is provisioned — the CLI resolves "
+            "agent_id from the store's own remote config.",
+        },
+        "agent_id": {
+            "type": "string",
+            "default": "",
+            "description": "Remote name to push session snapshots to — provision once "
+            "with `causal-memory cloud register <agent_id> <server_url> --db <this db>` "
+            "(cloud) or `remote add <agent_id> <path> --db <this db>` (file). "
+            "Empty disables session-end auto-commit.",
+        },
+        "auto_commit": {
+            "type": "boolean",
+            "default": True,
+            "description": "Run session-commit --push <agent_id> on session end "
+            "when cloud is configured and the causal-memory CLI is installed.",
         },
     },
 }
@@ -179,6 +213,29 @@ def _record_supports_context(mem: Any) -> bool:
         return False
 
 
+def _l0_from_messages(messages: list) -> str:
+    """≤256-char single-line L0 for the session-commit message.
+
+    Best-effort from an OpenAI-style message list: first user text (first
+    ~140 chars) + turn count. Hosts with richer summaries can pass better
+    text via their own plumbing — this only has to be honest and stable.
+    """
+    first_user = ""
+    for m in messages or []:
+        content = m.get("content") if isinstance(m, dict) else None
+        if m.get("role") == "user" and isinstance(content, str) and content.strip():
+            first_user = content.strip()
+            break
+    n = len(messages or [])
+    if first_user:
+        head = first_user.replace("\n", " ")[:140]
+        ellipsis = "…" if len(first_user) > 140 else ""
+        msg = f"hermes session ({n} turns): {head}{ellipsis}"
+    else:
+        msg = f"hermes session ({n} turns)"
+    return msg[:256]
+
+
 class CausalMemoryProvider(_MemoryProvider):
     """Hermes MemoryProvider backed by a local causal-memory store."""
 
@@ -188,6 +245,9 @@ class CausalMemoryProvider(_MemoryProvider):
         self._db_path: Optional[str] = None  # config override; "" / None = auto
         self._prefetch_budget = _DEFAULT_PREFETCH_BUDGET
         self._shared_user_ids: List[str] = []
+        self._server_url: str = ""
+        self._agent_id: str = ""
+        self._auto_commit: bool = True
         self._user_id: str = ""
         self._threads: List[threading.Thread] = []
         self._lock = threading.Lock()
@@ -271,6 +331,9 @@ class CausalMemoryProvider(_MemoryProvider):
                     "db_path": self._db_path or "",
                     "prefetch_budget": self._prefetch_budget,
                     "shared_user_ids": self._shared_user_ids,
+                    "server_url": self._server_url,
+                    "agent_id": self._agent_id,
+                    "auto_commit": self._auto_commit,
                 },
                 indent=2,
             )
@@ -310,9 +373,42 @@ class CausalMemoryProvider(_MemoryProvider):
         t.start()
 
     def on_session_end(self, messages: list) -> None:
-        # Conservative no-op: distilling a whole session into lessons needs
-        # an LLM key, which is not ours to assume. TODO: when
-        # CAUSAL_MEMORY_LLM_* is configured, run a distill pass here.
+        """Cloud snapshot at the real session boundary (P2 auto-commit).
+
+        Runs `causal-memory session-commit -m <L0> --push <agent_id>
+        --db <resolved db>` on a daemon thread — the same CLI path a human
+        would run, reusing commit/L0/push machinery and its idempotency
+        (nothing recorded this session → "nothing to commit", no-op).
+
+        Silent no-op when any prerequisite is missing: no agent_id (provision
+        the remote once — `cloud register <agent_id> <server_url>` for cloud,
+        or `remote add <agent_id> <path>` for a file remote), auto_commit
+        disabled, or the causal-memory CLI binary absent (override for dev:
+        CAUSAL_MEMORY_CLI env var). A session hook must never raise or block
+        teardown.
+        """
+        if not (self._auto_commit and self._agent_id):
+            return None
+        cli = self._cli_binary()
+        if cli is None:
+            logger.info("causal-memory CLI not found — skipping cloud session-commit")
+            return None
+        db = self._resolved_db()
+        msg = _l0_from_messages(messages)
+        cmd = [
+            cli,
+            "session-commit",
+            "-m",
+            msg,
+            "--push",
+            self._agent_id,
+            "--db",
+            str(db),
+        ]
+        t = threading.Thread(target=self._commit_safe, args=(cmd,), daemon=True)
+        with self._lock:
+            self._threads.append(t)
+        t.start()
         return None
 
     def on_pre_compress(self, messages: list) -> None:
@@ -371,6 +467,15 @@ class CausalMemoryProvider(_MemoryProvider):
         shared = values.get("shared_user_ids")
         if shared is not None:
             self._shared_user_ids = [str(u) for u in shared]
+        server_url = values.get("server_url")
+        if server_url is not None:
+            self._server_url = str(server_url or "")
+        agent_id = values.get("agent_id")
+        if agent_id is not None:
+            self._agent_id = str(agent_id or "")
+        auto_commit = values.get("auto_commit")
+        if auto_commit is not None:
+            self._auto_commit = bool(auto_commit)
 
     def _read_persisted_config(self) -> Dict[str, Any]:
         """Load config.json written by save_config (missing/corrupt → {})."""
@@ -412,6 +517,35 @@ class CausalMemoryProvider(_MemoryProvider):
             self._mem.remember(text)
         except Exception:
             pass  # background hook — never raise into a turn
+
+    def _cli_binary(self) -> Optional[str]:
+        """causal-memory CLI binary: CAUSAL_MEMORY_CLI override, else PATH."""
+        exe = os.environ.get("CAUSAL_MEMORY_CLI")
+        if exe and Path(exe).is_file():
+            return exe
+        return shutil.which("causal-memory")
+
+    def _run_cli(self, cmd: List[str]) -> None:
+        """Run the session-commit subprocess; log failures, never raise."""
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=_SESSION_COMMIT_TIMEOUT_S,
+        )
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
+            logger.warning(
+                "causal-memory session-commit exited %s: %s",
+                proc.returncode,
+                " | ".join(tail) or "(no output)",
+            )
+
+    def _commit_safe(self, cmd: List[str]) -> None:
+        try:
+            self._run_cli(cmd)
+        except Exception as e:  # noqa: BLE001 — background hook, never raise
+            logger.warning("causal-memory session-commit failed: %s", e)
 
 
 def register(ctx: Any) -> CausalMemoryProvider:

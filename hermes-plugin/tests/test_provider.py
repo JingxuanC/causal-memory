@@ -142,8 +142,40 @@ def test_prefetch_respects_configured_budget(provider):
 
 def test_config_schema_is_minimal(provider):
     schema = provider.get_config_schema()
-    assert set(schema["properties"]) == {"db_path", "prefetch_budget", "shared_user_ids"}
+    assert set(schema["properties"]) == {
+        "db_path",
+        "prefetch_budget",
+        "shared_user_ids",
+        "server_url",
+        "agent_id",
+        "auto_commit",
+    }
     assert "key" not in str(schema["properties"]).lower()  # no secrets
+
+
+def test_cloud_config_persists_and_reloads(tmp_path):
+    p = CausalMemoryProvider()
+    p.initialize(
+        "s", hermes_home=tmp_path,
+        config={
+            "server_url": "https://cm.example.com",
+            "agent_id": "athena",
+            "auto_commit": True,
+        },
+    )
+    p.save_config(
+        {
+            "server_url": "https://cm.example.com",
+            "agent_id": "athena",
+            "auto_commit": True,
+        },
+        tmp_path,
+    )
+    p2 = CausalMemoryProvider()
+    p2.initialize("s2", hermes_home=tmp_path)
+    assert p2._server_url == "https://cm.example.com"
+    assert p2._agent_id == "athena"
+    assert p2._auto_commit is True
 
 
 def test_sync_turn_is_nonblocking_and_lands(provider):
@@ -240,3 +272,108 @@ def test_cli_register_cli_wires_subparser():
     register_cli(sub)
     assert "causal-memory" in sub.parsers
     assert sub.defaults["func"] is _stats
+
+
+def test_l0_from_messages_first_user_and_counts():
+    from hermes_causal_memory.provider import _l0_from_messages
+
+    msgs = [
+        {"role": "system", "content": "you are x"},
+        {"role": "user", "content": "  部署灰度到 30% 观察一小时  "},
+        {"role": "assistant", "content": "done"},
+    ]
+    l0 = _l0_from_messages(msgs)
+    assert l0.startswith("hermes session (3 turns): 部署灰度到 30% 观察一小时")
+    assert len(l0) <= 256 and "\n" not in l0
+
+
+def test_l0_from_messages_fallback_and_caps():
+    from hermes_causal_memory.provider import _l0_from_messages
+
+    assert _l0_from_messages([]) == "hermes session (0 turns)"
+    assert _l0_from_messages([{"role": "assistant", "content": "hi"}]) == "hermes session (1 turns)"
+    long_user = "x" * 500
+    l0 = _l0_from_messages([{"role": "user", "content": long_user}])
+    assert len(l0) <= 256 and l0.endswith("…")
+
+
+def test_session_end_noop_without_cloud_config(provider, monkeypatch):
+    # No server_url/agent_id → nothing runs, nothing raises.
+    def _boom(*a, **k):
+        raise AssertionError("must not invoke the CLI without cloud config")
+
+    monkeypatch.setattr(provider, "_run_cli", _boom)
+    assert provider.on_session_end([{"role": "user", "content": "x"}]) is None
+
+
+def test_session_end_noop_when_cli_missing(tmp_path, monkeypatch):
+    p = CausalMemoryProvider()
+    p.initialize(
+        "s", hermes_home=tmp_path,
+        config={"server_url": "https://cm.example.com", "agent_id": "athena"},
+    )
+    monkeypatch.delenv("CAUSAL_MEMORY_CLI", raising=False)
+    monkeypatch.setattr("hermes_causal_memory.provider.shutil.which", lambda *_a, **_k: None)
+    assert p.on_session_end([{"role": "user", "content": "x"}]) is None
+
+
+def test_session_end_spawns_commit_with_expected_args(tmp_path, monkeypatch):
+    p = CausalMemoryProvider()
+    p.initialize(
+        "s", hermes_home=tmp_path,
+        config={"server_url": "https://cm.example.com", "agent_id": "athena"},
+    )
+    # NB: must NOT be tmp_path/"causal-memory" — that name is the provider's
+    # store directory (created by initialize).
+    fake_cli = tmp_path / "cm-cli"
+    fake_cli.write_text("#!/bin/sh\nexit 0\n")
+    fake_cli.chmod(0o755)
+    monkeypatch.setenv("CAUSAL_MEMORY_CLI", str(fake_cli))
+
+    captured = {}
+
+    class FakeProc:
+        returncode = 0
+        stdout = "pushed 1 commit(s)\n"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = list(cmd)
+        return FakeProc()
+
+    monkeypatch.setattr("hermes_causal_memory.provider.subprocess.run", fake_run)
+
+    msgs = [{"role": "user", "content": "让我修复一下回滚策略"}, {"role": "assistant", "content": "ok"}]
+    assert p.on_session_end(msgs) is None
+    p.wait_pending()
+
+    cmd = captured["cmd"]
+    assert cmd[0] == str(fake_cli)
+    assert cmd[1] == "session-commit"
+    assert cmd[2] == "-m"
+    assert cmd[3].startswith("hermes session (2 turns): 让我修复一下回滚策略")
+    assert cmd[4] == "--push" and cmd[5] == "athena"
+    assert cmd[6] == "--db" and cmd[7].endswith("causal.db")
+
+
+def test_session_end_failure_logs_but_never_raises(tmp_path, monkeypatch, caplog):
+    import logging
+
+    p = CausalMemoryProvider()
+    p.initialize(
+        "s", hermes_home=tmp_path,
+        config={"server_url": "https://cm.example.com", "agent_id": "athena"},
+    )
+    fake_cli = tmp_path / "cm-cli"
+    fake_cli.write_text("#!/bin/sh\nexit 0\n")
+    fake_cli.chmod(0o755)
+    monkeypatch.setenv("CAUSAL_MEMORY_CLI", str(fake_cli))
+
+    def failing_run(*a, **k):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("hermes_causal_memory.provider.subprocess.run", failing_run)
+    with caplog.at_level(logging.WARNING, logger="hermes_causal_memory"):
+        assert p.on_session_end([{"role": "user", "content": "x"}]) is None
+        p.wait_pending()
+    assert "session-commit failed" in caplog.text
