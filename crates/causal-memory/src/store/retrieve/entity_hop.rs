@@ -2,6 +2,7 @@
 
 use anyhow::{anyhow, Result};
 use rusqlite::params;
+use std::sync::atomic::Ordering;
 
 use super::by_conf;
 use crate::store::{entry_from_row, CausalStore, ENTRY_COLUMNS};
@@ -29,7 +30,15 @@ impl CausalStore {
         let mut ents = crate::patterns::entity_tokens(decision_text);
         ents.extend(crate::patterns::entity_tokens(outcome_text));
         let arc = std::sync::Arc::new(ents);
-        poison_safe_lock(&self.entity_cache).insert(edge_id, arc.clone());
+        let mut guard = poison_safe_lock(&self.entity_cache);
+        // T0b: bound the cache — correct-but-unbounded entries grow linearly
+        // with edge count and would OOM a long-lived process on a big store.
+        // Entries are immutable, so dropping the whole cache on overflow is
+        // cheap and safe (recomputed on demand).
+        if guard.len() >= self.entity_cache_cap.load(Ordering::Relaxed) {
+            guard.clear();
+        }
+        guard.insert(edge_id, arc.clone());
         arc
     }
 

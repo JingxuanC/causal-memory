@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Result};
@@ -358,7 +358,19 @@ pub struct CausalStore {
     /// edge simply drops out of the candidate set before the cache is read.
     pub(crate) entity_cache:
         Arc<Mutex<std::collections::HashMap<i64, std::sync::Arc<Vec<String>>>>>,
+    /// T0b bound on `entity_cache`: the cache is correct unbounded (entries
+    /// never go stale) but grows linearly with edge count, so a long-lived
+    /// process on a large store would otherwise OOM long before the store
+    /// does. On overflow the whole cache is dropped (cheap, safe: entries
+    /// are immutable and recomputed on demand). Tests shrink this to probe
+    /// eviction cheaply.
+    pub(crate) entity_cache_cap: Arc<AtomicUsize>,
 }
+
+/// Default bound for [`CausalStore::entity_cache`] (edge entries). Sized so a
+/// warm entity search stays fast at ~100k-1M edges while bounding memory to
+/// roughly tens of MB of token Arcs regardless of store size.
+const ENTITY_CACHE_CAP: usize = 50_000;
 
 impl CausalStore {
     /// Open an in-memory store (for tests).
@@ -371,6 +383,7 @@ impl CausalStore {
             conn: Arc::new(pool),
             access_buffer: Arc::new(Mutex::new(HashSet::new())),
             entity_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            entity_cache_cap: Arc::new(AtomicUsize::new(ENTITY_CACHE_CAP)),
         })
     }
 
@@ -385,6 +398,7 @@ impl CausalStore {
             conn: Arc::new(pool),
             access_buffer: Arc::new(Mutex::new(HashSet::new())),
             entity_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            entity_cache_cap: Arc::new(AtomicUsize::new(ENTITY_CACHE_CAP)),
         })
     }
 

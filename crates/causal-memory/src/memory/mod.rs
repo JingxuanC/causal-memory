@@ -18,13 +18,20 @@ use std::sync::Mutex;
 
 use format::{format_activation_layered, provenance_tag, TokenBudget};
 
-/// C7: rebuild the hippocampus graph only after enough writes accumulated
-/// (or enough time passed) — a full from_store per write is O(store) and
-/// dominates the write path as the store grows. The graph is a retrieval
-/// accelerator: briefly serving the previous version while writes batch is
-/// fine (keyword/semantic paths below still see the fresh store).
-const GRAPH_REBUILD_WRITES: usize = 5;
-const GRAPH_REBUILD_SECS: i64 = 30;
+/// Rebuild policy (T0, enterprise-scaling doc): the periodic full
+/// `from_store` rebuild is **amortized maintenance**, not the freshness
+/// mechanism. Freshness comes from write-path patches (`patch_graph_new_edge`
+/// / `patch_graph_new_fact` / retire — see ops.rs) plus the immediate
+/// proof-of-staleness rebuild when a store-resolved seed maps to no node
+/// (unified.rs). The generous ceilings below stop an active writer from
+/// self-throttling on O(store) reloads: measured, a full rebuild is ~107 s at
+/// 1M nodes / 4M edges (see docs/design/enterprise-scaling.md), so the old
+/// 30 s cadence made the store spend most of its time rebuilding itself.
+/// Periodic full rebuilds still run to (a) GC retired nodes, (b) flush the
+/// co-activation buffer into cooccurrence_edges, (c) repair any drift a
+/// patch missed.
+const GRAPH_REBUILD_WRITES: usize = 512;
+const GRAPH_REBUILD_SECS: i64 = 900;
 
 /// Cosine floor for semantic seeding in intervention_query (recall-oriented).
 pub(crate) const INTERVENTION_MIN_SIMILARITY: f64 = 0.5;

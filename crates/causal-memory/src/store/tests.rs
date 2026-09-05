@@ -1,5 +1,6 @@
 use super::*;
 use rusqlite::params;
+use std::sync::atomic::Ordering;
 
 #[test]
 fn test_record_and_search() {
@@ -3535,4 +3536,31 @@ fn test_prediction_stats_and_pending_list() {
     let pending = store.pending_predictions(10).unwrap();
     assert_eq!(pending.len(), 2);
     assert_eq!(pending[0].option_a, "a6", "newest first");
+}
+
+#[test]
+fn test_entity_cache_is_bounded() {
+    // T0b: the entity-token cache must not grow without bound on a big store.
+    // Entries are immutable, so overflow drops the whole cache — cheap and
+    // safe (recomputed on demand). Shrink the cap to probe cheaply.
+    let store = CausalStore::open_in_memory().unwrap();
+    store.entity_cache_cap.store(4, Ordering::Relaxed);
+    for i in 0..20i64 {
+        let _ = store.entity_tokens_for(
+            i,
+            &format!("decision number {i} about the rollout"),
+            &format!("outcome number {i} observed"),
+        );
+    }
+    let len = store.entity_cache.lock().unwrap().len();
+    assert!(len <= 4, "cache must respect its cap, got {len} entries");
+    // And the cache must keep working past overflow: a fresh entity-bearing
+    // id resolves (miss → compute → insert) and the bound still holds.
+    let hit = store.entity_tokens_for(9999, "Decision Alpha rollout", "Outcome Beta observed");
+    assert!(
+        hit.iter().any(|t| t.eq_ignore_ascii_case("alpha")),
+        "fresh entry must tokenize entities, got {hit:?}"
+    );
+    let len = store.entity_cache.lock().unwrap().len();
+    assert!(len <= 4, "bound must hold after eviction churn, got {len}");
 }
