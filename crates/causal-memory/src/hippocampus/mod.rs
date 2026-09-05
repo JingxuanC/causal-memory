@@ -15,9 +15,6 @@
 //! - Pre-multiplied spread coefficients in values[]
 //!
 //! Limitations:
-//! - text_jaccard_similarity uses whitespace tokenization; Chinese text (no
-//!   spaces) produces one giant token, making novelty detection unreliable.
-//!   Future: switch to character bigrams or a real tokenizer.
 //! - rand_seed uses a fixed-seed xorshift for deterministic testing. Set
 //!   CAUSAL_GRAPH_RANDOM_SEED to enable true randomness in production.
 
@@ -28,7 +25,7 @@ pub(crate) mod utils;
 
 pub use types::{
     ActivationResult, ConsolidationDelta, ConsolidationResult, ConsolidationStats, EdgeData,
-    NodeData, NoveltyReport, Relation,
+    NodeData, NoveltyReport, Relation, ViaEdge,
 };
 
 /// (P5) Novelty-gate modes (Nemori FEP, arXiv:2508.03341).
@@ -109,7 +106,31 @@ pub struct CausalGraph {
     node_event_time: Vec<i64>,
     node_sparse_code: Vec<u128>,
     node_task_tag: Vec<Option<String>>,
+    node_scope: Vec<Option<String>>,
     node_id_to_idx: HashMap<String, u32>,
+
+    // Phase C (one-graph-convergence): write-path patches. Inserting an
+    // edge into the middle of a CSR array is O(E) and shifts every stored
+    // CSR edge index, so edges added since the last full build live in
+    // per-node overlay maps consulted alongside the CSR segments by the
+    // spread steps. A full `from_store` rebuild folds them in (the
+    // overlays are dropped and the store is the truth).
+    patch_fwd: HashMap<u32, Vec<PatchEdge>>,
+    patch_rev: HashMap<u32, Vec<PatchEdge>>,
+
+    /// Phase C: node indices retired since the last full build (e.g. a
+    /// fact replaced under the same key). Retired nodes neither seed nor
+    /// surface in results; the next full rebuild drops them entirely
+    /// (from_store filters `valid_to IS NULL`).
+    retired_nodes: std::collections::HashSet<u32>,
+
+    /// Phase C: incremental inverted index — distinct token → chunk-node
+    /// indices (fact/scope nodes excluded). Maintained by `append_node`,
+    /// consumed by `link_fact_node`, so the write-path linker costs
+    /// O(fact tokens) instead of re-tokenizing every node per write. The
+    /// rebuild-time linker (`entity_link_facts`) stays store-side; both
+    /// use the same thresholds and weights.
+    token_index: HashMap<String, Vec<u32>>,
 
     // Config
     decay: f32,
@@ -118,6 +139,32 @@ pub struct CausalGraph {
     ltp_rate: f32,
     ltd_rate: f32,
     gc_threshold: f32,
+
+    /// Ablation switch: when false, `spread_and_collect` stops after
+    /// Q-weighted seeding (zero hops) — retrieval surfaces seed hits only.
+    /// Default true; flipped by [`CausalGraph::disable_spread`].
+    spread_enabled: bool,
+}
+
+/// Phase C: one overlay edge — the "other" node, its pre-multiplied spread
+/// value, its relation (for provenance reporting only — the spread itself
+/// uses the pre-multiplied value), and its validity flag (flippable in
+/// O(1), mirroring `edge_valid`).
+#[derive(Debug, Clone, Copy)]
+struct PatchEdge {
+    other: u32,
+    value: f32,
+    relation: Relation,
+    valid: bool,
+}
+
+/// The associative channel: learned/derived, dense, hub-forming edge types
+/// (Fact entity-links, Hebbian CoOccurrence). Spread along these is
+/// subject to the fan-out constraint (see `spread_step`); curated
+/// causal-family relations spread undivided.
+#[inline]
+fn is_associative(rel: Relation) -> bool {
+    matches!(rel, Relation::Fact | Relation::CoOccurrence)
 }
 
 impl CausalGraph {
@@ -143,13 +190,19 @@ impl CausalGraph {
             node_event_time: Vec::new(),
             node_sparse_code: Vec::new(),
             node_task_tag: Vec::new(),
+            node_scope: Vec::new(),
             node_id_to_idx: HashMap::new(),
+            patch_fwd: HashMap::new(),
+            patch_rev: HashMap::new(),
+            retired_nodes: std::collections::HashSet::new(),
+            token_index: HashMap::new(),
             decay: 0.7,
             threshold: 0.1,
             max_hops: 5,
             ltp_rate: 1.05,
             ltd_rate: 0.99,
             gc_threshold: 0.05,
+            spread_enabled: true,
         }
     }
 
@@ -172,6 +225,7 @@ impl CausalGraph {
         graph.node_event_time = nodes.iter().map(|n| n.event_time).collect();
         graph.node_sparse_code = nodes.iter().map(|n| simhash(&n.text)).collect();
         graph.node_task_tag = nodes.iter().map(|n| n.task_tag.clone()).collect();
+        graph.node_scope = nodes.iter().map(|n| n.scope.clone()).collect();
 
         // Build forward adjacency list (no fwd_idx yet — CSR index assigned during CSR build)
         let mut adj: Vec<Vec<AdjEdge>> = vec![Vec::new(); nodes.len()];
@@ -239,6 +293,22 @@ impl CausalGraph {
             }
         }
 
+        // Phase C: (re)build the incremental token index — distinct tokens
+        // → chunk-node indices, deduped posting lists. This mirrors what
+        // append_node maintains patch-side, so post-rebuild writes link
+        // against the full node set without re-tokenizing it.
+        graph.token_index.reserve(nodes.len());
+        for (i, node) in nodes.iter().enumerate() {
+            if node.id.starts_with("fact:") || node.id.starts_with("scope:") {
+                continue;
+            }
+            let distinct: std::collections::HashSet<String> =
+                crate::patterns::tokenize(&node.text).into_iter().collect();
+            for tok in distinct {
+                graph.token_index.entry(tok).or_default().push(i as u32);
+            }
+        }
+
         graph
     }
 
@@ -252,6 +322,11 @@ impl CausalGraph {
 
         let mut seeds = Vec::new();
         for i in 0..self.num_nodes {
+            // Phase C: retired nodes never seed (a replaced fact must not
+            // activate from a query match while patches are in flight).
+            if self.retired_nodes.contains(&(i as u32)) {
+                continue;
+            }
             if let Some(tag) = task_tag {
                 if self.node_task_tag[i].as_deref() != Some(tag) {
                     continue;
@@ -265,9 +340,26 @@ impl CausalGraph {
     }
 
     /// Core: single-hop spreading activation step (SpMV-style).
+    ///
+    /// Channel-scoped fan-out constraint (Collins & Loftus, applied to the
+    /// associative channel only): a node's activation is DIVIDED among its
+    /// valid outgoing ASSOCIATIVE edges (Fact entity-links, CoOccurrence
+    /// Hebbian links) — the dense, learned, hub-forming channel. Without
+    /// this, a high-degree chunk hub saturates whole neighborhoods at the
+    /// ±1.0 clamp within 2 hops (measured on the real 1834-node store:
+    /// ~1100 nodes activated per query, ~600 tied at 1.0, materialization
+    /// fell back to confidence tiebreaks — self-queries baseline 14.2% vs
+    /// seed-only 95.0%). Causal-family edges (Caused/Enabled/Prevented/
+    /// Meta) are curated, sparse, and carry the primary signal — their
+    /// spread is NOT divided, so causal-chain and inhibitory semantics are
+    /// exactly preserved.
     #[inline]
-    fn spread_step(&self, activations: &[f32], decay: f32) -> Vec<f32> {
+    fn spread_step(&self, activations: &[f32], decay: f32) -> (Vec<f32>, Vec<Option<ViaEdge>>) {
         let mut new_act = vec![0.0_f32; self.num_nodes];
+        // Flip-path marking: per-target, the edge with the largest
+        // |contribution| THIS hop. Pure bookkeeping — activation values are
+        // computed exactly as before.
+        let mut hop_via: Vec<Option<ViaEdge>> = vec![None; self.num_nodes];
 
         for (i, &a) in activations.iter().enumerate() {
             if a.abs() < self.threshold {
@@ -277,27 +369,79 @@ impl CausalGraph {
             let start = self.row_ptr[i] as usize;
             let end = self.row_ptr[i + 1] as usize;
 
+            // Fan-out divisor over the associative channel only.
+            let assoc_degree = (start..end)
+                .filter(|&e| self.edge_valid[e] && is_associative(self.edge_relations[e]))
+                .count();
+            let assoc_share = if assoc_degree > 0 {
+                a / assoc_degree as f32
+            } else {
+                a
+            };
+
             for edge_idx in start..end {
                 if !self.edge_valid[edge_idx] {
                     continue; // Skip invalidated edges
                 }
                 let target = self.col_idx[edge_idx] as usize;
                 let weight = self.values[edge_idx];
-                new_act[target] += a * weight * decay;
+                let out = if is_associative(self.edge_relations[edge_idx]) {
+                    assoc_share
+                } else {
+                    a
+                };
+                let contribution = out * weight * decay;
+                new_act[target] += contribution;
+                let wins = hop_via[target]
+                    .map(|v| contribution.abs() > v.contribution.abs())
+                    .unwrap_or(true);
+                if wins {
+                    hop_via[target] = Some(ViaEdge {
+                        from: i as u32,
+                        relation: self.edge_relations[edge_idx],
+                        contribution,
+                    });
+                }
+            }
+
+            // Phase C: write-path patch edges from this node. Patches are
+            // causal-family by construction (new lessons / org edges) and
+            // never hub-forming between rebuilds — spread undivided.
+            if let Some(patches) = self.patch_fwd.get(&(i as u32)) {
+                for p in patches {
+                    if p.valid {
+                        let contribution = a * p.value * decay;
+                        new_act[p.other as usize] += contribution;
+                        let target = p.other as usize;
+                        let wins = hop_via[target]
+                            .map(|v| contribution.abs() > v.contribution.abs())
+                            .unwrap_or(true);
+                        if wins {
+                            hop_via[target] = Some(ViaEdge {
+                                from: i as u32,
+                                relation: p.relation,
+                                contribution,
+                            });
+                        }
+                    }
+                }
             }
         }
 
         for a in &mut new_act {
             *a = a.clamp(-1.0, 1.0);
         }
-        new_act
+        (new_act, hop_via)
     }
 
     /// Reverse single-hop step (for trace_cause: outcome → decision).
     /// Bug fix #1: now checks edge_valid via rev_to_fwd_idx mapping.
+    /// Same channel-scoped fan-out as `spread_step`, and the same Flip-path
+    /// provenance bookkeeping (via records the FORWARD edge's relation).
     #[inline]
-    fn spread_step_rev(&self, activations: &[f32], decay: f32) -> Vec<f32> {
+    fn spread_step_rev(&self, activations: &[f32], decay: f32) -> (Vec<f32>, Vec<Option<ViaEdge>>) {
         let mut new_act = vec![0.0_f32; self.num_nodes];
+        let mut hop_via: Vec<Option<ViaEdge>> = vec![None; self.num_nodes];
 
         for (i, &a) in activations.iter().enumerate() {
             if a.abs() < self.threshold {
@@ -307,6 +451,20 @@ impl CausalGraph {
             let start = self.row_ptr_rev[i] as usize;
             let end = self.row_ptr_rev[i + 1] as usize;
 
+            let assoc_degree = (start..end)
+                .filter(|&r| {
+                    let fwd_idx = self.rev_to_fwd_idx[r] as usize;
+                    fwd_idx < self.edge_valid.len()
+                        && self.edge_valid[fwd_idx]
+                        && is_associative(self.edge_relations[fwd_idx])
+                })
+                .count();
+            let assoc_share = if assoc_degree > 0 {
+                a / assoc_degree as f32
+            } else {
+                a
+            };
+
             for rev_idx in start..end {
                 // Bug fix #1: check forward edge validity
                 let fwd_idx = self.rev_to_fwd_idx[rev_idx] as usize;
@@ -315,14 +473,51 @@ impl CausalGraph {
                 }
                 let target = self.col_idx_rev[rev_idx] as usize;
                 let weight = self.values_rev[rev_idx];
-                new_act[target] += a * weight * decay;
+                let out = if is_associative(self.edge_relations[fwd_idx]) {
+                    assoc_share
+                } else {
+                    a
+                };
+                let contribution = out * weight * decay;
+                new_act[target] += contribution;
+                let wins = hop_via[target]
+                    .map(|v| contribution.abs() > v.contribution.abs())
+                    .unwrap_or(true);
+                if wins {
+                    hop_via[target] = Some(ViaEdge {
+                        from: i as u32,
+                        relation: self.edge_relations[fwd_idx],
+                        contribution,
+                    });
+                }
+            }
+
+            // Phase C: write-path patch edges pointing INTO this node.
+            if let Some(patches) = self.patch_rev.get(&(i as u32)) {
+                for p in patches {
+                    if p.valid {
+                        let contribution = a * p.value * decay;
+                        new_act[p.other as usize] += contribution;
+                        let target = p.other as usize;
+                        let wins = hop_via[target]
+                            .map(|v| contribution.abs() > v.contribution.abs())
+                            .unwrap_or(true);
+                        if wins {
+                            hop_via[target] = Some(ViaEdge {
+                                from: i as u32,
+                                relation: p.relation,
+                                contribution,
+                            });
+                        }
+                    }
+                }
             }
         }
 
         for a in &mut new_act {
             *a = a.clamp(-1.0, 1.0);
         }
-        new_act
+        (new_act, hop_via)
     }
 
     /// Full K-hop spreading activation (CA3 pattern completion).
@@ -351,29 +546,81 @@ impl CausalGraph {
         run_hebbian: bool,
     ) -> Vec<ActivationResult> {
         // `reverse = true`: backward (outcome → decision, for trace_cause)
-        //
-        // Merge rule: uses absolute-value max (|new| > |old| → replace). This
-        // allows negative activations from prevented edges to replace zero
-        // (which signed-max could not: -0.126 > 0.0 is false). A node receiving
-        // both caused (+) and prevented (-) signals shows whichever is stronger.
         let seeds = self.find_seeds(query, task_tag);
         if seeds.is_empty() {
             return Vec::new();
         }
+        self.spread_and_collect(&seeds, reverse, run_hebbian)
+    }
 
+    /// Phase B (one-graph-convergence): seeded variant for the unified
+    /// engine. Seeds arrive from the store's resolvers (persistent BM25
+    /// index over ALL node types + optional semantic vectors) instead of
+    /// substring matching alone; the graph's own substring matches union
+    /// in. One spread over the whole typed graph follows.
+    pub fn spreading_activation_seeded(
+        &mut self,
+        query: &str,
+        seed_ids: &[String],
+        task_tag: Option<&str>,
+        run_hebbian: bool,
+    ) -> Vec<ActivationResult> {
+        let mut seeds = self.find_seeds(query, task_tag);
+        for id in seed_ids {
+            if let Some(&idx) = self.node_id_to_idx.get(id) {
+                if !seeds.contains(&idx) {
+                    seeds.push(idx);
+                }
+            }
+        }
+        if seeds.is_empty() {
+            return Vec::new();
+        }
+        self.spread_and_collect(&seeds, false, run_hebbian)
+    }
+
+    /// The shared spread engine: Q-weighted seeding → hops (forward or
+    /// reverse) with abs-max merge → threshold-collect → abs-sort →
+    /// optional Hebbian update.
+    ///
+    /// Merge rule: uses absolute-value max (|new| > |old| → replace). This
+    /// allows negative activations from prevented edges to replace zero
+    /// (which signed-max could not: -0.126 > 0.0 is false). A node receiving
+    /// both caused (+) and prevented (-) signals shows whichever is stronger.
+    fn spread_and_collect(
+        &mut self,
+        seeds: &[u32],
+        reverse: bool,
+        run_hebbian: bool,
+    ) -> Vec<ActivationResult> {
         let mut activations = vec![0.0_f32; self.num_nodes];
+        // Flip-path marking: provenance of each node's CURRENT (strongest)
+        // activation. hop = u8::MAX for unlit; seeds = 0. Both update
+        // together when the abs-max merge replaces a node's activation, so
+        // hop/via always describe the winning value. No effect on the
+        // activation values themselves.
+        let mut node_hop = vec![u8::MAX; self.num_nodes];
+        let mut node_via: Vec<Option<ViaEdge>> = vec![None; self.num_nodes];
         let now = chrono::Utc::now().timestamp();
-        for &seed in &seeds {
+        for &seed in seeds {
             // P4: Q-value-weighted seeding. High-Q nodes (proven useful)
             // get stronger initial activation; low-Q nodes still seed but
             // weaker, so they don't dominate. Q defaults to 0.5 when unset.
             let q = self.node_q_value[seed as usize];
             activations[seed as usize] = 0.5 + 0.5 * q; // maps [0,1] Q → [0.5,1.0] seed
             self.node_last_activated[seed as usize] = now;
+            node_hop[seed as usize] = 0;
         }
 
-        for _ in 0..self.max_hops {
-            let new_act = if reverse {
+        // Zero hops when spreading is disabled (ablation): seeds keep
+        // their Q-weighted activation, nothing propagates.
+        let hops = if self.spread_enabled {
+            self.max_hops
+        } else {
+            0
+        };
+        for hop in 1..=hops {
+            let (new_act, hop_via) = if reverse {
                 self.spread_step_rev(&activations, self.decay)
             } else {
                 self.spread_step(&activations, self.decay)
@@ -394,6 +641,8 @@ impl CausalGraph {
                     if new_act[i].abs() > activations[i].abs() {
                         activations[i] = new_act[i];
                         self.node_last_activated[i] = now;
+                        node_hop[i] = hop as u8;
+                        node_via[i] = hop_via[i];
                     }
                 }
             }
@@ -406,12 +655,16 @@ impl CausalGraph {
         let mut results: Vec<ActivationResult> = activations
             .iter()
             .enumerate()
-            .filter(|(_, &a)| a.abs() >= self.threshold)
+            .filter(|(i, &a)| {
+                a.abs() >= self.threshold && !self.retired_nodes.contains(&(*i as u32))
+            })
             .map(|(i, &a)| ActivationResult {
                 node_idx: i as u32,
                 activation: a,
                 text: self.node_text[i].clone(),
                 task_tag: self.node_task_tag[i].clone(),
+                hop: node_hop[i],
+                via: node_via[i],
             })
             .collect();
 
@@ -436,11 +689,9 @@ impl CausalGraph {
 
     /// CA1 novelty detection: compare predicted outcomes with actual.
     ///
-    /// WARNING: text_jaccard_similarity uses whitespace tokenization.
-    /// Chinese text (no spaces) produces one giant token, making similarity
-    /// near-zero and surprise near-1.0 for everything. This is a known
-    /// limitation (#10 in review). For Chinese-heavy use, switch to
-    /// character bigrams or a real tokenizer.
+    /// Similarity uses `patterns::tokenize` (lowercased ASCII words minus
+    /// stop words, CJK character bigrams), so surprise is meaningful for
+    /// whitespace-free text too.
     pub fn detect_novelty(&mut self, decision_text: &str, actual_outcome: &str) -> NoveltyReport {
         // Internal computation: use run_hebbian=false so novelty detection
         // doesn't have the side effect of strengthening co-occurrence edges.
@@ -775,8 +1026,7 @@ impl CausalGraph {
     pub fn hebbian_update(&mut self, active_nodes: &[u32], lambda: f32, eta: f32) {
         let active_set: std::collections::HashSet<u32> = active_nodes.iter().copied().collect();
         for edge_idx in 0..self.edge_relations.len() {
-            if self.edge_relations[edge_idx] != Relation::CoOccurrence
-                || !self.edge_valid[edge_idx]
+            if self.edge_relations[edge_idx] != Relation::CoOccurrence || !self.edge_valid[edge_idx]
             {
                 continue;
             }
@@ -838,10 +1088,7 @@ impl CausalGraph {
         store.with_conn(|conn| {
             let mut stmt = conn.prepare("UPDATE chunks SET q_value = ?1 WHERE id = ?2")?;
             for (id, &idx) in &self.node_id_to_idx {
-                stmt.execute(rusqlite::params![
-                    self.node_q_value[idx as usize],
-                    id
-                ])?;
+                stmt.execute(rusqlite::params![self.node_q_value[idx as usize], id])?;
             }
             Ok(())
         })
@@ -954,10 +1201,74 @@ impl CausalGraph {
         }
     }
 
+    /// Ablation switch: turn spreading activation off entirely.
+    ///
+    /// After calling this, retrieval reduces to the seeding layer alone —
+    /// seeds keep their Q-weighted initial activation, but zero hops run,
+    /// so no activation propagates along any edge (the graph's associative
+    /// reach removed). Used by the no-spread ablation arm to isolate the
+    /// contribution of spreading activation itself.
+    ///
+    /// This is irreversible for the graph instance (rebuild from store to undo).
+    /// SWR chain walking (`walk_chain`) is a different mechanism and is
+    /// deliberately NOT affected.
+    pub fn disable_spread(&mut self) {
+        self.spread_enabled = false;
+    }
+
     /// Activation floor — nodes with |activation| below this are filtered
     /// from results (D1 uses it to decide which nodes count as co-active).
     pub fn threshold(&self) -> f32 {
         self.threshold
+    }
+
+    /// Connectivity statistics over VALID edges (undirected BFS over the
+    /// CSR). Returns (component_count, largest_component_size,
+    /// isolated_node_count, valid_edge_count). A component is a weakly
+    /// connected set of nodes via valid edges. Used to quantify
+    /// one-graph convergence (facts linking isolated causal pairs into
+    /// clusters) and to catch cross-scope link explosions at benchmark
+    /// scale.
+    pub fn component_stats(&self) -> (usize, usize, usize, usize) {
+        let mut visited = vec![false; self.num_nodes];
+        let mut comps: Vec<usize> = Vec::new();
+        let valid_edges = self.edge_valid.iter().filter(|v| **v).count();
+        for start in 0..self.num_nodes {
+            if visited[start] {
+                continue;
+            }
+            let mut stack = vec![start];
+            visited[start] = true;
+            let mut size = 0usize;
+            while let Some(n) = stack.pop() {
+                size += 1;
+                for e in self.row_ptr[n] as usize..self.row_ptr[n + 1] as usize {
+                    if !self.edge_valid[e] {
+                        continue;
+                    }
+                    let t = self.col_idx[e] as usize;
+                    if !visited[t] {
+                        visited[t] = true;
+                        stack.push(t);
+                    }
+                }
+                for e in self.row_ptr_rev[n] as usize..self.row_ptr_rev[n + 1] as usize {
+                    let fwd = self.rev_to_fwd_idx[e] as usize;
+                    if !self.edge_valid[fwd] {
+                        continue;
+                    }
+                    let t = self.col_idx_rev[e] as usize;
+                    if !visited[t] {
+                        visited[t] = true;
+                        stack.push(t);
+                    }
+                }
+            }
+            comps.push(size);
+        }
+        let max = comps.iter().copied().max().unwrap_or(0);
+        let isolated = comps.iter().filter(|&&c| c == 1).count();
+        (comps.len(), max, isolated, valid_edges)
     }
 
     pub fn num_nodes(&self) -> usize {
@@ -980,6 +1291,201 @@ impl CausalGraph {
     /// chunk id, so retrieval results need the id, not just the text).
     pub fn node_id(&self, idx: usize) -> &str {
         &self.node_ids[idx]
+    }
+
+    /// Phase B: does the graph know this node id? A store-resolved seed
+    /// that maps to no node means the graph predates the write — the
+    /// unified engine uses this as a freshness signal.
+    pub fn has_node(&self, id: &str) -> bool {
+        self.node_id_to_idx.contains_key(id)
+    }
+
+    /// Phase C: append a node to the graph (write-path patch). Node arrays
+    /// are plain `Vec`s, so appending is O(1); the new node's CSR rows
+    /// start empty (zero-width) — its edges go through [`add_patch_edge`].
+    /// Returns the new node index. No-op (returns the existing index) when
+    /// the id already exists — callers patch after any write, including
+    /// chunk reuse where only the edge is new.
+    pub fn append_node(&mut self, data: NodeData) -> u32 {
+        if let Some(&idx) = self.node_id_to_idx.get(&data.id) {
+            return idx;
+        }
+        let idx = self.num_nodes as u32;
+        self.node_id_to_idx.insert(data.id.clone(), idx);
+        self.node_text.push(data.text);
+        let idx_id = data.id;
+        self.node_ids.push(idx_id.clone());
+        self.node_q_value.push(data.q_value);
+        self.node_replay_count.push(data.replay_count);
+        self.node_last_activated.push(data.last_activated);
+        self.node_event_time.push(data.event_time);
+        self.node_sparse_code
+            .push(crate::hippocampus::utils::simhash(
+                &self.node_text[idx as usize],
+            ));
+        self.node_task_tag.push(data.task_tag);
+        self.node_scope.push(data.scope);
+        self.num_nodes += 1;
+        // Zero-width CSR rows for the new node on both sides.
+        self.row_ptr.push(*self.row_ptr.last().unwrap_or(&0));
+        self.row_ptr_rev
+            .push(*self.row_ptr_rev.last().unwrap_or(&0));
+        // Phase C: keep the incremental token index current for chunk
+        // nodes (fact/scope nodes are not link targets). Posting lists are
+        // deduped (distinct tokens only), matching the rebuild-time linker.
+        let is_link_target = !(idx_id.starts_with("fact:") || idx_id.starts_with("scope:"));
+        if is_link_target {
+            let distinct: std::collections::HashSet<String> =
+                crate::patterns::tokenize(&self.node_text[idx as usize])
+                    .into_iter()
+                    .collect();
+            for tok in distinct {
+                self.token_index.entry(tok).or_default().push(idx);
+            }
+        }
+        idx
+    }
+
+    /// Phase C: add an edge between (possibly just-appended) nodes without
+    /// rebuilding. The edge lives in the overlay maps until the next full
+    /// `from_store`; spread steps consult it in both directions.
+    /// Idempotent: a duplicate (from, to, relation) — e.g. an idempotent
+    /// fact re-record — updates the weight instead of stacking a copy, so
+    /// repeated writes never inflate activation or grow the overlay.
+    pub fn add_patch_edge(&mut self, from: u32, to: u32, relation: Relation, weight: f32) {
+        let value = weight * relation.spread_coeff();
+        // Reviving write: a re-appended node leaves the retired set (the
+        // store-side revive path re-records a previously retired fact).
+        self.retired_nodes.remove(&from);
+        self.retired_nodes.remove(&to);
+        let upsert = |patches: &mut Vec<PatchEdge>, other: u32, value: f32| {
+            if let Some(p) = patches.iter_mut().find(|p| p.other == other) {
+                p.value = value;
+                p.valid = true;
+            } else {
+                patches.push(PatchEdge {
+                    other,
+                    value,
+                    relation,
+                    valid: true,
+                });
+            }
+        };
+        upsert(self.patch_fwd.entry(from).or_default(), to, value);
+        upsert(self.patch_rev.entry(to).or_default(), from, value);
+    }
+
+    /// Phase C: retire a node from seeding and result surfacing (a fact
+    /// replaced under the same key). Its edges stay so activation may
+    /// still bridge THROUGH it, but its own text never appears; the next
+    /// full rebuild removes it completely. Returns true when the id was
+    /// live in the graph.
+    pub fn retire_node(&mut self, id: &str) -> bool {
+        match self.node_id_to_idx.get(id) {
+            Some(&idx) => self.retired_nodes.insert(idx),
+            None => false,
+        }
+    }
+
+    /// Phase C: flip validity off for every edge (CSR or patch) between the
+    /// two chunk ids — the O(1)-amortized graph reaction to
+    /// `invalidate_decision`, so a falsified lesson stops spreading
+    /// immediately instead of after the next lazy rebuild.
+    /// Returns the number of edges flipped.
+    pub fn invalidate_edges_between(&mut self, from_id: &str, to_id: &str) -> usize {
+        let (Some(&from), Some(&to)) = (
+            self.node_id_to_idx.get(from_id),
+            self.node_id_to_idx.get(to_id),
+        ) else {
+            return 0;
+        };
+        let mut flipped = 0usize;
+        // CSR forward rows of `from`.
+        let start = self.row_ptr[from as usize] as usize;
+        let end = self.row_ptr[from as usize + 1] as usize;
+        for edge_idx in start..end {
+            if self.col_idx[edge_idx] == to && self.edge_valid[edge_idx] {
+                self.edge_valid[edge_idx] = false;
+                flipped += 1;
+            }
+        }
+        // Overlay edges in both directions.
+        if let Some(patches) = self.patch_fwd.get_mut(&from) {
+            for p in patches {
+                if p.other == to && p.valid {
+                    p.valid = false;
+                    flipped += 1;
+                }
+            }
+        }
+        if let Some(patches) = self.patch_rev.get_mut(&to) {
+            for p in patches {
+                if p.other == from && p.valid {
+                    p.valid = false;
+                    flipped += 1;
+                }
+            }
+        }
+        flipped
+    }
+
+    /// Phase C: entity-link one (just-appended) fact node against the
+    /// chunk nodes already in the graph — the in-graph mirror of
+    /// `entity_link_facts`, using the same thresholds and weights, so a
+    /// fresh fact is wired into the causal content immediately (not after
+    /// the next rebuild). Facts link to chunks sharing
+    /// ≥ [`FACT_LINK_MIN_TOKENS`] distinct tokens; bidirectional; capped
+    /// at [`FACT_LINK_MAX_PER_FACT`].
+    pub fn link_fact_node(&mut self, fact_idx: u32) {
+        let fact_text = self.node_text[fact_idx as usize].clone();
+        let fact_scope = self.node_scope[fact_idx as usize].clone();
+        let fact_tokens: std::collections::HashSet<String> = crate::patterns::tokenize(&fact_text)
+                .into_iter()
+                .filter(|t| !LINK_STOPWORDS.contains(&t.as_str()))
+                // df filter: a token present in > FACT_LINK_DF_LIMIT chunks
+                // (posting-list length) is too generic to count toward a link.
+                .filter(|t| {
+                    self.token_index
+                        .get(t)
+                        .map(|v| v.len() <= FACT_LINK_DF_LIMIT)
+                        .unwrap_or(true)
+                })
+                .collect();
+        if fact_tokens.is_empty() {
+            return;
+        }
+
+        // Distinct-shared-token count per in-scope chunk node via the
+        // incremental inverted index — O(fact tokens × hits), no per-node
+        // re-tokenize. Scope isolation mirrors entity_link_facts: a
+        // colon-namespaced fact scope links only to chunks whose task_tag
+        // matches the scope suffix.
+        let mut overlap: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for tok in &fact_tokens {
+            if let Some(chunks) = self.token_index.get(tok) {
+                for &ci in chunks {
+                    if !scope_matches(
+                        fact_scope.as_deref(),
+                        self.node_task_tag[ci as usize].as_deref(),
+                    ) {
+                        continue;
+                    }
+                    *overlap.entry(ci).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let mut linked: Vec<(u32, usize)> = overlap
+            .into_iter()
+            .filter(|&(_, n)| n >= FACT_LINK_MIN_TOKENS)
+            .collect();
+        linked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        linked.truncate(FACT_LINK_MAX_PER_FACT);
+        for (ci, n) in linked {
+            let weight = (0.3 + 0.1 * n as f32).min(0.8);
+            self.add_patch_edge(fact_idx, ci, Relation::Fact, weight);
+            self.add_patch_edge(ci, fact_idx, Relation::Fact, weight);
+        }
     }
 
     pub fn node_q_value(&self, idx: usize) -> f32 {
@@ -1051,9 +1557,7 @@ impl CausalGraph {
     pub fn out_neighbors_of(&self, node: u32) -> Vec<(u32, usize)> {
         let start = self.row_ptr[node as usize] as usize;
         let end = self.row_ptr[(node + 1) as usize] as usize;
-        (start..end)
-            .map(|i| (self.col_idx[i], i))
-            .collect()
+        (start..end).map(|i| (self.col_idx[i], i)).collect()
     }
 
     /// Target node of a given edge index.
@@ -1069,6 +1573,21 @@ impl Default for CausalGraph {
 }
 
 // ─── SQLite loading ────────────────────────────────────────────────
+
+/// Phase A (one-graph-convergence): minimum number of distinct shared
+/// tokens before an entity link is created between a fact node and a
+/// chunk node. Conservative on purpose — a false link wires unrelated
+/// activation into every downstream query.
+const FACT_LINK_MIN_TOKENS: usize = 3;
+/// Tokens appearing in more than this many chunks are too generic to drive
+/// a fact↔chunk link (audit 2026-08-21: df>20 tokens like dates/"agent"/"server"
+/// produced the bulk of false positives; df<=20 + >=3 tokens doubles link
+/// precision, 17% -> 33% strict / 29% -> 75% lenient).
+const FACT_LINK_DF_LIMIT: usize = 20;
+
+/// Phase A: max chunk links per fact — keeps a generic fact (key like
+/// `language`) from wiring itself to half the store.
+const FACT_LINK_MAX_PER_FACT: usize = 8;
 
 impl CausalGraph {
     /// Load graph from a CausalStore's SQLite database.
@@ -1102,6 +1621,7 @@ impl CausalGraph {
                     replay_count: 0,
                     last_activated: 0,
                     task_tag: None,
+                    scope: None,
                 });
             }
 
@@ -1156,6 +1676,8 @@ impl CausalGraph {
             }
 
             // P1: Load agent_facts as fact-type nodes + fact-type edges.
+            // Phase A: fact_indices feeds the entity linking below.
+            let mut fact_indices: Vec<usize> = Vec::new();
             let mut fact_stmt = conn.prepare(
                 "SELECT id, key, value, scope, confidence FROM agent_facts WHERE valid_to IS NULL",
             )?;
@@ -1182,8 +1704,10 @@ impl CausalGraph {
                         replay_count: 0,
                         last_activated: 0,
                         task_tag: None,
+                        scope: Some(scope.clone()),
                     });
                 }
+                fact_indices.push(nodes.len());
                 id_to_idx.insert(fact_node_id.clone(), nodes.len());
                 nodes.push(NodeData {
                     id: fact_node_id.clone(),
@@ -1193,11 +1717,22 @@ impl CausalGraph {
                     replay_count: 0,
                     last_activated: 0,
                     task_tag: Some(key.clone()),
+                    scope: Some(scope.clone()),
                 });
                 edges.push(EdgeData {
                     from_id: scope_node_id,
                     to_id: fact_node_id,
-                    relation: Relation::Fact,
+                    // Organizational edge, NOT semantic: NoEffect has
+                    // spread_coeff 0, so activation never travels through
+                    // the scope hub. A single shared scope (production:
+                    // everything under scope:user) otherwise makes every
+                    // fact two hops from every other — any fact hit
+                    // pollutes the whole fact layer via the hub (measured
+                    // on via-mcp LME: "what degree" surfaced unrelated
+                    // facts through scope:user while the true fact was
+                    // outranked). Harness stores are per-question scoped
+                    // and never hit this.
+                    relation: Relation::NoEffect,
                     weight: confidence as f32,
                     valid: true,
                 });
@@ -1265,9 +1800,128 @@ impl CausalGraph {
                 }
             }
 
+            // Phase A: entity-link fact nodes into the causal content
+            // graph — pure function over node data (unit-testable).
+            edges.extend(entity_link_facts(&nodes, &fact_indices));
+
             Ok(Self::build(&nodes, &edges))
         })
     }
+}
+
+/// Phase A (one-graph-convergence): entity-link fact nodes into the causal
+/// content graph (deterministic, no LLM). Facts otherwise form isolated
+/// scope-hub islands, so spreading activation can never cross between
+/// lessons and facts. A fact links to a chunk when they share
+/// ≥ [`FACT_LINK_MIN_TOKENS`] **distinct** tokens (`patterns::tokenize`:
+/// ASCII words + CJK bigrams). Edges are created in BOTH directions —
+/// fact seeds reach causal chains, causal seeds surface facts. An inverted
+/// token→chunk index keeps this O(total tokens) instead of
+/// O(facts × chunks).
+///
+/// Scope isolation (Phase A hardening, 2026-08-21): a fact with a
+/// colon-namespaced scope ("lme:{qid}", "tenant:acme") links ONLY to
+/// chunks whose task_tag matches the scope suffix — 500-question corpora
+/// share one store, and cross-question links would both pollute the
+/// isolation boundary and explode the graph (48万 nodes, up to 144万
+/// spurious edges). Canonical scopes (user/session/agent, the
+/// single-agent store) keep the original all-chunk behavior so real
+/// memory stays connected. Link tokens that are too generic to be
+/// discriminative are skipped (retrieval stopwords are separate).
+///
+/// Pure function over node data — unit-testable without a store.
+/// Tokens too generic to drive a fact↔chunk link (a fact sharing only
+/// "user"+"project" with a chunk is not a semantic connection).
+const LINK_STOPWORDS: &[&str] = &[
+    "user", "project", "code", "build", "using", "used", "want", "like", "get", "got", "make",
+    "made", "need", "way", "work", "worked", "thing", "stuff", "issue", "problem", "fix", "fixed",
+    "use", "went",
+];
+
+/// Colon-namespaced fact scope → strict chunk-task_tag isolation.
+fn scope_matches(fact_scope: Option<&str>, chunk_tag: Option<&str>) -> bool {
+    match fact_scope {
+        Some(s) if s.contains(':') => chunk_tag
+            .map(|t| t == s.rsplit(':').next().unwrap_or(s))
+            .unwrap_or(false),
+        _ => true, // canonical scope / no scope: single-agent store
+    }
+}
+
+fn entity_link_facts(nodes: &[NodeData], fact_indices: &[usize]) -> Vec<EdgeData> {
+    // Inverted token → chunk index. Posting lists are deduped at build
+    // time (a chunk whose text repeats a token appears once per token), so
+    // the overlap count below is the number of DISTINCT shared tokens —
+    // exactly what the threshold documents.
+    let mut token_to_chunks: std::collections::HashMap<String, Vec<usize>> =
+        std::collections::HashMap::new();
+    for (i, node) in nodes.iter().enumerate() {
+        if node.id.starts_with("fact:") || node.id.starts_with("scope:") {
+            continue; // only chunk nodes are link targets
+        }
+        let distinct: std::collections::HashSet<String> =
+            crate::patterns::tokenize(&node.text).into_iter().collect();
+        for tok in distinct {
+            token_to_chunks.entry(tok).or_default().push(i);
+        }
+    }
+
+    let mut edges = Vec::new();
+    for &fi in fact_indices {
+        let fact = &nodes[fi];
+        let fact_id = fact.id.clone();
+        let fact_tokens: std::collections::HashSet<String> = crate::patterns::tokenize(&fact.text)
+                .into_iter()
+                .filter(|t| !LINK_STOPWORDS.contains(&t.as_str()))
+                // df filter: a token present in > FACT_LINK_DF_LIMIT chunks
+                // (posting-list length) is too generic to count toward a link.
+                .filter(|t| token_to_chunks.get(t).map(|v| v.len() <= FACT_LINK_DF_LIMIT).unwrap_or(true))
+                .collect();
+        if fact_tokens.is_empty() {
+            continue;
+        }
+
+        // Distinct-shared-token count per in-scope chunk (idx → overlap).
+        let mut overlap: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for tok in &fact_tokens {
+            if let Some(chunks) = token_to_chunks.get(tok) {
+                for &ci in chunks {
+                    if !scope_matches(fact.scope.as_deref(), nodes[ci].task_tag.as_deref()) {
+                        continue;
+                    }
+                    *overlap.entry(ci).or_insert(0) += 1;
+                }
+            }
+        }
+
+        // Conservative threshold; deterministic order (overlap desc, idx
+        // asc); per-fact cap.
+        let mut linked: Vec<(usize, usize)> = overlap
+            .into_iter()
+            .filter(|&(_, n)| n >= FACT_LINK_MIN_TOKENS)
+            .collect();
+        linked.sort_unstable_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        linked.truncate(FACT_LINK_MAX_PER_FACT);
+
+        for (ci, n) in linked {
+            let weight = (0.3 + 0.1 * n as f32).min(0.8);
+            edges.push(EdgeData {
+                from_id: fact_id.clone(),
+                to_id: nodes[ci].id.clone(),
+                relation: Relation::Fact,
+                weight,
+                valid: true,
+            });
+            edges.push(EdgeData {
+                from_id: nodes[ci].id.clone(),
+                to_id: fact_id.clone(),
+                relation: Relation::Fact,
+                weight,
+                valid: true,
+            });
+        }
+    }
+    edges
 }
 
 #[cfg(test)]

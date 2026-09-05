@@ -253,6 +253,10 @@ Output: [
 4. Have you preserved all numbers, names, dates, and prices exactly as stated?
 5. Have you captured any transitions or changes with both old and new state?
 
+# Anti-Repetition (HARD RULE)
+- Each item must describe a DIFFERENT fact/event/lesson. NEVER emit the same or near-duplicate item twice — v4-flash has an observed degeneration mode where a handful of items repeat until max_tokens; the parser dedups exact repeats, but do not rely on it.
+- Output AT MOST 20 items. If you have more candidates, keep only the 20 most valuable.
+
 # Output
 
 Return ONLY a valid JSON array. No text, no explanation:
@@ -362,12 +366,16 @@ impl Distiller {
             ..Default::default()
         };
         match backoff::future::retry(backoff_cfg, || async {
-            llm::chat(
+            llm::chat_with_timeout(
                 &self.config,
                 DISTILL_PROMPT,
                 &user_msg,
                 Self::DISTILL_MAX_TOKENS,
                 0.0,
+                // Distilling a full session takes 30-120s on current DeepSeek
+                // (chat → v4-flash); the 8s MCP-path default aborts mid-body
+                // ("error decoding response body"). Floor at 120s.
+                llm::http_timeout().max(std::time::Duration::from_secs(120)),
             )
             .await
             .map_err(backoff::Error::transient)
@@ -383,8 +391,10 @@ impl Distiller {
 
     /// Max tokens for the distill reply: up to 30 detailed items per
     /// session (numbers, names, per-day events, meeting notes, emails,
-    /// proposals) need substantial headroom.
-    const DISTILL_MAX_TOKENS: u32 = 4000;
+    /// proposals) need substantial headroom. 8000: deepseek-v4-flash writes
+    /// longer per item than the v3-era model the 4000 budget was tuned for —
+    /// a truncated JSON tail costs the items after the cut.
+    const DISTILL_MAX_TOKENS: u32 = 8000;
 
     /// Parse the LLM reply into memory items. Pure function — the test
     /// surface for this module.
@@ -422,9 +432,16 @@ impl Distiller {
             })
             .unwrap_or_else(|_| salvage_objects(text));
 
+        // Exact-duplicate guard: deepseek-v4-flash has an observed
+        // degeneration mode where the same items repeat until max_tokens.
+        // Dedup on normalized text so a degenerate run cannot flood the
+        // store (write-side idempotency is the second net, this is the
+        // first).
+        let mut seen = std::collections::HashSet::new();
         raw_items
             .into_iter()
             .filter_map(|item| normalize_item(item, fallback_date))
+            .filter(|item| seen.insert(item.text.trim().to_lowercase()))
             .collect()
     }
 }
@@ -508,7 +525,10 @@ fn normalize_item(item: RawItem, fallback_date: &str) -> Option<MemoryItem> {
         .and_then(|v| v.as_str().map(str::to_string))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty() && s != "null");
-    let causal_relation = item.causal_relation.as_deref().and_then(CausalRelation::parse);
+    let causal_relation = item
+        .causal_relation
+        .as_deref()
+        .and_then(CausalRelation::parse);
     // If the LLM provided a causal_relation, force kind=Causal even if it
     // used a different field name (type/description) or didn't set kind.
     let kind = if causal_relation.is_some() {
@@ -675,8 +695,15 @@ pub async fn distill_recurrence(
             if i == 0 { session_embedding } else { None },
         )?;
     }
-    distill_recurrence_inner(store, distiller, session_id, date, session_embedding, min_similarity)
-        .await
+    distill_recurrence_inner(
+        store,
+        distiller,
+        session_id,
+        date,
+        session_embedding,
+        min_similarity,
+    )
+    .await
 }
 
 /// Core of `distill_recurrence`, assuming the turns are already in
@@ -801,6 +828,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_dedups_exact_repeats() {
+        // deepseek-v4-flash degeneration mode: the same items repeat until
+        // max_tokens. parse_items must collapse exact (normalized) repeats.
+        let raw = r#"[
+            {"kind": "event", "text": "2025-06-03: The user pushed commit abc123.", "date": "2025-06-03"},
+            {"kind": "event", "text": "2025-06-03: The user pushed commit abc123.", "date": "2025-06-03"},
+            {"kind": "event", "text": "  2025-06-03: The user pushed commit abc123. ", "date": "2025-06-03"},
+            {"kind": "lesson", "text": "2025-06-03: Always run tests first.", "date": "2025-06-03"}
+        ]"#;
+        let items = Distiller::parse_items(raw, "2025-06-03");
+        assert_eq!(
+            items.len(),
+            2,
+            "exact repeats collapse, distinct items stay"
+        );
+        assert_eq!(items[0].kind, ItemKind::Event);
+        assert_eq!(items[1].kind, ItemKind::Lesson);
+    }
+
+    #[test]
     fn parse_strips_markdown_fence() {
         let raw = "```json\n[{\"kind\": \"fact\", \"text\": \"2025-06-03: The user works as a software engineer.\", \"date\": \"2025-06-03\", \"supersedes\": null}]\n```";
         let items = Distiller::parse_items(raw, "2025-06-03");
@@ -885,72 +932,69 @@ mod tests {
     }
 }
 
-    // ─── v8: recurrence-triggered distill (P1) ────────────────────────────
+// ─── v8: recurrence-triggered distill (P1) ────────────────────────────
 
-    #[test]
-    fn test_should_distill_recurrence() {
-        let a = vec![1.0f32, 0.0, 0.0];
-        let prior = vec![
-            (1, vec![0.5f32, 0.5, 0.0]), // sim 0.707 — below a 0.9 gate
-            (2, vec![1.0f32, 0.0, 0.0]), // sim 1.0 — exact topic repeat
-        ];
-        // Above threshold → picks the BEST match.
-        assert_eq!(should_distill(&a, &prior, 0.9), Some((2, 1.0)));
-        // Lower threshold still picks the best.
-        assert_eq!(should_distill(&a, &prior, 0.6), Some((2, 1.0)));
-        // Strict gate rejects the 0.707 match.
-        assert_eq!(should_distill(&a, &prior, 0.99), Some((2, 1.0)));
-        assert_eq!(should_distill(&a, &prior, 1.01), None);
-        // Unrelated topic (orthogonal to every candidate) → no recurrence.
-        let b = vec![0.0f32, 0.0, 1.0];
-        assert_eq!(should_distill(&b, &prior, 0.5), None);
-        // Empty candidate set → never fires.
-        assert_eq!(should_distill(&a, &[], 0.1), None);
-    }
+#[test]
+fn test_should_distill_recurrence() {
+    let a = vec![1.0f32, 0.0, 0.0];
+    let prior = vec![
+        (1, vec![0.5f32, 0.5, 0.0]), // sim 0.707 — below a 0.9 gate
+        (2, vec![1.0f32, 0.0, 0.0]), // sim 1.0 — exact topic repeat
+    ];
+    // Above threshold → picks the BEST match.
+    assert_eq!(should_distill(&a, &prior, 0.9), Some((2, 1.0)));
+    // Lower threshold still picks the best.
+    assert_eq!(should_distill(&a, &prior, 0.6), Some((2, 1.0)));
+    // Strict gate rejects the 0.707 match.
+    assert_eq!(should_distill(&a, &prior, 0.99), Some((2, 1.0)));
+    assert_eq!(should_distill(&a, &prior, 1.01), None);
+    // Unrelated topic (orthogonal to every candidate) → no recurrence.
+    let b = vec![0.0f32, 0.0, 1.0];
+    assert_eq!(should_distill(&b, &prior, 0.5), None);
+    // Empty candidate set → never fires.
+    assert_eq!(should_distill(&a, &[], 0.1), None);
+}
 
-    #[test]
-    fn test_record_items_splits_facts_and_edges() {
-        use crate::store::CausalStore;
-        let store = CausalStore::open_in_memory().unwrap();
-        let items = vec![
-            MemoryItem {
-                kind: ItemKind::Fact,
-                text: "user uses Arch Linux".to_string(),
-                date: Some("2026-08-01".to_string()),
-                supersedes: None,
-                causal_relation: None,
-                decision: None,
-            },
-            MemoryItem {
-                kind: ItemKind::Lesson,
-                text: "always pin dependency versions".to_string(),
-                date: Some("2026-08-01".to_string()),
-                supersedes: None,
-                causal_relation: None,
-                decision: None,
-            },
-            MemoryItem {
-                kind: ItemKind::Causal,
-                text: "production crash".to_string(),
-                date: Some("2026-08-01".to_string()),
-                supersedes: None,
-                causal_relation: Some(CausalRelation::Caused),
-                decision: Some("deployed without tests".to_string()),
-            },
-        ];
-        let n = record_items(&store, &items, None).unwrap();
-        assert_eq!(n, 3);
-        // Fact → agent_facts; lesson (self-edge) + causal (proper edge) → causal_edges.
-        let facts = store
-            .search_facts_bm25("Arch", None, 10)
-            .unwrap()
-            .len();
-        assert_eq!(facts, 1);
-        assert_eq!(store.count_edges().unwrap(), 2);
-        // The causal item formed a real decision → outcome edge.
-        let causal = store
-            .search_causal_bm25(None, "deployed without tests", 10)
-            .unwrap();
-        assert_eq!(causal.len(), 1);
-        assert_eq!(causal[0].relation, "caused");
-    }
+#[test]
+fn test_record_items_splits_facts_and_edges() {
+    use crate::store::CausalStore;
+    let store = CausalStore::open_in_memory().unwrap();
+    let items = vec![
+        MemoryItem {
+            kind: ItemKind::Fact,
+            text: "user uses Arch Linux".to_string(),
+            date: Some("2026-08-01".to_string()),
+            supersedes: None,
+            causal_relation: None,
+            decision: None,
+        },
+        MemoryItem {
+            kind: ItemKind::Lesson,
+            text: "always pin dependency versions".to_string(),
+            date: Some("2026-08-01".to_string()),
+            supersedes: None,
+            causal_relation: None,
+            decision: None,
+        },
+        MemoryItem {
+            kind: ItemKind::Causal,
+            text: "production crash".to_string(),
+            date: Some("2026-08-01".to_string()),
+            supersedes: None,
+            causal_relation: Some(CausalRelation::Caused),
+            decision: Some("deployed without tests".to_string()),
+        },
+    ];
+    let n = record_items(&store, &items, None).unwrap();
+    assert_eq!(n, 3);
+    // Fact → agent_facts; lesson (self-edge) + causal (proper edge) → causal_edges.
+    let facts = store.search_facts_bm25("Arch", None, 10).unwrap().len();
+    assert_eq!(facts, 1);
+    assert_eq!(store.count_edges().unwrap(), 2);
+    // The causal item formed a real decision → outcome edge.
+    let causal = store
+        .search_causal_bm25(None, "deployed without tests", 10)
+        .unwrap();
+    assert_eq!(causal.len(), 1);
+    assert_eq!(causal[0].relation, "caused");
+}

@@ -1,0 +1,75 @@
+# Prebuilt binary releases for the causal-memory MCP server / CLI.
+#
+# Triggered by version tags `v*` (the GitHub Release track — distinct from
+# `py-v*`, which drives wheels.yml). Six assets: Windows / macOS / Linux ×
+# x64 / arm64, built on NATIVE runners per platform — reqwest uses
+# native-tls-vendored (OpenSSL built from source), so cross-compiling is
+# avoided on purpose.
+#
+# Usage: push a version tag, e.g. `git tag v0.9.3 && git push origin v0.9.3`.
+# workflow_dispatch runs build the same matrix but stay artifact-only.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write # upload assets to the GitHub Release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    target: x86_64-unknown-linux-gnu,   name: linux-x86_64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu,  name: linux-aarch64 }
+          - { os: macos-15-intel,   target: x86_64-apple-darwin,        name: macos-x86_64 } # macos-13 retired
+          - { os: macos-14,         target: aarch64-apple-darwin,       name: macos-aarch64 }
+          - { os: windows-latest,   target: x86_64-pc-windows-msvc,     name: windows-x86_64 }
+          - { os: windows-11-arm,   target: aarch64-pc-windows-msvc,    name: windows-aarch64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Build causal-memory
+        run: cargo build --release --locked -p causal-memory-cli --bin causal-memory --target ${{ matrix.target }}
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          tar -czf "dist/causal-memory-${{ github.ref_name }}-${{ matrix.name }}.tar.gz" \
+            -C "target/${{ matrix.target }}/release" causal-memory
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path "target/${{ matrix.target }}/release/causal-memory.exe" `
+            -DestinationPath "dist/causal-memory-${{ github.ref_name }}-${{ matrix.name }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.name }}
+          path: dist/
+
+  publish:
+    name: Attach assets to GitHub Release
+    needs: build
+    # Only tag pushes publish; workflow_dispatch builds stay artifact-only.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: bin-*
+          merge-multiple: true
+          path: dist
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

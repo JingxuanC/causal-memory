@@ -7,9 +7,9 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
-    CausalStore, ENTRY_COLUMNS, ID_COUNTER, SUPERSEDES_MIN_SHARED_TOKENS,
-    SUPERSEDES_SIM_THRESHOLD, containment_similarity, date_tokens, effective_polarity,
-    entry_from_row, is_retraction_record,
+    containment_similarity, date_tokens, effective_polarity, entry_from_row, is_retraction_record,
+    CausalStore, ForkPair, PendingPrediction, PredictionStats, ENTRY_COLUMNS, ID_COUNTER,
+    SUPERSEDES_MIN_SHARED_TOKENS, SUPERSEDES_SIM_THRESHOLD,
 };
 
 /// One C7 falsification candidate: (old_edge_id, new_edge_id, old_decision,
@@ -65,13 +65,18 @@ impl CausalStore {
             discovered_by,
             event_time,
             None,
+            None,
         )
     }
 
-    /// Record with an explicit event_time and a pre-judged outcome polarity
+    /// Record with an explicit event_time, a pre-judged outcome polarity
     /// (v4: positive/negative/mixed/neutral, judged by the LLM or the
-    /// heuristic at the caller). `None` stores NULL — read paths then fall
-    /// back to the signal-word heuristic.
+    /// heuristic at the caller), and an optional decision context
+    /// (v14: the world state the decision was made in — the abduction
+    /// substrate; same task_tag+context ⇒ comparable branch).
+    /// `None` polarity stores NULL — read paths then fall back to the
+    /// signal-word heuristic. `None` context stores NULL — legacy
+    /// behavior, excluded from fork detection.
     #[allow(clippy::too_many_arguments)]
     pub fn record_decision_full(
         &self,
@@ -83,6 +88,7 @@ impl CausalStore {
         discovered_by: &str,
         event_time: i64,
         outcome_polarity: Option<&str>,
+        context: Option<&str>,
     ) -> Result<(String, i64)> {
         let conn = self.acquire()?;
         let db_time = chrono::Utc::now().timestamp();
@@ -104,14 +110,125 @@ impl CausalStore {
         // the old lesson is falsified by the new evidence — soft-invalidate it.
         // Must run BEFORE inserting the new edge so the new edge is never matched.
         Self::invalidate_contradicted_edges(&conn, decision, outcome, outcome_polarity, db_time)?;
+        let fingerprint = context.map(|c| super::context_fingerprint(task_tag, c));
         conn.execute(
-            "INSERT INTO causal_edges (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag, outcome_polarity)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![&dec_id, &out_id, relation, confidence, discovered_by, event_time, db_time, task_tag, outcome_polarity],
+            "INSERT INTO causal_edges (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag, outcome_polarity, context_fingerprint, context_text)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                &dec_id,
+                &out_id,
+                relation,
+                confidence,
+                discovered_by,
+                event_time,
+                db_time,
+                task_tag,
+                outcome_polarity,
+                fingerprint,
+                context
+            ],
         )?;
         // C3: return the edge id too — callers no longer need a follow-up
         // SELECT to resolve it (the server used to re-query by from_id).
-        Ok((dec_id, conn.last_insert_rowid()))
+        let edge_id = conn.last_insert_rowid();
+        // v14 fork detection (Rung-3 Phase A): same fingerprint + a
+        // DIFFERENT decision chunk ⇒ natural experiment. Best-effort — a
+        // failure here must never fail the record (same discipline as the
+        // embedding path). Cap: link at most the 10 most recent siblings so
+        // a hot fingerprint stays O(n) not O(n²) pairs. The pair rows store
+        // only the two edge ids — the fingerprint itself is never read back
+        // from decision_forks (both consumers JOIN causal_edges, where it
+        // lives as context_fingerprint), so it is not duplicated here.
+        if let Some(fp) = &fingerprint {
+            let _ = Self::link_forks(&conn, edge_id, &dec_id, fp, db_time);
+        }
+        Ok((dec_id, edge_id))
+    }
+
+    /// v14: find same-fingerprint siblings with a different decision chunk
+    /// and insert id-ordered fork pairs (UNIQUE-deduped). Same decision text
+    /// re-recorded is the contradiction/supersession path, NOT a fork —
+    /// hence the `from_id !=` guard.
+    fn link_forks(
+        conn: &rusqlite::Connection,
+        edge_id: i64,
+        from_id: &str,
+        fingerprint: &str,
+        db_time: i64,
+    ) -> Result<usize> {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM causal_edges
+             WHERE context_fingerprint = ?1 AND valid_to IS NULL AND from_id != ?2
+             ORDER BY discovered_at DESC, id DESC LIMIT 10",
+        )?;
+        let siblings: Vec<i64> = stmt
+            .query_map(params![fingerprint, from_id], |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        let mut n = 0;
+        for sib in siblings {
+            let (a, b) = if sib < edge_id {
+                (sib, edge_id)
+            } else {
+                (edge_id, sib)
+            };
+            n += conn.execute(
+                "INSERT OR IGNORE INTO decision_forks (edge_id_a, edge_id_b, discovered_at)
+                 VALUES (?1, ?2, ?3)",
+                params![a, b, db_time],
+            )?;
+        }
+        Ok(n)
+    }
+
+    /// v14: fork pairs touching any of `edge_ids`, joined to both edges'
+    /// endpoint texts and polarities (for the counterfactual same-context
+    /// section). Only pairs where BOTH edges are still valid are returned.
+    /// The fingerprint comes from `ea.context_fingerprint` — both edges of a
+    /// pair share it by construction, and the JOIN is already there; the
+    /// forks table itself no longer duplicates it (schema v15).
+    pub fn fork_siblings_for_edges(&self, edge_ids: &[i64]) -> Result<Vec<ForkPair>> {
+        if edge_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let conn = self.acquire()?;
+        let placeholders = vec!["?"; edge_ids.len()].join(",");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT f.id, f.edge_id_a, f.edge_id_b, ea.context_fingerprint,
+                    da.text, oa.text, ea.relation, ea.outcome_polarity,
+                    db.text, ob.text, eb.relation, eb.outcome_polarity
+             FROM decision_forks f
+             JOIN causal_edges ea ON ea.id = f.edge_id_a AND ea.valid_to IS NULL
+             JOIN causal_edges eb ON eb.id = f.edge_id_b AND eb.valid_to IS NULL
+             JOIN chunks da ON da.id = ea.from_id
+             JOIN chunks oa ON oa.id = ea.to_id
+             JOIN chunks db ON db.id = eb.from_id
+             JOIN chunks ob ON ob.id = eb.to_id
+             WHERE f.edge_id_a IN ({placeholders}) OR f.edge_id_b IN ({placeholders})"
+        ))?;
+        let bind: Vec<&dyn rusqlite::ToSql> = edge_ids
+            .iter()
+            .chain(edge_ids.iter())
+            .map(|i| i as &dyn rusqlite::ToSql)
+            .collect();
+        let rows = stmt.query_map(bind.as_slice(), |row| {
+            Ok(ForkPair {
+                pair_id: row.get(0)?,
+                edge_id_a: row.get(1)?,
+                edge_id_b: row.get(2)?,
+                fingerprint: row.get(3)?,
+                a_decision: row.get(4)?,
+                a_outcome: row.get(5)?,
+                a_relation: row.get(6)?,
+                a_polarity: row.get(7)?,
+                b_decision: row.get(8)?,
+                b_outcome: row.get(9)?,
+                b_relation: row.get(10)?,
+                b_polarity: row.get(11)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
     /// C7 update-resolver candidate scan: valid edges whose decision chunk
     /// is REUSED (exact same decision text — record_decision reuses chunks)
@@ -276,10 +393,7 @@ impl CausalStore {
         // Causal items create a proper directed edge: decision → outcome
         let (chunk_id, edge_id) = if item.kind == crate::distill::ItemKind::Causal {
             let decision_text = item.decision.as_deref().unwrap_or("unknown action");
-            let relation = item
-                .causal_relation
-                .map(|r| r.as_str())
-                .unwrap_or("caused");
+            let relation = item.causal_relation.map(|r| r.as_str()).unwrap_or("caused");
             Self::insert_causal_distilled(
                 &conn,
                 decision_text,
@@ -346,13 +460,9 @@ impl CausalStore {
         confidence: f64,
         task_tag: Option<&str>,
     ) -> Result<(String, i64)> {
-        let chunk_id = Self::insert_chunk_with_retry(
-            conn,
-            text,
-            event_time,
-            None,
-            |seq| format!("distill:{event_time}:{seq}"),
-        )?;
+        let chunk_id = Self::insert_chunk_with_retry(conn, text, event_time, None, |seq| {
+            format!("distill:{event_time}:{seq}")
+        })?;
         Self::index_chunk(conn, &chunk_id, text)?;
         conn.execute(
             "INSERT INTO causal_edges
@@ -377,21 +487,13 @@ impl CausalStore {
         confidence: f64,
         task_tag: Option<&str>,
     ) -> Result<(String, i64)> {
-        let dec_id = Self::insert_chunk_with_retry(
-            conn,
-            decision_text,
-            event_time,
-            None,
-            |seq| format!("distill:d{event_time}:{seq}"),
-        )?;
+        let dec_id = Self::insert_chunk_with_retry(conn, decision_text, event_time, None, |seq| {
+            format!("distill:d{event_time}:{seq}")
+        })?;
         Self::index_chunk(conn, &dec_id, decision_text)?;
-        let out_id = Self::insert_chunk_with_retry(
-            conn,
-            outcome_text,
-            event_time,
-            None,
-            |seq| format!("distill:o{event_time}:{seq}"),
-        )?;
+        let out_id = Self::insert_chunk_with_retry(conn, outcome_text, event_time, None, |seq| {
+            format!("distill:o{event_time}:{seq}")
+        })?;
         Self::index_chunk(conn, &out_id, outcome_text)?;
         conn.execute(
             "INSERT INTO causal_edges
@@ -542,6 +644,21 @@ impl CausalStore {
         let now = chrono::Utc::now().timestamp();
         let n = conn.execute(
             "UPDATE causal_edges SET valid_to = ?1 WHERE id = ?2 AND valid_to IS NULL",
+            params![now, edge_id],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Soft-invalidate a mined meta-causal edge (cross-task pattern): set
+    /// valid_to = now. Returns true if a row was actually invalidated;
+    /// false if the edge does not exist or was already invalidated
+    /// (idempotent no-op). Meta edges were mine-able but not revocable —
+    /// this is the revoking half (roadmap).
+    pub fn invalidate_meta_edge(&self, edge_id: i64) -> Result<bool> {
+        let conn = self.acquire()?;
+        let now = chrono::Utc::now().timestamp();
+        let n = conn.execute(
+            "UPDATE meta_causal_edges SET valid_to = ?1 WHERE id = ?2 AND valid_to IS NULL",
             params![now, edge_id],
         )?;
         Ok(n > 0)
@@ -778,14 +895,16 @@ impl CausalStore {
         let code = crate::hippocampus::utils::simhash(text);
         // Near-duplicate observability (long texts only — short texts collide
         // in 128-bit simhash buckets far too often to be meaningful).
+        // Rows written before 0.9.3 carry old-scheme (whitespace-token) codes;
+        // mixed-era hamming comparisons may miss a near-dup log line until the
+        // old rows age out. Observability only — real dedup is exact-text.
         if text.chars().count() >= 20 {
             let mut stmt = conn.prepare(
                 "SELECT id, sparse_code FROM chunks
                  WHERE sparse_code IS NOT NULL AND length(text) >= 20",
             )?;
-            let rows = stmt.query_map([], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
             for row in rows {
                 let (id, code_hex) = row?;
                 if let Ok(other) = u128::from_str_radix(&code_hex, 16) {
@@ -837,5 +956,168 @@ impl CausalStore {
             }
         }
         anyhow::bail!("chunk id collision after 4 retries")
+    }
+
+    // ─── v14 prediction ledger (Rung-3 Phase A) ──────────────────────────
+
+    /// Log a counterfactual verdict as a falsifiable prediction. Returns
+    /// the prediction id (the footer reports it). Best-effort by contract:
+    /// the caller (counterfactual_inner) ignores errors so a ledger failure
+    /// never breaks the query itself.
+    pub fn log_prediction(
+        &self,
+        option_a: &str,
+        option_b: &str,
+        task_tag: Option<&str>,
+        verdict: &str,
+        method: &str,
+        confidence: f64,
+        evidence: Option<&str>,
+    ) -> Result<i64> {
+        let conn = self.acquire()?;
+        conn.execute(
+            "INSERT INTO pending_predictions
+             (created_at, option_a, option_b, task_tag, verdict, method, confidence, evidence)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                chrono::Utc::now().timestamp(),
+                option_a,
+                option_b,
+                task_tag,
+                verdict,
+                method,
+                confidence,
+                evidence
+            ],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Resolve predictions whose option_a/option_b matches `decision_text`
+    /// (exact text — consistent with chunk-reuse matching). First matching
+    /// record wins: only still-pending rows update, so re-records never
+    /// re-resolve. `correct` semantics (see the design doc §5):
+    ///   prefer_X + took X → 1 iff positive, 0 iff negative, else NULL
+    ///   prefer_X + took Y → 1 iff negative, 0 iff positive, else NULL
+    ///   no_difference     → resolves with NULL (weak evidence either way)
+    /// Returns the number of predictions resolved.
+    pub fn resolve_predictions_for_decision(
+        &self,
+        decision_text: &str,
+        actual_polarity: Option<&str>,
+    ) -> Result<usize> {
+        let conn = self.acquire()?;
+        let now = chrono::Utc::now().timestamp();
+        let mut stmt = conn.prepare(
+            "SELECT id, verdict, option_a, option_b FROM pending_predictions
+             WHERE resolved_at IS NULL AND (option_a = ?1 OR option_b = ?2)",
+        )?;
+        let pending: Vec<(i64, String, String, String)> = stmt
+            .query_map(params![decision_text, decision_text], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        let polarity = actual_polarity.unwrap_or("neutral");
+        let mut n = 0;
+        for (id, verdict, opt_a, _opt_b) in pending {
+            let took_a = opt_a == decision_text;
+            let correct: Option<i64> = match verdict.as_str() {
+                "no_difference" => None,
+                v => {
+                    let preferred_a = v == "prefer_a";
+                    // Followed the preferred option? Correct iff it paid off.
+                    // Took the rejected one? Correct iff it failed.
+                    let followed = preferred_a == took_a;
+                    match polarity {
+                        "positive" => Some((followed) as i64),
+                        "negative" => Some((!followed) as i64),
+                        _ => None, // mixed/neutral actual → ambiguous
+                    }
+                }
+            };
+            conn.execute(
+                "UPDATE pending_predictions
+                 SET resolved_at = ?2, resolved_option = ?3, actual_polarity = ?4, correct = ?5
+                 WHERE id = ?1 AND resolved_at IS NULL",
+                params![id, now, if took_a { "a" } else { "b" }, polarity, correct],
+            )?;
+            n += 1;
+        }
+        Ok(n)
+    }
+
+    /// Calibration stats for `prediction_report`: (resolved, correct,
+    /// ambiguous, pending) overall plus per-method and per-task_tag splits.
+    /// Ambiguous rows (correct IS NULL after resolution) count as resolved
+    /// but excluded from accuracy denominators — reporting them separately
+    /// is the honest read.
+    pub fn prediction_stats(&self) -> Result<PredictionStats> {
+        let conn = self.acquire()?;
+        let pending: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pending_predictions WHERE resolved_at IS NULL",
+            [],
+            |r| r.get(0),
+        )?;
+        let mut stmt = conn.prepare(
+            "SELECT method, COALESCE(task_tag, ''), COUNT(*),
+                    SUM(CASE WHEN correct = 1 THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN correct IS NULL AND resolved_at IS NOT NULL THEN 1 ELSE 0 END)
+             FROM pending_predictions
+             WHERE resolved_at IS NOT NULL
+             GROUP BY method, COALESCE(task_tag, '')",
+        )?;
+        let rows: Vec<(String, String, i64, i64, i64)> = stmt
+            .query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stats = PredictionStats {
+            pending,
+            ..PredictionStats::default()
+        };
+        for (method, tag, resolved, correct, ambiguous) in rows {
+            stats.resolved += resolved;
+            stats.correct += correct;
+            stats.ambiguous += ambiguous;
+            let entry = stats.by_method.entry(method).or_default();
+            entry.resolved += resolved;
+            entry.correct += correct;
+            entry.ambiguous += ambiguous;
+            let entry = stats
+                .by_task_tag
+                .entry(if tag.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    tag
+                })
+                .or_default();
+            entry.resolved += resolved;
+            entry.correct += correct;
+            entry.ambiguous += ambiguous;
+        }
+        Ok(stats)
+    }
+
+    /// Recent still-pending predictions for the report footer.
+    pub fn pending_predictions(&self, limit: usize) -> Result<Vec<PendingPrediction>> {
+        let conn = self.acquire()?;
+        let mut stmt = conn.prepare(
+            "SELECT id, created_at, option_a, option_b, COALESCE(task_tag, ''), method
+             FROM pending_predictions WHERE resolved_at IS NULL
+             ORDER BY created_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| {
+            Ok(PendingPrediction {
+                id: r.get(0)?,
+                created_at: r.get(1)?,
+                option_a: r.get(2)?,
+                option_b: r.get(3)?,
+                task_tag: r.get(4)?,
+                method: r.get(5)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
     }
 }

@@ -4,12 +4,12 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 
-use crate::patterns::{
-    boilerplate_tokens, content_tokens, jaccard, tokenize,
-};
+use crate::patterns::{boilerplate_tokens, content_tokens, jaccard, tokenize};
 use crate::store::{outcome_polarity, outcomes_contradict, CausalStore};
 
-use super::types::{ConsolidateConfig, ConsolidateReport, MetaNode, ReactivationEntry, SECS_PER_DAY};
+use super::types::{
+    ConsolidateConfig, ConsolidateReport, MetaNode, ReactivationEntry, SECS_PER_DAY,
+};
 
 /// Stage 1: replay-priority score for every valid edge.
 ///
@@ -33,10 +33,39 @@ pub fn score_reactivation(
     let window_secs = i64::from(config.access_boost_window_days) * SECS_PER_DAY as i64;
 
     // Flag edges that participate in a contradiction pair.
+    //
+    // Token blocking, same discipline as PatternMiner: Jaccard ≥
+    // similarity_threshold requires at least one shared token, so the
+    // all-pairs O(E²) scan (3.1e10 Jaccard calls on the 248k-edge
+    // LongMemEval store — sleep never finished, single core pegged for
+    // 45+ minutes) is replaced by inverted-index candidate generation.
+    // Tokens above the df cap are too frequent to be selective; pairs
+    // sharing only such tokens cannot reach the threshold either.
+    // Cap is n/1000 (floor 100), not n/100: the LongMemEval token df
+    // distribution is heavy-tailed, and a 1%-of-N cap still yields 2.9e9
+    // candidate pairs (measured via the bm25 index); n/1000 yields 8.6e7.
     let mut contradicted = vec![false; edges.len()];
+    let df_cap = (edges.len() / 1000).max(100);
+    let mut postings: HashMap<&str, Vec<usize>> = HashMap::new();
+    for (idx, toks) in tokens.iter().enumerate() {
+        for t in toks {
+            postings.entry(t.as_str()).or_default().push(idx);
+        }
+    }
+    let mut cand: Vec<usize> = Vec::new();
     for i in 0..edges.len() {
-        for j in i + 1..edges.len() {
-            if contradicted[i] && contradicted[j] {
+        cand.clear();
+        for t in &tokens[i] {
+            let list = &postings[t.as_str()];
+            if list.len() > df_cap {
+                continue;
+            }
+            cand.extend_from_slice(list);
+        }
+        cand.sort_unstable();
+        cand.dedup();
+        for &j in &cand {
+            if j <= i || (contradicted[i] && contradicted[j]) {
                 continue;
             }
             if jaccard(&tokens[i], &tokens[j]) >= config.miner.similarity_threshold
@@ -158,6 +187,14 @@ pub fn downscale(
     let edges = store.all_valid_edges()?;
     let window_secs = i64::from(config.access_boost_window_days) * SECS_PER_DAY as i64;
 
+    // Pass 1: compute post-decay confidence and GC candidacy per edge.
+    struct Pending {
+        edge_id: i64,
+        new_conf: f64,
+        changed: bool,
+        collect: bool,
+    }
+    let mut pendings: Vec<Pending> = Vec::with_capacity(edges.len());
     for e in &edges {
         let is_protected = protected.contains(&e.edge_id);
         let mut new_conf = e.confidence;
@@ -190,33 +227,169 @@ pub fn downscale(
             }
         }
 
-        // GC: user_feedback edges are pinned and never collected; replay-
+        // GC (triple criterion, HeLa-Mem adaptive forgetting): collect only
+        // when the edge is weak AND dormant AND untouched recently — the
+        // previous weak-alone rule deleted old-but-still-active lessons.
+        // user_feedback edges are pinned and never collected; replay-
         // protected edges use the more lenient threshold.
         let threshold = if is_protected {
             config.replay_gc_threshold
         } else {
             config.gc_threshold
         };
-        let collect = new_conf < threshold && e.discovered_by != "user_feedback";
-        if collect {
-            report.gc_invalidated += 1;
-        }
+        let weak = new_conf < threshold;
+        let dormant = now - e.discovered_at >= i64::from(config.gc_min_age_hours) * 3600;
+        let untouched = e
+            .last_accessed_at
+            .is_none_or(|last| now - last >= i64::from(config.gc_access_grace_hours) * 3600);
+        let collect = weak && dormant && untouched && e.discovered_by != "user_feedback";
+        pendings.push(Pending {
+            edge_id: e.edge_id,
+            new_conf,
+            changed,
+            collect,
+        });
+    }
 
-        if dry_run || (!changed && !collect) {
+    // GC budget (bounded forgetting): invalidate the weakest candidates
+    // first, at most max(gc_floor, max_gc_fraction × population) per cycle.
+    // Without the cap, a burst-ingested corpus with skewed timestamps
+    // decays uniformly and one cycle wipes most of the store (LongMemEval:
+    // 90% GC'd, evidence-hit 94%→50%). Exempt candidates keep their decayed
+    // confidence and face the next cycle. Small stores (< gc_floor
+    // candidates) are unaffected — exact pre-guard behaviour.
+    let mut gc_candidates: Vec<&Pending> = pendings.iter().filter(|p| p.collect).collect();
+    gc_candidates.sort_by(|a, b| {
+        a.new_conf
+            .partial_cmp(&b.new_conf)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.edge_id.cmp(&b.edge_id))
+    });
+    let budget = config
+        .gc_floor
+        .max((pendings.len() as f64 * config.max_gc_fraction) as usize);
+    let invalidate: HashSet<i64> = gc_candidates
+        .iter()
+        .take(budget)
+        .map(|p| p.edge_id)
+        .collect();
+    report.gc_invalidated = invalidate.len();
+    report.gc_deferred = gc_candidates.len() - invalidate.len();
+
+    // Pass 2: write.
+    for p in &pendings {
+        let collect = invalidate.contains(&p.edge_id);
+        if dry_run || (!p.changed && !collect) {
             continue;
         }
         store.with_conn(|conn| {
             if collect {
                 conn.execute(
                     "UPDATE causal_edges SET confidence = ?1, valid_to = ?2 WHERE id = ?3",
-                    rusqlite::params![new_conf, now, e.edge_id],
+                    rusqlite::params![p.new_conf, now, p.edge_id],
                 )?;
             } else {
                 conn.execute(
                     "UPDATE causal_edges SET confidence = ?1 WHERE id = ?2",
-                    rusqlite::params![new_conf, e.edge_id],
+                    rusqlite::params![p.new_conf, p.edge_id],
                 )?;
             }
+            Ok(())
+        })?;
+    }
+    downscale_facts(store, config, dry_run, now, report)
+}
+
+/// Phase D (one-graph-convergence): stage 3 fact downscaling — the same
+/// half-life decay and GC the causal edges get, applied to `agent_facts`.
+/// Age runs from `updated_at`; the tier is `half_life_fact_hours`
+/// (default 90d): facts are high-trust "what is" knowledge, so they fade
+/// far slower than temporal lessons. Facts below the GC threshold retire
+/// (`valid_to`); supersession lineage (`superseded_by`) is untouched.
+/// Same-day facts are not decayed, mirroring the edge path.
+pub fn downscale_facts(
+    store: &CausalStore,
+    config: &ConsolidateConfig,
+    dry_run: bool,
+    now: i64,
+    report: &mut ConsolidateReport,
+) -> Result<()> {
+    let facts: Vec<(i64, f64, i64)> = store.with_conn(|conn| {
+        let mut stmt = conn
+            .prepare("SELECT id, confidence, updated_at FROM agent_facts WHERE valid_to IS NULL")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        let v: std::result::Result<Vec<_>, rusqlite::Error> = rows.collect();
+        Ok(v?)
+    })?;
+
+    // Same bounded-forgetting budget as the edge pass: at most
+    // max(gc_floor, max_gc_fraction × population) invalidations per cycle,
+    // weakest first; spared facts keep their decayed confidence.
+    let population = facts.len();
+    let mut gc_candidates: Vec<(i64, f64)> = Vec::new();
+    for (id, confidence, updated_at) in facts {
+        let days = (now - updated_at) as f64 / SECS_PER_DAY;
+        if days < 1.0 {
+            continue;
+        }
+        let halflife = f64::from(config.half_life_fact_hours);
+        let new_conf = confidence * 0.5f64.powf(days * 24.0 / halflife);
+        report.facts_decayed += 1;
+        // Triple-criterion GC, facts variant: agent_facts has no access
+        // tracking, so the criterion is weak AND dormant (age from
+        // `updated_at` past `gc_min_age_hours`).
+        let dormant = now - updated_at >= i64::from(config.gc_min_age_hours) * 3600;
+        let collect = new_conf < config.gc_threshold && dormant;
+        if collect {
+            gc_candidates.push((id, new_conf));
+            continue;
+        }
+        if dry_run {
+            continue;
+        }
+        store.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_facts SET confidence = ?1 WHERE id = ?2",
+                rusqlite::params![new_conf, id],
+            )?;
+            Ok(())
+        })?;
+    }
+    gc_candidates.sort_by(|a, b| {
+        a.1.partial_cmp(&b.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
+    let budget = config
+        .gc_floor
+        .max((population as f64 * config.max_gc_fraction) as usize);
+    report.facts_gc = gc_candidates.len().min(budget);
+    report.gc_deferred += gc_candidates.len().saturating_sub(budget);
+    if dry_run {
+        return Ok(());
+    }
+    for (id, new_conf) in gc_candidates.iter().take(budget) {
+        store.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_facts SET confidence = ?1, valid_to = ?2 WHERE id = ?3",
+                rusqlite::params![new_conf, now, id],
+            )?;
+            Ok(())
+        })?;
+    }
+    // Deferred candidates still get their decayed confidence written.
+    for (id, new_conf) in gc_candidates.iter().skip(budget) {
+        store.with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_facts SET confidence = ?1 WHERE id = ?2",
+                rusqlite::params![new_conf, id],
+            )?;
             Ok(())
         })?;
     }

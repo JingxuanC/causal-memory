@@ -38,8 +38,8 @@ const DEFAULT_TIMEOUT_MS = 60_000
  *   2. CAUSAL_MEMORY_BIN     (ambient env override)
  *   3. <plugin>/../target/release/causal-memory  (this repo checked out
  *      anywhere — the dev workflow: cargo build --release --bin causal-memory)
- *   4. bare `causal-memory`  (resolved from PATH — the release-binary install:
- *      copy the GitHub release asset somewhere on PATH)
+ *   4. bare `causal-memory`  (resolved from PATH — `pip install causal-memory`
+ *      puts the console script there; no Rust toolchain needed)
  */
 function resolveCommand(explicit) {
   if (explicit) return explicit
@@ -146,7 +146,7 @@ export async function apply(ctx, config = {}) {
   const dbPath = config.dbPath ?? process.env.CAUSAL_MEMORY_DB ?? DEFAULT_DB()
   const timeoutMs = config.toolCallTimeoutMs ?? DEFAULT_TIMEOUT_MS
   const exclude = new Set(Array.isArray(config.exclude) ? config.exclude : [])
-  const failOnStartupError = config.failOnStartupError === true
+  const failOnStartupError = config.failOnStartupError !== false
 
   const client = createMcpClient(command, { ...process.env, CAUSAL_MEMORY_DB: dbPath }, timeoutMs)
 
@@ -172,9 +172,13 @@ export async function apply(ctx, config = {}) {
       + 'restart. Use it: before a non-trivial decision, query past episodes '
       + 'with search_causal or compare alternatives with counterfactual_query; '
       + 'before acting, forecast outcomes with intervention_query; after acting '
-      + 'on a decision, record the outcome with record_decision; record stable '
+      + 'on a decision, record the outcome with record_decision — and when you '
+      + 'weighed multiple options, ALWAYS pass the context param (a short '
+      + 'description of the situation): same task_tag + context becomes a '
+      + 'comparable branch for same-world counterfactual evidence; record stable '
       + 'user or project facts with record_fact; when something fails, trace '
-      + 'the cause with trace_cause or trace_cause_chain.',
+      + 'the cause with trace_cause or trace_cause_chain; periodically check '
+      + 'prediction_report to see whether past counterfactual advice held up.',
   })
 
   // Discover tools; activation blocks until this settles.
@@ -182,9 +186,11 @@ export async function apply(ctx, config = {}) {
   try {
     tools = await client.connect()
   } catch (error) {
-    ctx.logger.error(`causal-memory: connection or tool discovery failed: ${error.message}`)
+    ctx.logger.error(`causal-memory: connection or tool discovery failed: ${error.message}`
+      + ' — install the binary with `pip install causal-memory` (or `cargo build --release`'
+      + ' in the causal-memory repo), or point config.command / CAUSAL_MEMORY_BIN at it')
     if (failOnStartupError) throw error
-    return // activated with the prompt section but no tools
+    return // failOnStartupError: false — activated with the prompt section but no tools
   }
 
   const selected = tools.filter((tool) => !exclude.has(tool.name))
@@ -193,10 +199,30 @@ export async function apply(ctx, config = {}) {
   for (const tool of selected) {
     const definition = {
       name: tool.name,
-      description: tool.description,
-      parameters: tool.inputSchema ?? {},
+      description: tool.description ?? '',
+      parameters: tool.inputSchema ?? { type: 'object', properties: {} },
+      // Current dsh tool API: a mandatory canonical output contract. The
+      // canonical value is MCP-shaped ({ content: [...] }); render projects
+      // it to the model-facing text blocks (mirrors dsh-mcp-client).
+      output: {
+        schema: {
+          type: 'object',
+          properties: { content: { type: 'array', items: {} } },
+          required: ['content'],
+          additionalProperties: false,
+        },
+        render(_args, value) {
+          const blocks = Array.isArray(value?.content) ? value.content : []
+          const text = blocks
+            .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+            .map((b) => b.text)
+            .join('\n')
+          return [{ type: 'text', text: text || '(no output)' }]
+        },
+      },
       execute: async (args, exec) => {
-        return client.call(tool.name, args, exec?.signal)
+        const text = await client.call(tool.name, args, exec?.signal)
+        return { content: [{ type: 'text', text }] }
       },
     }
     disposers.push(ctx.tools.register(definition))

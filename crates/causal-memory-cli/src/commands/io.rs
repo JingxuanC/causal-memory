@@ -1,8 +1,8 @@
 //! Export / import subcommands.
 
-use rusqlite::OptionalExtension;
-use causal_memory::store::CausalStore;
 use crate::get_db_path;
+use causal_memory::store::CausalStore;
+use rusqlite::OptionalExtension;
 use std::path::PathBuf;
 
 fn fnv1a(text: &str) -> String {
@@ -195,7 +195,7 @@ pub(crate) fn export_jsonl(
         let meta_sql = if f.include_invalidated {
             "SELECT m.from_id, cf.text, cf.created_at, m.to_id, ct.text, ct.created_at,
                     m.relation, m.pattern, m.confidence, m.discovered_at, m.valid_to,
-                    m.strata_count, m.strata, m.confounded, m.simpson
+                    m.strata_count, m.strata, m.confounded, m.simpson, m.valid_from
              FROM meta_causal_edges m
              JOIN chunks cf ON cf.id = m.from_id
              JOIN chunks ct ON ct.id = m.to_id
@@ -203,7 +203,7 @@ pub(crate) fn export_jsonl(
         } else {
             "SELECT m.from_id, cf.text, cf.created_at, m.to_id, ct.text, ct.created_at,
                     m.relation, m.pattern, m.confidence, m.discovered_at, m.valid_to,
-                    m.strata_count, m.strata, m.confounded, m.simpson
+                    m.strata_count, m.strata, m.confounded, m.simpson, m.valid_from
              FROM meta_causal_edges m
              JOIN chunks cf ON cf.id = m.from_id
              JOIN chunks ct ON ct.id = m.to_id
@@ -228,10 +228,11 @@ pub(crate) fn export_jsonl(
                 row.get::<_, Option<String>>(12)?,
                 row.get::<_, Option<bool>>(13)?,
                 row.get::<_, Option<bool>>(14)?,
+                row.get::<_, Option<i64>>(15)?,
             ))
         })?;
         for row in rows {
-            let (fid, ftext, fcat, tid, ttext, tcat, rel, pat, conf, dat, vto, sc, s, cfd, sim) =
+            let (fid, ftext, fcat, tid, ttext, tcat, rel, pat, conf, dat, vto, sc, s, cfd, sim, vf) =
                 row?;
             chunks.entry(fid.clone()).or_insert((ftext, fcat));
             chunks.entry(tid.clone()).or_insert((ttext, tcat));
@@ -240,7 +241,7 @@ pub(crate) fn export_jsonl(
                     "type": "meta_edge",
                     "from_id": fid, "to_id": tid,
                     "relation": rel, "pattern": pat, "confidence": conf,
-                    "discovered_at": dat, "valid_to": vto,
+                    "discovered_at": dat, "valid_from": vf, "valid_to": vto,
                     "strata_count": sc, "strata": s,
                     "confounded": cfd, "simpson": sim,
                 })
@@ -365,6 +366,7 @@ pub(crate) fn run_export(args: &[String]) -> anyhow::Result<()> {
 #[derive(Default, Debug)]
 pub(crate) struct ImportStats {
     pub(crate) imported: usize,
+    pub(crate) aligned: usize,
     pub(crate) skipped_duplicate: usize,
     pub(crate) skipped_invalid: usize,
 }
@@ -374,11 +376,40 @@ pub(crate) struct ImportStats {
 /// counted and skipped, never fatal. Dedup key for edges:
 /// (from_text, to_text, relation, event_time); meta edges:
 /// (from_text, to_text, relation); chunks: FNV-1a(text) id, INSERT OR IGNORE.
+///
+/// This is the **只增 merge** (align=false): duplicates are skipped, so state
+/// changes on existing edges never propagate — pull semantics keep the local
+/// copy of an edge untouched.
 pub(crate) fn import_jsonl(
     store: &CausalStore,
     content: &str,
     task_tag_override: Option<&str>,
     dry_run: bool,
+) -> anyhow::Result<ImportStats> {
+    import_jsonl_impl(store, content, task_tag_override, dry_run, false)
+}
+
+/// Align-mode import (P1): a snapshot line whose edge/meta_edge already exists
+/// locally is **updated** instead of skipped — `valid_to`, `confidence` and
+/// (meta edges) `valid_from` take the snapshot's values. This is what makes a
+/// pull replay of a commit chain converge to the remote's state: forgets and
+/// supersessions (valid_to) and re-validations (valid_to → NULL) cross the
+/// wire. Insert/dup behavior is otherwise identical to [`import_jsonl`].
+pub(crate) fn import_jsonl_aligned(
+    store: &CausalStore,
+    content: &str,
+    task_tag_override: Option<&str>,
+    dry_run: bool,
+) -> anyhow::Result<ImportStats> {
+    import_jsonl_impl(store, content, task_tag_override, dry_run, true)
+}
+
+fn import_jsonl_impl(
+    store: &CausalStore,
+    content: &str,
+    task_tag_override: Option<&str>,
+    dry_run: bool,
+    align: bool,
 ) -> anyhow::Result<ImportStats> {
     let mut stats = ImportStats::default();
     // source chunk id → text (chunk lines precede their referrers in exports)
@@ -438,9 +469,16 @@ pub(crate) fn import_jsonl(
                 let tag = task_tag_override
                     .map(String::from)
                     .or_else(|| v["task_tag"].as_str().map(String::from));
+                let confidence = v["confidence"].as_f64().unwrap_or(0.5);
+                let discovered_at = v["discovered_at"]
+                    .as_i64()
+                    .unwrap_or_else(|| chrono::Utc::now().timestamp());
+                let valid_to = v["valid_to"].as_i64();
+                let discovered_by = v["discovered_by"].as_str().unwrap_or("llm_inferred");
+                let polarity = v["outcome_polarity"].as_str();
 
                 // Dedup: (from_text, to_text, relation, event_time).
-                let dup = store.with_conn(|conn| {
+                let existing = store.with_conn(|conn| {
                     Ok(conn
                         .query_row(
                             "SELECT ce.id FROM causal_edges ce
@@ -451,21 +489,29 @@ pub(crate) fn import_jsonl(
                             rusqlite::params![ftext, ttext, rel, event_time],
                             |r| r.get::<_, i64>(0),
                         )
-                        .optional()?
-                        .is_some())
+                        .optional()?)
                 })?;
-                if dup {
-                    stats.skipped_duplicate += 1;
+                if let Some(id) = existing {
+                    if align {
+                        // State propagation: valid_to (forget/supersede or
+                        // re-validation → NULL) and confidence follow the
+                        // snapshot. Only-增 merge keeps everything else local.
+                        if !dry_run {
+                            store.with_conn(|conn| {
+                                conn.execute(
+                                    "UPDATE causal_edges SET confidence = ?1, valid_to = ?2 WHERE id = ?3",
+                                    rusqlite::params![confidence, valid_to, id],
+                                )?;
+                                Ok(())
+                            })?;
+                        }
+                        stats.aligned += 1;
+                    } else {
+                        stats.skipped_duplicate += 1;
+                    }
                     continue;
                 }
                 if !dry_run {
-                    let confidence = v["confidence"].as_f64().unwrap_or(0.5);
-                    let discovered_at = v["discovered_at"]
-                        .as_i64()
-                        .unwrap_or_else(|| chrono::Utc::now().timestamp());
-                    let valid_to = v["valid_to"].as_i64();
-                    let discovered_by = v["discovered_by"].as_str().unwrap_or("llm_inferred");
-                    let polarity = v["outcome_polarity"].as_str();
                     store.with_conn(|conn| {
                         conn.execute(
                             "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
@@ -503,7 +549,16 @@ pub(crate) fn import_jsonl(
                     stats.skipped_invalid += 1;
                     continue;
                 };
-                let dup = store.with_conn(|conn| {
+                let confidence = v["confidence"].as_f64().unwrap_or(0.5);
+                let discovered_at = v["discovered_at"]
+                    .as_i64()
+                    .unwrap_or_else(|| chrono::Utc::now().timestamp());
+                let pattern = v["pattern"].as_str();
+                let valid_to = v["valid_to"].as_i64();
+                // valid_from travels with the snapshot (R11); older exports
+                // lack it → fall back to discovered_at (historic behavior).
+                let valid_from = v["valid_from"].as_i64().or(Some(discovered_at));
+                let existing = store.with_conn(|conn| {
                     Ok(conn
                         .query_row(
                             "SELECT m.id FROM meta_causal_edges m
@@ -514,20 +569,29 @@ pub(crate) fn import_jsonl(
                             rusqlite::params![ftext, ttext, rel],
                             |r| r.get::<_, i64>(0),
                         )
-                        .optional()?
-                        .is_some())
+                        .optional()?)
                 })?;
-                if dup {
-                    stats.skipped_duplicate += 1;
+                if let Some(id) = existing {
+                    if align {
+                        // State propagation for meta edges, incl. valid_from.
+                        if !dry_run {
+                            store.with_conn(|conn| {
+                                conn.execute(
+                                    "UPDATE meta_causal_edges
+                                         SET confidence = ?1, valid_from = ?2, valid_to = ?3
+                                      WHERE id = ?4",
+                                    rusqlite::params![confidence, valid_from, valid_to, id],
+                                )?;
+                                Ok(())
+                            })?;
+                        }
+                        stats.aligned += 1;
+                    } else {
+                        stats.skipped_duplicate += 1;
+                    }
                     continue;
                 }
                 if !dry_run {
-                    let confidence = v["confidence"].as_f64().unwrap_or(0.5);
-                    let discovered_at = v["discovered_at"]
-                        .as_i64()
-                        .unwrap_or_else(|| chrono::Utc::now().timestamp());
-                    let pattern = v["pattern"].as_str();
-                    let valid_to = v["valid_to"].as_i64();
                     store.with_conn(|conn| {
                         conn.execute(
                             "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
@@ -544,7 +608,7 @@ pub(crate) fn import_jsonl(
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                             rusqlite::params![
                                 fnv1a(ftext), fnv1a(ttext), rel, pattern, confidence,
-                                discovered_at, discovered_at, valid_to,
+                                discovered_at, valid_from, valid_to,
                                 v["strata_count"].as_i64(),
                                 v["strata"].as_str(),
                                 v["confounded"].as_bool(),
@@ -564,11 +628,14 @@ pub(crate) fn import_jsonl(
 
 pub(crate) fn run_import(args: &[String]) -> anyhow::Result<()> {
     const USAGE: &str =
-        "Usage: causal-memory import <file.jsonl> [--db <PATH>] [--dry-run] [--task-tag Y]
-  --task-tag Y tags all imported edges (e.g. the source agent's name).";
+        "Usage: causal-memory import <file.jsonl> [--db <PATH>] [--dry-run] [--task-tag Y] [--align]\n\
+  --task-tag Y tags all imported edges (e.g. the source agent's name).\n\
+  --align      propagate state (valid_to/confidence) onto existing edges\n\
+               instead of skipping them (used by `pull` for snapshots).";
     let mut file: Option<PathBuf> = None;
     let mut db: Option<PathBuf> = None;
     let mut dry_run = false;
+    let mut align = false;
     let mut tag: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
@@ -581,6 +648,7 @@ pub(crate) fn run_import(args: &[String]) -> anyhow::Result<()> {
                 db = Some(PathBuf::from(p));
             }
             "--dry-run" => dry_run = true,
+            "--align" => align = true,
             "--task-tag" => {
                 i += 1;
                 let Some(t) = args.get(i) else {
@@ -609,14 +677,176 @@ pub(crate) fn run_import(args: &[String]) -> anyhow::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let store = CausalStore::open(&db_path)?;
-    let stats = import_jsonl(&store, &content, tag.as_deref(), dry_run)?;
+    let stats = if align {
+        import_jsonl_aligned(&store, &content, tag.as_deref(), dry_run)?
+    } else {
+        import_jsonl(&store, &content, tag.as_deref(), dry_run)?
+    };
 
     println!(
         "=== Import complete{} ===",
         if dry_run { " (DRY RUN)" } else { "" }
     );
     println!("  imported:          {}", stats.imported);
+    if stats.aligned > 0 {
+        println!("  aligned:           {}", stats.aligned);
+    }
     println!("  skipped_duplicate: {}", stats.skipped_duplicate);
     println!("  skipped_invalid:   {}", stats.skipped_invalid);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use causal_memory::store::CausalStore;
+
+    fn edge_state(store: &CausalStore) -> (usize, usize) {
+        store
+            .with_conn(|conn| {
+                let valid: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM causal_edges WHERE valid_to IS NULL",
+                    [],
+                    |r| r.get(0),
+                )?;
+                let inv: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM causal_edges WHERE valid_to IS NOT NULL",
+                    [],
+                    |r| r.get(0),
+                )?;
+                Ok((valid as usize, inv as usize))
+            })
+            .unwrap()
+    }
+
+    fn edge_confidence(store: &CausalStore) -> f64 {
+        store
+            .with_conn(|conn| {
+                conn.query_row("SELECT confidence FROM causal_edges LIMIT 1", [], |r| {
+                    r.get(0)
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))
+            })
+            .unwrap()
+    }
+
+    /// One valid lesson between two chunks (export-format lines, no header).
+    fn lesson_lines(
+        decision: &str,
+        outcome: &str,
+        valid_to: Option<i64>,
+        confidence: f64,
+    ) -> String {
+        let d = fnv1a(decision);
+        let o = fnv1a(outcome);
+        let vto = valid_to
+            .map(|t| format!(",\"valid_to\":{t}"))
+            .unwrap_or_default();
+        format!(
+            "{{\"type\":\"chunk\",\"id\":\"{d}\",\"text\":\"{decision}\",\"created_at\":1700000000}}\n\
+             {{\"type\":\"chunk\",\"id\":\"{o}\",\"text\":\"{outcome}\",\"created_at\":1700000000}}\n\
+             {{\"type\":\"edge\",\"from_id\":\"{d}\",\"to_id\":\"{o}\",\"relation\":\"caused\",\"confidence\":{confidence},\
+             \"task_tag\":null,\"event_time\":1700000000,\"discovered_at\":1700000000{vto},\
+             \"discovered_by\":\"test\",\"outcome_polarity\":null}}\n"
+        )
+    }
+
+    #[test]
+    fn align_propagates_edge_state_but_plain_import_skips() {
+        let dst = CausalStore::open_in_memory().unwrap();
+        // Seed: valid lesson.
+        import_jsonl(
+            &dst,
+            &lesson_lines("直推上线", "生产挂了", None, 0.9),
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(edge_state(&dst), (1, 0));
+
+        // Control: plain 只增 import of a "forgotten" snapshot line → skipped,
+        // local edge stays valid (the R6 gap this feature closes).
+        let forgotten = lesson_lines("直推上线", "生产挂了", Some(1700000100), 0.9);
+        let s = import_jsonl(&dst, &forgotten, None, false).unwrap();
+        assert_eq!(s.aligned, 0);
+        assert_eq!(s.skipped_duplicate, 1);
+        assert_eq!(edge_state(&dst), (1, 0));
+
+        // Align import → valid_to propagates (edge invalidated remotely).
+        let s = import_jsonl_aligned(&dst, &forgotten, None, false).unwrap();
+        assert_eq!(s.aligned, 1);
+        assert_eq!(edge_state(&dst), (0, 1));
+
+        // Re-validation: remote clears valid_to again + lower confidence.
+        let revived = lesson_lines("直推上线", "生产挂了", None, 0.7);
+        let s = import_jsonl_aligned(&dst, &revived, None, false).unwrap();
+        assert_eq!(s.aligned, 1);
+        assert_eq!(edge_state(&dst), (1, 0));
+        assert!(
+            (edge_confidence(&dst) - 0.7).abs() < 1e-9,
+            "confidence should follow snapshot"
+        );
+    }
+
+    #[test]
+    fn export_carries_meta_valid_from_and_import_restores_it() {
+        let src = CausalStore::open_in_memory().unwrap();
+        let (fa, ta) = (fnv1a("因果A"), fnv1a("因果B"));
+        src.with_conn(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, 1700000000)",
+                rusqlite::params![fa, "因果A"],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, 1700000000)",
+                rusqlite::params![ta, "因果B"],
+            )?;
+            conn.execute(
+                "INSERT INTO meta_causal_edges
+                     (from_id, to_id, relation, pattern, confidence, discovered_at, valid_from, valid_to,
+                      strata_count, strata, confounded, simpson)
+                 VALUES (?1, ?2, 'refines', 'direct', 0.85, 1700000000, 1700000100, 1700000200, 2, NULL, 0, 0)",
+                rusqlite::params![fa, ta],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        // Export full-truth → meta_edge line carries valid_from.
+        let f = ExportFilters {
+            task_tag: None,
+            min_confidence: 0.0,
+            since: 0,
+            include_invalidated: true,
+            redact: false,
+        };
+        let (lines, stats) = export_jsonl(&src, &f).unwrap();
+        assert_eq!(stats.meta_edges, 1);
+        let meta_line = lines
+            .iter()
+            .find(|l| l.contains("\"type\":\"meta_edge\""))
+            .expect("meta edge line");
+        assert!(
+            meta_line.contains("\"valid_from\":1700000100"),
+            "line: {meta_line}"
+        );
+
+        // Import into a fresh store → valid_from + valid_to survive (R11).
+        let dst = CausalStore::open_in_memory().unwrap();
+        let s = import_jsonl_aligned(&dst, &lines.join("\n"), None, false).unwrap();
+        assert_eq!(s.imported, 1);
+        dst.with_conn(|conn| {
+            let (vf, vt): (Option<i64>, Option<i64>) = conn
+                .query_row(
+                    "SELECT valid_from, valid_to FROM meta_causal_edges LIMIT 1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(vf, Some(1700000100));
+            assert_eq!(vt, Some(1700000200));
+            Ok(())
+        })
+        .unwrap();
+    }
 }

@@ -1,5 +1,12 @@
 # Roadmap
 
+> Updated 2026-08-24: **code-audited sync** — checked every open item
+> against the source instead of the docs. Shipped but unticked: half-life
+> decay tiers, per-type answer prompting, multi-session retrieval,
+> Memora (weekly), layered loading + token budget (incl. the hippocampus
+> path fix). New since last update: bounded-forgetting GC budget,
+> `disable_spread` ablation switch + first formal ablation run.
+>
 > Updated 2026-07-30: **positioning shift — from causal layer to complete memory
 > system**. The causal layer was the beachhead, not the boundary. causal-memory
 > is growing into a complete agent memory system: fact/preference memory and
@@ -47,9 +54,9 @@ argument — lightweight self-built fact layer, pluggable storage substrate).
   with a backup; `instructions`-style focus parameter still a candidate
   for the narrative layer
 - [~] **Query routing + fusion retrieval** — ✅ RRF fusion shipped
-  (`search_memory`, 2026-07-31); remaining: query-type classifier for
-  single-layer routing and iterative retrieval with entity/time anchors for
-  multi-session questions (targets LongMemEval multi-session 32.3%)
+  (`search_memory`, 2026-07-31); iterative retrieval with entity/time
+  anchors for multi-session questions also shipped (60.2%, see below).
+  Remaining: query-type classifier for single-layer routing
 - [x] **Q-value dynamics** — ✅ shipped (consolidate Stage 1.5 Bellman
   reinforcement → `chunks.q_value` persistence → hippocampus seeding
   `0.5 + 0.5·Q`). Implementation note: the learned utility weights *node
@@ -60,26 +67,42 @@ argument — lightweight self-built fact layer, pluggable storage substrate).
 
 Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
 
-- [ ] **Triple-criterion GC** — prune only when structurally weak AND dormant
-  AND zero recent access (HeLa-Mem adaptive forgetting; avoids deleting old
-  but still-active edges)
-- [ ] **Flip-path marking** — tag results as direct-seed vs spreading-surfaced
-  so upper layers can do Top-k ∪ Top-m unions (HeLa-Mem dual-path retrieval)
-- [ ] **Layered loading + token budget** — L0 summary / L1 overview / L2 full
-  text on retrieval results (OpenViking pattern); strict `max_tokens` control
-- [ ] **Formal ablation** — ablate SWR / spreading / `prevented` once each and
-  quantify contributions (HeLa-Mem ablation analogue; strengthens the paper)
-- [ ] **Token-efficiency benchmark** — measure causal-memory token cost per
-  query, compare against OpenViking's 34–91% savings claim
+- [x] **Triple-criterion GC** — ✅ shipped 2026-08-26: prune only when
+  structurally weak AND dormant (`gc_min_age_hours`, default 168h) AND zero
+  recent access (`gc_access_grace_hours`, 168h, edges only — `agent_facts`
+  has no access column so facts use weak+dormant); old-but-active edges
+  survive (HeLa-Mem adaptive forgetting)
+- [x] **Flip-path marking** — ✅ shipped: every spreading-activation result
+  carries provenance (`hop` 0=seed / N + `via` winning edge relation &
+  source); `search_causal` / `search_memory` take `explain=true` to render
+  `[seed]` / `[spread hop=N via relation←"source"]` tags per hit, and
+  every recall persists an audit row (`recall_audit`, schema v13) read back
+  via `/debug/recalls` (2026-08-26)
+- [x] **Layered loading + token budget** — ✅ shipped: L0/L1/L2
+  (`detail_level`) + strict `max_tokens` on `search_causal`, incl. the
+  hippocampus spreading path (threaded 2026-08-24 — the params were
+  silently dead on that path before) and on `search_memory` (facts +
+  causal sections share one budget; default output byte-identical)
+- [x] **Formal ablation** — ✅ shipped 2026-08-24: harness + engine
+  switches (`disable_inhibition` / `disable_spread`, `benches/ablation`),
+  spread-flooding fix + fan-out constraint (real-DB baseline 14.2% →
+  95.0%, LongMemEval 84.0% no regression), paraphrase negative result
+  recorded honestly. Full writeup:
+  [docs/evaluations/spread-flooding-ablation-2026-08.md](evaluations/spread-flooding-ablation-2026-08.md)
+- [~] **Token-efficiency benchmark** — per-question token accounting
+  shipped in the LongMemEval harness (avg ctx/ans tokens in every run
+  summary); the dedicated cross-system comparison vs OpenViking's
+  34–91% savings claim is still open
 
 ## Current state — v0.9.0+ (main)
 
-**Fifteen MCP tools**: `record_decision` / `search_causal` / `record_fact` /
+**Seventeen MCP tools**: `record_decision` / `search_causal` / `record_fact` /
 `search_facts` / `search_memory` / `trace_cause` / `trace_cause_chain` /
-`invalidate_decision` / `resolve_updates` / `search_patterns` / `causal_directory` /
-`intervention_query` / `counterfactual_query` / `reconstruct_lesson` /
-`remember` — over stdio **and** HTTP transport (`causal-memory-http
---port 9938`).
+`invalidate_decision` / `invalidate_pattern` / `resolve_updates` /
+`search_patterns` / `causal_directory` / `intervention_query` /
+`counterfactual_query` / `reconstruct_lesson` / `remember` /
+`prediction_report` — over stdio **and** HTTP transport
+(`causal-memory-http --port 9938`).
 
 Core capabilities (all shipped, all tested):
 
@@ -102,6 +125,9 @@ Core capabilities (all shipped, all tested):
 - Sleep consolidation: four-phase cycle; reactivation scores feed
   downscaling (half-rate decay for replay-protected edges), replay marks
   carry into the next cycle
+- Forgetting: bounded GC budget (`max(floor=50, 20% of population)`,
+  weakest-first, edges and facts independently), half-life decay tiers,
+  diversity-gated cycles (`sleep --auto`)
 - Pearl ladder: Rung-2 `intervention_query` (stratified, Simpson warning)
   + contrastive empirical `counterfactual_query` (honestly labeled: not SCM)
 - Reconstructive retrieval: `reconstruct_lesson` (Markov-blanket subgraph
@@ -111,14 +137,14 @@ Core capabilities (all shipped, all tested):
   #2)
 - Cross-agent sharing: `causal-memory export` / `import` (JSONL, idempotent,
   best-effort redaction)
-- 344 tests (unit + e2e: migration / pipeline / MCP stdio)
+- 368 tests (unit + e2e: migration / pipeline / MCP stdio)
 
 ## Benchmarks (frozen protocols, all published in docs/benchmarks/)
 
 | Benchmark | Result | Note |
 |---|---|---|
 | LoCoMo (1,986 q) | overall 64.2% (adopted prompt) · abstention 91.5% | 5 controlled runs; raw-QA best 65.0% |
-| LongMemEval (500 q) | overall 61.8% · knowledge-update 76.9% · **abstention 96.7%** | multi-session 32.3% is the known gap |
+| LongMemEval (500 q, 2026-08-22 full pipeline) | **overall 76.4% · multi-session 60.2% · temporal 69.9% · abstention 96.7% @ 11.5K tok/q** | vs 72.4% (8/20) at -32% token cost; mem0 official 94.4% @ 6.8K, ind. repro 73.8% — caliber gap, see docs/benchmarks/longmemeval.md |
 | **Compaction survival (k=5)** | text-only 44.5% vs text+causal **65.3%** | causal edges fully offset 5 compactions (+20.8pp) |
 | **Agent ablation (trap world)** | repeat-mistake 67% (no memory) → **33%** (with memory) | glm-4-plus, seed 42, both 6/6 solved; post-search hit 57% |
 
@@ -146,15 +172,20 @@ explosion (17,496 → 119 edges, 26.5s → 0.8s).
 
 Benchmark-driven:
 
-- [ ] **Memora benchmark** (arXiv:2604.20006) — the only weekly→quarterly
-  memory eval with an explicit *forgetting* dimension; the natural next
-  stage for the compaction-survival claim after LoCoMo k=5
-- [ ] **Multi-session retrieval** (LongMemEval's 32.3%): query decomposition
-  or iterative retrieval for cross-session synthesis; higher top-k for
-  multi-evidence questions
-- [ ] **Per-type answer prompting** (preference questions 23.3%:
-  rubric-style answers need a different answer contract than short-fact)
-- [ ] `max_tokens` budget param on `search_causal`; `causal-memory stats`
+- [~] **Memora benchmark** (arXiv:2604.20006) — weekly scale shipped:
+  full FAMA protocol port (`benches/memora`), 17 runs, FAMA 31.0 /
+  MPA 46.8% / FAA 72.1% (single-judge, not directly comparable to the
+  official 3-judge vote). Remaining: monthly/quarterly scales (harness
+  supports them, never run)
+- [x] **Multi-session retrieval** — ✅ shipped (LongMemEval multi-session
+  32.3% → 60.2%): query decomposition with temporal anchors
+  (`parse_temporal_anchor` / `retrieve_multi_pass`), multi-session-only
+  hippocampus spreading, P8 session expansion
+- [x] **Per-type answer prompting** — ✅ shipped: per-question-type
+  answer contracts (knowledge-update / multi-session / preference
+  rules); preference 13.3% → 56.7% → 80.0%
+- [x] `max_tokens` budget param on `search_causal` — ✅ (see mechanism
+  absorption above); [x] `causal-memory stats` — ✅ shipped 2026-08-25
   (Claude Code `/context` analogue)
 
 Memory-quality:
@@ -163,23 +194,47 @@ Memory-quality:
   superseded edges stay retrievable with `superseded_by` provenance;
   CausalEval C7 50% → 100% with C3 unharmed. The LLM-judge upgrade below
   now builds on this instead of hard invalidation
-- [ ] **Half-life decay tiers** (Vela-inspired): `halflife_hours` column,
-  effective_confidence = confidence · 0.5^(age/halflife); 24h/168h/720h/2160h
-  tiers replace the flat 0.99/day
-- [ ] **noveltyEntropy trigger**: run sleep when recent-decision entropy
-  crosses a threshold, not on a calendar
+- [x] **Half-life decay tiers** (Vela-inspired) — ✅ shipped:
+  `halflife_hours` per provenance tier (user_feedback 2160h / llm 2160h /
+  temporal 168h / fact 2160h), `effective = confidence · 0.5^(age/halflife)`
+  for edges and facts; unmapped sources (`distill`, `rule`) intentionally
+  keep the legacy flat `decay_per_day`
+- [~] **noveltyEntropy trigger** — diversity gate shipped: `sleep --auto`
+  computes normalized Shannon entropy over the last 64 chunks and skips
+  the cycle below `min_diversity` (0.4). Remaining: auto-invocation
+  (today an external caller must still start `sleep`)
 - [ ] **LLM update-resolver**: replace rule-based contradiction detection
   with the LLM judge for invalidation decisions (polarity plumbing ready)
-- [ ] Meta-edge invalidation tool (meta edges mine-able but not revocable)
+- [ ] **Rung-3 Phase A (abduction + forks + prediction ledger)** —
+  [design](design/counterfactual-rung3.md): context fingerprints on
+  `record_decision` (schema v14), write-time `decision_forks` natural
+  experiments, `counterfactual_query` fork section + logged predictions
+  auto-resolved by later `record_decision` calls, `prediction_report`
+  (17th tool) calibration dashboard. Phase B (micro-SCM / LLM replay)
+  gated on fork density; Phase C (executable replay) interface-routed
+- [x] **Meta-edge invalidation tool** — ✅ shipped 2026-08-24
+  (`invalidate_pattern`, 16th MCP tool): soft-deletes via the existing
+  `meta_causal_edges.valid_to` (readers already filtered it), live graph
+  patched immediately like `invalidate_decision`; `search_patterns`
+  output now carries `(#<id>)` as the revocation handle
 - [ ] Hybrid retrieval ranking (BM25 + vector + confidence fusion)
 
 Ecosystem:
 
-- [ ] **Hermes Agent memory provider** — the first agent runtime with a
-  first-class memory plugin slot; no current provider stores causal edges.
-  Entry ticket: our benchmark suite (see
-  [docs/research/computational-ai/hermes-provider-ecosystem.md](research/computational-ai/hermes-provider-ecosystem.md)).
-  Requires PyO3 bindings — reprioritized above HTTP transport
+- [x] **Hermes Agent memory provider** — ✅ shipped 2026-08-25
+  (`hermes-plugin/`, `hermes-causal-memory` on the
+  `hermes_agent.memory_providers` entry point): full MemoryProvider ABC
+  lifecycle verified against a real Hermes v0.20.5 install (discover →
+  initialize → write → prefetch → shutdown). Entry ticket: our benchmark
+  suite (see
+  [docs/research/computational-ai/hermes-provider-ecosystem.md](research/computational-ai/hermes-provider-ecosystem.md))
+- [ ] **Cloud context restore** (session commit/archive) —
+  [design](design/cloud-context-restore.md): upgrade `session_logs` from an
+  audit table into a commit/archive/restore loop (OpenViking-style session
+  lifecycle) — `commit_session` / `restore_session` tools, tiered L0/L1/L2
+  loading on the existing `detail_level` path, object-store sync, plus the
+  still-open `/mcp` auth + multi-tenant hardening. fork stays orthogonal:
+  it compares same-context branches, it does not snapshot context.
 - [ ] **L0 file injection**: generate `CAUSAL_MEMORY.md` (< 200 lines,
   pointer-style) for constant system-prompt pinning — proactive, vs the
   on-demand `causal_directory` tool
@@ -195,22 +250,42 @@ Ecosystem:
   (`causal_memory::memory::Memory`, 15 ops, MCP behavior preserved 1:1);
   `crates/causal-memory-py` binds it as the `causal_memory` Python module
   (abi3 ≥ 3.9, maturin build, `CausalMemory` class mirroring all 15 tools,
-  pytest smoke suite). Remaining for the ecosystem entry: PyPI publishing +
-  CI wheels, then the Hermes provider slot
+  pytest smoke suite). PyPI shipped 2026-08-24: `pip install
+  causal-memory` (0.9.x, 4-platform abi3 wheels + sdist via trusted
+  publishing; wheel includes the MCP server console script +
+  `setconfig` CLI since 0.9.2) — and the Hermes provider slot above
+  is done too.
 - [ ] TS bindings (after Python)
 - [x] MCP HTTP transport — ✅ shipped (`causal-memory http`, Streamable
-  HTTP, stateless mode); auth/multi-tenant hardening still open
+  HTTP, stateless mode). Bearer auth for the observability routes
+  shipped 2026-09-01 (`CAUSAL_MEMORY_HTTP_AUTH_TOKEN` gates `/metrics` +
+  `/debug/*`; probes intentionally open; AMC `/metrics` too) — MCP
+  endpoint auth + multi-tenant hardening still open
 - [ ] Multi-tenant support
 - [ ] Backup / restore tooling (migrations already done)
-- [ ] Observability (Prometheus, OpenTelemetry)
+- [x] Observability (Prometheus, OpenTelemetry) — ✅ shipped the core:
+  hand-rolled in-process registry (no metrics/OTel crates), RED +
+  recall metrics at `/metrics` (Prometheus text), `/healthz` `/readyz`,
+  `/debug/recall` + `/debug/recalls` (persisted recall audit), JSON
+  structured logs via `CAUSAL_MEMORY_LOG_FORMAT=json` (2026-08-26).
+  OTel/OTLP export deferred until a collector actually exists
 - [ ] Stable API guarantee
 
 ## Explicitly out of scope
 
-- **Rung 3 SCM counterfactuals** (structural-causal-model reasoning): per
-  [insights/11](https://github.com/JingxuanC/agent-teardown/blob/main/insights/11-causal-state-store.md),
-  practically impossible for agents. The honest engineering subset shipped:
-  `counterfactual_query` is contrastive/empirical over recorded
-  alternatives, labeled as such on every output.
-  *Watch: Executable Counterfactuals (arXiv:2510.01539) challenges this;
-  revisit if the technique matures.*
+- **Rung-3 SCM ground truth** (structural-causal-model certainty in open
+  worlds): per
+  [insights/11](https://github.com/JingxuanC/causal-memory/blob/main/insights/11-causal-state-store.md),
+  not achievable for agents acting in open, nonstationary worlds. The R3
+  **engineering subset** is in scope since 2026-09-01 — see
+  [docs/design/counterfactual-rung3.md](design/counterfactual-rung3.md)
+  and the prior-art survey
+  ([research/computational-ai/rung3-prior-art.md](research/computational-ai/rung3-prior-art.md)):
+  abduction substrate (context fingerprints, schema v14) → fork edges
+  (natural-experiment graph) → prediction ledger (counterfactual_query
+  logs falsifiable predictions, auto-resolved when either branch is
+  recorded) → deferred micro-SCM/LLM replay (gated on fork density) →
+  closed-world executable replay (stepback-style rerun; interface only).
+  *Watch: Executable Counterfactuals (arXiv:2510.01539) confirmed the
+  abduction gap is real and measurable — its synthetic-data recipe is the
+  candidate eval set when Phase 3 starts.*

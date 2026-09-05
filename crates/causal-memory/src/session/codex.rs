@@ -65,10 +65,7 @@ impl SessionParser for CodexParser {
             );
         }
         if !source.path.exists() {
-            return Err(anyhow!(
-                "Session file not found: {}",
-                source.path.display()
-            ));
+            return Err(anyhow!("Session file not found: {}", source.path.display()));
         }
 
         let raw = std::fs::read_to_string(&source.path)?;
@@ -88,7 +85,9 @@ impl SessionParser for CodexParser {
             if entry.entry_type != "response_item" {
                 continue;
             }
-            let Some(payload) = &entry.payload else { continue };
+            let Some(payload) = &entry.payload else {
+                continue;
+            };
             let pt = payload.payload_type.as_deref().unwrap_or("");
             let ts = entry.timestamp.clone();
 
@@ -97,7 +96,11 @@ impl SessionParser for CodexParser {
                     let id = payload.call_id.clone().unwrap_or_default();
                     let name = payload.name.clone().unwrap_or_default();
                     let arguments = payload.arguments.clone().unwrap_or_default();
-                    decisions.push(CandidateDecision { id, name, arguments });
+                    decisions.push(CandidateDecision {
+                        id,
+                        name,
+                        arguments,
+                    });
                 }
                 "function_call_output" => {
                     let call_id = payload.call_id.clone().unwrap_or_default();

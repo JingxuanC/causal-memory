@@ -496,8 +496,11 @@ fn test_dedup_identical_texts_no_self_pairing() {
         0,
         "no meta edge may be mined: {report:?}"
     );
-    // The tool-call pair is counted as skipped (3 content tokens < 4).
-    assert!(report.skipped_short >= 1);
+    // The tool-call pair is counted as skipped (identical content-token sets
+    // → trivially similar). With token blocking, skip counters only cover
+    // candidate pairs (pairs sharing ≥1 token below the df cap); the old
+    // all-pairs loop additionally counted no-overlap pairs as skipped_short.
+    assert!(report.skipped_self >= 1);
     // No self-pairs or identical-text pairs can exist in the DB.
     let (self_pairs, same_text): (i64, i64) = store
         .with_conn(|conn| {
@@ -680,7 +683,10 @@ fn test_max_pairs_global_cap() {
 #[test]
 fn test_entity_tokens_names_and_noise() {
     // Mid-sentence names are entities; possessives normalized.
-    assert_eq!(entity_tokens("I talked to Melanie's kids today"), vec!["melanie"]);
+    assert_eq!(
+        entity_tokens("I talked to Melanie's kids today"),
+        vec!["melanie"]
+    );
     // Sentence-initial caps are capitalization noise, not entities.
     assert!(entity_tokens("Melanie went hiking.").is_empty());
     // Mixed sentence: mid-sentence names survive, sentence-initial ones drop.
@@ -691,4 +697,118 @@ fn test_entity_tokens_names_and_noise() {
     // Stoplist + no proper nouns → no entities.
     assert!(entity_tokens("What is the name of the city?").is_empty());
     assert!(entity_tokens("which editor does the user prefer").is_empty());
+}
+
+// ── Phase D: facts as first-class mining participants ────────────────
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is the desired behavior"
+)]
+fn test_fact_mines_similar_to_meta_edge() {
+    // A rich decision and a fact echoing its vocabulary — jaccard above
+    // the 0.65 bar, both above min_tokens. The miner must connect the
+    // fact node to the decision chunk with a similar_to meta edge.
+    let store = store_with(&[(
+        "migrated the config parsing to serde derive with proc macros",
+        "boilerplate halved",
+        Some("rust"),
+        1_700_000_000,
+    )]);
+    store
+        .record_fact(
+            "parser_choice",
+            "config parsing migrated to serde derive proc macros",
+            "user",
+            "agent",
+            0.8,
+        )
+        .unwrap();
+
+    let report = mine(&store);
+    assert!(
+        report.similar_to >= 1,
+        "fact↔decision pair must mine similar_to: {report:?}"
+    );
+
+    // The meta edge endpoints are the fact node id and the decision chunk.
+    let (from_id, to_id, relation): (String, String, String) = store
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT from_id, to_id, relation FROM meta_causal_edges LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?)
+        })
+        .unwrap();
+    assert_eq!(relation, "similar_to");
+    let ids = [from_id.as_str(), to_id.as_str()];
+    assert!(
+        ids.iter().any(|i| i.starts_with("fact:")),
+        "one endpoint must be the fact node: {ids:?}"
+    );
+    assert!(
+        ids.iter().any(|i| !i.starts_with("fact:")),
+        "one endpoint must be the decision chunk: {ids:?}"
+    );
+
+    // Post-Phase-A, the graph loads fact nodes — so the meta edge wires
+    // the fact into the causal content graph (Meta spread +0.6).
+    let mut graph = crate::hippocampus::CausalGraph::from_store(&store).unwrap();
+    let results = graph.spreading_activation("config parsing", None, false);
+    let texts: Vec<&str> = results.iter().map(|r| r.text.as_str()).collect();
+    assert!(
+        texts.iter().any(|t| t.contains("parser_choice")),
+        "meta edge must surface the fact from a causal seed: {texts:?}"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is the desired behavior"
+)]
+fn test_fact_does_not_dilute_stratification() {
+    // Two same-tag decisions (similar, single stratum) + a matching
+    // fact. The fact must NOT enter the strata pool: the decision pair
+    // alone is single-stratum (confounded → halved confidence). If the
+    // fact's scope leaked into the pool, strata would become {tag, scope}
+    // and wrongly clear `confounded`.
+    let store = store_with(&[
+        (
+            "deployed the payments service without canary checks",
+            "deploy failed",
+            Some("ops"),
+            100,
+        ),
+        (
+            "deployed the inventory service without canary checks",
+            "deploy failed",
+            Some("ops"),
+            200,
+        ),
+    ]);
+    store
+        .record_fact(
+            "deploy_policy",
+            "never deploy services without canary checks",
+            "user",
+            "agent",
+            0.8,
+        )
+        .unwrap();
+
+    let report = mine(&store);
+    // The decision pair must still be marked confounded (single stratum).
+    assert!(
+        report.confounded >= 1,
+        "same-tag decision pair must stay confounded despite the fact: {report:?}"
+    );
+    // And the fact still participates as an endpoint (its similar_to
+    // edge exists), just not in the replication pool.
+    assert!(
+        report.similar_to >= 1,
+        "fact pairs still mine similar_to: {report:?}"
+    );
 }

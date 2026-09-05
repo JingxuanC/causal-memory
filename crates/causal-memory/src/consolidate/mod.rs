@@ -67,6 +67,10 @@ pub fn consolidate(
     // 0..1. Near-uniform recent text means there is nothing new to
     // consolidate: skip the whole cycle as a no-op (sleep --auto).
     report.diversity = recent_diversity(store, 64)?;
+    eprintln!(
+        "[consolidate] stage 0 done (diversity {:.2})",
+        report.diversity
+    );
     if report.diversity < config.min_diversity {
         report.skipped_low_diversity = true;
         return Ok(report);
@@ -74,6 +78,7 @@ pub fn consolidate(
 
     // ── Stage 1: Reactivation (score → protect in stage 3 → write back) ──
     let scored = score_reactivation(store, config, now)?;
+    eprintln!("[consolidate] stage 1 done ({} edges scored)", scored.len());
     let protected: HashSet<i64> = scored
         .iter()
         .filter(|e| e.score >= config.replay_protect_score)
@@ -112,6 +117,10 @@ pub fn consolidate(
             }
         }
     }
+    eprintln!(
+        "[consolidate] stage 1.5 done ({} q-updates)",
+        report.q_updates
+    );
 
     // ── Stage 1.7: C7 supersession resolution ───────────────────────────
     // Knowledge-update pass: lessons whose decision chunk was re-recorded
@@ -120,9 +129,14 @@ pub fn consolidate(
     // No LLM configured -> skipped (rule-based contradiction already ran on
     // the write path); failures keep the edge (conservative).
     resolve_supersessions(store, config, dry_run, &mut report)?;
+    eprintln!("[consolidate] stage 1.7 done (supersessions resolved)");
 
     // ── Stage 2: Generalization ─────────────────────────────────────────
     report.merged_edges = merge_redundant_edges(store, dry_run, now)?;
+    eprintln!(
+        "[consolidate] stage 2a done ({} merged)",
+        report.merged_edges
+    );
     let meta_before = snapshot_meta_edges(store)?;
     let miner = PatternMiner::new(store, config.miner);
     report.mine_report = if dry_run {
@@ -130,9 +144,17 @@ pub fn consolidate(
     } else {
         miner.mine()?
     };
+    eprintln!(
+        "[consolidate] stage 2b done (mining: {report:?})",
+        report = report.mine_report
+    );
 
     // ── Stage 3: Downscaling (decay + access boost + GC) ────────────────
     downscale(store, config, dry_run, now, &protected, &mut report)?;
+    eprintln!(
+        "[consolidate] stage 3 done ({} decayed, {} gc)",
+        report.decayed, report.gc_invalidated
+    );
 
     // ── Stage 1 write-back: mark replay-protected edges as replayed ─────
     // Runs AFTER downscale so this cycle's access-boost math still sees the
@@ -141,6 +163,10 @@ pub fn consolidate(
 
     // ── Stage 4: REM integration (cross-domain transfer) ────────────────
     report.rem_transfers = rem_integrate(store, config, dry_run, &meta_before)?;
+    eprintln!(
+        "[consolidate] stage 4 done ({} rem transfers)",
+        report.rem_transfers
+    );
 
     Ok(report)
 }
@@ -260,7 +286,10 @@ pub fn recent_diversity(store: &CausalStore, n: usize) -> Result<f64> {
             entropy -= p * p.ln();
         }
         let unique = freq.len() as f64;
-        Ok(if unique > 1.0 { entropy / unique.ln() } else { 0.0 })
+        Ok(if unique > 1.0 {
+            entropy / unique.ln()
+        } else {
+            0.0
+        })
     })
 }
-

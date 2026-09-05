@@ -1,6 +1,9 @@
-use std::collections::HashMap;
-use crate::consolidate::{consolidate, recent_diversity, resolve_supersessions_with, ConsolidateConfig, ConsolidateReport, SupersessionAction};
+use crate::consolidate::{
+    consolidate, recent_diversity, resolve_supersessions_with, ConsolidateConfig,
+    ConsolidateReport, SupersessionAction,
+};
 use crate::store::CausalStore;
+use std::collections::HashMap;
 const NOW: i64 = 1_700_000_000;
 const DAY: i64 = 86_400;
 
@@ -260,6 +263,155 @@ fn test_gc_invalidates_low_confidence_but_pins_user_feedback() {
     // now follows the 2160h half-life tier (0.1 is below protect score).
     let expected = 0.1 * 0.5_f64.powf(10.0 * 24.0 / 2160.0);
     assert!((edge_conf(&store, pinned_id) - expected).abs() < 1e-9);
+}
+
+#[test]
+fn test_gc_bounded_forgetting_budget() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // 100 edges that ALL fall below the GC threshold after decay
+    // (0.21 × 0.5^(240/2160) ≈ 0.194 < 0.2). An unbounded cycle would wipe
+    // every one (the LongMemEval mass-extinction repro: burst ingest +
+    // uniform age → uniform decay). The budget caps this cycle at
+    // max(gc_floor=50, 0.2×100) = 50 invalidations, weakest first.
+    let mut ids = Vec::new();
+    for i in 0..100 {
+        ids.push(insert_edge(
+            &store,
+            &format!("speculative tweak number {i} attempted here"),
+            "no measurable effect",
+            0.21,
+            "llm_inferred",
+            Some("perf"),
+            NOW - 10 * DAY,
+            None,
+        ));
+    }
+    // Weakest candidate (0.05 → ~0.046): must be invalidated first.
+    let weakest = insert_edge(
+        &store,
+        "wild guess refactor of the whole module",
+        "nothing improved at all",
+        0.05,
+        "llm_inferred",
+        Some("perf"),
+        NOW - 10 * DAY,
+        None,
+    );
+    // Strongest candidate (0.215 → ~0.199, still < 0.2): spared this cycle.
+    let strongest = insert_edge(
+        &store,
+        "borderline optimization of the retry path",
+        "marginal effect only",
+        0.215,
+        "llm_inferred",
+        Some("perf"),
+        NOW - 10 * DAY,
+        None,
+    );
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    // 102 candidates total; budget = max(50, 0.2×102) = 50.
+    assert_eq!(report.gc_invalidated, 50);
+    assert_eq!(report.gc_deferred, 52);
+    assert!(!edge_valid(&store, weakest), "weakest candidate GC'd first");
+    assert!(
+        edge_valid(&store, strongest),
+        "strongest below-threshold edge survives under the budget"
+    );
+    // The weakest edge is one of the 50 invalidated, so 51 of the 100
+    // identical-confidence edges survive alongside it... minus its seat:
+    // 50 invalidated = weakest + 49 from `ids` → 51 of `ids` survive.
+    let survivors = ids.iter().filter(|&&id| edge_valid(&store, id)).count();
+    assert_eq!(survivors, 51, "invalidation stopped at the budget");
+}
+
+// ── Stage 3: triple-criterion GC (HeLa-Mem adaptive forgetting) ──────
+
+#[test]
+fn test_gc_recently_accessed_weak_edge_survives() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Both edges: 10 days old, 0.21 → ~0.194 < 0.2 — weak AND dormant.
+    // The one read an hour ago is spared by the access-freshness criterion;
+    // only the never-accessed twin is collected.
+    let accessed_id = insert_edge(
+        &store,
+        "weak but still consulted lesson",
+        "marginal effect",
+        0.21,
+        "llm_inferred",
+        Some("perf"),
+        NOW - 10 * DAY,
+        Some(NOW - 3600),
+    );
+    let stale_id = insert_edge(
+        &store,
+        "weak and never consulted lesson",
+        "marginal effect",
+        0.21,
+        "llm_inferred",
+        Some("perf"),
+        NOW - 10 * DAY,
+        None,
+    );
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert!(
+        edge_valid(&store, accessed_id),
+        "weak but recently accessed edge survives (old-but-active)"
+    );
+    assert!(
+        !edge_valid(&store, stale_id),
+        "weak + dormant + untouched edge is collected"
+    );
+    assert_eq!(report.gc_invalidated, 1);
+}
+
+#[test]
+fn test_gc_dormancy_grace_for_young_edges() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Recorded at 0.19 (already below gc_threshold) only 2 days ago: weak
+    // but NOT dormant (< gc_min_age_hours = 168h) → grace, survives cycle 1.
+    let id = insert_edge(
+        &store,
+        "fresh speculative idea, low initial confidence",
+        "unverified",
+        0.19,
+        "llm_inferred",
+        Some("perf"),
+        NOW - 2 * DAY,
+        None,
+    );
+    consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert!(
+        edge_valid(&store, id),
+        "young weak edge gets the dormancy grace period"
+    );
+    // Six days later the edge is 8 days old → dormant; still weak and never
+    // accessed → collected.
+    consolidate(&store, &default_config(), false, NOW + 6 * DAY).unwrap();
+    assert!(
+        !edge_valid(&store, id),
+        "once dormant, the weak untouched edge is collected"
+    );
+}
+
+#[test]
+fn test_fact_gc_dormancy_grace() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // Weak (0.1 < 0.2) but only 2 days old → not dormant → spared;
+    // agent_facts has no access tracking, so the criterion is weak+dormant.
+    let young = store
+        .record_fact("editor", "zed", "user", "agent", 0.1)
+        .unwrap();
+    let old = store
+        .record_fact("pager", "less", "user", "agent", 0.1)
+        .unwrap();
+    backdate_fact(&store, young, NOW - 2 * DAY);
+    backdate_fact(&store, old, NOW - 10 * DAY);
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    let (_, young_valid) = fact_state(&store, young);
+    let (_, old_valid) = fact_state(&store, old);
+    assert!(young_valid, "young weak fact gets the dormancy grace");
+    assert!(!old_valid, "old weak fact is collected");
+    assert_eq!(report.facts_gc, 1);
 }
 
 // ── Stage 2a: redundant merge ────────────────────────────────────────
@@ -731,8 +883,7 @@ fn test_replay_feedback_loop_across_cycles() {
     );
     // Control: full 3-day decay, no boost.
     assert!(
-        (edge_conf(&store, control_id) - 0.6 * 0.99_f64.powi(2) * 0.99_f64.powi(3)).abs()
-            < 1e-9
+        (edge_conf(&store, control_id) - 0.6 * 0.99_f64.powi(2) * 0.99_f64.powi(3)).abs() < 1e-9
     );
     assert!(
         edge_conf(&store, protected_id) > edge_conf(&store, control_id),
@@ -815,7 +966,10 @@ fn test_diversity_high_when_varied() {
             .unwrap();
     }
     let d = recent_diversity(&store, 64).unwrap();
-    assert!(d > 0.5, "varied recent text must score high diversity (got {d:.2})");
+    assert!(
+        d > 0.5,
+        "varied recent text must score high diversity (got {d:.2})"
+    );
 }
 
 // ── Stage 1.7: C7 supersession resolution ─────────────────────────────
@@ -852,7 +1006,15 @@ fn test_supersession_skips_without_llm() {
     let store = CausalStore::open_in_memory().unwrap();
     insert_falsified_pair(&store);
     let mut report = ConsolidateReport::default();
-    resolve_supersessions_with(&store, &default_config(), false, &mut report, None, SupersessionAction::Retire).unwrap();
+    resolve_supersessions_with(
+        &store,
+        &default_config(),
+        false,
+        &mut report,
+        None,
+        SupersessionAction::Retire,
+    )
+    .unwrap();
     assert_eq!(
         report.superseded_lessons, 0,
         "no LLM configured → stage must be a silent no-op"
@@ -874,7 +1036,15 @@ fn test_supersession_judge_failure_keeps_edge() {
     let store = CausalStore::open_in_memory().unwrap();
     insert_falsified_pair(&store);
     let mut report = ConsolidateReport::default();
-    resolve_supersessions_with(&store, &default_config(), false, &mut report, Some(&bad), SupersessionAction::Retire).unwrap();
+    resolve_supersessions_with(
+        &store,
+        &default_config(),
+        false,
+        &mut report,
+        Some(&bad),
+        SupersessionAction::Retire,
+    )
+    .unwrap();
     assert_eq!(
         report.superseded_lessons, 0,
         "judge failure must be conservative (keep the edge)"
@@ -899,12 +1069,24 @@ fn test_supersession_live_apply() {
     insert_falsified_pair(&store);
     assert_eq!(store.all_valid_edges().unwrap().len(), 2, "precondition");
     let mut report = ConsolidateReport::default();
-    resolve_supersessions_with(&store, &default_config(), false, &mut report, Some(&llm), SupersessionAction::Retire).unwrap();
+    resolve_supersessions_with(
+        &store,
+        &default_config(),
+        false,
+        &mut report,
+        Some(&llm),
+        SupersessionAction::Retire,
+    )
+    .unwrap();
     let valid = store.all_valid_edges().unwrap();
     assert_eq!(
-        valid.len(), 1,
+        valid.len(),
+        1,
         "live judge must retire the falsified old edge (got {:?})",
-        valid.iter().map(|e| e.outcome_text.as_str()).collect::<Vec<_>>()
+        valid
+            .iter()
+            .map(|e| e.outcome_text.as_str())
+            .collect::<Vec<_>>()
     );
     assert_eq!(report.superseded_lessons, 1);
 }
@@ -939,10 +1121,15 @@ fn test_supersession_annotate_live() {
         valid.len(),
         2,
         "annotate must keep both edges retrievable (got {:?})",
-        valid.iter().map(|e| e.outcome_text.as_str()).collect::<Vec<_>>()
+        valid
+            .iter()
+            .map(|e| e.outcome_text.as_str())
+            .collect::<Vec<_>>()
     );
     let annotated = valid.iter().find(|e| e.outcome_text == "caused an outage");
-    let corrected_by = valid.iter().find(|e| e.outcome_text == "was safe, no incident");
+    let corrected_by = valid
+        .iter()
+        .find(|e| e.outcome_text == "was safe, no incident");
     match (annotated, corrected_by) {
         (Some(old), Some(new)) => {
             assert_eq!(
@@ -950,9 +1137,138 @@ fn test_supersession_annotate_live() {
                 Some(new.edge_id),
                 "soft mark must point at the correcting edge"
             );
-            assert_eq!(new.superseded_by, None, "the correction itself is not superseded");
+            assert_eq!(
+                new.superseded_by, None,
+                "the correction itself is not superseded"
+            );
         }
         _ => panic!("both edges must survive annotation"),
     }
     assert_eq!(report.superseded_lessons, 1);
+}
+
+// ── Phase D: fact downscaling + supersession lineage ─────────────────
+
+/// Backdate a fact's updated_at so stage 3 sees it as `days` old.
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is the desired behavior"
+)]
+fn backdate_fact(store: &CausalStore, fact_id: i64, updated_at: i64) {
+    store
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE agent_facts SET updated_at = ?1 WHERE id = ?2",
+                rusqlite::params![updated_at, fact_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is the desired behavior"
+)]
+fn fact_state(store: &CausalStore, fact_id: i64) -> (f64, bool) {
+    store
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT confidence, valid_to IS NULL FROM agent_facts WHERE id = ?1",
+                rusqlite::params![fact_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .unwrap()
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is the desired behavior"
+)]
+fn test_fact_half_life_decay_and_gc() {
+    let store = CausalStore::open_in_memory().unwrap();
+    // One old fact (400 days → well past the 90d half-life, below the GC
+    // threshold), one fresh fact (same-day → untouched).
+    let old = store
+        .record_fact("ci_tool", "jenkins", "user", "agent", 0.8)
+        .unwrap();
+    let fresh = store
+        .record_fact("os", "macos", "user", "agent", 0.9)
+        .unwrap();
+    backdate_fact(&store, old, NOW - 400 * DAY);
+
+    // Dry run: counted, not written.
+    let report = consolidate(&store, &default_config(), true, NOW).unwrap();
+    assert!(report.facts_decayed >= 1, "{:?}", report.facts_decayed);
+    assert_eq!(report.facts_gc, 1, "400d-old fact must be collected");
+    let (conf, valid) = fact_state(&store, old);
+    assert!(valid && (conf - 0.8).abs() < 1e-9, "dry run must not write");
+
+    // Real run: the old fact retires with decayed confidence, the fresh
+    // one keeps its confidence and stays valid.
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    assert_eq!(report.facts_gc, 1);
+    let (conf, valid) = fact_state(&store, old);
+    assert!(!valid, "old fact must retire");
+    assert!(
+        conf < 0.2,
+        "retired confidence must be below the threshold: {conf}"
+    );
+    let (conf, valid) = fact_state(&store, fresh);
+    assert!(valid, "fresh fact must stay valid");
+    assert!(
+        (conf - 0.9).abs() < 1e-9,
+        "fresh fact must not decay: {conf}"
+    );
+}
+
+#[test]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is the desired behavior"
+)]
+fn test_fact_replace_records_supersession_lineage() {
+    let store = CausalStore::open_in_memory().unwrap();
+    let old = store
+        .record_fact("pm", "npm", "user", "agent", 0.8)
+        .unwrap();
+    let (new, retired) = store
+        .record_fact_replacing("pm", "pnpm", "user", "agent", 0.9)
+        .unwrap();
+    assert_eq!(retired, 1);
+
+    // The old row carries the lineage: retired AND pointing at its replacement.
+    let (valid, superseded_by): (bool, Option<i64>) = store
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT valid_to IS NULL, superseded_by FROM agent_facts WHERE id = ?1",
+                rusqlite::params![old],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert!(!valid, "old value must retire");
+    assert_eq!(
+        superseded_by,
+        Some(new),
+        "lineage must point at the new fact"
+    );
+
+    // Revive (re-record the old value) clears the lineage.
+    store
+        .record_fact("pm", "npm", "user", "agent", 0.8)
+        .unwrap();
+    let (valid, superseded_by): (bool, Option<i64>) = store
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT valid_to IS NULL, superseded_by FROM agent_facts WHERE id = ?1",
+                rusqlite::params![old],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?)
+        })
+        .unwrap();
+    assert!(valid, "re-recorded fact revives");
+    assert_eq!(superseded_by, None, "revive clears the lineage");
 }

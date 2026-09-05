@@ -1,16 +1,89 @@
-//! The 15 memory operations, shared by all frontends. Each method mirrors
+//! The 16 memory operations, shared by all frontends. Each method mirrors
 //! one MCP tool and returns the same text the tool would produce — agent
 //! frameworks (MCP host, Python bindings) consume these strings directly.
 
 use std::collections::HashMap;
 
-use super::format::{format_entry_layered, rrf_fuse_many, truncate_chars, TokenBudget};
+use super::format::{
+    format_entry_layered, format_fact_layered, format_lesson_layered, rrf_fuse_many,
+    truncate_chars, TokenBudget,
+};
 use super::output::*;
-use super::{block_on, Memory, INTERVENTION_MIN_SIMILARITY, SEMANTIC_CONTRADICTION_MIN_SIMILARITY};
+use super::{
+    block_on, Memory, CLOSED_WORLD_TAGS, INTERVENTION_MIN_SIMILARITY,
+    SEMANTIC_CONTRADICTION_MIN_SIMILARITY,
+};
 use crate::store::{AgentFact, CausalEntry, ChainHop};
+
+/// One structured retrieval hit — the machine-readable form of
+/// `search_memory`'s output, so non-LLM frontends (the AMC leaderboard
+/// contract: `{id, content, score, created_at}`) consume the same fused
+/// result agents see as text. `score` is the RRF fused rank score; `rank`
+/// is the 1-based fused position.
+#[derive(Debug, Clone)]
+pub struct MemoryHit {
+    /// Layer-namespaced key: `fact:{id}` or `causal:{edge_id}`.
+    pub key: String,
+    /// Human-readable content of the underlying memory.
+    pub content: String,
+    /// RRF fused score (higher = more relevant).
+    pub score: f64,
+    /// 1-based position in the fused ranking.
+    pub rank: usize,
+    pub created_at: Option<i64>,
+}
+
+/// Ranked retrieval results shared by both search paths: (rank, item)
+/// pairs per layer (rank = fused position, or engine activation position
+/// on the spread path) plus the mode tag, the explain map (Flip-path
+/// marking: hit key → `[seed]` / `[spread hop=N via …]` tag; rendered only
+/// when the caller passes explain=true, so default output is unchanged),
+/// and the recall-audit metadata (seeds / hop summary) for the audit row
+/// and the /debug/recall trace endpoint.
+struct RankedHits {
+    facts: Vec<(usize, AgentFact)>,
+    causal: Vec<(usize, CausalEntry)>,
+    mode: &'static str,
+    explains: HashMap<String, String>,
+    seeds: Vec<(String, &'static str)>,
+    activated_nodes: usize,
+    /// Hop distribution of the SURFACED hits (index = hop; surfaced hits
+    /// only, not the whole lit set).
+    hop_counts: Vec<usize>,
+    max_hop: u8,
+}
+
+/// The dual-pool fallback's return shape (no provenance — every hit there
+/// is a literal/semantic seed by construction).
+type DualPoolHits = (
+    Vec<(usize, AgentFact)>,
+    Vec<(usize, CausalEntry)>,
+    &'static str,
+);
+
+/// Multi-pass session-expansion budget (was a hardcoded 40).
+const MULTI_PASS_SESSION_BUDGET: usize = 80;
+
+/// Top-N density-weighted sessions kept by multi-pass expansion. 2 = the
+/// LME-measured sweet spot (multi-session 133q: 55.6% → 59.4% at -40%
+/// context); 0 disables the whitelist (all touched sessions share the
+/// budget proportionally). Env-tunable for A/B:
+/// CAUSAL_MEMORY_EXPAND_TOP_SESSIONS.
+fn multi_pass_top_sessions() -> usize {
+    static CACHE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *CACHE.get_or_init(|| {
+        std::env::var("CAUSAL_MEMORY_EXPAND_TOP_SESSIONS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2)
+    })
+}
 
 impl Memory {
     /// `record_decision` — log a decision → outcome causal edge.
+    /// `context` (v14, optional): short description of the situation the
+    /// decision was made in — same task_tag+context becomes a comparable
+    /// branch (fork) for counterfactual queries.
     pub fn record_decision(
         &self,
         decision: &str,
@@ -18,6 +91,7 @@ impl Memory {
         relation: &str,
         task_tag: &str,
         confidence_source: Option<&str>,
+        context: Option<&str>,
     ) -> String {
         let confidence = match confidence_source {
             Some("temporal") => 0.4,
@@ -42,8 +116,28 @@ impl Memory {
             source,
             chrono::Utc::now().timestamp(),
             Some(&polarity),
+            context,
         ) {
             Ok((_dec_id, edge_id)) => {
+                // Phase C: patch the live graph so the new lesson is
+                // visible to the very next query (no rebuild wait).
+                if let Ok(Some(entry)) = self.store.get_edge(edge_id) {
+                    self.patch_graph_new_edge(&entry);
+                }
+                // v14 prediction ledger: a recorded outcome for a decision
+                // text that a pending counterfactual predicted resolves it.
+                // Best-effort — resolution must never block recording.
+                let resolved = self
+                    .store
+                    .resolve_predictions_for_decision(decision, Some(&polarity))
+                    .unwrap_or(0);
+                let ledger_note = if resolved > 0 {
+                    format!(
+                        "\n📐 Resolved {resolved} pending prediction(s) about this decision — see prediction_report."
+                    )
+                } else {
+                    String::new()
+                };
                 // Opportunistically embed the new edge so semantic search
                 // finds it. Silent on any failure — embedding must never
                 // block recording; the `causal-memory embed` CLI backfills
@@ -65,7 +159,7 @@ impl Memory {
                     );
                 }
                 format!(
-                    "✅ Recorded: [{}] {} →({})→ {} (confidence: {:.2}, id: {})",
+                    "✅ Recorded: [{}] {} →({})→ {} (confidence: {:.2}, id: {}){ledger_note}",
                     task_tag,
                     truncate_chars(decision, 60),
                     relation,
@@ -92,7 +186,11 @@ impl Memory {
 
         // Parse the messages into turns
         let date = date.unwrap_or("");
-        let date = if date.len() >= 10 { &date[..10] } else { "" };
+        let date = if date.chars().count() >= 10 {
+            date.chars().take(10).collect::<String>()
+        } else {
+            String::new()
+        };
 
         // Split messages into turns — accept raw text with speaker: prefix,
         // or just treat as a single assistant message
@@ -136,7 +234,7 @@ impl Memory {
         };
 
         // Run distill synchronously (blocking the op call)
-        let items = match block_on(distiller.distill_session(date, &turns)) {
+        let items = match block_on(distiller.distill_session(&date, &turns)) {
             Ok(items) if !items.is_empty() => items,
             Ok(_) => return "ℹ️ Nothing worth remembering in this conversation.".to_string(),
             Err(e) => return format!("❌ Extraction failed: {e}"),
@@ -156,7 +254,10 @@ impl Memory {
                 ItemKind::Event => "event",
                 ItemKind::Causal => "causal",
             };
-            summary.push(format!("  [{kind_str}] {}", &item.text[..item.text.len().min(80)]));
+            summary.push(format!(
+                "  [{kind_str}] {}",
+                item.text.chars().take(80).collect::<String>()
+            ));
 
             // Write to store based on kind
             if item.kind == ItemKind::Causal {
@@ -196,7 +297,10 @@ impl Memory {
                     ItemKind::Lesson => "lesson",
                     _ => "event",
                 };
-                match self.store.record_fact(key, &item.text, "user", "remember", 0.8) {
+                match self
+                    .store
+                    .record_fact(key, &item.text, "user", "remember", 0.8)
+                {
                     Ok(_) => facts += 1,
                     Err(_) => {
                         // Fall back to causal edge with no_effect
@@ -230,6 +334,10 @@ impl Memory {
     }
 
     /// `search_causal` — BM25 + semantic retrieval of past causal episodes.
+    /// `explain` (default false) appends a provenance tag per hit
+    /// (Flip-path marking); default output is byte-identical to the
+    /// pre-explain format.
+    #[allow(clippy::too_many_arguments)]
     pub fn search_causal(
         &self,
         task_tag: Option<&str>,
@@ -237,11 +345,16 @@ impl Memory {
         limit: Option<usize>,
         detail_level: Option<&str>,
         max_tokens: Option<usize>,
+        explain: Option<bool>,
     ) -> String {
         let limit = limit.unwrap_or(5);
         let detail_level = detail_level.unwrap_or("l2");
         let max_tokens = max_tokens.unwrap_or(0);
+        let explain = explain.unwrap_or(false);
         let mut budget = TokenBudget::new(max_tokens);
+        // Non-spread paths surface direct store hits — provenance-wise they
+        // are seeds by definition.
+        let seed_tag = if explain { "   ↳ [seed]\n" } else { "" };
 
         // ── Hippocampus path: spreading activation (联想检索) ──
         // The graph does associative retrieval: from seed matches, activation
@@ -249,7 +362,15 @@ impl Memory {
         // would miss. Falls through to BM25/semantic if graph is unavailable
         // or finds nothing.
         if let Some(query) = query.filter(|q| !q.trim().is_empty()) {
-            if let Some(hippo_result) = self.hippocampus_search(query, task_tag, false, limit) {
+            if let Some(hippo_result) = self.hippocampus_search(
+                query,
+                task_tag,
+                false,
+                limit,
+                detail_level,
+                max_tokens,
+                explain,
+            ) {
                 return hippo_result;
             }
 
@@ -283,7 +404,17 @@ impl Memory {
                             ));
                             break;
                         }
-                        out.push_str(&line);
+                        if explain {
+                            // Tag hugs its entry: the layered line ends in
+                            // a blank separator, so trim + re-add it after
+                            // the tag. (explain=false keeps the raw line.)
+                            out.push_str(line.trim_end());
+                            out.push('\n');
+                            out.push_str(seed_tag);
+                            out.push('\n');
+                        } else {
+                            out.push_str(&line);
+                        }
                     }
                     return out;
                 }
@@ -300,7 +431,10 @@ impl Memory {
             if results.is_empty() {
                 return "[bm25] 📭 No past causal episodes found matching your query.".to_string();
             }
-            let mut out = format!("[bm25/{detail_level}] Found {} past episode(s)", results.len());
+            let mut out = format!(
+                "[bm25/{detail_level}] Found {} past episode(s)",
+                results.len()
+            );
             if max_tokens > 0 {
                 out.push_str(&format!(" (token budget: {max_tokens})"));
             }
@@ -314,7 +448,16 @@ impl Memory {
                     ));
                     break;
                 }
-                out.push_str(&line);
+                if explain {
+                    // Tag hugs its entry: the layered line ends in a blank
+                    // separator, so trim + re-add it after the tag.
+                    out.push_str(line.trim_end());
+                    out.push('\n');
+                    out.push_str(seed_tag);
+                    out.push('\n');
+                } else {
+                    out.push_str(&line);
+                }
             }
             return out;
         } // end hippocampus if let Some(query) block
@@ -337,7 +480,7 @@ impl Memory {
         );
         for (i, entry) in results.iter().take(limit).enumerate() {
             out.push_str(&format!(
-                "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n\n",
+                "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n",
                 i + 1,
                 entry.task_tag.as_deref().unwrap_or("untagged"),
                 entry.decision_text,
@@ -345,6 +488,10 @@ impl Memory {
                 entry.outcome_text,
                 entry.confidence * 100.0,
             ));
+            if explain {
+                out.push_str("   ↳ [seed]\n");
+            }
+            out.push('\n');
         }
         out
     }
@@ -376,11 +523,23 @@ impl Memory {
                 Err(e) => return format!("❌ Failed to record fact: {e}"),
             }
         } else {
-            match self.store.record_fact(key, value, scope, "agent", confidence) {
+            match self
+                .store
+                .record_fact(key, value, scope, "agent", confidence)
+            {
                 Ok(id) => (id, 0),
                 Err(e) => return format!("❌ Failed to record fact: {e}"),
             }
         };
+
+        // Phase C: patch the live graph (scope hub + fact node + entity
+        // links); on replace, retire the superseded fact nodes too — the
+        // old value stops seeding/surfacing immediately, not at the next
+        // lazy rebuild.
+        self.patch_graph_new_fact(fact_id, key, value, scope, confidence);
+        if retired > 0 {
+            self.patch_graph_retire_facts(fact_id);
+        }
 
         // Opportunistic embedding (silent on any failure — must never block
         // recording; a CLI backfill path can catch up later).
@@ -388,6 +547,11 @@ impl Memory {
         if let Some(Ok(vec)) = block_on(crate::embed::embed_shared(&text)) {
             let _ = self.store.put_fact_embedding(fact_id, "shared", &vec);
         }
+
+        // Phase A: fact changes now reach the graph — mark it dirty so the
+        // lazy rebuild picks the new fact node up (same contract as
+        // record_decision / remember).
+        self.mark_graph_dirty();
 
         let mut out = format!(
             "✅ Recorded fact: [{}] {} = \"{}\" (confidence: {:.2}, id: {})",
@@ -488,14 +652,114 @@ impl Memory {
         out
     }
 
+    /// `remember_raw_turns` — pre-gatekeeping write path: raw conversation
+    /// turns go straight into the retrieval pool (chunks) with adjacent-turn
+    /// temporal edges. No LLM, no distillation — this is what `remember`
+    /// does when no distiller is available, productized for backends (the
+    /// AMC server's `--write-mode raw`) that need write-time LLM calls off
+    /// the synchronous path. The full pipeline (`remember`) keeps
+    /// write-time gatekeeping: LLM extraction is the sole path into the
+    /// pool (0afb9f1) — choose deliberately.
+    ///
+    /// Returns the number of turns written.
+    pub fn remember_raw_turns(&self, turns: &[(String, String)], session: &str) -> usize {
+        let now = chrono::Utc::now().timestamp();
+        let mut written = 0usize;
+        for (idx, (speaker, text)) in turns.iter().enumerate() {
+            let chunk_id = format!("raw:{session}:{idx}");
+            let payload = format!("[{session}] {speaker}: {text}");
+            let ok = self
+                .store
+                .with_conn(|c| {
+                    use rusqlite::params;
+                    c.execute(
+                        "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
+                        params![&chunk_id, &payload, now],
+                    )?;
+                    if idx > 0 {
+                        let prev_id = format!("raw:{session}:{}", idx - 1);
+                        c.execute(
+                            "INSERT OR IGNORE INTO causal_edges
+                             (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
+                             VALUES (?1, ?2, 'no_effect', 0.4, 'temporal', ?3, ?3, NULL)",
+                            params![&prev_id, &chunk_id, now],
+                        )?;
+                    }
+                    Ok(())
+                })
+                .is_ok();
+            if ok {
+                written += 1;
+            }
+        }
+        written
+    }
+
+    /// Structured core of `search_memory`: both layers (facts + causal),
+    /// semantic/BM25 per-layer fallthrough, hop expansion, RRF fusion and
+    /// top-`limit` truncation. The text tool and the AMC server both wrap
+    /// this — one retrieval pipeline, two presentations. Display-only
+    /// concerns (D4 intent routing) stay in the text wrapper. See
+    /// [`MemoryHit`] for the hit shape.
+    pub fn search_memory_entries(
+        &self,
+        query: &str,
+        task_tag: Option<&str>,
+        scope: Option<&str>,
+        limit: usize,
+    ) -> (Vec<MemoryHit>, &'static str) {
+        // Phase B: unified engine first — one seeding pass over ALL node
+        // types, one spreading-activation run, typed hits. The dual-pool
+        // RRF path is the fallback (and the regression control for A/B
+        // comparison). Both paths produce the same ranked-pair shape, so
+        // hit materialization is shared. Structured hits are explain-free
+        // by contract (benchmarks consume content verbatim).
+        let hits = self.ranked_hits(query, task_tag, scope, limit);
+        let mode = hits.mode;
+        (hits_from_ranked(&hits.facts, &hits.causal), mode)
+    }
+
+    /// Observability (/debug/recall): run one recall and return the full
+    /// trace as JSON — seeds with sources, hop summary, and per-result
+    /// provenance tags. Read-only; the audit row is written as for any
+    /// recall.
+    pub fn recall_trace(&self, query: &str, limit: usize) -> serde_json::Value {
+        let t0 = std::time::Instant::now();
+        let hits = self.ranked_hits(query, None, None, limit);
+        let structured = hits_from_ranked(&hits.facts, &hits.causal);
+        serde_json::json!({
+            "query": query,
+            "mode": hits.mode,
+            "latency_ms": t0.elapsed().as_secs_f64() * 1000.0,
+            "seeds": hits.seeds.iter().map(|(id, s)| serde_json::json!({"id": id, "source": s})).collect::<Vec<_>>(),
+            "activated_nodes": hits.activated_nodes,
+            "max_hop": hits.max_hop,
+            "hop_counts_surfaced": hits.hop_counts,
+            "results": structured.iter().map(|h| serde_json::json!({
+                "key": h.key,
+                "rank": h.rank,
+                "explain": hits.explains.get(&h.key),
+                "content": h.content,
+            })).collect::<Vec<_>>(),
+        })
+    }
+
     /// `search_memory` — unified retrieval: facts + causal lessons fused by
-    /// Reciprocal Rank Fusion (RRF) in one call.
+    /// Reciprocal Rank Fusion (RRF) in one call. `detail_level` (l0/l1/l2,
+    /// default l2) picks the per-item verbosity; `max_tokens` (default 0 =
+    /// unlimited) truncates the rendered pool against a shared token budget;
+    /// `explain` (default false) appends a provenance tag per hit — default
+    /// output is byte-identical to the pre-explain format.
+    #[allow(clippy::too_many_arguments)]
     pub fn search_memory(
         &self,
         query: &str,
         task_tag: Option<&str>,
         scope: Option<&str>,
         limit: Option<usize>,
+        detail_level: Option<&str>,
+        max_tokens: Option<usize>,
+        explain: Option<bool>,
     ) -> String {
         let limit = limit.unwrap_or(10);
         if let Some(s) = scope {
@@ -503,6 +767,186 @@ impl Memory {
                 return format!("❌ Invalid scope '{s}' — use one of: user, session, agent");
             }
         }
+        let detail_level = detail_level.unwrap_or("l2");
+        if !matches!(detail_level, "l0" | "l1" | "l2") {
+            return format!("❌ Invalid detail_level '{detail_level}' — use one of: l0, l1, l2");
+        }
+
+        // Phase B: unified engine first; the dual-pool RRF path stays as
+        // the fallback and the regression control for A/B comparison.
+        // Both produce the same ranked-pair shape, so D4 routing and the
+        // grouped display are shared.
+        let hits = self.ranked_hits(query, task_tag, scope, limit);
+        render_unified(
+            query,
+            &hits.facts,
+            &hits.causal,
+            hits.mode,
+            detail_level,
+            max_tokens.unwrap_or(0),
+            if explain.unwrap_or(false) {
+                Some(&hits.explains)
+            } else {
+                None
+            },
+        )
+    }
+
+    /// One retrieval story, two presentations: the unified spread engine
+    /// when it can serve the query, the dual-pool RRF path otherwise.
+    /// Returns facts and causal entries as (rank, item) pairs — facts in
+    /// activation/fused order, causal likewise — plus the mode tag and the
+    /// per-hit explain map. Every call is a recall: record metrics and a
+    /// best-effort audit row (audit failures never break retrieval).
+    fn ranked_hits(
+        &self,
+        query: &str,
+        task_tag: Option<&str>,
+        scope: Option<&str>,
+        limit: usize,
+    ) -> RankedHits {
+        let t0 = std::time::Instant::now();
+        let out = if let Some(spread) = self.unified_spread_hits(query, task_tag, scope, limit) {
+            let mut explains = HashMap::new();
+            let mut hop_counts = vec![0usize; spread.max_hop as usize + 1];
+            let base = spread.facts.len();
+            let facts: Vec<(usize, AgentFact)> = spread
+                .facts
+                .into_iter()
+                .enumerate()
+                .map(|(i, (f, p))| {
+                    let key = format!("fact:{}", f.id);
+                    explains.insert(key, p.tag());
+                    hop_counts[p.hop as usize] += 1;
+                    let source = if p.hop == 0 { "seed" } else { "spread" };
+                    crate::observability::metrics().record_recall_result("facts", source);
+                    (i + 1, f)
+                })
+                .collect();
+            let causal: Vec<(usize, CausalEntry)> = spread
+                .causal
+                .into_iter()
+                .enumerate()
+                .map(|(i, (e, p))| {
+                    let key = format!("causal:{}", e.edge_id);
+                    explains.insert(key, p.tag());
+                    hop_counts[p.hop as usize] += 1;
+                    let source = if p.hop == 0 { "seed" } else { "spread" };
+                    crate::observability::metrics().record_recall_result("causal", source);
+                    (base + i + 1, e)
+                })
+                .collect();
+            crate::observability::metrics().record_activated_nodes(spread.activated_nodes);
+            RankedHits {
+                facts,
+                causal,
+                mode: "spread",
+                explains,
+                seeds: spread.seeds,
+                activated_nodes: spread.activated_nodes,
+                hop_counts,
+                max_hop: spread.max_hop,
+            }
+        } else {
+            let (facts, causal, mode) = self.dual_pool_fused(query, task_tag, scope, limit);
+            // Direct store hits: every result is a literal/semantic seed.
+            let mut explains = HashMap::new();
+            for (_, f) in &facts {
+                explains.insert(format!("fact:{}", f.id), "[seed]".to_string());
+                crate::observability::metrics().record_recall_result("facts", "seed");
+            }
+            for (_, e) in &causal {
+                explains.insert(format!("causal:{}", e.edge_id), "[seed]".to_string());
+                crate::observability::metrics().record_recall_result("causal", "seed");
+            }
+            let n = facts.len() + causal.len();
+            RankedHits {
+                facts,
+                causal,
+                mode,
+                explains,
+                seeds: Vec::new(),
+                activated_nodes: 0,
+                hop_counts: vec![n],
+                max_hop: 0,
+            }
+        };
+        self.write_recall_audit(
+            query,
+            task_tag,
+            out.mode,
+            &out.seeds,
+            out.activated_nodes,
+            out.max_hop,
+            &out.explains,
+            out.facts.len() + out.causal.len(),
+            t0.elapsed().as_secs_f64() * 1000.0,
+        );
+        out
+    }
+
+    /// Best-effort recall audit (v13 `recall_audit` table): one row per
+    /// recall with seeds, hop summary and per-result explain tags. A write
+    /// failure increments a metrics counter and logs a warning — retrieval
+    /// is NEVER affected.
+    #[allow(clippy::too_many_arguments)]
+    fn write_recall_audit(
+        &self,
+        query: &str,
+        task_tag: Option<&str>,
+        mode: &str,
+        seeds: &[(String, &'static str)],
+        activated_nodes: usize,
+        max_hop: u8,
+        explains: &HashMap<String, String>,
+        result_count: usize,
+        latency_ms: f64,
+    ) {
+        let seeds_json = serde_json::to_string(
+            &seeds
+                .iter()
+                .map(|(id, s)| serde_json::json!({ "id": id, "source": s }))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_string());
+        let mut result_keys: Vec<String> = explains.keys().cloned().collect();
+        result_keys.sort();
+        let results_json = serde_json::to_string(
+            &result_keys
+                .iter()
+                .map(|k| serde_json::json!({ "key": k, "explain": explains[k] }))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_string());
+        let row = crate::store::RecallAuditRow {
+            query,
+            task_tag,
+            server: self.server_label(),
+            mode,
+            seeds_json: &seeds_json,
+            activated_nodes,
+            max_hop,
+            results_json: &results_json,
+            latency_ms,
+            result_count,
+        };
+        if let Err(e) = self.store.insert_recall_audit(&row) {
+            crate::observability::metrics().record_audit_error();
+            tracing::warn!("recall audit write failed (recall unaffected): {e}");
+        }
+    }
+
+    /// The dual-pool RRF fallback: per-layer retrieval (semantic → BM25
+    /// fallthrough per layer), A2 hop expansion, RRF fusion, fused
+    /// top-`limit` as ranked pairs — facts and causal entries each carry
+    /// their fused rank.
+    fn dual_pool_fused(
+        &self,
+        query: &str,
+        task_tag: Option<&str>,
+        scope: Option<&str>,
+        limit: usize,
+    ) -> DualPoolHits {
         // Pull more than needed per layer so the fusion has real candidates.
         let per_layer = limit.saturating_mul(2).max(10);
 
@@ -512,15 +956,6 @@ impl Memory {
         // semantic result (e.g. records stored without embeddings) degrades
         // that layer to BM25 instead of silently missing hits.
         let query_vec = block_on(crate::embed::embed_shared(query)).and_then(|r| r.ok());
-
-        // D4: query routing — when the intent is clear, prefer the dominant
-        // layer in the DISPLAY (retrieval still fuses, so a wrong guess never
-        // hides the other layer's hits; an empty dominant layer falls back to
-        // showing everything).
-        let intent = crate::query_router::classify_query(query);
-        let dominant_is_causal = matches!(intent, crate::query_router::QueryIntent::Causal)
-            || matches!(intent, crate::query_router::QueryIntent::Chain);
-        let dominant_is_fact = matches!(intent, crate::query_router::QueryIntent::Fact);
 
         let mut used_semantic = false;
         let facts: Vec<AgentFact> = match &query_vec {
@@ -568,9 +1003,7 @@ impl Memory {
         let mode = if used_semantic { "semantic" } else { "bm25" };
 
         if facts.is_empty() && causal.is_empty() {
-            return format!(
-                "[unified/{mode}] 📭 No memories found matching your query in any layer."
-            );
+            return (Vec::new(), Vec::new(), mode);
         }
 
         // A2: hop expansion from the causal seeds — 1-hop adjacency + 2-hop
@@ -587,8 +1020,7 @@ impl Memory {
             .unwrap_or_default();
         let mut hop_keys: Vec<String> = Vec::new();
         for e in &hop {
-            if let std::collections::hash_map::Entry::Vacant(entry) =
-                causal_by_id.entry(e.edge_id)
+            if let std::collections::hash_map::Entry::Vacant(entry) = causal_by_id.entry(e.edge_id)
             {
                 entry.insert(e.clone());
                 hop_keys.push(format!("causal:{}", e.edge_id));
@@ -610,71 +1042,23 @@ impl Memory {
             .map(|(i, (k, _))| (k.as_str(), i + 1))
             .collect();
 
-        // Keep only items inside the fused top-`limit`, then group by layer
-        // for display (each item annotated with its fused rank).
+        // Keep only items inside the fused top-`limit`, as ranked pairs.
         let keep = |key: &str| rank_of.get(key).is_some_and(|r| *r <= limit);
-        let facts_kept: Vec<&AgentFact> = facts
-            .iter()
+        let facts_kept: Vec<(usize, AgentFact)> = facts
+            .into_iter()
             .filter(|f| keep(&format!("fact:{}", f.id)))
+            .map(|f| (rank_of[format!("fact:{}", f.id).as_str()], f))
             .collect();
-        // Materialize from the merged causal pool (primary + hop neighbors),
-        // displayed in fused-rank order.
-        let mut causal_kept: Vec<&CausalEntry> = causal_by_id
-            .iter()
-            .filter(|(id, _)| keep(&format!("causal:{id}")))
-            .map(|(_, e)| e)
+        // Materialize from the merged causal pool (primary + hop
+        // neighbors), in fused-rank order.
+        let mut causal_kept: Vec<(usize, CausalEntry)> = causal_by_id
+            .into_values()
+            .filter(|e| keep(&format!("causal:{}", e.edge_id)))
+            .map(|e| (rank_of[format!("causal:{}", e.edge_id).as_str()], e))
             .collect();
-        causal_kept.sort_by_key(|e| rank_of[format!("causal:{}", e.edge_id).as_str()]);
+        causal_kept.sort_by_key(|(r, _)| *r);
 
-        // D4: route the display to the dominant layer when the classifier is
-        // confident AND that layer actually has hits (otherwise fall back to
-        // the full fusion view — never hide evidence).
-        let route_causal = dominant_is_causal && !causal_kept.is_empty();
-        let route_fact = dominant_is_fact && !facts_kept.is_empty();
-        let facts_kept: Vec<&AgentFact> = if route_causal {
-            Vec::new()
-        } else {
-            facts_kept
-        };
-        let causal_kept: Vec<&CausalEntry> = if route_fact {
-            Vec::new()
-        } else {
-            causal_kept
-        };
-
-        let layers = usize::from(!facts_kept.is_empty()) + usize::from(!causal_kept.is_empty());
-        let total = facts_kept.len() + causal_kept.len();
-        let mut out =
-            format!("[unified/{mode}] Found {total} memories across {layers} layer(s):\n\n");
-        if !facts_kept.is_empty() {
-            out.push_str(&format!("📊 Facts ({}):\n", facts_kept.len()));
-            for fact in &facts_kept {
-                let rank = rank_of[format!("fact:{}", fact.id).as_str()];
-                out.push_str(&format!(
-                    "  #{rank} [{}] {} = \"{}\" (confidence: {:.0}%)\n",
-                    fact.scope,
-                    fact.key,
-                    truncate_chars(&fact.value, 60),
-                    fact.confidence * 100.0,
-                ));
-            }
-            out.push('\n');
-        }
-        if !causal_kept.is_empty() {
-            out.push_str(&format!("🔗 Causal lessons ({}):\n", causal_kept.len()));
-            for entry in &causal_kept {
-                let rank = rank_of[format!("causal:{}", entry.edge_id).as_str()];
-                out.push_str(&format!(
-                    "  #{rank} [{}] \"{}\" →({})→ \"{}\" (confidence: {:.0}%)\n",
-                    entry.task_tag.as_deref().unwrap_or("untagged"),
-                    truncate_chars(&entry.decision_text, 50),
-                    entry.relation,
-                    truncate_chars(&entry.outcome_text, 50),
-                    entry.confidence * 100.0,
-                ));
-            }
-        }
-        out
+        (facts_kept, causal_kept, mode)
     }
 
     /// Step A (multi-session retrieval design, docs/design/): multi-pass
@@ -706,6 +1090,10 @@ impl Memory {
             Ok(e) => e,
             Err(err) => return format!("❌ Multi-pass retrieval failed: {err}"),
         };
+        // Distill episodes are BM25-favored paraphrases that crowd original
+        // turns out of top-k (retrieval-scoring.md §4): cap them at a third
+        // of the budget so primary evidence keeps its slots.
+        let entries = crate::retrieval::apply_episode_quota(entries, per_layer / 3);
         if entries.is_empty() {
             return "[multi-pass] 📭 No memories found matching your query.".to_string();
         }
@@ -730,16 +1118,24 @@ impl Memory {
         }
         // Aggregation shapes: append full session context (chunks not already
         // covered by a retrieved edge) so a complete evidence set is visible.
+        // Density-weighted top-N whitelist (the LME dilution cut, +3.8pp /
+        // -40% tokens measured on multi-session 133q): only the highest-
+        // value sessions expand at all, budget split proportionally by
+        // hit_count × query-token overlap. Top-2 default from the measured
+        // sweet spot; 0 disables (all touched sessions, proportional).
         if plan.aggregation {
             let ids: Vec<String> = entries
                 .iter()
                 .flat_map(|e| [e.decision_id.clone(), e.outcome_id.clone()])
                 .collect();
-            if let Ok(chunks) =
-                crate::retrieval::expand_session_chunks(&self.store, &ids, 40)
-            {
-                let covered: std::collections::HashSet<String> =
-                    ids.into_iter().collect();
+            if let Ok(chunks) = crate::retrieval::expand_session_chunks_weighted(
+                &self.store,
+                &ids,
+                query,
+                MULTI_PASS_SESSION_BUDGET,
+                multi_pass_top_sessions(),
+            ) {
+                let covered: std::collections::HashSet<String> = ids.into_iter().collect();
                 let extra: Vec<&(String, String)> = chunks
                     .iter()
                     .filter(|(id, _)| !covered.contains(id))
@@ -765,7 +1161,9 @@ impl Memory {
         // which decisions could have caused it. Activation spreads along
         // reverse causal edges, surfacing decisions that keyword search
         // would miss (e.g., a decision phrased differently from the query).
-        if let Some(hippo_result) = self.hippocampus_search(outcome_description, None, true, 5) {
+        if let Some(hippo_result) =
+            self.hippocampus_search(outcome_description, None, true, 5, "l1", 0, false)
+        {
             return hippo_result;
         }
 
@@ -804,14 +1202,14 @@ impl Memory {
         let min_confidence = min_confidence.unwrap_or(0.5);
         let limit = limit.unwrap_or(5);
 
-        let chains = match self.store.trace_cause_chain(
-            outcome_description,
-            max_depth,
-            min_confidence,
-        ) {
-            Ok(c) => c,
-            Err(e) => return format!("❌ Chain trace failed: {e}"),
-        };
+        let chains =
+            match self
+                .store
+                .trace_cause_chain(outcome_description, max_depth, min_confidence)
+            {
+                Ok(c) => c,
+                Err(e) => return format!("❌ Chain trace failed: {e}"),
+            };
 
         if chains.is_empty() {
             return "📭 No multi-hop causal chains found. Try widening max_depth or lowering min_confidence.".to_string();
@@ -894,9 +1292,17 @@ impl Memory {
                     "{} {} lesson(s){} — superseded edges {}.\n\
                      Re-run with apply=true to write, or `causal-memory sleep` folds \
                      this into the next consolidation cycle.",
-                    if apply { "✓ Superseded" } else { "👀 Would supersede" },
+                    if apply {
+                        "✓ Superseded"
+                    } else {
+                        "👀 Would supersede"
+                    },
                     report.superseded_lessons,
-                    if apply { "" } else { " (preview — nothing written)" },
+                    if apply {
+                        ""
+                    } else {
+                        " (preview — nothing written)"
+                    },
                     match config.supersession_action {
                         crate::consolidate::SupersessionAction::Retire => {
                             "exit retrieval (valid_to set)"
@@ -928,13 +1334,92 @@ impl Memory {
 
         match self.store.invalidate_edge(edge_id) {
             Ok(true) => {
-                let reason = reason.map(|r| format!(" (reason: {r})")).unwrap_or_default();
+                // Phase C: the falsified lesson stops spreading immediately
+                // (O(deg) flip) instead of at the next lazy rebuild.
+                if let Ok(mut guard) = self.graph.lock() {
+                    if let Some(graph) = guard.as_mut() {
+                        graph.invalidate_edges_between(&edge.decision_id, &edge.outcome_id);
+                    }
+                }
+                let reason = reason
+                    .map(|r| format!(" (reason: {r})"))
+                    .unwrap_or_default();
                 format!(
                     "✅ Invalidated edge #{}: \"{}\" →({})→ \"{}\"{reason}. It will no longer appear in search/trace results, but is kept for audit.",
                     edge_id, edge.decision_text, edge.relation, edge.outcome_text,
                 )
             }
             Ok(false) => format!("❌ Edge #{edge_id} could not be invalidated."),
+            Err(e) => format!("❌ Invalidate failed: {e}"),
+        }
+    }
+
+    /// `invalidate_pattern` — soft-invalidate a mined cross-task pattern
+    /// (meta-causal edge, the id shown as `#N` in `search_patterns`).
+    /// Meta edges are mine-able during sleep consolidation; this is the
+    /// revoking half (roadmap). Idempotent.
+    pub fn invalidate_pattern(&self, edge_id: i64, reason: Option<&str>) -> String {
+        use rusqlite::OptionalExtension;
+        struct MetaRow {
+            from_id: String,
+            to_id: String,
+            relation: String,
+            from_text: String,
+            to_text: String,
+            valid_to: Option<i64>,
+        }
+        let meta = self.store.with_conn(|c| {
+            Ok(c.query_row(
+                "SELECT m.from_id, m.to_id, m.relation, cf.text, ct.text, m.valid_to
+                     FROM meta_causal_edges m
+                     JOIN chunks cf ON cf.id = m.from_id
+                     JOIN chunks ct ON ct.id = m.to_id
+                     WHERE m.id = ?1",
+                rusqlite::params![edge_id],
+                |r| {
+                    Ok(MetaRow {
+                        from_id: r.get(0)?,
+                        to_id: r.get(1)?,
+                        relation: r.get(2)?,
+                        from_text: r.get(3)?,
+                        to_text: r.get(4)?,
+                        valid_to: r.get(5)?,
+                    })
+                },
+            )
+            .optional()?)
+        });
+        let meta = match meta {
+            Ok(Some(m)) => m,
+            Ok(None) => return format!("❌ Pattern edge #{edge_id} not found."),
+            Err(e) => return format!("❌ Lookup failed: {e}"),
+        };
+        if meta.valid_to.is_some() {
+            return format!(
+                "❌ Pattern edge #{} was already invalidated: \"{}\" --[{}]--> \"{}\"",
+                edge_id, meta.from_text, meta.relation, meta.to_text,
+            );
+        }
+
+        match self.store.invalidate_meta_edge(edge_id) {
+            Ok(true) => {
+                // The revoked pattern stops spreading immediately (O(deg)
+                // flip) instead of at the next lazy rebuild — same
+                // contract as invalidate_decision.
+                if let Ok(mut guard) = self.graph.lock() {
+                    if let Some(graph) = guard.as_mut() {
+                        graph.invalidate_edges_between(&meta.from_id, &meta.to_id);
+                    }
+                }
+                let reason = reason
+                    .map(|r| format!(" (reason: {r})"))
+                    .unwrap_or_default();
+                format!(
+                    "✅ Invalidated pattern edge #{}: \"{}\" --[{}]--> \"{}\"{reason}. It will no longer appear in search_patterns or spreading activation, but is kept for audit.",
+                    edge_id, meta.from_text, meta.relation, meta.to_text,
+                )
+            }
+            Ok(false) => format!("❌ Pattern edge #{edge_id} could not be invalidated."),
             Err(e) => format!("❌ Invalidate failed: {e}"),
         }
     }
@@ -969,10 +1454,11 @@ impl Memory {
             };
             let pattern = edge.pattern.as_deref().unwrap_or("");
             out.push_str(&format!(
-                "{}. \"{}\" --[{label}]--> \"{}\"\n   {pattern}\n   confidence: {:.0}%\n",
+                "{}. \"{}\" --[{label}]--> \"{}\" (#{})\n   {pattern}\n   confidence: {:.0}%\n",
                 i + 1,
                 edge.from_text,
                 edge.to_text,
+                edge.id,
                 edge.confidence * 100.0,
             ));
             // v5 stratified-replication verdicts (NULL = untested → no note).
@@ -1056,11 +1542,10 @@ impl Memory {
                             Err(e) => return format!("❌ Intervention query failed: {e}"),
                         }
                     }
-                    None => match self.store.trace_effect_chain(
-                        action,
-                        max_depth,
-                        min_confidence,
-                    ) {
+                    None => match self
+                        .store
+                        .trace_effect_chain(action, max_depth, min_confidence)
+                    {
                         Ok(c) => c,
                         Err(e) => return format!("❌ Intervention query failed: {e}"),
                     },
@@ -1101,7 +1586,9 @@ impl Memory {
                 )
             })
             .collect();
-        let reference = task_tag.map(str::to_string).or_else(|| modal_stratum(&pooled));
+        let reference = task_tag
+            .map(str::to_string)
+            .or_else(|| modal_stratum(&pooled));
         let summary = stratified_summary(&pooled, reference.as_deref());
         let display: Vec<&Vec<ChainHop>> = match task_tag {
             Some(t) => chains
@@ -1198,6 +1685,76 @@ impl Memory {
         self.counterfactual_inner(decision, alternative, task_tag, limit.unwrap_or(5))
     }
 
+    /// `prediction_report` (v14) — the prediction-ledger calibration
+    /// dashboard: resolved/correct/ambiguous/pending overall, per method and
+    /// per task_tag, plus the newest pending predictions. This is how the
+    /// system's counterfactual claims stay falsifiable instead of rhetorical.
+    pub fn prediction_report(&self) -> String {
+        let Ok(stats) = self.store.prediction_stats() else {
+            return "❌ Prediction report failed".to_string();
+        };
+        if stats.resolved == 0 && stats.pending == 0 {
+            return "📐 Prediction ledger is empty — counterfactual_query logs a \
+                    prediction every time it issues a verdict; predictions resolve \
+                    automatically when either option is later recorded."
+                .to_string();
+        }
+        let judged = stats.resolved - stats.ambiguous;
+        let mut out = format!(
+            "📐 Prediction ledger: {} resolved / {} pending\n",
+            stats.resolved, stats.pending
+        );
+        if stats.resolved > 0 {
+            out.push_str(&format!(
+                "   accuracy {}/{} ({:.0}%{}), {} ambiguous excluded\n",
+                stats.correct,
+                judged,
+                if judged > 0 {
+                    stats.correct as f64 / judged as f64 * 100.0
+                } else {
+                    0.0
+                },
+                if judged > 0 {
+                    ""
+                } else {
+                    ", no judged predictions yet"
+                },
+                stats.ambiguous
+            ));
+        }
+        let fmt_entry = |label: &str, e: &crate::store::PredictionStatsEntry| {
+            let denom = e.resolved - e.ambiguous;
+            format!(
+                "   {label}: {}/{} correct ({} ambiguous)\n",
+                e.correct, denom, e.ambiguous
+            )
+        };
+        for (method, e) in &stats.by_method {
+            out.push_str(&fmt_entry(&format!("method={method}"), e));
+        }
+        for (tag, e) in &stats.by_task_tag {
+            out.push_str(&fmt_entry(&format!("task_tag={tag}"), e));
+        }
+        if let Ok(pending) = self.store.pending_predictions(5) {
+            for p in pending {
+                let tag = if p.task_tag.is_empty() {
+                    "(none)"
+                } else {
+                    &p.task_tag
+                };
+                out.push_str(&format!(
+                    "   pending #{} \"{}\" vs \"{}\" ({}, {})\n",
+                    p.id,
+                    truncate_chars(&p.option_a, 40),
+                    truncate_chars(&p.option_b, 40),
+                    tag,
+                    p.method
+                ));
+            }
+        }
+        out
+    }
+
     /// Counterfactual comparison with the embedder injected (None = keyword
     /// path, identical to unconfigured — keeps tests hermetic).
     pub fn counterfactual_inner(
@@ -1208,19 +1765,34 @@ impl Memory {
         limit: usize,
     ) -> String {
         // C2: run both sides' embedding + retrieval concurrently (the two
-        // side_evidence calls used to serialize two HTTP round-trips).
+        // retrieval calls used to serialize two HTTP round-trips).
         let (a, b) = block_on(async {
-            let fa = self.side_evidence(decision, task_tag, limit);
-            let fb = self.side_evidence(alternative, task_tag, limit);
+            let fa = self.side_entries(decision, task_tag, limit);
+            let fb = self.side_entries(alternative, task_tag, limit);
             tokio::join!(fa, fb)
         });
-        let (dist_a, reps_a, tag_a) = a;
-        let (dist_b, reps_b, tag_b) = b;
+        let (entries_a, tag_a) = a;
+        let (entries_b, tag_b) = b;
         let tag = if tag_a == "semantic" && tag_b == "semantic" {
             "[semantic]"
         } else {
             "[bm25]"
         };
+        // Competitive separation before aggregation (v14.1): shared
+        // vocabulary must not pool both sides into both distributions.
+        let (entries_a, entries_b) = Self::separate_sides(&entries_a, &entries_b);
+        let (dist_a, reps_a) = Self::dist_and_reps(&entries_a);
+        let (dist_b, reps_b) = Self::dist_and_reps(&entries_b);
+        let ids_a: Vec<i64> = entries_a.iter().map(|e| e.edge_id).collect();
+        let ids_b: Vec<i64> = entries_b.iter().map(|e| e.edge_id).collect();
+
+        // v14 fork section: same-context siblings of any retrieved edge are
+        // natural experiments — evidence about ONE world state rather than a
+        // cross-context aggregate. Best-effort: lookup failures just skip
+        // the section (output stays distribution-only).
+        let mut ids = ids_a.clone();
+        ids.extend_from_slice(&ids_b);
+        let forks = self.store.fork_siblings_for_edges(&ids).unwrap_or_default();
 
         let mut out = String::from(
             "⚠️ contrastive/empirical counterfactual over recorded alternatives — not a Pearl Rung-3 SCM counterfactual\n",
@@ -1243,25 +1815,119 @@ impl Memory {
                 out.push_str(&format!("   → {r}\n"));
             }
         }
+        if !forks.is_empty() {
+            out.push_str(&format!(
+                "\n🔀 Same-context branches (natural experiments, {} pair(s)):\n",
+                forks.len()
+            ));
+            for f in &forks {
+                // Which query side each endpoint matched (if any): label
+                // only when the endpoint was retrieved BY that side.
+                let side = |id: i64, decision_ids: &[i64], label: &'static str| {
+                    if decision_ids.contains(&id) {
+                        label
+                    } else {
+                        ""
+                    }
+                };
+                let sa = side(f.edge_id_a, &ids_a, "A");
+                let sb = side(f.edge_id_b, &ids_b, "B");
+                fn pol(p: &Option<String>) -> &str {
+                    p.as_deref().unwrap_or("?")
+                }
+                out.push_str(&format!(
+                    "   [{}] {}{} →({})→ \"{}\" [{}]  vs  {}{} →({})→ \"{}\" [{}]\n",
+                    truncate_chars(&f.fingerprint, 48),
+                    sa,
+                    truncate_chars(&f.a_decision, 40),
+                    f.a_relation,
+                    truncate_chars(&f.a_outcome, 40),
+                    pol(&f.a_polarity),
+                    sb,
+                    truncate_chars(&f.b_decision, 40),
+                    f.b_relation,
+                    truncate_chars(&f.b_outcome, 40),
+                    pol(&f.b_polarity),
+                ));
+            }
+        }
+        // Conclusion: paired (same-context) evidence outranks the pooled
+        // distributions when both exist — a fork pair is evidence about one
+        // world; distributions mix many.
+        let paired = paired_verdict(&forks, &ids_a, &ids_b);
         out.push_str(&format!(
             "\nConclusion: {}\n",
-            counterfactual_verdict(&dist_a, &dist_b)
+            match &paired {
+                Some(p) => format!("{p} (outranks the pooled distribution)"),
+                None => counterfactual_verdict(&dist_a, &dist_b),
+            }
         ));
+        // v14 prediction ledger: every verdict becomes a falsifiable
+        // prediction, auto-resolved when either option is later recorded.
+        // Verdict codes come from the shared VERDICT_* constants — the
+        // formatters and this matcher read the same strings by construction
+        // (the "favor"/"favors" mismatch bug this replaces was exactly a
+        // hand-copied-contract failure).
+        let verdict_code = match &paired {
+            Some(p) if p.contains(VERDICT_FAVORS_A) => "prefer_a",
+            Some(p) if p.contains(VERDICT_FAVORS_B) => "prefer_b",
+            Some(_) => "no_difference", // tied contrasting pairs
+            None => match counterfactual_verdict(&dist_a, &dist_b) {
+                v if v.contains(VERDICT_FAVORS_A) => "prefer_a",
+                v if v.contains(VERDICT_FAVORS_B) => "prefer_b",
+                _ if dist_a.total() > 0 && dist_b.total() > 0 => "no_difference",
+                _ => "",
+            },
+        };
+        if !verdict_code.is_empty() {
+            let strength = ((dist_a.score() - dist_b.score()).abs() / 4.0).clamp(0.1, 1.0);
+            if let Ok(id) = self.store.log_prediction(
+                decision,
+                alternative,
+                task_tag,
+                verdict_code,
+                "contrastive",
+                strength,
+                None,
+            ) {
+                out.push_str(&format!(
+                    "📐 Prediction #{id} logged — resolved automatically when either option is recorded.\n"
+                ));
+                // Phase-4 interface (executable replay routing): closed-world
+                // tags route to a replay plan instead of only an estimate.
+                // The engine (stepback-style trace + dirty-set rerun) is future
+                // work; this defines the routing + the ledger feedback path so
+                // method='executable' predictions can exist from day one.
+                if let Some(tag) = task_tag {
+                    if CLOSED_WORLD_TAGS.contains(&tag.to_lowercase().as_str()) {
+                        out.push_str(&format!(
+                            "🧪 Closed-world decision (task_tag={tag}): instead of estimating — replay it. \
+                             Apply the alternative in a sandbox, execute, then record the outcome with \
+                             record_decision(…, context=<same as the original edge>). The prediction \
+                             resolves automatically; over time prediction_report separates replayed facts \
+                             from estimates.\n"
+                        ));
+                    }
+                }
+            }
+        }
         out
     }
 
     /// One side of the counterfactual: retrieve similar past decision edges
     /// (semantic with BM25 fallback, same pattern as search_causal) and
     /// aggregate their outcome distribution + representative outcomes.
-    async fn side_evidence(
+    /// v14.1: returns the raw ranked entries — competitive separation (an
+    /// edge retrieved by BOTH queries stays only on the side that ranks it
+    /// higher) runs in counterfactual_inner AFTER both retrievals land,
+    /// then distribution/reps are computed from the separated pools.
+    async fn side_entries(
         &self,
         query: &str,
         task_tag: Option<&str>,
         limit: usize,
-    ) -> (CfDist, Vec<String>, &'static str) {
-        let semantic = crate::embed::embed_shared(query)
-            .await
-            .and_then(|r| {
+    ) -> (Vec<crate::store::CausalEntry>, &'static str) {
+        let semantic = crate::embed::embed_shared(query).await.and_then(|r| {
             let vec = r.ok()?;
             let hits = self
                 .store
@@ -1275,7 +1941,7 @@ impl Memory {
                 .collect();
             (!entries.is_empty()).then_some(entries)
         });
-        let (entries, path) = match semantic {
+        match semantic {
             Some(e) => (e, "semantic"),
             None => {
                 let entries = self
@@ -1284,10 +1950,14 @@ impl Memory {
                     .unwrap_or_default();
                 (entries, "bm25")
             }
-        };
+        }
+    }
 
+    /// Distribution + representative outcomes over (already separated)
+    /// side entries.
+    fn dist_and_reps(entries: &[crate::store::CausalEntry]) -> (CfDist, Vec<String>) {
         let mut dist = CfDist::default();
-        for e in &entries {
+        for e in entries {
             dist.add(polarity_bucket(
                 e.outcome_polarity.as_deref(),
                 &e.outcome_text,
@@ -1305,7 +1975,41 @@ impl Memory {
                 )
             })
             .collect();
-        (dist, reps, path)
+        (dist, reps)
+    }
+
+    /// Competitive separation (v14.1, the cross-side-contamination fix):
+    /// retrieval matches decision AND outcome text, so two options that
+    /// share vocabulary pull each other's episodes into both pools,
+    /// flattening the contrast toward a tie. An edge retrieved by BOTH
+    /// queries stays only on the side that ranks it earlier (both paths
+    /// return rank-ordered entries; earlier = stronger match) and is
+    /// dropped from the other. Returns the separated pools.
+    fn separate_sides(
+        a: &[crate::store::CausalEntry],
+        b: &[crate::store::CausalEntry],
+    ) -> (
+        Vec<crate::store::CausalEntry>,
+        Vec<crate::store::CausalEntry>,
+    ) {
+        let rank_of = |id: i64, entries: &[crate::store::CausalEntry]| {
+            entries.iter().position(|e| e.edge_id == id)
+        };
+        let mut a_kept = Vec::with_capacity(a.len());
+        for (ia, e) in a.iter().enumerate() {
+            match rank_of(e.edge_id, b) {
+                Some(ib) if ib < ia => {} // B ranks it stronger → B keeps it
+                _ => a_kept.push(e.clone()),
+            }
+        }
+        let mut b_kept = Vec::with_capacity(b.len());
+        for (ib, e) in b.iter().enumerate() {
+            match rank_of(e.edge_id, a) {
+                Some(ia) if ia <= ib => {} // A ranks it stronger (or tie → A) → A keeps it
+                _ => b_kept.push(e.clone()),
+            }
+        }
+        (a_kept, b_kept)
     }
 
     /// `reconstruct_lesson` — reconstructive retrieval: Markov-blanket
@@ -1443,4 +2147,131 @@ impl Memory {
             Err(_) => String::new(),
         }
     }
+}
+
+// ─── Unified search presentation (shared by both retrieval paths) ────
+
+/// Layer-namespaced key + content of a fact hit.
+fn fact_hit(f: &AgentFact) -> MemoryHit {
+    MemoryHit {
+        key: format!("fact:{}", f.id),
+        content: format!("[{}] {} = \"{}\"", f.scope, f.key, f.value),
+        score: 0.0, // filled by hits_from_ranked
+        rank: 0,
+        created_at: Some(f.updated_at),
+    }
+}
+
+/// Layer-namespaced key + content of a causal hit.
+fn causal_hit(e: &CausalEntry) -> MemoryHit {
+    MemoryHit {
+        key: format!("causal:{}", e.edge_id),
+        content: format!(
+            "\"{}\" →({})→ \"{}\"",
+            e.decision_text, e.relation, e.outcome_text
+        ),
+        score: 0.0, // filled by hits_from_ranked
+        rank: 0,
+        created_at: Some(e.event_time),
+    }
+}
+
+/// Materialize ranked pairs as `MemoryHit`s, globally rank-sorted (the
+/// same order the fused/spread ranking produced). Score uses the RRF
+/// formula on BOTH paths so the field keeps one semantics.
+fn hits_from_ranked(
+    facts: &[(usize, AgentFact)],
+    causal: &[(usize, CausalEntry)],
+) -> Vec<MemoryHit> {
+    let mut hits: Vec<MemoryHit> = facts
+        .iter()
+        .map(|(rank, f)| {
+            let mut h = fact_hit(f);
+            h.rank = *rank;
+            h.score = 1.0 / (super::RRF_K + *rank as f64);
+            h
+        })
+        .chain(causal.iter().map(|(rank, e)| {
+            let mut h = causal_hit(e);
+            h.rank = *rank;
+            h.score = 1.0 / (super::RRF_K + *rank as f64);
+            h
+        }))
+        .collect();
+    hits.sort_by_key(|h| h.rank);
+    hits
+}
+
+/// The shared display tail of `search_memory`: D4 intent routing (prefer
+/// the dominant layer in the DISPLAY when the classifier is confident and
+/// that layer has hits — never hide evidence), then the grouped
+/// fact/causal rendering with per-item ranks. `detail_level` picks the
+/// per-item verbosity (l2 = the historical format, byte-identical);
+/// `max_tokens` > 0 truncates both sections against one shared budget.
+/// `explain` (None by default → byte-identical output) appends a
+/// provenance tag per hit (Flip-path marking).
+#[allow(clippy::too_many_arguments)]
+fn render_unified(
+    query: &str,
+    facts: &[(usize, AgentFact)],
+    causal: &[(usize, CausalEntry)],
+    mode: &str,
+    detail_level: &str,
+    max_tokens: usize,
+    explain: Option<&HashMap<String, String>>,
+) -> String {
+    if facts.is_empty() && causal.is_empty() {
+        return format!("[unified/{mode}] 📭 No memories found matching your query in any layer.");
+    }
+    let intent = crate::query_router::classify_query(query);
+    let dominant_is_causal = matches!(
+        intent,
+        crate::query_router::QueryIntent::Causal | crate::query_router::QueryIntent::Chain
+    );
+    let dominant_is_fact = matches!(intent, crate::query_router::QueryIntent::Fact);
+    let route_causal = dominant_is_causal && !causal.is_empty();
+    let route_fact = dominant_is_fact && !facts.is_empty();
+    let facts: &[(usize, AgentFact)] = if route_causal { &[] } else { facts };
+    let causal: &[(usize, CausalEntry)] = if route_fact { &[] } else { causal };
+
+    let layers = usize::from(!facts.is_empty()) + usize::from(!causal.is_empty());
+    let total = facts.len() + causal.len();
+    let mut out = format!("[unified/{mode}] Found {total} memories across {layers} layer(s):\n\n");
+    let mut budget = TokenBudget::new(max_tokens);
+    let mut truncated = 0usize;
+    if !facts.is_empty() {
+        out.push_str(&format!("📊 Facts ({}):\n", facts.len()));
+        for (rank, fact) in facts {
+            let (line, cost) = format_fact_layered(fact, *rank, detail_level);
+            if !budget.try_spend(cost) {
+                truncated += 1;
+                continue;
+            }
+            out.push_str(&line);
+            if let Some(tag) = explain.and_then(|m| m.get(&format!("fact:{}", fact.id))) {
+                out.push_str(&format!("    ↳ {tag}\n"));
+            }
+        }
+        out.push('\n');
+    }
+    if !causal.is_empty() {
+        out.push_str(&format!("🔗 Causal lessons ({}):\n", causal.len()));
+        for (rank, entry) in causal {
+            let (line, cost) = format_lesson_layered(entry, *rank, detail_level);
+            if !budget.try_spend(cost) {
+                truncated += 1;
+                continue;
+            }
+            out.push_str(&line);
+            if let Some(tag) = explain.and_then(|m| m.get(&format!("causal:{}", entry.edge_id))) {
+                out.push_str(&format!("    ↳ {tag}\n"));
+            }
+        }
+    }
+    if truncated > 0 {
+        out.push_str(&format!(
+            "… {truncated} more result(s) truncated (token budget)\n"
+        ));
+    }
+    out
 }

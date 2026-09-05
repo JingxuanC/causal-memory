@@ -1,8 +1,8 @@
 //! Misc subcommands (mcp / extract / reasoning / link).
 
+use crate::get_db_path;
 use crate::server::CausalMemoryServer;
 use causal_memory::store::CausalStore;
-use crate::get_db_path;
 
 pub(crate) fn run_mcp_server() -> anyhow::Result<()> {
     let db_path = get_db_path();
@@ -37,19 +37,26 @@ pub(crate) fn run_mcp_server() -> anyhow::Result<()> {
 /// confounder (neighbor Jaccard), corroboration (path redundancy),
 /// placebo (activation specificity).
 pub(crate) fn run_refute(args: &[String]) -> anyhow::Result<()> {
+    use crate::get_db_path;
     use causal_memory::hippocampus::CausalGraph;
     use causal_memory::refute::EdgeRefuter;
     use causal_memory::store::CausalStore;
-    use crate::get_db_path;
 
     let db_path = get_db_path();
     let store = CausalStore::open(&db_path)?;
     let edge_count = store.count_edges().unwrap_or(0);
-    eprintln!("Loading graph from {} ({edge_count} edges)...", db_path.display());
+    eprintln!(
+        "Loading graph from {} ({edge_count} edges)...",
+        db_path.display()
+    );
 
     let graph = CausalGraph::from_store(&store)?;
-    eprintln!("Graph: {} nodes, {} edges ({} valid)",
-        graph.num_nodes(), graph.num_edges(), graph.num_valid_edges());
+    eprintln!(
+        "Graph: {} nodes, {} edges ({} valid)",
+        graph.num_nodes(),
+        graph.num_edges(),
+        graph.num_valid_edges()
+    );
 
     let refuter = EdgeRefuter::new(&graph);
     let report = refuter.refute_all();
@@ -61,7 +68,11 @@ pub(crate) fn run_refute(args: &[String]) -> anyhow::Result<()> {
     println!("\n  Grade distribution:");
     for grade in ['A', 'B', 'C', 'D', 'F'] {
         let count = report.distribution.get(&grade).copied().unwrap_or(0);
-        let pct = if report.graded > 0 { 100.0 * count as f64 / report.graded as f64 } else { 0.0 };
+        let pct = if report.graded > 0 {
+            100.0 * count as f64 / report.graded as f64
+        } else {
+            0.0
+        };
         let bar = "█".repeat(count * 40 / report.graded.max(1));
         println!("    {}: {:>4} ({:>5.1}%) {}", grade, count, pct, bar);
     }
@@ -69,19 +80,26 @@ pub(crate) fn run_refute(args: &[String]) -> anyhow::Result<()> {
     // Sample edges by grade
     println!("\n  Sample edges by grade:");
     for grade in ['A', 'B', 'D', 'F'] {
-        let sample: Vec<_> = report.results.iter()
+        let sample: Vec<_> = report
+            .results
+            .iter()
             .filter(|(_, r)| r.grade == grade)
             .take(3)
             .collect();
-        if sample.is_empty() { continue; }
+        if sample.is_empty() {
+            continue;
+        }
         println!("\n    Grade {}:", grade);
         for (edge_idx, result) in sample {
             let from = graph.edge_source_node(*edge_idx);
             let to = graph.edge_target(*edge_idx);
             let from_text = graph.node_text(from as usize);
             let to_text = graph.node_text(to as usize);
-            println!("      [{}] {} → {}",
-                result.tests.iter()
+            println!(
+                "      [{}] {} → {}",
+                result
+                    .tests
+                    .iter()
                     .map(|t| match t.result {
                         causal_memory::refute::TestResult::Robust => "✓",
                         causal_memory::refute::TestResult::Inconclusive => "?",
@@ -90,7 +108,8 @@ pub(crate) fn run_refute(args: &[String]) -> anyhow::Result<()> {
                     .collect::<Vec<_>>()
                     .join(""),
                 &from_text[..from_text.len().min(40)],
-                &to_text[..to_text.len().min(40)]);
+                &to_text[..to_text.len().min(40)]
+            );
         }
     }
 
@@ -101,8 +120,9 @@ pub(crate) fn run_refute(args: &[String]) -> anyhow::Result<()> {
         store.with_conn(|c| {
             c.execute_batch(
                 "ALTER TABLE causal_edges ADD COLUMN refutation_grade TEXT;
-                 ALTER TABLE causal_edges ADD COLUMN refutation_detail TEXT;"
-            ).ok();
+                 ALTER TABLE causal_edges ADD COLUMN refutation_detail TEXT;",
+            )
+            .ok();
             Ok::<_, anyhow::Error>(())
         })?;
 
@@ -111,7 +131,7 @@ pub(crate) fn run_refute(args: &[String]) -> anyhow::Result<()> {
         // which sorts by event_time. We need to re-query to get the DB row IDs.
         let edge_ids: Vec<i64> = store.with_conn(|c| {
             let mut stmt = c.prepare(
-                "SELECT id FROM causal_edges WHERE valid_to IS NULL ORDER BY event_time ASC"
+                "SELECT id FROM causal_edges WHERE valid_to IS NULL ORDER BY event_time ASC",
             )?;
             let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -174,6 +194,8 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    // Opt-in bearer auth for the observability routes (empty/unset = open).
+    let auth_token = crate::http_auth::token_from_config();
 
     eprintln!("Opening causal memory DB at {}", db_path.display());
     // A3: one shared store for the whole process — every connection works
@@ -193,24 +215,92 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
 
         // Each connection gets a fresh server instance backed by the same store.
         let shared_store = store.clone();
+        // rmcp 默认只放行 loopback Host（localhost/127.0.0.1/::1）防 DNS rebinding。
+        // Docker 容器经 host.docker.internal 访问宿主机时 Host 头不在白名单 → 403。
+        // 这里合并默认白名单 + host.docker.internal + 环境变量追加
+        // （CAUSAL_MEMORY_ALLOWED_HOSTS，逗号分隔，供其他部署形态使用）。
+        let mut allowed_hosts = vec![
+            "localhost".to_string(),
+            "127.0.0.1".to_string(),
+            "::1".to_string(),
+            "host.docker.internal".to_string(),
+        ];
+        if let Ok(extra) = std::env::var("CAUSAL_MEMORY_ALLOWED_HOSTS") {
+            allowed_hosts.extend(
+                extra
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
+            );
+        }
         let config = StreamableHttpServerConfig::default()
             .with_stateful_mode(false)
-            .with_json_response(true);
+            .with_json_response(true)
+            .with_allowed_hosts(allowed_hosts);
         let service = StreamableHttpService::new(
-            move || Ok(CausalMemoryServer::new((*shared_store).clone())),
+            move || {
+                Ok(CausalMemoryServer::new_with_label(
+                    (*shared_store).clone(),
+                    "mcp-http",
+                ))
+            },
             Arc::new(rmcp::transport::streamable_http_server::session::never::NeverSessionManager::default()),
             config,
         );
 
+        // One Memory for the debug endpoints (graph built once, not per
+        // request); MCP connections keep their per-connection instances.
+        let debug_memory = Arc::new(causal_memory::memory::Memory::new_with_label(
+            (*store).clone(),
+            "mcp-http",
+        ));
+
         let app = axum::Router::new()
             .route_service("/mcp", service)
-            .route("/health", axum::routing::get(|| async { "ok" }));
+            .merge(build_obs_router(
+                ObsState { store, debug_memory },
+                auth_token.clone(),
+            ))
+            // Git-sync object store: /agents/<id>/objects|refs (https remote,
+            // memory-git-sync §7 P1). Layout mirrors the file remote 1:1.
+            .merge(crate::server::sync::build_sync_router(
+                crate::server::sync::SyncState {
+                    root: crate::server::sync::sync_root(),
+                    global_token: auth_token.clone(),
+                },
+            ));
 
         let listener = tokio::net::TcpListener::bind(format!("{host}:{port}"))
             .await
             .map_err(|e| anyhow::anyhow!("Failed to bind {host}:{port}: {e}"))?;
         eprintln!("Listening on http://{host}:{port}/mcp");
-        eprintln!("Health check: http://{host}:{port}/health");
+        eprintln!("Health check: http://{host}:{port}/healthz (legacy: /health)");
+        eprintln!("Metrics:      http://{host}:{port}/metrics");
+        eprintln!("Recall debug: http://{host}:{port}/debug/recall?query=... (+ /debug/recalls)");
+        eprintln!(
+            "Git sync:     http://{host}:{port}/agents/<agent_id>/objects|refs (root: {})",
+            crate::server::sync::sync_root().display()
+        );
+        let loopback_host =
+            host == "127.0.0.1" || host == "localhost" || host == "::1" || host == "[::1]";
+        match (&auth_token, loopback_host) {
+            (Some(token), _) => {
+                eprintln!(
+                    "Auth: /metrics and /debug/* require 'Authorization: Bearer <token>' (CAUSAL_MEMORY_HTTP_AUTH_TOKEN)"
+                );
+                if token.len() < 16 {
+                    eprintln!("WARNING: bearer token is shorter than 16 chars — brute-forceable; use a longer one");
+                }
+            }
+            (None, false) => {
+                eprintln!(
+                    "WARNING: /metrics and /debug/* are unauthenticated and the server is bound on {host} — set CAUSAL_MEMORY_HTTP_AUTH_TOKEN or bind --host 127.0.0.1 before exposing this port"
+                );
+            }
+            (None, true) => {
+                eprintln!("NOTE: /metrics and /debug/* are unauthenticated (loopback bind); set CAUSAL_MEMORY_HTTP_AUTH_TOKEN to lock them down");
+            }
+        }
 
         axum::serve(listener, app)
             .await
@@ -219,9 +309,87 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
     })
 }
 
+/// Shared state for the observability endpoints (MCP HTTP mode).
+#[derive(Clone)]
+struct ObsState {
+    store: std::sync::Arc<CausalStore>,
+    debug_memory: std::sync::Arc<causal_memory::memory::Memory>,
+}
+
+/// The observability routes (everything except `/mcp`). Health probes
+/// (`/health`, `/healthz`, `/readyz`) stay open on purpose — kubelet
+/// liveness/readiness probes cannot attach bearer headers and these routes
+/// leak nothing. `/metrics` and `/debug/*` carry the recall corpus behind
+/// optional bearer auth (`CAUSAL_MEMORY_HTTP_AUTH_TOKEN`; unset = open,
+/// the pre-auth behavior). Extracted from `run_http_server` so the router
+/// can be exercised end-to-end in tests without an rmcp service.
+fn build_obs_router(state: ObsState, auth_token: Option<String>) -> axum::Router {
+    let secret_routes = axum::Router::new()
+        .route("/metrics", axum::routing::get(obs_metrics))
+        .route("/debug/recall", axum::routing::get(obs_debug_recall))
+        .route("/debug/recalls", axum::routing::get(obs_debug_recalls));
+    let secret_routes = crate::http_auth::protected(secret_routes, auth_token);
+    // /health kept for backward compatibility.
+    axum::Router::new()
+        .route("/health", axum::routing::get(|| async { "ok" }))
+        .route("/healthz", axum::routing::get(|| async { "ok" }))
+        .route("/readyz", axum::routing::get(obs_readyz))
+        .merge(secret_routes)
+        .with_state(state)
+}
+
+/// Readiness: a light DB probe (count chunks). 503 when the store is down.
+async fn obs_readyz(
+    axum::extract::State(s): axum::extract::State<ObsState>,
+) -> axum::http::StatusCode {
+    match s.store.count_chunks() {
+        Ok(_) => axum::http::StatusCode::OK,
+        Err(_) => axum::http::StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
+/// Prometheus text exposition; store gauges computed at scrape time.
+async fn obs_metrics(axum::extract::State(s): axum::extract::State<ObsState>) -> String {
+    causal_memory::observability::metrics().render_prometheus(Some(&s.store))
+}
+
+/// /debug/recall?query=...&topk=N — run one recall NOW and return the full
+/// trace (seeds, hop summary, per-result provenance) as JSON.
+async fn obs_debug_recall(
+    axum::extract::State(s): axum::extract::State<ObsState>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::Json<serde_json::Value> {
+    let query = params.get("query").cloned().unwrap_or_default();
+    let topk = params
+        .get("topk")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(10)
+        .clamp(1, 50);
+    let mem = s.debug_memory.clone();
+    let trace = tokio::task::spawn_blocking(move || mem.recall_trace(&query, topk))
+        .await
+        .unwrap_or_else(|e| serde_json::json!({ "error": format!("recall task failed: {e}") }));
+    axum::Json(trace)
+}
+
+/// /debug/recalls — newest-first audit rows from the recall_audit table
+/// (persisted; survives restarts).
+async fn obs_debug_recalls(
+    axum::extract::State(s): axum::extract::State<ObsState>,
+) -> axum::Json<serde_json::Value> {
+    let store = (*s.store).clone();
+    let rows = tokio::task::spawn_blocking(move || store.recent_recall_audits(100))
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("audit read task failed: {e}")));
+    match rows {
+        Ok(entries) => axum::Json(serde_json::json!({ "recalls": entries })),
+        Err(e) => axum::Json(serde_json::json!({ "error": format!("{e:#}") })),
+    }
+}
+
 pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
-    use causal_memory::session::{default_source_kind, parser_for, SessionSource};
     use causal_memory::distill::{Distiller, ItemKind};
+    use causal_memory::session::{default_source_kind, parser_for, SessionSource};
 
     let (agent, session_dir) = crate::commands::parse_agent_path(args);
     if session_dir.as_os_str().is_empty() {
@@ -253,8 +421,11 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
         "Extracting memories from: {} (agent={agent:?})",
         session_dir.display()
     );
-    println!("  {} assistant messages, {} tool calls",
-        parsed.assistant_texts.len(), parsed.decisions.len());
+    println!(
+        "  {} assistant messages, {} tool calls",
+        parsed.assistant_texts.len(),
+        parsed.decisions.len()
+    );
 
     // Build conversation turns from assistant reasoning texts
     // (not tool calls — we extract from the agent's THINKING, not its ACTIONS)
@@ -324,9 +495,7 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
                     ItemKind::Lesson => "lesson".into(),
                     ItemKind::Event => "event".into(),
                     ItemKind::Causal => {
-                        let rel = item.causal_relation
-                            .map(|r| r.as_str())
-                            .unwrap_or("caused");
+                        let rel = item.causal_relation.map(|r| r.as_str()).unwrap_or("caused");
                         total_causal += 1;
                         // Write causal edge
                         let now_ts = chrono::Utc::now().timestamp();
@@ -338,8 +507,13 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
                             _ => 0.5,
                         };
                         let _ = store.record_decision_at(
-                            decision, &item.text, rel,
-                            Some("reasoning"), conf, "llm_inferred", now_ts,
+                            decision,
+                            &item.text,
+                            rel,
+                            Some("reasoning"),
+                            conf,
+                            "llm_inferred",
+                            now_ts,
                         );
                         format!("causal({})", rel)
                     }
@@ -347,10 +521,22 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
 
                 if item.kind != ItemKind::Causal {
                     let key = match item.kind {
-                        ItemKind::Fact => { total_facts += 1; "fact" }
-                        ItemKind::Preference => { total_facts += 1; "preference" }
-                        ItemKind::Lesson => { total_facts += 1; "lesson" }
-                        _ => { total_episodes += 1; "event" }
+                        ItemKind::Fact => {
+                            total_facts += 1;
+                            "fact"
+                        }
+                        ItemKind::Preference => {
+                            total_facts += 1;
+                            "preference"
+                        }
+                        ItemKind::Lesson => {
+                            total_facts += 1;
+                            "lesson"
+                        }
+                        _ => {
+                            total_episodes += 1;
+                            "event"
+                        }
                     };
                     let _ = store.record_fact(key, &item.text, "user", "reasoning", 0.8);
                 }
@@ -367,7 +553,10 @@ pub(crate) fn run_extract(args: &[String]) -> anyhow::Result<()> {
     println!("  Facts/preferences:     {}", total_facts);
     println!("  Causal edges:          {}", total_causal);
     println!("  Other episodes:        {}", total_episodes);
-    println!("  Total memories:        {}", total_facts + total_causal + total_episodes);
+    println!(
+        "  Total memories:        {}",
+        total_facts + total_causal + total_episodes
+    );
     println!("\nTotal causal edges in DB: {}", store.count_edges()?);
 
     Ok(())
@@ -496,4 +685,364 @@ pub(crate) fn run_link() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+/// `stats` — store overview (Claude Code `/context` analogue): file size,
+/// per-layer counts, consolidation state, and recency at a glance.
+pub(crate) fn run_stats(args: &[String]) -> anyhow::Result<()> {
+    let mut db: Option<std::path::PathBuf> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--db" => {
+                i += 1;
+                let Some(p) = args.get(i) else {
+                    anyhow::bail!("--db requires a path\nUsage: causal-memory stats [--db <PATH>]")
+                };
+                db = Some(std::path::PathBuf::from(p));
+            }
+            other => {
+                anyhow::bail!("unknown flag: {other}\nUsage: causal-memory stats [--db <PATH>]")
+            }
+        }
+        i += 1;
+    }
+    let db = db.unwrap_or_else(get_db_path);
+    let bytes = std::fs::metadata(&db).map(|m| m.len()).unwrap_or(0);
+    let store = CausalStore::open(&db)?;
+
+    store.with_conn(|c| {
+        let q1 = |sql: &str| -> rusqlite::Result<i64> { c.query_row(sql, [], |r| r.get(0)) };
+        let version: i64 = c.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let chunks = q1("SELECT COUNT(*) FROM chunks")?;
+        let (qmin, qmax, qavg): (f64, f64, f64) = c.query_row(
+            // MIN/MAX/AVG return NULL on an empty chunks table — default to
+            // the untouched initial q_value instead of erroring out.
+            "SELECT COALESCE(MIN(q_value), 0.5), COALESCE(MAX(q_value), 0.5), COALESCE(AVG(q_value), 0.5) FROM chunks",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let q_tuned = q1("SELECT COUNT(*) FROM chunks WHERE ABS(q_value - 0.5) > 0.001")?;
+        let edges_valid = q1("SELECT COUNT(*) FROM causal_edges WHERE valid_to IS NULL")?;
+        let edges_dead = q1("SELECT COUNT(*) FROM causal_edges WHERE valid_to IS NOT NULL")?;
+        let facts_active = q1("SELECT COUNT(*) FROM agent_facts WHERE valid_to IS NULL")?;
+        let facts_dead = q1("SELECT COUNT(*) FROM agent_facts WHERE valid_to IS NOT NULL")?;
+        let meta = q1("SELECT COUNT(*) FROM meta_causal_edges")?;
+        let cooc = q1("SELECT COUNT(*) FROM cooccurrence_edges")?;
+        let emb = q1("SELECT COUNT(*) FROM edge_embeddings")?;
+        let latest: Option<i64> = c
+            .query_row("SELECT MAX(created_at) FROM chunks", [], |r| r.get(0))
+            .ok();
+
+        println!("causal-memory stats — {}", db.display());
+        println!("  file: {} · schema v{version}", human_bytes(bytes));
+        println!();
+        println!("  chunks:            {chunks}  (q_value {qmin:.2}–{qmax:.2}, avg {qavg:.3}; {q_tuned} tuned by consolidation)");
+        println!("  causal edges:      {edges_valid} active · {edges_dead} invalidated");
+        let mut stmt =
+            c.prepare("SELECT relation, COUNT(*) FROM causal_edges WHERE valid_to IS NULL GROUP BY relation ORDER BY 2 DESC")?;
+        let rels = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (rel, n) in &rels {
+            println!("      {rel:<14} {n}");
+        }
+        println!("  facts:             {facts_active} active · {facts_dead} superseded/invalidated");
+        let mut stmt = c.prepare(
+            "SELECT scope, COUNT(*) FROM agent_facts WHERE valid_to IS NULL GROUP BY scope ORDER BY 2 DESC",
+        )?;
+        let scopes = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (scope, n) in &scopes {
+            println!("      {scope:<14} {n}");
+        }
+        println!("  meta edges:        {meta}");
+        println!("  co-occurrence:     {cooc}");
+        println!("  edge embeddings:   {emb}");
+        println!();
+        let mut stmt = c.prepare(
+            "SELECT COALESCE(task_tag,'untagged'), COUNT(*) FROM causal_edges WHERE valid_to IS NULL GROUP BY task_tag ORDER BY 2 DESC LIMIT 5",
+        )?;
+        let tags = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !tags.is_empty() {
+            let line: Vec<String> = tags.iter().map(|(t, n)| format!("{t} ({n})")).collect();
+            println!("  top task tags:     {}", line.join(", "));
+        }
+        if let Some(ts) = latest {
+            let dt = chrono::DateTime::from_timestamp(ts, 0)
+                .map(|d| d.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+                .unwrap_or_else(|| ts.to_string());
+            println!("  latest memory:     {dt}");
+        }
+
+        // ── Rung-3 Phase A gauges (v14): fork density is the Phase-3
+        // trigger (micro-SCM fits once a stratum holds enough same-context
+        // pairs); the ledger shows whether counterfactual advice is any
+        // good yet. Guards keep stats working on pre-v14 DBs.
+        let has_forks = q1(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='decision_forks'",
+        )? == 1;
+        if has_forks {
+            let forks = q1("SELECT COUNT(*) FROM decision_forks")?;
+            let ctx_edges = q1(
+                "SELECT COUNT(*) FROM causal_edges WHERE context_fingerprint IS NOT NULL AND valid_to IS NULL",
+            )?;
+            println!("  context edges:     {ctx_edges} (v14 abduction substrate)");
+            println!("  fork pairs:        {forks} (same-context natural experiments)");
+            let mut stmt = c.prepare(
+                "SELECT COALESCE(e.task_tag,'untagged'), COUNT(*)
+                 FROM decision_forks f
+                 JOIN causal_edges e ON e.id = f.edge_id_a
+                 GROUP BY e.task_tag HAVING COUNT(*) >= 1 ORDER BY 2 DESC LIMIT 5",
+            )?;
+            let ftags = stmt
+                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            if !ftags.is_empty() {
+                let line: Vec<String> =
+                    ftags.iter().map(|(t, n)| format!("{t} ({n})")).collect();
+                println!("      fork density:  {}", line.join(", "));
+                println!("      (Phase-3 trigger: >= 30 pairs in one task_tag)");
+            }
+        }
+        let has_pred = q1(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pending_predictions'",
+        )? == 1;
+        if has_pred {
+            if let Ok(ps) = store.prediction_stats() {
+                let judged = ps.resolved - ps.ambiguous;
+                if ps.resolved > 0 {
+                    let acc = if judged > 0 {
+                        format!("{:.0}%", ps.correct as f64 / judged as f64 * 100.0)
+                    } else {
+                        "n/a".to_string()
+                    };
+                    println!(
+                        "  predictions:       {} resolved ({acc} accuracy, {} ambiguous) · {} pending",
+                        ps.resolved, ps.ambiguous, ps.pending
+                    );
+                } else if ps.pending > 0 {
+                    println!("  predictions:       0 resolved · {} pending", ps.pending);
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
+fn human_bytes(b: u64) -> String {
+    const UNITS: [&str; 4] = ["B", "KiB", "MiB", "GiB"];
+    let mut v = b as f64;
+    let mut u = 0;
+    while v >= 1024.0 && u < UNITS.len() - 1 {
+        v /= 1024.0;
+        u += 1;
+    }
+    if u == 0 {
+        format!("{b} B")
+    } else {
+        format!("{v:.1} {}", UNITS[u])
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "test invariant: panicking on failure is desired"
+)]
+mod obs_tests {
+    use super::*;
+
+    fn state() -> ObsState {
+        let store = CausalStore::open_in_memory().unwrap();
+        store
+            .record_decision_full(
+                "skipped the test suite before the release",
+                "production outage on friday",
+                "caused",
+                Some("release"),
+                0.8,
+                "rule",
+                1000,
+                Some("negative"),
+                None,
+            )
+            .unwrap();
+        let store = std::sync::Arc::new(store);
+        let debug_memory = std::sync::Arc::new(causal_memory::memory::Memory::new_with_label(
+            (*store).clone(),
+            "test",
+        ));
+        ObsState {
+            store,
+            debug_memory,
+        }
+    }
+
+    #[tokio::test]
+    async fn obs_endpoints_end_to_end() {
+        let s = state();
+
+        // Readiness probes the store.
+        assert_eq!(
+            obs_readyz(axum::extract::State(s.clone())).await,
+            axum::http::StatusCode::OK
+        );
+
+        // Live recall trace: results carry provenance tags.
+        let mut q = std::collections::HashMap::new();
+        q.insert("query".to_string(), "test suite release".to_string());
+        let axum::Json(trace) =
+            obs_debug_recall(axum::extract::State(s.clone()), axum::extract::Query(q)).await;
+        let results = trace["results"].as_array().unwrap();
+        assert!(!results.is_empty(), "trace has results: {trace}");
+        assert!(
+            results[0]["explain"].as_str().unwrap().starts_with('['),
+            "provenance tag: {}",
+            results[0]
+        );
+
+        // The recall landed in the audit table; /debug/recalls reads it back.
+        let axum::Json(recalls) = obs_debug_recalls(axum::extract::State(s.clone())).await;
+        let rows = recalls["recalls"].as_array().unwrap();
+        assert!(!rows.is_empty(), "audit rows: {recalls}");
+        assert_eq!(rows[0]["query"], "test suite release");
+
+        // Metrics text exposes the causal_memory families (2 chunks: the
+        // decision chunk + the outcome chunk).
+        let text = obs_metrics(axum::extract::State(s)).await;
+        assert!(text.contains("causal_memory_store_chunks 2"), "{text}");
+        assert!(text.contains("causal_memory_uptime_seconds"), "{text}");
+    }
+
+    // ─── Bearer auth on the real router (ephemeral port + reqwest, the
+    // amc.rs self-test pattern) ─────────────────────────────────────────
+
+    /// No keep-alive reuse: on the current-thread tokio runtime the reqwest
+    /// pool can reset a reused idle connection between requests (a
+    /// test-harness artifact — see amc.rs's test_client note).
+    fn test_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .pool_max_idle_per_host(0)
+            .build()
+            .unwrap()
+    }
+
+    async fn spawn_obs(auth_token: Option<String>) -> String {
+        let app = build_obs_router(state(), auth_token);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let base = format!("http://{addr}");
+        let client = test_client();
+        for _ in 0..100 {
+            if client
+                .get(format!("{base}/health"))
+                .send()
+                .await
+                .map(|r| r.status().is_success())
+                .unwrap_or(false)
+            {
+                return base;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        panic!("obs server did not become ready");
+    }
+
+    #[tokio::test]
+    async fn obs_router_no_token_all_open() {
+        let base = spawn_obs(None).await;
+        let client = test_client();
+        for path in [
+            "/health",
+            "/healthz",
+            "/readyz",
+            "/metrics",
+            "/debug/recalls",
+        ] {
+            let status = client
+                .get(format!("{base}{path}"))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, axum::http::StatusCode::OK, "{path} -> {status}");
+        }
+    }
+
+    #[tokio::test]
+    async fn obs_router_rejects_missing_or_wrong_bearer() {
+        let base = spawn_obs(Some("s3cret-bearer-token".into())).await;
+        let client = test_client();
+        // No header.
+        for path in ["/metrics", "/debug/recall?query=x", "/debug/recalls"] {
+            let resp = client.get(format!("{base}{path}")).send().await.unwrap();
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+                "{path} without header"
+            );
+            assert_eq!(
+                resp.headers().get("www-authenticate").unwrap(),
+                "Bearer",
+                "RFC 6750 challenge on {path}"
+            );
+        }
+        // Wrong token.
+        let resp = client
+            .get(format!("{base}/metrics"))
+            .header("Authorization", "Bearer wrong-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn obs_router_accepts_correct_bearer() {
+        let base = spawn_obs(Some("s3cret-bearer-token".into())).await;
+        let client = test_client();
+        let resp = client
+            .get(format!("{base}/metrics"))
+            .header("Authorization", "Bearer s3cret-bearer-token")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("causal_memory_uptime_seconds"), "{body}");
+        // The query-string debug route works through the middleware (the
+        // middleware only reads the Authorization header).
+        let resp = client
+            .get(format!("{base}/debug/recall?query=test+suite+release"))
+            .header("Authorization", "bearer s3cret-bearer-token") // scheme case-insensitive
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body = resp.text().await.unwrap();
+        assert!(body.contains("\"results\""), "{body}");
+    }
+
+    #[tokio::test]
+    async fn obs_router_health_probes_open_when_token_set() {
+        let base = spawn_obs(Some("s3cret-bearer-token".into())).await;
+        let client = test_client();
+        // kubelet liveness/readiness probes cannot attach bearer headers.
+        for path in ["/health", "/healthz", "/readyz"] {
+            let status = client
+                .get(format!("{base}{path}"))
+                .send()
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, axum::http::StatusCode::OK, "{path} -> {status}");
+        }
+    }
 }

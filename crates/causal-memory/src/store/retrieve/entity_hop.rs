@@ -3,14 +3,12 @@
 use anyhow::{anyhow, Result};
 use rusqlite::params;
 
-use crate::store::{CausalStore, ENTRY_COLUMNS, entry_from_row};
 use super::by_conf;
+use crate::store::{entry_from_row, CausalStore, ENTRY_COLUMNS};
 
 /// Lock the entity cache ignoring poisoning (cache writes can't panic, so a
 /// poisoned guard only means some other thread panicked elsewhere).
-fn poison_safe_lock<T>(
-    m: &std::sync::Mutex<T>,
-) -> std::sync::MutexGuard<'_, T> {
+fn poison_safe_lock<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -63,14 +61,17 @@ impl CausalStore {
         // Which ids need their texts (cache misses only)?
         let uncached: Vec<i64> = {
             let cache = poison_safe_lock(&self.entity_cache);
-            all_ids.iter().copied().filter(|id| !cache.contains_key(id)).collect()
+            all_ids
+                .iter()
+                .copied()
+                .filter(|id| !cache.contains_key(id))
+                .collect()
         };
         let mut texts: std::collections::HashMap<i64, (String, String)> =
             std::collections::HashMap::new();
         if !uncached.is_empty() {
             for chunk_ids in uncached.chunks(500) {
-                let placeholders =
-                    chunk_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let placeholders = chunk_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
                 let sql = format!(
                     "SELECT ce.id, cf.text, ct.text
                      FROM causal_edges ce
@@ -174,7 +175,9 @@ impl CausalStore {
         };
 
         // Fetch edges matching a built SQL with bound values.
-        let run = |sql: String, binds: Vec<Box<dyn rusqlite::ToSql>>| -> Result<Vec<crate::store::CausalEntry>> {
+        let run = |sql: String,
+                   binds: Vec<Box<dyn rusqlite::ToSql>>|
+         -> Result<Vec<crate::store::CausalEntry>> {
             let mut stmt = conn.prepare(&sql)?;
             let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
             let rows = stmt.query_map(rusqlite::params_from_iter(bind_refs), entry_from_row)?;
@@ -205,8 +208,16 @@ impl CausalStore {
             return Ok(Vec::new());
         }
 
-        let edge_ph = seed_edge_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let chunk_ph = seed_chunks.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let edge_ph = seed_edge_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
+        let chunk_ph = seed_chunks
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
 
         // 1-hop: valid edges sharing an endpoint chunk with a seed.
         let mut binds: Vec<Box<dyn rusqlite::ToSql>> = seed_edge_ids
@@ -243,7 +254,11 @@ impl CausalStore {
         // shared query tokens (causal leaps are topically loose).
         let mut hop2: Vec<crate::store::CausalEntry> = Vec::new();
         if !hop1_chunks.is_empty() {
-            let h1_chunk_ph = hop1_chunks.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let h1_chunk_ph = hop1_chunks
+                .iter()
+                .map(|_| "?")
+                .collect::<Vec<_>>()
+                .join(",");
             let id_ph = seed_edge_ids
                 .iter()
                 .map(|_| "?")
@@ -278,7 +293,8 @@ impl CausalStore {
 
         // One ranked list: 1-hop first (decay by rank), each by query overlap
         // then confidence; truncate to the budget.
-        let mut ranked: Vec<crate::store::CausalEntry> = Vec::with_capacity(hop1.len() + hop2.len());
+        let mut ranked: Vec<crate::store::CausalEntry> =
+            Vec::with_capacity(hop1.len() + hop2.len());
         let mut scored: Vec<(usize, crate::store::CausalEntry)> =
             hop1.into_iter().map(|e| (overlap(&e), e)).collect();
         scored.sort_by(|a, b| b.0.cmp(&a.0).then(by_conf(&a.1, &b.1)));
@@ -292,4 +308,80 @@ impl CausalStore {
         Ok(ranked)
     }
 
+    /// Phase B (one-graph-convergence): valid edges with an endpoint in
+    /// `chunk_activation` — materializes the display rows for chunk nodes
+    /// the spreading-activation engine lit up. Ordered by STRONGEST
+    /// endpoint activation (absolute value — prevented edges spread
+    /// negative activation), confidence then edge id as tiebreakers;
+    /// `task_tag` narrows like the single-layer searches.
+    ///
+    /// Activation-aware prefilter: the pre-LIMIT ordering used to be
+    /// confidence DESC, so a high-activation but low-confidence edge was
+    /// cut before `rank_edges_by_activation` ever saw it (real-store
+    /// ablation: baseline evidence hit 12.8% vs seed-only 95.0% — gold
+    /// edges drowned in the candidate flood). Activation now leads the
+    /// ordering; confidence is only a tiebreak.
+    pub fn edges_touching_chunks(
+        &self,
+        chunk_activation: &[(String, f32)],
+        task_tag: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<crate::store::CausalEntry>> {
+        if chunk_activation.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let conn = self.acquire()?;
+
+        // Host-variable ceiling: a wide spread can light up thousands of
+        // chunks, and the VALUES list carries 2 binds per chunk (id +
+        // activation). Cap the list — ids arrive activation-ordered, so
+        // truncation keeps the strongest spread surfaces (900 chunks →
+        // 1800 binds, far below SQLite's 32766 default).
+        const MAX_CHUNK_BINDS: usize = 900;
+        let act: &[(String, f32)] = if chunk_activation.len() > MAX_CHUNK_BINDS {
+            &chunk_activation[..MAX_CHUNK_BINDS]
+        } else {
+            chunk_activation
+        };
+
+        // Activation scores travel as a VALUES CTE. The LEFT JOIN probes
+        // against the materialized CTE keep the O(E·log ids) plan the
+        // indexed temp table provided (measured minutes per query on the
+        // LongMemEval store when this was a wide literal IN list).
+        let values = vec!["(?,?)"; act.len()].join(",");
+        let mut sql = format!(
+            "WITH act(id, a) AS (VALUES {values})
+             SELECT {ENTRY_COLUMNS}
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             JOIN chunks ct ON ct.id = ce.to_id
+             LEFT JOIN act af ON af.id = ce.from_id
+             LEFT JOIN act at ON at.id = ce.to_id
+             WHERE ce.valid_to IS NULL
+               AND (af.id IS NOT NULL OR at.id IS NOT NULL)"
+        );
+        let mut binds: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(act.len() * 2 + 2);
+        for (id, a) in act {
+            binds.push(Box::new(id.clone()));
+            binds.push(Box::new(*a));
+        }
+        if let Some(tag) = task_tag {
+            sql.push_str(" AND ce.task_tag = ?");
+            binds.push(Box::new(tag.to_string()));
+        }
+        sql.push_str(
+            " ORDER BY MAX(COALESCE(ABS(af.a), 0), COALESCE(ABS(at.a), 0)) DESC, \
+             ce.confidence DESC, ce.id LIMIT ?",
+        );
+        binds.push(Box::new(limit as i64));
+
+        let mut stmt = conn.prepare(&sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), entry_from_row)?;
+        let entries = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))?;
+        self.record_access(entries.iter().map(|e| e.edge_id))?;
+        Ok(entries)
+    }
 }

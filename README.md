@@ -9,9 +9,13 @@
 > *why* it worked — and *what would happen if* they acted differently.
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Status: v0.9.0](https://img.shields.io/badge/status-v0.9.0--alpha-orange.svg)](#status)
-[![Tests: 344](https://img.shields.io/badge/tests-344-brightgreen.svg)](#build--test)
-[![Release: v0.9.0](https://img.shields.io/badge/release-v0.9.0-blue.svg)](https://github.com/JingxuanC/causal-memory/releases)
+[![Status: v0.9.2](https://img.shields.io/badge/status-v0.9.2--alpha-orange.svg)](#status)
+[![Tests: 368](https://img.shields.io/badge/tests-368-brightgreen.svg)](#build--test)
+[![Release: v0.9.2](https://img.shields.io/badge/release-v0.9.2-blue.svg)](https://github.com/JingxuanC/causal-memory/releases)
+[![Hermes plugin](https://img.shields.io/badge/hermes-plugin-blue.svg)](hermes-plugin/)
+[![DSH plugin](https://img.shields.io/badge/deepseek--harness-plugin-blue.svg)](dsh-plugin/)
+
+**English** · [简体中文](README.zh-CN.md)
 
 ---
 
@@ -33,6 +37,35 @@ compaction**. Real-LLM benchmark (grok-build's production compaction prompt):
 
 The causal table survives because it lives **outside the agent's context window** —
 compaction cannot touch it.
+
+---
+
+## Demo
+
+**30-second single scene** — the agent is about to `git push --no-verify`;
+`intervention_query` fires a DANGER chain citing the lesson it recorded last
+time ("production login failed for 40 minutes; emergency rollback"):
+
+<!-- GitHub's CSP (media-src) only allows GitHub-hosted media, so an
+     external <video> never plays on the repo page. An animated GIF goes
+     through the camo image proxy and plays inline. Click for the mp4. -->
+[![30-second danger-warning demo](docs/demo/causal-memory-danger-30s.gif)](docs/demo/causal-memory-danger-30s.mp4)
+
+[Download video](docs/demo/causal-memory-danger-30s.mp4) ·
+[DANGER-scene screenshot](docs/demo/demo30_danger.png) ·
+Regenerate: `scripts/capture_demo30.py` → `scripts/render_demo30.py`
+
+A 21-second hands-on demo (real memory store, no mocks): pre-action warning
+(`intervention_query` → DANGER chain) → experience recall (`search_causal`)
+→ counterfactual comparison (`counterfactual_query`) → write loop
+(`record_decision` → immediately searchable).
+
+[![21-second demo](docs/demo/causal-memory-demo.gif)](docs/demo/causal-memory-demo.mp4)
+
+[Download video](docs/demo/causal-memory-demo.mp4) ·
+[Warning-scene screenshot](docs/demo/demo_intervention.png) ·
+[Brand card](docs/demo/demo_card.png) ·
+Regenerate: `scripts/render_demo.py`
 
 ---
 
@@ -81,7 +114,7 @@ specialty and not where causal-memory adds value.
 | Benchmark | causal-memory | mem0 | Note |
 |---|---|---|---|
 | LoCoMo (strict judge) | 79.1% | 91.6% | mem0's home turf |
-| LongMemEval (distill v2) | 75.2% | 74.4% | Roughly tied |
+| LongMemEval-S (full pipeline, deepseek-chat) | **76.4%** @ 11.5K tok/q | 94.4% @ 6.8K tok/q (official) · 73.8% (ind. repro) | single-model stack vs platform stack; see docs/benchmarks/longmemeval.md |
 | Memora MPA | 67.4% | 71.8% | −4.4pp |
 | Compaction survival | 100% | 45% | External table = immune to compaction |
 | Agent repeat-mistake | 33% | 67% | −34pp on trap-world |
@@ -198,6 +231,10 @@ cargo build --release
 
 ### MCP integration (Claude Code, Cursor, grok-build, etc.)
 
+First-class installers: **Claude Code** (`integrations/claude-code/`) and
+**Codex CLI** (`integrations/codex/`) — MCP registration + activation
+prompt/skill in one idempotent script each.
+
 ```json
 {
   "mcpServers": {
@@ -211,11 +248,52 @@ cargo build --release
 }
 ```
 
+No Rust toolchain? `pip install causal-memory` puts the same `causal-memory`
+console script on your PATH (the full CLI — bare invocation is the stdio MCP
+server), so `"command": "causal-memory"` works as the MCP entry too.
+
+To teach the agent *when* to use the memory tools (agents don't call them
+proactively without instruction), install the bundled agent skill
+[skills/causal-memory/SKILL.md](skills/causal-memory/SKILL.md):
+
+```bash
+# Skills CLI (skills.sh ecosystem) — works with Claude Code, Cursor,
+# Kimi Code CLI, Codex, Copilot and more:
+npx skills add JingxuanC/causal-memory@causal-memory
+```
+
+…or copy `skills/causal-memory/` into your agent's skills directory
+(e.g. `~/.agents/skills/causal-memory/`), or paste [CLAUDE.md](CLAUDE.md)
+into your system prompt / `AGENTS.md`.
+
 ### HTTP transport (remote agents, multi-agent shared memory)
 
 ```bash
 ./target/release/causal-memory http --port 9938   # MCP Streamable HTTP
 ```
+
+Observability endpoints on the same port:
+
+```
+GET /metrics                    Prometheus text (RED + recall metrics)
+GET /healthz / /readyz          liveness / readiness (readiness probes the store)
+GET /debug/recall?query=...     run a recall now, return the full JSON trace
+                                (seeds, hop summary, per-result provenance)
+GET /debug/recalls              newest-first recall audit rows (persisted,
+                                schema v13 recall_audit table; survives restarts)
+```
+
+`/metrics` and `/debug/*` expose the recall corpus, so they accept opt-in
+bearer auth: set `CAUSAL_MEMORY_HTTP_AUTH_TOKEN` (env or
+`causal-memory setconfig`) and they require
+`Authorization: Bearer <token>` (unset = open, the previous behavior).
+`/healthz` / `/readyz` stay open on purpose — kubelet probes cannot send
+bearer headers and leak nothing. `/mcp` auth is not covered by the token
+(rmcp 2.2.0 already restricts it to loopback Host headers by default; MCP
+client auth is tracked in the roadmap). Without the token, do not expose
+the port to the public internet.
+
+Structured JSON logs on stderr: `CAUSAL_MEMORY_LOG_FORMAT=json`.
 
 ### With local embeddings (no API key needed)
 
@@ -248,12 +326,13 @@ from causal_memory import CausalMemory
 
 mem = CausalMemory("~/.local/share/causal-memory/causal.db")  # or CausalMemory.in_memory()
 mem.record_decision("used Redis mutex for cache stampede protection",
-                    "deadlock under load", "caused", "concurrency")
+                    "deadlock under load", "caused", "concurrency",
+                    context="go 1.22, single redis, 5k rps")
 print(mem.search_causal(query="cache stampede protection"))
 print(mem.intervention_query("skip the test suite before shipping"))
 ```
 
-Methods mirror the 14 MCP tools one-to-one and return the same text. Embedding
+Methods mirror the 17 MCP tools one-to-one and return the same text. Embedding
 and LLM features use the same `CAUSAL_MEMORY_EMBED_*` / `CAUSAL_MEMORY_LLM_*`
 environment variables; without them the bindings degrade gracefully to
 BM25-only retrieval. Smoke tests: `maturin develop && pytest tests/`.
@@ -265,11 +344,37 @@ BM25-only retrieval. Smoke tests: `maturin develop && pytest tests/`.
 
 ---
 
-## Fourteen MCP tools
+## Integrations
+
+### Hermes memory provider
+
+[hermes-plugin/](hermes-plugin/) turns causal-memory into a drop-in Hermes
+`MemoryProvider` — flat facts + decision→outcome causal lessons on one local
+SQLite store, per-profile by construction
+(`<hermes_home>/causal-memory/causal.db`). Wired hooks: system-prompt causal
+directory, budgeted prefetch recall, non-blocking `sync_turn` write-behind,
+and a `hermes causal-memory stats` CLI. Because the store lives outside the
+context window, Hermes compaction can't touch it. Install and configuration:
+[hermes-plugin/README.md](hermes-plugin/README.md).
+
+### DeepSeek Harness (DSH) native plugin
+
+[dsh-plugin/](dsh-plugin/) mounts all 16 causal-memory tools onto DSH's
+`ctx.tools` with clean names (no `mcp__` prefix) and injects a system-prompt
+block telling the model when to consult the causal store. Zero runtime
+dependencies — JSON-RPC over stdio straight to the causal-memory binary.
+One-line install: `dsh plugin --profile web add "$PWD/dsh-plugin"` (needs the
+`causal-memory` binary — `pip install causal-memory`, or a repo
+`cargo build --release`).
+Details: [dsh-plugin/README.md](dsh-plugin/README.md).
+
+---
+
+## Seventeen MCP tools
 
 | Tool | When to call | What it does |
 |---|---|---|
-| `record_decision` | After acting on a decision | Logs `decision → outcome` as a causal edge with relation type |
+| `record_decision` | After acting on a decision | Logs `decision → outcome` as a causal edge with relation type; optional `context` records the world state — same task_tag + context becomes a comparable branch (fork) |
 | `remember` | After any meaningful exchange | Zero-friction alternative: paste conversation text, LLM auto-extracts facts/lessons/causal edges |
 | `search_causal` | Before a non-trivial decision | BM25 + semantic retrieval of past causal episodes |
 | `record_fact` | When learning a stable fact | Records flat facts with scope + confidence; idempotent |
@@ -278,10 +383,13 @@ BM25-only retrieval. Smoke tests: `maturin develop && pytest tests/`.
 | `trace_cause` | When something fails | Single-hop reverse: which decision caused this outcome |
 | `trace_cause_chain` | Deep failure analysis | Multi-hop backward traversal through the causal graph |
 | `invalidate_decision` | When a lesson is wrong | Soft-invalidate (hidden from search, kept for audit) |
+| `invalidate_pattern` | When a mined pattern is wrong | Soft-invalidate a meta edge (the #N handle from search_patterns) |
+| `resolve_updates` | After contradicting outcomes | LLM-judged supersession pass over diverged repeated decisions |
 | `search_patterns` | To recall cross-task lessons | Mined meta edges: similar_to / repeated / contradicts / refines |
 | `causal_directory` | Pinned in system prompt | L0 compact pointer list of what the agent knows |
 | `intervention_query` | **Before taking an action** | Forward simulation: predicts outcomes (safe/warning/danger) |
-| `counterfactual_query` | When choosing between options | Contrastive: compares recorded outcomes of two alternatives |
+| `counterfactual_query` | When choosing between options | Contrastive: compares recorded outcomes of two alternatives; renders same-context branches (natural experiments) when they exist; every verdict logs a falsifiable prediction |
+| `prediction_report` | Periodic calibration check | Prediction-ledger accuracy overall / per method / per task_tag + pending list |
 | `reconstruct_lesson` | When you want the distilled lesson | Reconstructive retrieval: Markov-blanket subgraph → coherent narrative, with optional N-way calibration |
 
 ---
@@ -354,11 +462,14 @@ cargo clippy --workspace -- -D warnings # Lint
 ## Agent Memory Challenge (AMC/01)
 
 causal-memory enters the [Agent Memory Leaderboard](https://agentmemories.ai/competition/)
-first evaluation cycle via a standalone Add/Search integration server:
+first evaluation cycle via an Add/Search integration server — a thin HTTP
+frontend over the same `Memory` facade the MCP server runs (BM25 + semantic +
+entity retrieval, RRF-fused; one store per `user_id`):
 
 ```bash
 cargo build --release --bin causal-memory-amc
-./target/release/causal-memory-amc --db amc.db --port 8787
+./target/release/causal-memory-amc --db-dir amc_data --port 8787 --write-mode raw
+# --write-mode raw (no LLM, platform default) | distill (write-time LLM extraction)
 # POST /add (store memory, user_id-isolated) · POST /search (ordered evidence) · GET /health
 ```
 
@@ -394,11 +505,11 @@ research papers. Key references:
 
 ## Status
 
-**v0.9.0 — alpha.**
+**v0.9.2 — alpha.**
 
 What works (16/16 layers with end-to-end validation):
 
-- ✅ 14 MCP tools (stdio + HTTP transport)
+- ✅ 17 MCP tools (stdio + HTTP transport)
 - ✅ Write-time gatekeeping (session_logs separation, V3 distill prompt)
 - ✅ BM25 + semantic RRF unified retrieval
 - ✅ Hippocampus engine: CSR spreading activation, DG SimHash, CA1 novelty, SWR 2.0
@@ -414,8 +525,9 @@ What works (16/16 layers with end-to-end validation):
 - ✅ Vela-style half-life decay tiers (90d / 7d / legacy 0.99-per-day)
 - ✅ Multi-session multi-pass retrieval (LongMemEval multi-session 42.9% → 57.9%, same-codebase)
 - ✅ PyO3 Python bindings (crates/causal-memory-py)
+- ✅ Hermes memory-provider plugin (hermes-plugin/)
 - ✅ DSH native plugin (dsh-plugin/) + architecture visualization (docs/architecture.html)
-- ✅ 344/344 tests passing + clippy clean
+- ✅ 368/368 tests passing + clippy clean
 
 What's not done yet:
 

@@ -6,6 +6,7 @@ members = [
     "crates/causal-memory",
     "crates/causal-memory-cli",
     "crates/causal-memory-py",
+    "benches/common",
 ]
 # The py crate is a cdylib for maturin wheels; plain release profile links
 # -lpython3.9, which the macOS system Python does not ship. Build/test it
@@ -21,7 +22,7 @@ default-members = [
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/JingxuanC/causal-memory"
-version = "0.9.0"
+version = "0.9.2"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -32,10 +33,14 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "0.8"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 chrono = "0.4"
-reqwest = { version = "0.12", features = ["json"] }
+# native-tls-vendored: build OpenSSL from source so manylinux/Windows wheels
+# don't depend on a system OpenSSL (keeps native-tls semantics — see the
+# recorded zhipu/reqwest TLS lesson; do not switch to rustls casually).
+reqwest = { version = "0.12", features = ["json", "native-tls-vendored"] }
 futures = "0.3"
+sha2 = ">=0.10,<0.12"
 causal-memory = { path = "crates/causal-memory" }
 
 [profile.release]

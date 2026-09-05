@@ -9,14 +9,14 @@
 //! MCP tools produce — agent frameworks consume these directly as tool
 //! outputs.
 
-use crate::hippocampus::CausalGraph;
+use crate::hippocampus::{CausalGraph, NodeData, Relation};
 use crate::store::CausalStore;
 use anyhow::Result;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-use format::truncate_chars;
+use format::{format_activation_layered, provenance_tag, TokenBudget};
 
 /// C7: rebuild the hippocampus graph only after enough writes accumulated
 /// (or enough time passed) — a full from_store per write is O(store) and
@@ -28,6 +28,12 @@ const GRAPH_REBUILD_SECS: i64 = 30;
 
 /// Cosine floor for semantic seeding in intervention_query (recall-oriented).
 pub(crate) const INTERVENTION_MIN_SIMILARITY: f64 = 0.5;
+
+/// Phase-4 interface: task tags whose consequences live in deterministic
+/// environments (builds, tests, configs, benches). counterfactual_query
+/// routes these to an executable-replay plan — rerunning the alternative
+/// in a sandbox beats any estimate when the world is code.
+pub(crate) const CLOSED_WORLD_TAGS: [&str; 4] = ["build", "test", "config", "bench"];
 /// Cosine floor for the semantic contradiction scan on record (precision-
 /// oriented: only paraphrase-level duplicates of the same decision).
 pub(crate) const SEMANTIC_CONTRADICTION_MIN_SIMILARITY: f64 = 0.85;
@@ -38,6 +44,7 @@ pub(crate) const RRF_K: f64 = 60.0;
 pub mod format;
 pub mod ops;
 pub mod output;
+mod unified;
 
 #[cfg(test)]
 mod tests;
@@ -59,11 +66,20 @@ pub struct Memory {
     /// cooccurrence_edges table when the graph rebuilds. Keeps Hebbian
     /// learning off the read path (batched, low-frequency writes).
     cooc_buffer: Mutex<Vec<(String, String)>>,
+    /// Observability: which frontend this instance serves ("core" default;
+    /// "mcp-stdio" / "mcp-http" / "amc" when the server sets it). Labels
+    /// the recall_audit rows and request metrics.
+    server_label: &'static str,
 }
 
 impl Memory {
     /// Wrap an existing store.
     pub fn new(store: CausalStore) -> Self {
+        Self::new_with_label(store, "core")
+    }
+
+    /// Wrap an existing store with a server label (observability).
+    pub fn new_with_label(store: CausalStore, server_label: &'static str) -> Self {
         // Load the hippocampus graph from the store on startup.
         let graph = CausalGraph::from_store(&store).ok();
         Self {
@@ -72,7 +88,14 @@ impl Memory {
             graph_writes: AtomicUsize::new(0),
             graph_last_rebuild: AtomicI64::new(chrono::Utc::now().timestamp()),
             cooc_buffer: Mutex::new(Vec::new()),
+            server_label,
         }
+    }
+
+    /// The observability label of this instance ("core" unless a server
+    /// set one).
+    pub(crate) fn server_label(&self) -> &'static str {
+        self.server_label
     }
 
     /// Open (or create) a memory database at `path`, running migrations.
@@ -91,11 +114,125 @@ impl Memory {
         &self.store
     }
 
+    /// Ablation switch: disable spreading activation on the live graph —
+    /// retrieval keeps the seeding layer (BM25/semantic direct hits) but
+    /// no activation propagates along edges. No-op if the graph failed to
+    /// load (retrieval already runs the dual-pool RRF fallback in that
+    /// case). Irreversible for this `Memory` instance; reopen to undo.
+    /// Used by the no-spread ablation arm (benches/ablation).
+    pub fn disable_spread(&self) {
+        if let Ok(mut guard) = self.graph.lock() {
+            if let Some(graph) = guard.as_mut() {
+                graph.disable_spread();
+            }
+        }
+    }
+
     /// Mark the in-memory graph as stale after a write. Cheap; the actual
     /// rebuild happens lazily in maybe_rebuild_graph on the next
     /// hippocampus query.
     fn mark_graph_dirty(&self) {
         self.graph_writes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Phase C (one-graph-convergence): patch a freshly recorded causal
+    /// edge into the live graph — append the endpoint nodes (no-op on
+    /// chunk reuse), add the edge as an overlay patch. The new lesson is
+    /// visible to the very next query without waiting for the lazy
+    /// rebuild; `mark_graph_dirty` still runs so the periodic full rebuild
+    /// bounds drift.
+    fn patch_graph_new_edge(&self, entry: &crate::store::CausalEntry) {
+        if let Ok(mut guard) = self.graph.lock() {
+            if let Some(graph) = guard.as_mut() {
+                let node = |id: &str, text: &str, task_tag: Option<String>| NodeData {
+                    id: id.to_string(),
+                    text: text.to_string(),
+                    event_time: entry.event_time,
+                    q_value: 0.5,
+                    replay_count: 0,
+                    last_activated: 0,
+                    task_tag,
+                    scope: None,
+                };
+                let from = graph.append_node(node(
+                    &entry.decision_id,
+                    &entry.decision_text,
+                    entry.task_tag.clone(),
+                ));
+                let to = graph.append_node(node(&entry.outcome_id, &entry.outcome_text, None));
+                graph.add_patch_edge(
+                    from,
+                    to,
+                    Relation::from_str_lossy(&entry.relation),
+                    entry.confidence as f32,
+                );
+            }
+        }
+    }
+
+    /// Phase C: patch a freshly recorded fact into the live graph —
+    /// scope hub + fact node + scope→fact edge, then entity-link the fact
+    /// against the chunk nodes (same thresholds as the rebuild-time
+    /// linker).
+    fn patch_graph_new_fact(
+        &self,
+        fact_id: i64,
+        key: &str,
+        value: &str,
+        scope: &str,
+        confidence: f64,
+    ) {
+        if let Ok(mut guard) = self.graph.lock() {
+            if let Some(graph) = guard.as_mut() {
+                let scope_idx = graph.append_node(NodeData {
+                    id: format!("scope:{scope}"),
+                    text: format!("[{scope} scope]"),
+                    event_time: 0,
+                    q_value: 0.5,
+                    replay_count: 0,
+                    last_activated: 0,
+                    task_tag: None,
+                    scope: Some(scope.to_string()),
+                });
+                let fact_idx = graph.append_node(NodeData {
+                    id: format!("fact:{fact_id}"),
+                    text: format!("{key}: {value}"),
+                    event_time: 0,
+                    q_value: confidence as f32,
+                    replay_count: 0,
+                    last_activated: 0,
+                    task_tag: Some(key.to_string()),
+                    scope: Some(scope.to_string()),
+                });
+                // Organizational edge (NoEffect): the scope hub must not
+                // propagate activation — see from_store's counterpart.
+                graph.add_patch_edge(scope_idx, fact_idx, Relation::NoEffect, confidence as f32);
+                graph.link_fact_node(fact_idx);
+            }
+        }
+    }
+
+    /// Phase C: retire graph nodes for facts superseded by `new_fact_id`
+    /// (the store sets `superseded_by` on replace). Retired fact nodes
+    /// neither seed nor surface until the next full rebuild drops them.
+    fn patch_graph_retire_facts(&self, new_fact_id: i64) {
+        let superseded: Vec<i64> = self
+            .store
+            .with_conn(|conn| {
+                let mut stmt =
+                    conn.prepare("SELECT id FROM agent_facts WHERE superseded_by = ?1")?;
+                let rows = stmt.query_map(rusqlite::params![new_fact_id], |r| r.get(0))?;
+                let ids: std::result::Result<Vec<i64>, rusqlite::Error> = rows.collect();
+                Ok(ids?)
+            })
+            .unwrap_or_default();
+        if let Ok(mut guard) = self.graph.lock() {
+            if let Some(graph) = guard.as_mut() {
+                for id in superseded {
+                    graph.retire_node(&format!("fact:{id}"));
+                }
+            }
+        }
     }
 
     /// Rebuild the graph when enough writes have accumulated or enough time
@@ -108,16 +245,26 @@ impl Memory {
         let now = chrono::Utc::now().timestamp();
         let last = self.graph_last_rebuild.load(Ordering::Relaxed);
         if writes >= GRAPH_REBUILD_WRITES || now - last >= GRAPH_REBUILD_SECS {
-            if let Ok(g) = CausalGraph::from_store(&self.store) {
-                if let Ok(mut guard) = self.graph.lock() {
-                    *guard = Some(g);
-                }
-            }
-            self.graph_writes.store(0, Ordering::Relaxed);
-            self.graph_last_rebuild.store(now, Ordering::Relaxed);
-            // D1: flush buffered co-activation pairs alongside the rebuild.
-            self.flush_cooccurrences();
+            self.rebuild_graph_now();
         }
+    }
+
+    /// Phase B: rebuild the graph from the store unconditionally and reset
+    /// the lazy-rebuild bookkeeping. Same cost as the lazy trigger; called
+    /// when a query proves the graph is stale (a store-resolved seed maps
+    /// to no node) so the unified engine is never weaker than the store
+    /// paths it replaced.
+    fn rebuild_graph_now(&self) {
+        if let Ok(g) = CausalGraph::from_store(&self.store) {
+            if let Ok(mut guard) = self.graph.lock() {
+                *guard = Some(g);
+            }
+        }
+        self.graph_writes.store(0, Ordering::Relaxed);
+        self.graph_last_rebuild
+            .store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
+        // D1: flush buffered co-activation pairs alongside the rebuild.
+        self.flush_cooccurrences();
     }
 
     /// Record every unordered pair of co-activated chunks (D1). Retrieval
@@ -155,12 +302,20 @@ impl Memory {
 
     /// Try spreading activation search on the hippocampus graph.
     /// Returns None if graph is empty, missing, or finds nothing.
+    /// Honors the same detail_level/max_tokens contract as the BM25 and
+    /// semantic paths — these were dead parameters on this path until the
+    /// budget was threaded through here. `explain` appends a provenance
+    /// tag per hit (Flip-path marking); false = historical output.
+    #[allow(clippy::too_many_arguments)]
     fn hippocampus_search(
         &self,
         query: &str,
         task_tag: Option<&str>,
         reverse: bool,
         limit: usize,
+        detail_level: &str,
+        max_tokens: usize,
+        explain: bool,
     ) -> Option<String> {
         self.maybe_rebuild_graph();
         let mut guard = self.graph.lock().ok()?;
@@ -187,19 +342,34 @@ impl Memory {
         let count = results.len().min(limit);
         let direction = if reverse { "reverse" } else { "forward" };
         let mut out = format!(
-            "[hippocampus/{direction}] Activated {}/{} nodes via spreading activation:\n\n",
+            "[hippocampus/{direction}/{detail_level}] Activated {}/{} nodes via spreading activation",
             count,
             results.len()
         );
+        if max_tokens > 0 {
+            out.push_str(&format!(" (token budget: {max_tokens})"));
+        }
+        out.push_str(":\n\n");
+        let mut budget = TokenBudget::new(max_tokens);
         for (i, r) in results.iter().take(limit).enumerate() {
-            let sign = if r.activation > 0.0 { "+" } else { "-" };
-            out.push_str(&format!(
-                "{}. [{:.0}%{}] \"{}\"\n",
-                i + 1,
-                r.activation.abs() * 100.0,
-                sign,
-                truncate_chars(&r.text, 80),
-            ));
+            let (line, cost) =
+                format_activation_layered(&r.text, r.activation, i + 1, detail_level);
+            if !budget.try_spend(cost) {
+                out.push_str(&format!(
+                    "… {} more result(s) truncated (token budget)\n",
+                    count - i
+                ));
+                break;
+            }
+            out.push_str(&line);
+            if explain {
+                let tag = provenance_tag(
+                    r.hop,
+                    r.via.map(|v| v.relation.as_str()),
+                    r.via.map(|v| graph.node_text(v.from as usize)),
+                );
+                out.push_str(&format!("   ↳ {tag}\n"));
+            }
         }
         Some(out)
     }

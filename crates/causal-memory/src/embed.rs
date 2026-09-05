@@ -32,18 +32,20 @@ pub struct EmbedConfig {
 }
 
 impl EmbedConfig {
-    /// Load from env. Returns None if not configured (semantic search unavailable).
+    /// Load from env / config file (`config::get`: process env wins, the
+    /// JSON config file is the fallback). Returns None if not configured
+    /// (semantic search unavailable).
     ///
     /// - CAUSAL_MEMORY_EMBED_API, default: CAUSAL_MEMORY_LLM_API
     /// - CAUSAL_MEMORY_EMBED_KEY, default: CAUSAL_MEMORY_LLM_KEY
     /// - CAUSAL_MEMORY_EMBED_MODEL, default: "text-embedding-3-small"
     pub fn from_env() -> Option<Self> {
         Self::resolve(
-            std::env::var("CAUSAL_MEMORY_EMBED_API").ok().as_deref(),
-            std::env::var("CAUSAL_MEMORY_EMBED_KEY").ok().as_deref(),
-            std::env::var("CAUSAL_MEMORY_EMBED_MODEL").ok().as_deref(),
-            std::env::var("CAUSAL_MEMORY_LLM_API").ok().as_deref(),
-            std::env::var("CAUSAL_MEMORY_LLM_KEY").ok().as_deref(),
+            crate::config::get("CAUSAL_MEMORY_EMBED_API").as_deref(),
+            crate::config::get("CAUSAL_MEMORY_EMBED_KEY").as_deref(),
+            crate::config::get("CAUSAL_MEMORY_EMBED_MODEL").as_deref(),
+            crate::config::get("CAUSAL_MEMORY_LLM_API").as_deref(),
+            crate::config::get("CAUSAL_MEMORY_LLM_KEY").as_deref(),
         )
     }
 
@@ -160,8 +162,8 @@ impl LocalEmbedder {
         // 150s stall). Cache root resolves exactly like fastembed's
         // `get_cache_dir()` (FASTEMBED_CACHE_DIR, default `.fastembed_cache`).
         // Pre-creating the cache dir is the opt-in for download-on-first-use.
-        let cache_root = std::env::var("FASTEMBED_CACHE_DIR")
-            .unwrap_or_else(|_| ".fastembed_cache".to_string());
+        let cache_root =
+            std::env::var("FASTEMBED_CACHE_DIR").unwrap_or_else(|_| ".fastembed_cache".to_string());
         if !std::path::Path::new(&cache_root).is_dir() {
             anyhow::bail!(
                 "local embedding model not cached (missing {cache_root}/); \
@@ -169,9 +171,7 @@ impl LocalEmbedder {
                  create the directory to allow download-on-first-use"
             );
         }
-        let model = fastembed::TextEmbedding::try_new(
-            fastembed::TextInitOptions::new(model_enum),
-        )?;
+        let model = fastembed::TextEmbedding::try_new(fastembed::TextInitOptions::new(model_enum))?;
         Ok(Self { model, model_name })
     }
 
@@ -329,7 +329,10 @@ fn embed_cache() -> &'static std::sync::Mutex<lru::LruCache<String, Vec<f32>>> {
 /// Minimal interface so the cache works over every embedder variant
 /// (HTTP Embedder, UnifiedEmbedder, local ONNX).
 pub trait CachedEmbed {
-    fn embed_async(&mut self, text: &str) -> impl std::future::Future<Output = Result<Vec<f32>>> + Send;
+    fn embed_async(
+        &mut self,
+        text: &str,
+    ) -> impl std::future::Future<Output = Result<Vec<f32>>> + Send;
 }
 
 impl CachedEmbed for UnifiedEmbedder {
@@ -400,8 +403,10 @@ pub fn blob_to_vec(b: &[u8]) -> Result<Vec<f32>> {
     if !b.len().is_multiple_of(4) {
         anyhow::bail!("embedding blob length {} is not a multiple of 4", b.len());
     }
-    Ok(b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    Ok(b.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect())
 }
 
@@ -490,7 +495,11 @@ mod tests {
         let mut lru = lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap());
         assert!(lru.get("q").is_none(), "miss on empty");
         lru.put("q".to_string(), vec![1.0, 2.0]);
-        assert_eq!(lru.get("q").cloned(), Some(vec![1.0, 2.0]), "hit after insert");
+        assert_eq!(
+            lru.get("q").cloned(),
+            Some(vec![1.0, 2.0]),
+            "hit after insert"
+        );
     }
 
     #[test]

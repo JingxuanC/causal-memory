@@ -8,6 +8,10 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[lib]
+name = "causal_memory_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "causal-memory"
 path = "src/main.rs"
@@ -44,6 +48,7 @@ local-embed = ["causal-memory/local-embed"]
 
 [dependencies]
 causal-memory.workspace = true
+bench-common = { path = "../../benches/common" }
 rmcp.workspace = true
 axum = "0.8"
 tokio.workspace = true
@@ -55,8 +60,16 @@ rusqlite.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 chrono.workspace = true
-reqwest.workspace = true
+# blocking: the git-sync CLI client (push/pull/clone over https) runs in sync
+# commands and uses reqwest's blocking client on a short per-request timeout.
+reqwest = { workspace = true, features = ["blocking"] }
 futures.workspace = true
+sha2.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+# Restore SIGPIPE default in run() so piping into `head` dies quietly
+# instead of panicking on println! (Rust ignores SIGPIPE by default).
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
@@ -68,3 +81,11 @@ workspace = true
 [[bin]]
 name = "causal-memory-causal-eval"
 path = "../../benches/causal_eval/main.rs"
+
+[[bin]]
+name = "causal-memory-fork-eval"
+path = "../../benches/fork_eval/main.rs"
+
+[[bin]]
+name = "causal-memory-ablation"
+path = "../../benches/ablation/main.rs"
