@@ -1834,6 +1834,71 @@ fn l0_message(stem: &str, decisions: usize, events: usize, lessons: usize) -> St
     msg.chars().take(256).collect()
 }
 
+/// Bounded excerpt of a parsed session for the LLM L0 summarizer (~3k chars,
+/// keeps the per-session-end call cheap).
+fn l0_excerpt(p: &causal_memory::session::ParsedSession) -> String {
+    let mut out = String::new();
+    for d in &p.decisions {
+        out.push_str(&format!(
+            "decision: {}\n",
+            d.name.chars().take(160).collect::<String>()
+        ));
+        if out.chars().count() > 3000 {
+            return out;
+        }
+    }
+    for e in &p.events {
+        out.push_str(&format!(
+            "event: {} → {}\n",
+            e.tool_name.chars().take(80).collect::<String>(),
+            e.outcome.chars().take(80).collect::<String>()
+        ));
+        if out.chars().count() > 3000 {
+            return out;
+        }
+    }
+    for t in &p.assistant_texts {
+        let one = t.chars().take(200).collect::<String>();
+        out.push_str(&format!("assistant: {one}\n"));
+        if out.chars().count() > 3000 {
+            break;
+        }
+    }
+    out
+}
+
+/// LLM one-line L0 summary (`--l0-llm`). `Ok(None)` = no LLM configured or no
+/// session material (caller falls back to the heuristic); `Err` = the model
+/// call failed — same fallback applies, so a flaky LLM never blocks the hook.
+fn llm_l0(
+    parsed: Option<&causal_memory::session::ParsedSession>,
+    stem: &str,
+) -> anyhow::Result<Option<String>> {
+    use causal_memory::llm::{self, LlmConfig};
+    let Some(cfg) = LlmConfig::from_env() else {
+        return Ok(None);
+    };
+    let Some(p) = parsed else {
+        return Ok(None);
+    };
+    let excerpt = l0_excerpt(p);
+    if excerpt.trim().is_empty() {
+        return Ok(None);
+    }
+    const SYS: &str = "You summarize an AI agent session into exactly ONE plain-text line \
+                       (no quotes, no markdown, no emoji, ≤ 256 characters). Output only the summary.";
+    let user = format!("Session: {stem}\n\nSession activity:\n{excerpt}\n\nOne-line summary:");
+    let rt = tokio::runtime::Runtime::new()?;
+    let content = rt.block_on(llm::chat(&cfg, SYS, &user, 70, 0.2))?;
+    let one_line = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let capped: String = one_line.chars().take(256).collect();
+    if capped.trim().is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(capped))
+    }
+}
+
 /// `session-commit <session-file|dir>` — the `on_session_end` hook of P2
 /// auto-commit: parse the agent session (best-effort), snapshot whatever
 /// lessons the session recorded (via `record` / MCP record_decision) with a
@@ -1841,17 +1906,20 @@ fn l0_message(stem: &str, decisions: usize, events: usize, lessons: usize) -> St
 /// never goes stale.
 ///
 ///   session-commit <session> [--agent grok|claude|codex|kimi] [-m <msg>]
-///                 [--push <remote>] [--db P]
+///                 [--l0-llm] [--push <remote>] [--db P]
 ///
-/// The parse is advisory: an unparseable/foreign session file does NOT block
-/// the commit (message falls back to the file name) — the hook must never
-/// lose a session's recorded lessons to a format nit.
+/// Message resolution order: `-m` (host-provided L0) > `--l0-llm` (LLM
+/// one-line summary of the parsed session, ≤256 chars) > heuristic fallback
+/// (`session <stem>: N new lesson(s) …`). The parse is advisory: an
+/// unparseable/foreign session file does NOT block the commit — the hook must
+/// never lose a session's recorded lessons to a format nit.
 pub(crate) fn run_session_commit(args: &[String]) -> anyhow::Result<()> {
-    const USAGE: &str = "Usage: causal-memory session-commit <session-file|dir> [--agent grok|claude|codex|kimi] [-m <msg>] [--push <remote>] [--db P]";
+    const USAGE: &str = "Usage: causal-memory session-commit <session-file|dir> [--agent grok|claude|codex|kimi] [-m <msg>] [--l0-llm] [--push <remote>] [--db P]";
     let mut db: Option<PathBuf> = None;
     let mut push: Option<String> = None;
     let mut message: Option<String> = None;
     let mut agent: Option<String> = None;
+    let mut l0_llm = false;
     let mut pos: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -1884,6 +1952,7 @@ pub(crate) fn run_session_commit(args: &[String]) -> anyhow::Result<()> {
                 };
                 agent = Some(a.clone());
             }
+            "--l0-llm" => l0_llm = true,
             s if s.starts_with("--") => bail!("unknown flag: {s}\n{USAGE}"),
             other => pos.push(other.to_string()),
         }
@@ -1895,12 +1964,12 @@ pub(crate) fn run_session_commit(args: &[String]) -> anyhow::Result<()> {
     let db_path = db.unwrap_or_else(get_db_path);
     let cm = cm_dir_for(&db_path);
 
-    // Best-effort parse → counts for the L0 fallback message.
+    // Best-effort parse → parsed material (for LLM L0) + counts (fallback msg).
     let stem = Path::new(session_path)
         .file_name()
         .map(|f| f.to_string_lossy().into_owned())
         .unwrap_or_else(|| session_path.clone());
-    let (decisions, events) = {
+    let parsed: Option<causal_memory::session::ParsedSession> = {
         use causal_memory::session::{agent_kind_from_str, parser_for, SessionSource};
         let kind = agent
             .as_deref()
@@ -1912,13 +1981,17 @@ pub(crate) fn run_session_commit(args: &[String]) -> anyhow::Result<()> {
             SessionSource::file(session_path)
         };
         match parser_for(kind).parse(&src) {
-            Ok(p) => (p.decisions.len(), p.events.len()),
+            Ok(p) => Some(p),
             Err(e) => {
                 eprintln!("session-commit: parse warning ({e}); committing with fallback message");
-                (0, 0)
+                None
             }
         }
     };
+    let (decisions, events) = parsed
+        .as_ref()
+        .map(|p| (p.decisions.len(), p.events.len()))
+        .unwrap_or((0, 0));
 
     // How many uncommitted lessons does the working tree hold?
     let pending = CausalStore::open(&db_path)
@@ -1943,7 +2016,24 @@ pub(crate) fn run_session_commit(args: &[String]) -> anyhow::Result<()> {
             .count()
     }
 
-    let msg = message.unwrap_or_else(|| l0_message(&stem, decisions, events, pending));
+    let msg = match message {
+        Some(m) => m,
+        None if l0_llm => match llm_l0(parsed.as_ref(), &stem) {
+            Ok(Some(m)) => {
+                eprintln!("session-commit: L0 via LLM");
+                m
+            }
+            Ok(None) => {
+                eprintln!("session-commit: --l0-llm requested but no LLM config / no parseable session — heuristic message");
+                l0_message(&stem, decisions, events, pending)
+            }
+            Err(e) => {
+                eprintln!("session-commit: LLM L0 failed ({e:#}); heuristic message");
+                l0_message(&stem, decisions, events, pending)
+            }
+        },
+        None => l0_message(&stem, decisions, events, pending),
+    };
     if msg.is_empty() {
         bail!("empty commit message");
     }
@@ -1963,4 +2053,48 @@ pub(crate) fn run_session_commit(args: &[String]) -> anyhow::Result<()> {
     }
     println!("session-commit: {msg}");
     Ok(())
+}
+
+#[cfg(test)]
+mod l0_tests {
+    use super::*;
+
+    #[test]
+    fn l0_message_is_single_line_and_capped() {
+        let m = l0_message(&"session-abc".to_string(), 123, 456, 3);
+        assert!(m.chars().count() <= 256);
+        assert!(!m.contains('\n'));
+        assert!(m.contains("new lesson(s)"));
+        // A pathological stem is still capped (phrase may be truncated away).
+        let m2 = l0_message(&"x".repeat(400), 0, 0, 0);
+        assert!(m2.chars().count() <= 256);
+        assert!(!m2.contains('\n'));
+    }
+
+    #[test]
+    fn l0_excerpt_bounded_and_empty_on_empty_session() {
+        let empty = causal_memory::session::ParsedSession::default();
+        assert_eq!(l0_excerpt(&empty), "");
+        // A crowded session still stays bounded.
+        let mut p = causal_memory::session::ParsedSession::default();
+        for i in 0..50 {
+            p.decisions.push(causal_memory::session::CandidateDecision {
+                id: format!("d{i}"),
+                name: format!("decision number {i} ").repeat(30),
+                arguments: "{}".into(),
+            });
+        }
+        p.assistant_texts = vec!["long reasoning text ".repeat(500)];
+        let ex = l0_excerpt(&p);
+        assert!(ex.chars().count() <= 3200, "len {}", ex.chars().count());
+    }
+
+    #[test]
+    fn llm_l0_returns_none_without_session_material() {
+        // Env-independent short circuits: no parsed session, or an empty one,
+        // must never reach a network call.
+        assert!(llm_l0(None, "s.jsonl").unwrap().is_none());
+        let empty = causal_memory::session::ParsedSession::default();
+        assert!(llm_l0(Some(&empty), "s.jsonl").unwrap().is_none());
+    }
 }

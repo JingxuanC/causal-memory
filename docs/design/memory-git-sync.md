@@ -318,10 +318,15 @@ objects/refs 布局已为其留位。
 - [x] Docker 部署一页文档：[deploy-docker.md](deploy-docker.md)
 
 **P2**
-- [ ] Hermes provider 云模式（provider 指向 https remote 而非本地 wheel）
-- [ ] **自动 commit**：provider on_session_end 触发 commit —— agent 场景
-      无人敲命令，否则云端永不更新
-- [ ] commit message 自动来自 session L0 摘要
+- [ ] Hermes provider 云模式（provider 指向 https remote 而非本地 wheel；
+      跨仓集成，on_session_end 调 `session-commit --l0-llm --push <agent>`）
+- [x] **自动 commit**：`record` + `session-commit` CLI 钩子（27b81d8）——
+      session 结束时快照 + 可选 push，云端不再过期；record 走 MCP
+      record_decision 同一条 facade 路径
+- [x] commit message 自动来自 session L0 摘要（27b81d8 + 后续）：解析顺序
+      `-m`（宿主 L0）> `--l0-llm`（LLM 单行 ≤256 字）> 启发式
+      `session <stem>: N new lesson(s)`；LLM 缺失/失败/会话不可解析一律
+      回落启发式，钩子永不因摘要失败丢记录
 - [ ] 计量（bootstrap/检索量挂钩 L1 商业化）
 
 ---
