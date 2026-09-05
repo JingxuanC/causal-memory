@@ -31,7 +31,9 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::commands::io::{export_jsonl, import_jsonl, ExportFilters, ExportStats};
+use crate::commands::io::{
+    export_jsonl, import_jsonl, import_jsonl_aligned, ExportFilters, ExportStats,
+};
 use crate::get_db_path;
 use causal_memory::store::CausalStore;
 
@@ -616,6 +618,12 @@ pub(crate) fn run_push(args: &[String]) -> anyhow::Result<()> {
 
 /// Import a chain of commit snapshots (oldest first) into `store`. Returns
 /// cumulative ImportStats across all snapshots.
+///
+/// Uses **align-mode** import: replaying full-state snapshots over an existing
+/// DB converges to the remote's state — a forget/supersede (valid_to set in a
+/// newer snapshot) invalidates the local copy instead of being skipped, and a
+/// re-validation (valid_to → NULL) re-activates it. This closes the 只增 gap
+/// (design §4/§9 R6): pull is now real state alignment, not just additions.
 fn import_chain(
     store: &CausalStore,
     remote_dir: &Path,
@@ -627,8 +635,9 @@ fn import_chain(
         if meta.format_version != FORMAT_VERSION {
             bail!("unsupported commit format_version {}", meta.format_version);
         }
-        let stats = import_jsonl(store, &data.join("\n"), None, false)?;
+        let stats = import_jsonl_aligned(store, &data.join("\n"), None, false)?;
         sum.imported += stats.imported;
+        sum.aligned += stats.aligned;
         sum.skipped_duplicate += stats.skipped_duplicate;
         sum.skipped_invalid += stats.skipped_invalid;
     }
@@ -638,6 +647,7 @@ fn import_chain(
 #[derive(Default)]
 struct ImportStatsSum {
     imported: usize,
+    aligned: usize,
     skipped_duplicate: usize,
     skipped_invalid: usize,
 }
@@ -732,8 +742,8 @@ pub(crate) fn run_pull(args: &[String]) -> anyhow::Result<()> {
         counts.chunks
     );
     println!(
-        "  imported {} · skipped_duplicate {} · skipped_invalid {}",
-        sum.imported, sum.skipped_duplicate, sum.skipped_invalid
+        "  imported {} · aligned {} · skipped_duplicate {} · skipped_invalid {}",
+        sum.imported, sum.aligned, sum.skipped_duplicate, sum.skipped_invalid
     );
     if let Some(b) = backup {
         println!("  pre-pull backup: {}", b.display());
@@ -1350,5 +1360,92 @@ mod tests {
         let prefix = &head[..10];
         let resolved = resolve_commit(&cm_dir_for(Path::new(&db)), prefix).unwrap();
         assert_eq!(resolved, head);
+    }
+    #[test]
+    fn pull_propagates_state_changes() {
+        // The P1 align-mode acceptance: a forget on A invalidates the lesson
+        // on B after pull, and a re-validation re-activates it (只增 gap closed).
+        let td = TestDir::new("align-pull");
+        let db_a = td.db("a.db");
+        let remote = td.db("remote");
+        let db_b = td.db("b.db");
+
+        // Helper: edge id by decision text.
+        fn edge_id(db: &str, decision: &str) -> i64 {
+            let store = CausalStore::open(db).unwrap();
+            store
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT ce.id FROM causal_edges ce
+                         JOIN chunks cf ON cf.id = ce.from_id
+                         JOIN chunks ct ON ct.id = ce.to_id
+                         WHERE cf.text = ?1 AND ct.text = ?2 LIMIT 1",
+                        rusqlite::params![decision, outcome_of(decision)],
+                        |r| r.get(0),
+                    )
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+                })
+                .unwrap()
+        }
+        fn outcome_of(_d: &str) -> &str {
+            "结果A"
+        }
+        fn set_valid_to(db: &str, id: i64, valid_to: Option<i64>) {
+            let store = CausalStore::open(db).unwrap();
+            store
+                .with_conn(|conn| {
+                    conn.execute(
+                        "UPDATE causal_edges SET valid_to = ?1 WHERE id = ?2",
+                        rusqlite::params![valid_to, id],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+
+        // A: lesson valid, commit c1, push. B clones.
+        let store = CausalStore::open(&db_a).unwrap();
+        import_jsonl(&store, &seed_jsonl("教训A", "结果A", None), None, false).unwrap();
+        drop(store);
+        commit_all(&db_a, "c1: learned").unwrap();
+        run_remote(&[
+            "add".into(),
+            "origin".into(),
+            remote.clone(),
+            "--db".into(),
+            db_a.clone(),
+        ])
+        .unwrap();
+        run_push(&["origin".into(), "--db".into(), db_a.clone()]).unwrap();
+        run_clone(&[remote.clone(), "--db".into(), db_b.clone()]).unwrap();
+        assert_eq!(export_edges(&db_b), (1, 0));
+
+        // A forgets the lesson (valid_to = now) → commit c2 → push.
+        let id = edge_id(&db_a, "教训A");
+        set_valid_to(&db_a, id, Some(1700000100));
+        commit_all(&db_a, "c2: forgotten").unwrap();
+        run_push(&["origin".into(), "--db".into(), db_a.clone()]).unwrap();
+
+        // B pulls → the lesson is now invalidated locally (align, not skip).
+        run_pull(&["origin".into(), "--db".into(), db_b.clone()]).unwrap();
+        assert_eq!(
+            export_edges(&db_b),
+            (0, 1),
+            "forget must propagate via pull"
+        );
+
+        // A re-validates (e.g. restore edge) → commit c3 → push.
+        set_valid_to(&db_a, id, None);
+        commit_all(&db_a, "c3: revived").unwrap();
+        run_push(&["origin".into(), "--db".into(), db_a.clone()]).unwrap();
+
+        // B pulls → lesson valid again.
+        run_pull(&["origin".into(), "--db".into(), db_b.clone()]).unwrap();
+        assert_eq!(
+            export_edges(&db_b),
+            (1, 0),
+            "re-validation must propagate via pull"
+        );
+        assert_eq!(head_of(&db_b), head_of(&db_a));
     }
 }
