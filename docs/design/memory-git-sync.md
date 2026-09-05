@@ -297,23 +297,25 @@ objects/refs 布局已为其留位。
 
 ## 7. 实施路径
 
-**P0（~1 天，单机可验证）**
-- [ ] `commands/git.rs`：commit / log / push / pull / clone / checkout /
+**P0（~1 天，单机可验证）✅ 已完成（2026-09-05，7619d4b）**
+- [x] `commands/git.rs`：commit / log / push / pull / clone / checkout /
       remote（file remote：裸路径与 file:// URL 均支持）
-- [ ] `.cm/` 读写（HEAD/refs/config 原子更新：写临时文件 + rename）
-- [ ] sha2 依赖 + 数据行 hash（meta 行、header 行不计入）
-- [ ] 单测：roundtrip（A commit → clone 到 B → 检索一致）、pull 两次幂等、
+- [x] `.cm/` 读写（HEAD/refs/config 原子更新：写临时文件 + rename）
+- [x] sha2 依赖 + 数据行 hash（meta 行、header 行不计入）
+- [x] 单测：roundtrip（A commit → clone 到 B → 检索一致）、pull 两次幂等、
       快进拒绝、未提交记录保留、损坏对象拒绝、checkout 回退（含证伪态还原、
       备份生成、工作区记录丢弃）、remote add/list/remove
-- [ ] lib.rs dispatch + help 段
+- [x] lib.rs dispatch + help 段
 
-**P1（云端 + 状态对齐）**
-- [ ] **import align mode**：快照行带 valid_to/confidence → 本地同文本边
+**P1（云端 + 状态对齐）✅ 已完成（2026-09-05，d0d3890/a857592/87d7fe1）**
+- [x] **import align mode**：快照行带 valid_to/confidence → 本地同文本边
       UPDATE 状态而非 skip（补上 §4 的只增边界：forget/supersede 状态
-      跨机传播，pull 才真正等于"状态对齐"）
-- [ ] https remote（server 挂 `/agents/<id>/objects|refs`，bearer 全开）
-- [ ] `causal-memory cloud register/list/revoke`（token ↔ agent_id）
-- [ ] Docker 部署一页文档
+      跨机传播，pull 才真正等于"状态对齐"；meta_edge.valid_from 同步携带）
+- [x] https remote（server 挂 `/agents/<id>/objects|refs`，bearer 全开；
+      PUT 校验 meta.hash == 对象名，客户端读时复核数据完整性）
+- [x] `causal-memory cloud register/list/revoke`（token ↔ agent_id，
+      admin token 管理，per-agent token 可吊销）
+- [x] Docker 部署一页文档：[deploy-docker.md](deploy-docker.md)
 
 **P2**
 - [ ] Hermes provider 云模式（provider 指向 https remote 而非本地 wheel）
