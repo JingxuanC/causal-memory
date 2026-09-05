@@ -34,6 +34,36 @@ def provider(tmp_path):
     return p
 
 
+def test_per_user_db_isolation(tmp_path):
+    """Gateway users off the shared allowlist get isolated tenant DBs."""
+    p_owner = CausalMemoryProvider()
+    p_owner.initialize(
+        "s-owner", hermes_home=tmp_path, user_id="6ee4d376",
+        config={"shared_user_ids": ["6ee4d376"]},
+    )
+    p_tenant = CausalMemoryProvider()
+    p_tenant.initialize(
+        "s-tenant", hermes_home=tmp_path, user_id="395e8f36",
+        config={"shared_user_ids": ["6ee4d376"]},
+    )
+    p_other = CausalMemoryProvider()
+    p_other.initialize(
+        "s-other", hermes_home=tmp_path, user_id="b9g9a36b",
+        config={"shared_user_ids": ["6ee4d376"]},
+    )
+    # Owner → shared main DB; tenants → distinct per-user DBs.
+    assert p_owner._resolved_db().name == "causal.db"
+    assert p_tenant._resolved_db().name != p_owner._resolved_db().name
+    assert p_tenant._resolved_db().name != p_other._resolved_db().name
+    # Tenant A writes a fact; tenant B must not see it.
+    p_tenant._mem.record_fact("private", "395e8f36的私有记忆", scope="user")
+    hits = p_other._mem.search_facts("395e8f36的私有记忆", scope="user", limit=5)
+    assert "私有记忆" not in hits
+    # Owner (shared DB) is unaffected by tenant writes.
+    owner_hits = p_owner._mem.search_facts("395e8f36的私有记忆", scope="user", limit=5)
+    assert "私有记忆" not in owner_hits
+
+
 def test_register_with_fake_ctx():
     ctx = FakeCtx()
     provider = register(ctx)
@@ -112,7 +142,7 @@ def test_prefetch_respects_configured_budget(provider):
 
 def test_config_schema_is_minimal(provider):
     schema = provider.get_config_schema()
-    assert set(schema["properties"]) == {"db_path", "prefetch_budget"}
+    assert set(schema["properties"]) == {"db_path", "prefetch_budget", "shared_user_ids"}
     assert "key" not in str(schema["properties"]).lower()  # no secrets
 
 

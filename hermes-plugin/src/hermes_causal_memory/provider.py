@@ -15,10 +15,20 @@ Maps the Hermes MemoryProvider surface onto the `causal_memory` facade:
 
 Storage is profile-isolated: the DB lives under
 `<hermes_home>/causal-memory/causal.db` unless config overrides db_path.
+
+Per-user isolation (gateway multi-tenant): when `initialize` receives a
+`user_id` that is NOT in the shared-users allowlist (config
+`shared_user_ids`), the provider opens a tenant DB at
+`<hermes_home>/causal-memory/causal_<sha1(user_id)[:16]>.db` instead of the
+shared one. Users on the allowlist (default: the Hermes owner) and all
+non-gateway contexts (CLI/cron, no user_id) share the main DB. This keeps
+each gateway user's facts/lessons physically separate — no cross-user
+recall leakage.
 """
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import threading
@@ -49,6 +59,13 @@ _CONFIG_SCHEMA = {
             "type": "integer",
             "default": _DEFAULT_PREFETCH_BUDGET,
             "description": "Max tokens returned per prefetch recall (0 = unlimited)",
+        },
+        "shared_user_ids": {
+            "type": "array",
+            "items": {"type": "string"},
+            "default": [],
+            "description": "Gateway user_ids that share the main causal.db (owner/allowlist). "
+            "Users NOT listed get an isolated tenant DB per user_id.",
         },
     },
 }
@@ -170,6 +187,8 @@ class CausalMemoryProvider(_MemoryProvider):
         self._hermes_home: Optional[Path] = None
         self._db_path: Optional[str] = None  # config override; "" / None = auto
         self._prefetch_budget = _DEFAULT_PREFETCH_BUDGET
+        self._shared_user_ids: List[str] = []
+        self._user_id: str = ""
         self._threads: List[threading.Thread] = []
         self._lock = threading.Lock()
 
@@ -198,6 +217,9 @@ class CausalMemoryProvider(_MemoryProvider):
         # write-only).
         cfg = kwargs.get("config") or self._read_persisted_config()
         self._apply_config(cfg)
+        # Per-user isolation: gateway sessions carry a user_id; non-gateway
+        # contexts (CLI/cron/subagent) pass none → shared main DB.
+        self._user_id = str(kwargs.get("user_id") or "")
         self._open()
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -245,7 +267,11 @@ class CausalMemoryProvider(_MemoryProvider):
         cfg_dir.mkdir(parents=True, exist_ok=True)
         (cfg_dir / "config.json").write_text(
             json.dumps(
-                {"db_path": self._db_path or "", "prefetch_budget": self._prefetch_budget},
+                {
+                    "db_path": self._db_path or "",
+                    "prefetch_budget": self._prefetch_budget,
+                    "shared_user_ids": self._shared_user_ids,
+                },
                 indent=2,
             )
         )
@@ -342,6 +368,9 @@ class CausalMemoryProvider(_MemoryProvider):
         budget = values.get("prefetch_budget")
         if budget is not None:
             self._prefetch_budget = int(budget)
+        shared = values.get("shared_user_ids")
+        if shared is not None:
+            self._shared_user_ids = [str(u) for u in shared]
 
     def _read_persisted_config(self) -> Dict[str, Any]:
         """Load config.json written by save_config (missing/corrupt → {})."""
@@ -354,6 +383,13 @@ class CausalMemoryProvider(_MemoryProvider):
             return {}
 
     def _resolved_db(self) -> Path:
+        # Per-user isolation: a gateway user_id that is NOT on the shared
+        # allowlist gets its own tenant DB. Shared users (owner) and
+        # non-gateway contexts (empty user_id) use the main DB.
+        if self._user_id and self._user_id not in self._shared_user_ids:
+            assert self._hermes_home is not None
+            digest = hashlib.sha1(self._user_id.encode("utf-8")).hexdigest()[:16]
+            return self._hermes_home / "causal-memory" / f"causal_{digest}.db"
         if self._db_path:
             return Path(self._db_path).expanduser()
         assert self._hermes_home is not None
