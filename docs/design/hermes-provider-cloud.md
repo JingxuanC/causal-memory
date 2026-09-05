@@ -48,19 +48,28 @@ causal-memory session-commit <最近会话导出> --l0-llm --push <agent_id> --d
   session」文件名传给 session-commit（无文件也能 commit 存量教训，
   见 session-commit 的 parse-advisory 设计）。
 
-### B. Hermes memory-provider ABC 的 `on_session_end`（现成接口，无需上游改动）
-Hermes `MemoryProvider` ABC **已经内置可选钩子 `on_session_end(messages)`**
-（`agent/memory_provider.py`，真实会话边界触发：CLI 退出 / /reset /
-网关会话过期；`on_session_switch` 管 /resume /branch /压缩）。memory 插件
-在 `plugin.yaml` 的 `hooks:` 里声明使用哪些钩子（hindsight 即声明
-`on_session_end`）。causal-memory provider 只需 override 该方法：
-组装 L0（Hermes 会话摘要或自身 LLM）→ 调 CLI `session-commit --push <agent_id>`。
+### B. 现有 hermes-plugin 的 `on_session_end` 接线（增量最小，推荐）
+**Hermes 记忆插件已经实现并落地**：`hermes-plugin/`（包名
+`hermes-causal-memory`，entry point `hermes_agent.memory_providers` +
+`$HERMES_HOME/plugins/causal-memory/` 目录 shim），`plugin.yaml` 已声明
+`on_session_end / on_pre_compress / on_memory_write / prefetch /
+system_prompt_block` 等钩子，Hermes `MemoryProvider` ABC 的
+`on_session_end(messages)` 是现成接口（会话边界触发：CLI 退出 / /reset /
+网关会话过期）。
 
-> 修正记录：初稿误写"需给 Hermes ABC 加 on_session_end 的上游提案"——
-> 该钩子已存在（2026 已随 memory-provider ABC 落地），provider 直接实现即可。
+但当前 `on_session_end` 是**保守 no-op**（TODO: 需 LLM key 的 distill），
+且整个插件**只连本地 causal.db，与 git-sync/cloud 零连接**（无 commit /
+push / agent_id / server 概念）。云模式的真正增量 = 在现有插件上：
 
-**推荐：B 路线直接实现 causal provider（standalone 插件仓），A 的 cadence
-cron 作为无插件时的兜底。**
+1. `get_config_schema` / `save_config` 增 `server_url`、`agent_id`
+   （token 由 `cloud register` 写入各 db 的 `.cm/config.json`，天然
+   按 db 粒度，tenant db 也各推各的）；
+2. `on_session_end(messages)` 填 body：配了云 + 本地有 causal-memory
+   CLI 时，后台跑 `causal-memory session-commit --push <agent_id>
+   --db <resolved_db>`（复用 P0-P2 全部机制：快照、L0 消息、幂等）；
+   CLI 缺失/未配置云 → 保持 no-op，不阻塞会话；
+3. `sync_turn` 已有 per-turn remember —— 与 on_session_end 提交天然
+   互补（增量记录边 + 周期快照推云端）。
 
 ## 3. agent_id / token 配置流（一次，之后全自动）
 
@@ -100,8 +109,8 @@ causal-memory clone athena                                   # → 命中同一�
 
 ## 6. 不做（明确边界）
 
-- 不做 Hermes 仓库改动（MVP 也不需要）：`on_session_end` 钩子已存在，
-  causal provider 作为 standalone 插件仓实现（in-tree 集合已关闭）。
+- 不做 Hermes 仓库改动：ABC 钩子已存在、插件已落地，全部增量在
+  causal-memory 侧（hermes-plugin + CLI）。
 - 不做实时双向 sync/websocket——快照 + cadence 已覆盖「agent 上下文
   跨位置可用」的诉求。
 - 计量/计费（bootstrap、检索量）不在本设计内，见 commercialization。
