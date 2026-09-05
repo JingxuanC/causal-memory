@@ -40,6 +40,7 @@ chrono = "0.4"
 # recorded zhipu/reqwest TLS lesson; do not switch to rustls casually).
 reqwest = { version = "0.12", features = ["json", "native-tls-vendored"] }
 futures = "0.3"
+sha2 = ">=0.10,<0.12"
 causal-memory = { path = "crates/causal-memory" }
 
 [profile.release]

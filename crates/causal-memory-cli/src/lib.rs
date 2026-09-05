@@ -15,6 +15,7 @@ pub mod http_auth;
 pub mod server;
 
 use commands::distill::{run_distill, run_novelty};
+use commands::git::{run_checkout, run_clone, run_commit, run_log, run_pull, run_push, run_remote};
 use commands::io::{run_export, run_import};
 use commands::maintenance::{
     run_embed, run_judge, run_migrate, run_polarity, run_resolve_updates, run_restore, run_sleep,
@@ -156,6 +157,21 @@ fn dispatch(args: &[String]) -> anyhow::Result<()> {
             "export" => return run_export(&args[1..]),
             // Subcommand: import <file.jsonl> — import shared causal memory
             "import" => return run_import(&args[1..]),
+            // ── Memory git sync (docs/design/memory-git-sync.md) ──
+            // commit [-m <msg>] [--db P] — snapshot the full store
+            "commit" => return run_commit(&args[1..]),
+            // log [--oneline] [--limit N] [--db P] — walk the commit chain
+            "log" => return run_log(&args[1..]),
+            // push [<remote|path>] [--db P] — upload local-only commits
+            "push" => return run_push(&args[1..]),
+            // pull [<remote|path>] [--db P] — import remote commits
+            "pull" => return run_pull(&args[1..]),
+            // clone <path|remote> [--db P] — fresh DB from a remote
+            "clone" => return run_clone(&args[1..]),
+            // checkout <hash|HEAD|HEAD~N> [--db P] — hard-reset to a snapshot
+            "checkout" => return run_checkout(&args[1..]),
+            // remote add|list|remove — named remotes for push/pull
+            "remote" => return run_remote(&args[1..]),
             // Subcommand: bench-compaction — reproducible
             // compaction-degradation bench
             "bench-compaction" => {
@@ -228,6 +244,17 @@ fn print_help() {
          \x20 export <file.jsonl>    share causal memory across agents\n\
          \x20 import <file.jsonl>    import shared causal memory\n\
          \x20 wiki [--out dir] [--format obsidian|html]  export as vault/HTML graph\n\
+         \n\
+         Memory git sync (snapshot versioning + cross-location sync):\n\
+         \x20 commit -m <msg>       snapshot the whole store (full truth incl.\n\
+         \x20                        invalidated; originals kept, no redact)\n\
+         \x20 log [--oneline]       walk the commit chain (no DB open)\n\
+         \x20 push [<remote|path>]  upload local commits (fast-forward checked)\n\
+         \x20 pull [<remote|path>]  import remote commits (idempotent)\n\
+         \x20 clone <path|remote>   fresh DB from a remote + set origin\n\
+         \x20 checkout <hash|HEAD|HEAD~N>  hard-reset DB to a snapshot\n\
+         \x20 remote add|list|remove <name> [<path>]  named remotes\n\
+         \x20   (state in <db>.cm/; commits are sha256 content-addressed)\n\
          \n\
          Benchmarks:\n\
          \x20 bench-compaction       compaction-degradation bench\n\
