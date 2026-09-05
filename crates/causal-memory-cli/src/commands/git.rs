@@ -2007,27 +2007,34 @@ pub(crate) fn run_session_commit(args: &[String]) -> anyhow::Result<()> {
         .map(|p| (p.decisions.len(), p.events.len()))
         .unwrap_or((0, 0));
 
-    // How many uncommitted lessons does the working tree hold?
-    let pending = CausalStore::open(&db_path)
-        .ok()
-        .map(|store| snapshot_data_lines(&store))
-        .transpose()?
-        .map(|(_, stats)| {
-            // Distinguish "nothing ever committed" from "clean": compare
-            // against the head snapshot if one exists.
-            match read_ref(&cm.join("refs/heads/main")) {
-                Some(head) => read_object(&cm, &head)
-                    .ok()
-                    .map(|(_, old)| stats.edges.saturating_sub(snapshot_edges(&old)))
-                    .unwrap_or(stats.edges),
-                None => stats.edges,
-            }
-        })
-        .unwrap_or(0);
+    // How much uncommitted content does the working tree hold? Compare the
+    // current export against the head snapshot. Snapshot scope = the causal
+    // graph (edges + referenced chunk texts); orphan chunks and the fact
+    // layer are intentionally not sync content — so an "empty" store here
+    // means "no uncommitted causal content".
+    let store = CausalStore::open(&db_path)?;
+    let (lines, stats) = snapshot_data_lines(&store)?;
+    let head = read_ref(&cm.join("refs/heads/main"));
+    let new_lessons = match &head {
+        Some(h) => read_object(&cm, h)
+            .ok()
+            .map(|(_, old)| stats.edges.saturating_sub(snapshot_edges(&old)))
+            .unwrap_or(stats.edges),
+        None => stats.edges,
+    };
     fn snapshot_edges(old: &[String]) -> usize {
         old.iter()
             .filter(|l| l.contains("\"type\":\"edge\""))
             .count()
+    }
+    // A brand-new store must NOT get an empty genesis snapshot from the
+    // auto-commit hook (review finding): a no-op first session would push a
+    // meaningless empty commit (e3b0c442…) to the cloud. `commit` remains
+    // the explicit way to baseline an empty store; the hook waits for the
+    // first real lesson.
+    if head.is_none() && lines.is_empty() {
+        println!("session-commit: nothing to commit (store is empty — the first lesson will create the first snapshot)");
+        return Ok(());
     }
 
     let msg = match message {
@@ -2039,14 +2046,14 @@ pub(crate) fn run_session_commit(args: &[String]) -> anyhow::Result<()> {
             }
             Ok(None) => {
                 eprintln!("session-commit: --l0-llm requested but no LLM config / no parseable session — heuristic message");
-                l0_message(&stem, decisions, events, pending)
+                l0_message(&stem, decisions, events, new_lessons)
             }
             Err(e) => {
                 eprintln!("session-commit: LLM L0 failed ({e:#}); heuristic message");
-                l0_message(&stem, decisions, events, pending)
+                l0_message(&stem, decisions, events, new_lessons)
             }
         },
-        None => l0_message(&stem, decisions, events, pending),
+        None => l0_message(&stem, decisions, events, new_lessons),
     };
     if msg.is_empty() {
         bail!("empty commit message");
