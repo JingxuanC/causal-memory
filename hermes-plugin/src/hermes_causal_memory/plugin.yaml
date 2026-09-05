@@ -1,5 +1,5 @@
 name: causal-memory
-version: 0.1.0
+version: 0.1.1
 description: >-
   Causal memory provider — flat facts + decision→outcome causal lessons on one
   local SQLite store. Spreading-activation recall surfaces associative lessons
