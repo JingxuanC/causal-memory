@@ -48,14 +48,19 @@ causal-memory session-commit <最近会话导出> --l0-llm --push <agent_id> --d
   session」文件名传给 session-commit（无文件也能 commit 存量教训，
   见 session-commit 的 parse-advisory 设计）。
 
-### B. Hermes memory-provider ABC 加 on_session_end 钩子（上游改动，后续）
-Hermes `plugins/memory/<name>/` 的 `MemoryProvider` ABC 现有
-`sync_turn / prefetch / shutdown`，无会话结束信号。要「严格端上提交」需
-给 ABC 加可选 `on_session_end(summary: Option<&str>)`，causal-memory
-provider 实现 = 组装 L0 + 调 CLI session-commit。这是对 Hermes 仓库的
-通用扩展（其他 provider 也受益），单独提 PR，不与本仓库耦合。
+### B. Hermes memory-provider ABC 的 `on_session_end`（现成接口，无需上游改动）
+Hermes `MemoryProvider` ABC **已经内置可选钩子 `on_session_end(messages)`**
+（`agent/memory_provider.py`，真实会话边界触发：CLI 退出 / /reset /
+网关会话过期；`on_session_switch` 管 /resume /branch /压缩）。memory 插件
+在 `plugin.yaml` 的 `hooks:` 里声明使用哪些钩子（hindsight 即声明
+`on_session_end`）。causal-memory provider 只需 override 该方法：
+组装 L0（Hermes 会话摘要或自身 LLM）→ 调 CLI `session-commit --push <agent_id>`。
 
-**推荐：先 A 落地跑通，B 作为对 Hermes 的上游提案。**
+> 修正记录：初稿误写"需给 Hermes ABC 加 on_session_end 的上游提案"——
+> 该钩子已存在（2026 已随 memory-provider ABC 落地），provider 直接实现即可。
+
+**推荐：B 路线直接实现 causal provider（standalone 插件仓），A 的 cadence
+cron 作为无插件时的兜底。**
 
 ## 3. agent_id / token 配置流（一次，之后全自动）
 
@@ -95,7 +100,8 @@ causal-memory clone athena                                   # → 命中同一�
 
 ## 6. 不做（明确边界）
 
-- 不做 Hermes 仓库改动（MVP）；B 路线以独立提案形式给上游。
+- 不做 Hermes 仓库改动（MVP 也不需要）：`on_session_end` 钩子已存在，
+  causal provider 作为 standalone 插件仓实现（in-tree 集合已关闭）。
 - 不做实时双向 sync/websocket——快照 + cadence 已覆盖「agent 上下文
   跨位置可用」的诉求。
 - 计量/计费（bootstrap、检索量）不在本设计内，见 commercialization。
