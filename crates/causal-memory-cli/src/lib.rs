@@ -14,6 +14,7 @@ pub mod commands;
 pub mod http_auth;
 pub mod server;
 
+use commands::chat::{run_ask, run_forget, run_record, run_status};
 use commands::distill::{run_distill, run_novelty};
 use commands::io::{run_export, run_import};
 use commands::maintenance::{
@@ -180,6 +181,18 @@ fn dispatch(args: &[String]) -> anyhow::Result<()> {
             // Subcommand: stats [--db <PATH>] — store overview (size,
             // layers, recency)
             "stats" => return run_stats(&args[1..]),
+            // Subcommand: ask "<question>" [--limit N] [--tag T]
+            // [--explain] — natural-language recall across ALL memory
+            // layers (the human twin of the agent's search_memory tool)
+            "ask" => return run_ask(&args[1..]),
+            // Subcommand: record "<decision>" "<outcome>" [--relation R]
+            // [--tag T] ... — manually write a decision → outcome lesson
+            "record" => return run_record(&args[1..]),
+            // Subcommand: status — human heartbeat view of the store
+            "status" => return run_status(&args[1..]),
+            // Subcommand: forget <edge_id> [--reason R] — soft-invalidate
+            // a lesson (hidden from recall, kept for audit)
+            "forget" => return run_forget(&args[1..]),
             // --http: HTTP transport mode (remote agents, multi-agent
             // shared memory)
             "http" => return run_http_server(&args[1..]),
@@ -223,6 +236,13 @@ fn print_help() {
          \x20 resolve-updates        LLM update-resolver for falsified lessons\n\
          \x20 refute                 graph-structural refutation on all edges\n\
          \x20 stats [--db P]         store overview (size, layers, recency)\n\
+         \n\
+         Talk to your memory (human interface):\n\
+         \x20 ask \"<question>\" [--limit N] [--tag T] [--explain]  search all memory (facts + lessons)\n\
+         \x20 record \"<decision>\" \"<outcome>\" [--relation R] [--tag T]\n\
+         \x20                        [--confidence S] [--context C]  write a lesson by hand\n\
+         \x20 status [--db P]        what the store holds + recent lessons + next steps\n\
+         \x20 forget <edge_id> [--reason R]   hide a lesson you no longer trust\n\
          \n\
          Share & export:\n\
          \x20 export <file.jsonl>    share causal memory across agents\n\
