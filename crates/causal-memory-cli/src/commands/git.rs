@@ -387,9 +387,9 @@ fn resolve_remote(cm: &Path, target: Option<&str>, default_name: &str) -> anyhow
                 (t.to_string(), None)
             } else {
                 bail!(
-                    "'{t}' is neither a configured remote ({}) nor a path/URL; \
-                     bare agent_id resolution needs `cloud register` (P1)",
-                    remotes.keys().cloned().collect::<Vec<_>>().join(", ")
+                    "'{t}' is neither a configured remote ({}) nor a path/URL — \
+                     run `cloud register {t} <server-url>` first",
+                    remotes.keys().cloned().collect::<Vec<_>>().join(", "),
                 )
             }
         }
@@ -995,15 +995,18 @@ pub(crate) fn run_clone(args: &[String]) -> anyhow::Result<()> {
     }
     let cm = cm_dir_for(&db_path);
     ensure_cm(&cm)?;
-    // Fresh clone: no named remotes yet — the target is a path/URL, or (P1-3)
-    // a bare agent_id resolved through the cloud registry config.
+    // Fresh clone: target may be a path/URL, or a named remote / registered
+    // agent_id (config holds agent remotes with their bearer token).
+    let cfg = read_config(&cm)?;
     let remote = if is_http_url(&target) {
         remote_from_url(target.clone(), env_auth_token())
+    } else if let Some((url, token)) = remote_entry(&cfg, &target) {
+        remote_from_url(url, token.filter(|t| !t.is_empty()))
     } else if looks_like_path(&target) {
         remote_from_url(target.clone(), None)
     } else {
         bail!(
-            "'{target}' is not a path or URL; bare agent_id resolution needs `cloud register` (P1)"
+            "'{target}' is neither a path/URL nor a registered agent — run `cloud register {target} <server-url>` first"
         )
     };
     let remote_head = match remote.read_ref()? {
@@ -1161,6 +1164,164 @@ pub(crate) fn run_checkout(args: &[String]) -> anyhow::Result<()> {
         if sum.imported == 0 && !data.is_empty() {
             println!("  (snapshot restored; import reported 0 — re-import deduped against nothing on a fresh DB, check counts above)");
         }
+    }
+    Ok(())
+}
+
+/// `cloud register|list|revoke` — provision/rotate/revoke per-agent bearer
+/// tokens on a sync server (P1-3), and record the agent as a named remote so
+/// `push`/`pull`/`clone <agent_id>` resolve with the right token.
+///
+///   cloud register <agent_id> <server-url> [--db P]   mint token, save remote
+///   cloud list     <server-url> [--db P]              list registered agents
+///   cloud revoke   <agent_id> <server-url> [--db P]   revoke token + drop remote
+///
+/// Admin auth for the control plane: CAUSAL_MEMORY_ADMIN_TOKEN, else the
+/// shared CAUSAL_MEMORY_HTTP_AUTH_TOKEN (the server applies the same rule).
+pub(crate) fn run_cloud(args: &[String]) -> anyhow::Result<()> {
+    const USAGE: &str =
+        "Usage: causal-memory cloud register <agent_id> <server-url> [--db P]\n       \
+         causal-memory cloud list <server-url> [--db P]\n       \
+         causal-memory cloud revoke <agent_id> <server-url> [--db P]";
+    let mut db: Option<PathBuf> = None;
+    let mut pos: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--db" => {
+                i += 1;
+                let Some(p) = args.get(i) else {
+                    bail!("--db requires a path");
+                };
+                db = Some(PathBuf::from(p));
+            }
+            s if s.starts_with("--") => bail!("unknown flag: {s}\n{USAGE}"),
+            other => pos.push(other.to_string()),
+        }
+        i += 1;
+    }
+    let db_path = db.unwrap_or_else(get_db_path);
+    let cm = cm_dir_for(&db_path);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let admin_token = std::env::var("CAUSAL_MEMORY_ADMIN_TOKEN")
+        .ok()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .or_else(env_auth_token);
+
+    let op = pos
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("{USAGE}"))?
+        .as_str();
+    match op {
+        "register" => {
+            let (Some(agent), Some(server)) = (pos.get(1), pos.get(2)) else {
+                bail!("Usage: causal-memory cloud register <agent_id> <server-url>\n{USAGE}");
+            };
+            let server = server.trim_end_matches('/');
+            let mut req = client.post(format!("{server}/agents/{agent}/register"));
+            if let Some(t) = &admin_token {
+                req = req.bearer_auth(t);
+            }
+            let resp = req.send().context("sync server unreachable")?;
+            if !resp.status().is_success() {
+                let status = resp.status().as_u16();
+                let body = resp.text().unwrap_or_default();
+                bail!(
+                    "register failed → HTTP {status}: {} (server needs CAUSAL_MEMORY_ADMIN_TOKEN to mint tokens)",
+                    body_snippet(body)
+                );
+            }
+            let v: serde_json::Value = resp.json()?;
+            let token = v
+                .get("token")
+                .and_then(|t| t.as_str())
+                .context("register response missing token")?
+                .to_string();
+            ensure_cm(&cm)?;
+            let mut cfg = read_config(&cm)?;
+            cfg["remotes"][agent] = serde_json::json!({
+                "url": format!("{server}/agents/{agent}"),
+                "token": token,
+            });
+            write_config(&cm, &cfg)?;
+            println!(
+                "registered agent '{agent}' → {server}/agents/{agent} (token saved; rotated: {})",
+                v.get("rotated").and_then(|r| r.as_bool()).unwrap_or(false)
+            );
+            println!("  now: commit -m … && push {agent}");
+        }
+        "list" => {
+            let Some(server) = pos.get(1) else {
+                bail!("Usage: causal-memory cloud list <server-url>\n{USAGE}");
+            };
+            let server = server.trim_end_matches('/');
+            let mut req = client.get(format!("{server}/agents"));
+            if let Some(t) = &admin_token {
+                req = req.bearer_auth(t);
+            }
+            let resp = req.send().context("sync server unreachable")?;
+            if !resp.status().is_success() {
+                let status = resp.status().as_u16();
+                bail!(
+                    "list failed → HTTP {status}: {}",
+                    body_snippet(resp.text().unwrap_or_default())
+                );
+            }
+            let v: serde_json::Value = resp.json()?;
+            let agents = v
+                .get("agents")
+                .and_then(|a| a.as_array())
+                .cloned()
+                .unwrap_or_default();
+            if agents.is_empty() {
+                println!("(no agents registered on {server})");
+            } else {
+                println!("agents on {server}:");
+                for a in agents {
+                    println!(
+                        "  {} (token: {})",
+                        a.get("agent_id").and_then(|x| x.as_str()).unwrap_or("?"),
+                        if a.get("has_token")
+                            .and_then(|x| x.as_bool())
+                            .unwrap_or(false)
+                        {
+                            "provisioned"
+                        } else {
+                            "none"
+                        }
+                    );
+                }
+            }
+        }
+        "revoke" => {
+            let (Some(agent), Some(server)) = (pos.get(1), pos.get(2)) else {
+                bail!("Usage: causal-memory cloud revoke <agent_id> <server-url>\n{USAGE}");
+            };
+            let server = server.trim_end_matches('/');
+            let mut req = client.delete(format!("{server}/agents/{agent}/token"));
+            if let Some(t) = &admin_token {
+                req = req.bearer_auth(t);
+            }
+            let resp = req.send().context("sync server unreachable")?;
+            if !resp.status().is_success() {
+                let status = resp.status().as_u16();
+                bail!(
+                    "revoke failed → HTTP {status}: {}",
+                    body_snippet(resp.text().unwrap_or_default())
+                );
+            }
+            // Drop the local named remote (url + token) for that agent.
+            let mut cfg = read_config(&cm)?;
+            if let Some(rem) = cfg.get_mut("remotes").and_then(|r| r.as_object_mut()) {
+                rem.remove(agent);
+            }
+            write_config(&cm, &cfg)?;
+            println!("revoked token for agent '{agent}' and dropped the local remote");
+        }
+        other => bail!("unknown cloud subcommand: {other} (register|list|revoke)\n{USAGE}"),
     }
     Ok(())
 }

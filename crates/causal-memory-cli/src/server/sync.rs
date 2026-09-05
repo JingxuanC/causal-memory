@@ -135,6 +135,128 @@ async fn require_sync_auth(State(st): State<AuthState>, req: Request, next: Next
     }
 }
 
+// ─── Agent provisioning (cloud register / list / revoke, P1-3) ────────
+// These routes are guarded by the *admin* token — they mint/rotate/revoke
+// exactly the per-agent repo tokens the sync auth above checks. Admin token:
+// CAUSAL_MEMORY_ADMIN_TOKEN, falling back to the global HTTP token; unset =
+// open (dev / trusted network), same posture as the repo endpoints.
+
+#[derive(Clone)]
+struct AdminState {
+    admin_token: Option<String>,
+}
+
+fn effective_admin_token(global: &Option<String>) -> Option<String> {
+    if let Some(t) = causal_memory::config::get("CAUSAL_MEMORY_ADMIN_TOKEN") {
+        let t = t.trim();
+        if !t.is_empty() {
+            return Some(t.to_string());
+        }
+    }
+    global.clone()
+}
+
+fn bearer_ok(req: &Request, expected: &str) -> bool {
+    req.headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| match v.split_once(' ') {
+            Some((scheme, cred)) if scheme.eq_ignore_ascii_case("bearer") => {
+                constant_time_eq(cred.trim(), expected)
+            }
+            _ => false,
+        })
+        .unwrap_or(false)
+}
+
+async fn require_admin(State(st): State<AdminState>, req: Request, next: Next) -> Response {
+    match &st.admin_token {
+        None => next.run(req).await, // open dev mode
+        Some(expected) => {
+            if bearer_ok(&req, expected) {
+                next.run(req).await
+            } else {
+                (
+                    StatusCode::UNAUTHORIZED,
+                    [(header::WWW_AUTHENTICATE, "Bearer")],
+                    "unauthorized: admin token required (CAUSAL_MEMORY_ADMIN_TOKEN)",
+                )
+                    .into_response()
+            }
+        }
+    }
+}
+
+/// 48-hex token from the OS CSPRNG. No weak fallback: an agent credential
+/// that can be guessed is worse than no credential.
+fn random_token() -> std::io::Result<String> {
+    use std::io::Read;
+    let mut buf = [0u8; 24];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut buf)?;
+    Ok(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+async fn register_agent(
+    State(root): State<PathBuf>,
+    AxumPath(agent): AxumPath<String>,
+) -> Result<axum::Json<serde_json::Value>, ApiError> {
+    let dir =
+        agent_dir(&root, &agent).ok_or_else(|| err(StatusCode::BAD_REQUEST, "bad agent id"))?;
+    let rotated = dir.join("token").exists();
+    let token = random_token().map_err(|e| {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("token source: {e}"),
+        )
+    })?;
+    atomic_write_file(&dir.join("token"), token.as_bytes())
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("write: {e}")))?;
+    Ok(axum::Json(serde_json::json!({
+        "agent_id": agent,
+        "token": token,
+        "rotated": rotated,
+    })))
+}
+
+async fn list_agents(
+    State(root): State<PathBuf>,
+) -> Result<axum::Json<serde_json::Value>, ApiError> {
+    let dir = root.join("agents");
+    let mut agents: Vec<serde_json::Value> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if e.path().is_dir() && valid_agent_id(&name) {
+                agents.push(serde_json::json!({
+                    "agent_id": name,
+                    "has_token": e.path().join("token").exists(),
+                }));
+            }
+        }
+    }
+    agents.sort_by(|a, b| {
+        a.get("agent_id")
+            .and_then(|x| x.as_str())
+            .cmp(&b.get("agent_id").and_then(|x| x.as_str()))
+    });
+    Ok(axum::Json(serde_json::json!({ "agents": agents })))
+}
+
+async fn revoke_agent_token(
+    State(root): State<PathBuf>,
+    AxumPath(agent): AxumPath<String>,
+) -> Result<StatusCode, ApiError> {
+    let dir =
+        agent_dir(&root, &agent).ok_or_else(|| err(StatusCode::BAD_REQUEST, "bad agent id"))?;
+    let token_file = dir.join("token");
+    if !token_file.exists() {
+        return Err(err(StatusCode::NOT_FOUND, "no token for this agent"));
+    }
+    std::fs::remove_file(&token_file)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, format!("remove: {e}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 type ApiError = (StatusCode, String);
 
 fn err(status: StatusCode, msg: impl Into<String>) -> ApiError {
@@ -247,24 +369,45 @@ async fn put_ref(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Router for the object-store endpoints. State is bound internally so it can
-/// be merged into the MCP HTTP app (which has its own state type).
+/// Router for the object-store endpoints + agent provisioning. State is bound
+/// internally so it can be merged into the MCP HTTP app (own state type).
 pub(crate) fn build_sync_router(state: SyncState) -> Router {
     let api = Router::new()
         .route(
             "/agents/{agent}/objects/{hash}",
             get(get_object).put(put_object),
         )
-        .route("/agents/{agent}/refs/heads/main", get(get_ref).put(put_ref));
-    let auth = AuthState {
-        root: state.root.clone(),
-        global_token: state.global_token.clone(),
-    };
-    api.route_layer(axum::middleware::from_fn_with_state(
-        auth,
-        require_sync_auth,
-    ))
-    .with_state(state.root)
+        .route("/agents/{agent}/refs/heads/main", get(get_ref).put(put_ref))
+        .route_layer(axum::middleware::from_fn_with_state(
+            AuthState {
+                root: state.root.clone(),
+                global_token: state.global_token.clone(),
+            },
+            require_sync_auth,
+        ))
+        .with_state(state.root.clone());
+
+    // Agent provisioning (cloud register/list/revoke) — admin auth, not the
+    // per-agent repo auth (it mints those very tokens).
+    let admin = Router::new()
+        .route(
+            "/agents/{agent}/register",
+            axum::routing::post(register_agent),
+        )
+        .route("/agents", axum::routing::get(list_agents))
+        .route(
+            "/agents/{agent}/token",
+            axum::routing::delete(revoke_agent_token),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            AdminState {
+                admin_token: effective_admin_token(&state.global_token),
+            },
+            require_admin,
+        ))
+        .with_state(state.root);
+
+    Router::new().merge(api).merge(admin)
 }
 
 #[cfg(test)]
@@ -467,5 +610,121 @@ mod tests {
         // Covered implicitly by object_and_ref_roundtrip (no global token,
         // no agent token file → PUT/GET succeed unauthenticated).
         let _ = Request::builder().body(Body::empty()).unwrap();
+    }
+    #[tokio::test]
+    async fn register_list_revoke_lifecycle() {
+        // Hermetic: the router's admin token falls back to the ambient
+        // CAUSAL_MEMORY_ADMIN_TOKEN env var — a dev shell may have it set.
+        std::env::remove_var("CAUSAL_MEMORY_ADMIN_TOKEN");
+        let root = tempfile::tempdir().unwrap();
+        // Global token set; admin falls back to it (no CAUSAL_MEMORY_ADMIN_TOKEN).
+        let base = spawn(root.path().to_path_buf(), Some("global-secret".into())).await;
+        let client = test_client();
+        let authed =
+            |req: reqwest::RequestBuilder| req.header("Authorization", "Bearer global-secret");
+
+        // Register without admin auth → 401.
+        let resp = client
+            .post(format!("{base}/agents/newbie/register"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+        // Register with admin → mints a 48-hex token.
+        let resp = authed(client.post(format!("{base}/agents/newbie/register")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value = resp.json().await.unwrap();
+        let t1 = v["token"].as_str().unwrap().to_string();
+        assert_eq!(t1.len(), 48);
+        assert_eq!(v["rotated"], false);
+
+        // Per-agent token now guards the repo (global no longer suffices).
+        let resp = client
+            .get(format!("{base}/agents/newbie/refs/heads/main"))
+            .header("Authorization", "Bearer global-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let resp = client
+            .get(format!("{base}/agents/newbie/refs/heads/main"))
+            .header("Authorization", format!("Bearer {t1}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND); // authed, empty
+
+        // list shows the provisioned agent.
+        let resp = authed(client.get(format!("{base}/agents")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(v["agents"][0]["agent_id"], "newbie");
+        assert_eq!(v["agents"][0]["has_token"], true);
+
+        // Re-register rotates: old token dies, new one works.
+        let resp = authed(client.post(format!("{base}/agents/newbie/register")))
+            .send()
+            .await
+            .unwrap();
+        let v: serde_json::Value = resp.json().await.unwrap();
+        let t2 = v["token"].as_str().unwrap().to_string();
+        assert_eq!(v["rotated"], true);
+        assert_ne!(t1, t2);
+        let resp = client
+            .get(format!("{base}/agents/newbie/refs/heads/main"))
+            .header("Authorization", format!("Bearer {t1}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "rotated token must be dead"
+        );
+        let resp = client
+            .get(format!("{base}/agents/newbie/refs/heads/main"))
+            .header("Authorization", format!("Bearer {t2}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        // Revoke: token file gone → falls back to the global token.
+        let resp = authed(client.delete(format!("{base}/agents/newbie/token")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let resp = client
+            .get(format!("{base}/agents/newbie/refs/heads/main"))
+            .header("Authorization", format!("Bearer {t2}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "revoked token must be dead"
+        );
+        let resp = client
+            .get(format!("{base}/agents/newbie/refs/heads/main"))
+            .header("Authorization", "Bearer global-secret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        // Revoking again → 404.
+        let resp = authed(client.delete(format!("{base}/agents/newbie/token")))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

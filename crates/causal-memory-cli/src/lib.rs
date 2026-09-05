@@ -15,7 +15,9 @@ pub mod http_auth;
 pub mod server;
 
 use commands::distill::{run_distill, run_novelty};
-use commands::git::{run_checkout, run_clone, run_commit, run_log, run_pull, run_push, run_remote};
+use commands::git::{
+    run_checkout, run_clone, run_cloud, run_commit, run_log, run_pull, run_push, run_remote,
+};
 use commands::io::{run_export, run_import};
 use commands::maintenance::{
     run_embed, run_judge, run_migrate, run_polarity, run_resolve_updates, run_restore, run_sleep,
@@ -172,6 +174,8 @@ fn dispatch(args: &[String]) -> anyhow::Result<()> {
             "checkout" => return run_checkout(&args[1..]),
             // remote add|list|remove — named remotes for push/pull
             "remote" => return run_remote(&args[1..]),
+            // cloud register|list|revoke — provision agent tokens on a server
+            "cloud" => return run_cloud(&args[1..]),
             // Subcommand: bench-compaction — reproducible
             // compaction-degradation bench
             "bench-compaction" => {
@@ -254,6 +258,9 @@ fn print_help() {
          \x20 clone <path|remote>   fresh DB from a remote + set origin\n\
          \x20 checkout <hash|HEAD|HEAD~N>  hard-reset DB to a snapshot\n\
          \x20 remote add|list|remove <name> [<path>]  named remotes\n\
+         \x20 cloud register <agent_id> <server-url>  mint agent token + save remote\n\
+         \x20 cloud list <server-url>                 list registered agents\n\
+         \x20 cloud revoke <agent_id> <server-url>    revoke agent token\n\
          \x20   (state in <db>.cm/; commits are sha256 content-addressed)\n\
          \n\
          Benchmarks:\n\
