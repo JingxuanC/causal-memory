@@ -1,6 +1,6 @@
 # causal-memory DSH plugin
 
-DeepSeek Harness 原生记忆插件：把 causal-memory 的 16 个工具以**干净命名**
+DeepSeek Harness 原生记忆插件：把 causal-memory 的 17 个工具以**干净命名**
 （无 `mcp__` 前缀）挂到 DSH 的 `ctx.tools`，并注入一条系统提示词段落
 （order 300），告诉模型何时查阅因果记忆库。
 
@@ -79,7 +79,7 @@ dsh plugin --profile web remove causal-memory-dsh-plugin
 - 零运行时依赖：只用 Node 内置模块；JSON-RPC over stdio 直接与
   causal-memory 二进制通信（rmcp 的新行分隔 JSON 线协议）。
 - `apply` 为 async：与 DSH 官方 `@deepseek-ai/dsh-mcp-client` 同款时序
-  （cordis 不等待 async apply 的 promise，工具在激活后异步就位）。
+  （cordis 4.x 会等待 async apply 的 promise，工具在激活前完成握手与发现）。
 - 所有注册均为 effect 作用域：卸载时注销工具并终止子进程。
 - 与 MCP 桥（`@deepseek-ai/dsh-mcp-client`，工具名 `mcp__causal-memory__*`）
   二选一启用，避免双份工具。
