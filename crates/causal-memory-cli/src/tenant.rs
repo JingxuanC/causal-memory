@@ -1,11 +1,17 @@
 //! Multi-tenant bearer auth for the `/mcp` endpoint (opt-in).
 //!
 //! `CAUSAL_MEMORY_TOKENS_FILE` points to a JSON file mapping bearer tokens
-//! to tenant names:
+//! to tenant names — or to a directory of such `*.json` files, which are
+//! merged (the ops-managed `tokens.json` and the website-bridge
+//! `cloud.json` pattern):
 //!
 //! ```json
-//! { "<token-a>": "alice", "<token-b>": "bob" }
+//! { "<token-a>": "alice", "sha256:<hex-of-token-b>": "bob" }
 //! ```
+//!
+//! Keys prefixed `sha256:` are matched against the SHA-256 of the presented
+//! token, so issuers that only store hashes (the website dashboard: "we only
+//! keep a hash") can bridge tokens in without plaintext ever touching disk.
 //!
 //! When the file is configured and loads as a non-empty map, `/mcp` requires
 //! `Authorization: Bearer <token>`; the resolved tenant gets its own
@@ -16,13 +22,14 @@
 //! the pre-existing behavior: no `/mcp` auth, one shared store for everyone
 //! (`auth=open` — the startup log states the mode either way).
 //!
-//! Hot-reload tradeoff: the tokens file is re-read when its mtime changes
-//! (one `stat` per request, no full re-parse), so ops can add/revoke tenants
-//! without a restart. A same-nanosecond rewrite could theoretically slip
-//! past the mtime check — acceptable for an ops-managed file that changes
-//! by hand/deploy, and documented here. If the file disappears or stops
-//! parsing at runtime, the last-good map is kept (fail closed): a bad edit
-//! must not silently open the endpoint or lock every tenant out.
+//! Hot-reload tradeoff: each source file is re-read when its mtime changes
+//! (one `stat` per file per request, no full re-parse), so ops can
+//! add/revoke tenants without a restart. A same-nanosecond rewrite could
+//! theoretically slip past the mtime check — acceptable for files that
+//! change by hand/deploy/bridge, and documented here. A source that
+//! disappears or stops parsing keeps its last-good map (fail closed): a bad
+//! edit must not silently open the endpoint or lock every tenant out. An
+//! empty-but-valid `{}` clears that source's tokens (revocation by edit).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -57,90 +64,163 @@ fn load_map(path: &Path) -> anyhow::Result<HashMap<String, String>> {
 }
 
 /// Token → tenant map with mtime-based hot reload.
+/// SHA-256 hex of a presented bearer token, for matching `sha256:<hex>`
+/// entries: bridge files from the website dashboard store only hashes (the
+/// product's promise is "we never keep plaintext"), so the server hashes the
+/// presented credential and compares digests instead.
+fn sha256_hex(text: &str) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(text.as_bytes());
+    let mut out = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
 pub(crate) struct TenantTokens {
+    /// File or directory. Directory mode merges every `*.json` inside (each
+    /// holding the same token→tenant map): the ops-managed `tokens.json` and
+    /// the website-bridge `cloud.json` can then live side by side without a
+    /// shared-writer race on one file.
     path: PathBuf,
     inner: Mutex<TokensInner>,
 }
 
+#[derive(Default)]
 struct TokensInner {
-    /// Mtime of the file the cached map was loaded from (None = file was
-    /// absent). Compared with `!=`, not ordering: mtime can move backwards
-    /// on a restore-from-backup and we still want the reload.
-    mtime: Option<std::time::SystemTime>,
-    map: HashMap<String, String>,
+    /// Per-source-file last-known mtime (None = file was absent/unreadable).
+    /// Compared with `!=`, not ordering: mtime can move backwards on a
+    /// restore-from-backup and we still want the reload.
+    stamps: HashMap<PathBuf, Option<std::time::SystemTime>>,
+    /// Per-source-file last-good map. Fail closed per file: a broken edit to
+    /// one source must not drop the others nor silently open anything.
+    maps: HashMap<PathBuf, HashMap<String, String>>,
+}
+
+impl TokensInner {
+    fn total_len(&self) -> usize {
+        self.maps.values().map(|m| m.len()).sum()
+    }
+}
+
+/// List the token source files: the path itself when it is a plain file, or
+/// every `*.json` directly inside it when it is a directory (sorted for
+/// deterministic merge order).
+fn source_files(path: &Path) -> Vec<PathBuf> {
+    let is_dir = std::fs::metadata(path).map(|m| m.is_dir()).unwrap_or(false);
+    if !is_dir {
+        return vec![path.to_path_buf()];
+    }
+    let mut files: Vec<PathBuf> = std::fs::read_dir(path)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().is_some_and(|e| e == "json"))
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files
 }
 
 impl TenantTokens {
     /// Load from `CAUSAL_MEMORY_TOKENS_FILE` (env or config file). Returns
-    /// None — open mode — when the key is unset, or the file is missing,
+    /// None — open mode — when the key is unset, or the file/dir is missing,
     /// unparseable, or holds no usable entries (each case warns loudly on
     /// stderr; the last one is a misconfiguration an operator must see).
     pub(crate) fn from_env() -> Option<Self> {
         let raw = causal_memory::config::get("CAUSAL_MEMORY_TOKENS_FILE")?;
         let path = PathBuf::from(raw.trim());
-        let map = match load_map(&path) {
-            Ok(map) => map,
-            Err(e) => {
-                eprintln!(
-                    "WARNING: CAUSAL_MEMORY_TOKENS_FILE={} could not be loaded ({e:#}); /mcp runs with auth=open",
-                    path.display()
-                );
-                return None;
+        let mut inner = TokensInner::default();
+        let mut loaded_any_source = false;
+        for file in source_files(&path) {
+            let stamp = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+            if let Ok(map) = load_map(&file) {
+                inner.maps.insert(file.clone(), map);
+                loaded_any_source = true;
             }
-        };
-        if map.is_empty() {
+            inner.stamps.insert(file, stamp);
+        }
+        if !loaded_any_source {
+            eprintln!(
+                "WARNING: CAUSAL_MEMORY_TOKENS_FILE={} could not be loaded; /mcp runs with auth=open",
+                path.display()
+            );
+            return None;
+        }
+        if inner.total_len() == 0 {
             eprintln!(
                 "WARNING: CAUSAL_MEMORY_TOKENS_FILE={} has no usable token entries; /mcp runs with auth=open",
                 path.display()
             );
             return None;
         }
-        let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
         Some(Self {
             path,
-            inner: Mutex::new(TokensInner { mtime, map }),
+            inner: Mutex::new(inner),
         })
     }
 
-    /// Number of configured tokens (startup log).
+    /// Number of configured tokens across all sources (startup log).
     pub(crate) fn len(&self) -> usize {
-        poison_lock(&self.inner).map.len()
+        poison_lock(&self.inner).total_len()
     }
 
-    /// Re-read the file when its mtime changed. Fail closed: on a missing or
-    /// unparseable file the last-good map stays in force; the stamped mtime
-    /// means a broken file is retried on its next change, not every request.
+    /// Re-read sources whose mtime changed (or that appeared/disappeared).
+    /// Fail closed per file: a missing/unparseable source keeps its last-good
+    /// map; the stamped mtime means it is retried on its next change, not
+    /// every request. An empty-but-valid map clears that source's tokens
+    /// (that is how revocation-by-edit works).
     fn reload_if_changed(&self) {
-        let mtime = std::fs::metadata(&self.path)
-            .and_then(|m| m.modified())
-            .ok();
+        let files = source_files(&self.path);
         let mut inner = poison_lock(&self.inner);
-        if mtime == inner.mtime {
+        let file_set: std::collections::HashSet<&PathBuf> = files.iter().collect();
+        let stale = inner
+            .stamps
+            .keys()
+            .any(|k| !file_set.contains(k))
+            || files.iter().any(|f| {
+                let stamp = std::fs::metadata(f).and_then(|m| m.modified()).ok();
+                inner.stamps.get(f).copied().flatten() != stamp
+            });
+        if !stale {
             return;
         }
-        match load_map(&self.path) {
-            Ok(map) if !map.is_empty() => {
-                tracing::info!(
-                    path = %self.path.display(),
-                    tokens = map.len(),
-                    "reloaded tenant tokens file"
-                );
-                inner.map = map;
+        // Drop sources that disappeared (their tenants are revoked).
+        inner.maps.retain(|k, _| file_set.contains(k));
+        let mut new_stamps = HashMap::new();
+        let mut changed = 0usize;
+        for file in files {
+            let stamp = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+            if inner.stamps.get(&file).copied().flatten() != stamp {
+                changed += 1;
+                match load_map(&file) {
+                    Ok(map) => {
+                        inner.maps.insert(file.clone(), map);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %file.display(),
+                            "tenant tokens source unreadable ({e:#}) — keeping last-good map (fail closed)"
+                        );
+                    }
+                }
             }
-            _ => {
-                tracing::warn!(
-                    path = %self.path.display(),
-                    "tenant tokens file unreadable/empty — keeping last-good map (fail closed)"
-                );
-            }
+            new_stamps.insert(file, stamp);
         }
-        inner.mtime = mtime;
+        inner.stamps = new_stamps;
+        if changed > 0 {
+            tracing::info!(sources = inner.stamps.len(), tokens = inner.total_len(), "reloaded tenant tokens");
+        }
     }
 
     /// Resolve the request's bearer credential to a tenant name. The scan is
     /// constant-time per entry rather than a HashMap lookup: `HashMap<String>`
     /// hashing is not a constant-time operation and would give a timing
-    /// oracle on which token prefix matched.
+    /// oracle on which token prefix matched. Keys prefixed `sha256:` are
+    /// matched against the SHA-256 of the presented token, so hash-only
+    /// bridge files work without ever storing plaintext.
     pub(crate) fn resolve(&self, headers: &axum::http::HeaderMap) -> Option<String> {
         let presented = headers
             .get(header::AUTHORIZATION)
@@ -150,10 +230,15 @@ impl TenantTokens {
                 _ => None,
             })?;
         self.reload_if_changed();
+        let presented_hash = sha256_hex(presented);
         poison_lock(&self.inner)
-            .map
-            .iter()
-            .find(|(token, _)| constant_time_eq(token, presented))
+            .maps
+            .values()
+            .flat_map(|m| m.iter())
+            .find(|(token, _)| match token.strip_prefix("sha256:") {
+                Some(hash) => constant_time_eq(hash, &presented_hash),
+                None => constant_time_eq(token, presented),
+            })
             .map(|(_, tenant)| tenant.clone())
     }
 }
@@ -317,12 +402,17 @@ mod tests {
         /// Test constructor: load from an explicit path (from_env reads the
         /// process-global env, which tests must not fight over).
         fn from_path_for_test(path: &Path) -> Self {
+            let mut inner = TokensInner::default();
+            for file in source_files(path) {
+                let stamp = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+                if let Ok(map) = load_map(&file) {
+                    inner.maps.insert(file.clone(), map);
+                }
+                inner.stamps.insert(file, stamp);
+            }
             Self {
                 path: path.to_path_buf(),
-                inner: Mutex::new(TokensInner {
-                    mtime: std::fs::metadata(path).and_then(|m| m.modified()).ok(),
-                    map: load_map(path).unwrap(),
-                }),
+                inner: Mutex::new(inner),
             }
         }
     }
@@ -374,6 +464,82 @@ mod tests {
         assert!(p.extension().is_some_and(|e| e == "db"), "{p:?}");
         // Distinct names stay distinct after sanitizing (hash disambiguates).
         assert_ne!(stores.db_path("a/b"), stores.db_path("a_b"));
+    }
+
+    #[test]
+    fn tokens_sha256_hashed_keys_match_without_plaintext() {
+        let dir = tempfile::tempdir().unwrap();
+        let hash = sha256_hex("cm_cloud-token-1");
+        let path = write_tokens(
+            dir.path(),
+            &format!(r#"{{"sha256:{hash}": "alice", "tok-plain": "bob"}}"#),
+        );
+        let tokens = TenantTokens::from_path_for_test(&path);
+        let mut headers = axum::http::HeaderMap::new();
+        // Presented plaintext matches its sha256: entry.
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer cm_cloud-token-1".parse().unwrap(),
+        );
+        assert_eq!(tokens.resolve(&headers).as_deref(), Some("alice"));
+        // Plaintext entries still work side by side.
+        headers.insert(header::AUTHORIZATION, "Bearer tok-plain".parse().unwrap());
+        assert_eq!(tokens.resolve(&headers).as_deref(), Some("bob"));
+        // The hash itself is NOT a credential: presenting the digest fails.
+        headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {hash}").parse().unwrap(),
+        );
+        assert_eq!(tokens.resolve(&headers), None);
+    }
+
+    #[test]
+    fn tokens_directory_mode_merges_and_revokes_per_file() {
+        let dir = tempfile::tempdir().unwrap();
+        write_tokens(dir.path(), r#"{"tok-alice": "alice"}"#);
+        std::fs::write(
+            dir.path().join("cloud.json"),
+            r#"{"tok-carol": "carol"}"#,
+        )
+        .unwrap();
+        // Non-json files in the dir are ignored.
+        std::fs::write(dir.path().join("README.txt"), "not tokens").unwrap();
+        let tokens = TenantTokens::from_path_for_test(dir.path());
+        let mut headers = axum::http::HeaderMap::new();
+        for (token, tenant) in [("tok-alice", "alice"), ("tok-carol", "carol")] {
+            headers.insert(
+                header::AUTHORIZATION,
+                format!("Bearer {token}").parse().unwrap(),
+            );
+            assert_eq!(tokens.resolve(&headers).as_deref(), Some(tenant));
+        }
+
+        // Website bridge adds a token to cloud.json: picked up on next request.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(
+            dir.path().join("cloud.json"),
+            r#"{"tok-carol": "carol", "tok-dave": "dave"}"#,
+        )
+        .unwrap();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer tok-dave".parse().unwrap(),
+        );
+        assert_eq!(tokens.resolve(&headers).as_deref(), Some("dave"));
+
+        // Deleting cloud.json revokes its tenants; tokens.json tenants stay.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::remove_file(dir.path().join("cloud.json")).unwrap();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer tok-carol".parse().unwrap(),
+        );
+        assert_eq!(tokens.resolve(&headers), None);
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer tok-alice".parse().unwrap(),
+        );
+        assert_eq!(tokens.resolve(&headers).as_deref(), Some("alice"));
     }
 
     // ─── End-to-end: real MCP JSON-RPC over HTTP against the tenant router ───
