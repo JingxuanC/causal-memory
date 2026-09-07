@@ -196,11 +196,15 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
     }
     // Opt-in bearer auth for the observability routes (empty/unset = open).
     let auth_token = crate::http_auth::token_from_config();
+    // Opt-in multi-tenant auth for /mcp (unset/empty/unreadable file = open).
+    let tenant_tokens = crate::tenant::TenantTokens::from_env();
 
     eprintln!("Opening causal memory DB at {}", db_path.display());
-    // A3: one shared store for the whole process — every connection works
-    // against the same CausalStore (WAL makes concurrent connections safe).
-    // The old code reopened + re-migrated the DB per connection.
+    // A3: one shared store for the whole process — in open mode every /mcp
+    // connection works against this CausalStore (WAL makes concurrent
+    // connections safe). In multi-tenant mode /mcp never touches it (each
+    // tenant gets a lazy per-tenant store), but the observability endpoints
+    // keep reporting on this default store.
     let store = std::sync::Arc::new(CausalStore::open(&db_path)?);
     let edge_count = store.count_edges().unwrap_or(0);
     eprintln!("Causal memory ready: {} existing edges", edge_count);
@@ -213,8 +217,6 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
         };
         use std::sync::Arc;
 
-        // Each connection gets a fresh server instance backed by the same store.
-        let shared_store = store.clone();
         // rmcp 默认只放行 loopback Host（localhost/127.0.0.1/::1）防 DNS rebinding。
         // Docker 容器经 host.docker.internal 访问宿主机时 Host 头不在白名单 → 403。
         // 这里合并默认白名单 + host.docker.internal + 环境变量追加
@@ -237,16 +239,47 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
             .with_stateful_mode(false)
             .with_json_response(true)
             .with_allowed_hosts(allowed_hosts);
-        let service = StreamableHttpService::new(
-            move || {
-                Ok(CausalMemoryServer::new_with_label(
-                    (*shared_store).clone(),
-                    "mcp-http",
-                ))
-            },
-            Arc::new(rmcp::transport::streamable_http_server::session::never::NeverSessionManager::default()),
-            config,
-        );
+
+        // /mcp: open (one shared store, per-connection server instances) or
+        // multi-tenant (bearer token → tenant → lazy per-tenant store).
+        let mcp_route: axum::Router = match tenant_tokens {
+            Some(tokens) => {
+                let tenants_dir = db_path
+                    .parent()
+                    .map(|p| p.join("tenants"))
+                    .unwrap_or_else(|| std::path::PathBuf::from("tenants"));
+                eprintln!(
+                    "Auth: /mcp auth=multi-tenant ({} tokens; tenant dbs under {})",
+                    tokens.len(),
+                    tenants_dir.display()
+                );
+                crate::tenant::McpTenantState::new(
+                    tokens,
+                    crate::tenant::TenantStores::new(tenants_dir),
+                    config,
+                )
+                .router()
+            }
+            None => {
+                eprintln!(
+                    "Auth: /mcp auth=open (set CAUSAL_MEMORY_TOKENS_FILE for multi-tenant)"
+                );
+                // Each connection gets a fresh server instance backed by the
+                // same store.
+                let shared_store = store.clone();
+                let service = StreamableHttpService::new(
+                    move || {
+                        Ok(CausalMemoryServer::new_with_label(
+                            (*shared_store).clone(),
+                            "mcp-http",
+                        ))
+                    },
+                    Arc::new(rmcp::transport::streamable_http_server::session::never::NeverSessionManager::default()),
+                    config,
+                );
+                axum::Router::new().route_service("/mcp", service)
+            }
+        };
 
         // One Memory for the debug endpoints (graph built once, not per
         // request); MCP connections keep their per-connection instances.
@@ -256,7 +289,7 @@ pub(crate) fn run_http_server(args: &[String]) -> anyhow::Result<()> {
         ));
 
         let app = axum::Router::new()
-            .route_service("/mcp", service)
+            .merge(mcp_route)
             .merge(build_obs_router(
                 ObsState { store, debug_memory },
                 auth_token.clone(),

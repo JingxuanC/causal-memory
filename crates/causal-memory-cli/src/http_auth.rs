@@ -5,9 +5,9 @@
 //! MCP HTTP server and `/metrics` on the AMC server. Health probes
 //! (`/health`, `/healthz`, `/readyz`) stay open on purpose: kubelet
 //! liveness/readiness probes cannot attach bearer headers, and those
-//! endpoints leak nothing beyond an "ok"/DB-up status. The `/mcp` route is
-//! out of scope — MCP-client auth deserves its own design (rmcp 2.2.0
-//! already restricts it to loopback Host headers by default).
+//! endpoints leak nothing beyond an "ok"/DB-up status. `/mcp` client auth
+//! is a separate mechanism: per-tenant bearer tokens via
+//! `CAUSAL_MEMORY_TOKENS_FILE` (see `tenant.rs`).
 
 use axum::extract::{Request, State};
 use axum::http::{header, StatusCode};

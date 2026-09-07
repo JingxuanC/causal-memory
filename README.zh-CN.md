@@ -246,11 +246,37 @@ GET /debug/recalls              最近的召回审计记录（落库持久化，
 `causal-memory setconfig`）后，这些端点要求
 `Authorization: Bearer <token>`（不设置 = 保持开放，即原有行为）。
 `/healthz` / `/readyz` 有意保持开放——kubelet 探针无法携带 bearer 头，
-且这两个端点不泄露内容。`/mcp` 不在此 token 的保护范围内
-（rmcp 2.2.0 默认已将其限制为 loopback Host；MCP 客户端鉴权见 roadmap）。
-未设置 token 时请勿将该端口暴露公网。
+且这两个端点不泄露内容。`/mcp` 的客户端鉴权是另一套机制：按租户的
+bearer token（见下文「多租户 HTTP」）。未设置 token 时请勿将该端口暴露公网。
 
 stderr 结构化 JSON 日志：`CAUSAL_MEMORY_LOG_FORMAT=json`。
+
+#### 多租户 HTTP（每租户独立数据库）
+
+将 `CAUSAL_MEMORY_TOKENS_FILE`（环境变量或 `causal-memory setconfig`）
+指向一个 JSON 文件，内容是 bearer token → 租户名的映射：
+
+```json
+{ "token-for-alice": "alice", "token-for-bob": "bob" }
+```
+
+文件配置且非空时，`/mcp` 要求 `Authorization: Bearer <token>`；每个租户
+读写自己独立的 SQLite 库，路径为
+`<db-dir>/tenants/<tenant>.<fnv1a-hash>.db`——一租户一库，首次请求时
+惰性打开，租户之间的事实与因果边互不可见（有端到端隔离测试覆盖）。
+缺失或未知 token 返回 `401`，且不会创建任何数据库文件。文件 mtime
+变化时会自动热加载，无需重启即可增删租户；运行时文件损坏/丢失则
+保持最后一次可用的映射（fail closed）。
+
+不设置（或文件为空/不可读）时保持原有行为：`/mcp` 无鉴权、单共享库，
+本地和 stdio 用法零影响。启动日志会标明当前模式：
+`auth=multi-tenant (N tokens)` 或 `auth=open`。
+
+内存驻留提示：每个活跃租户各持有一个 `CausalStore` 和内存图，RSS 随
+租户数增长——在单进程承载大量租户前请参阅
+[docs/design/enterprise-scaling.md](docs/design/enterprise-scaling.md)。
+可观测性端点（`/metrics`、`/debug/*`）仍报告默认共享库，并继续由
+`CAUSAL_MEMORY_HTTP_AUTH_TOKEN` 独立控制。
 
 ### 使用本地 embedding（无需 API key）
 

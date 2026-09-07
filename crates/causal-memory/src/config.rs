@@ -22,6 +22,7 @@ pub const ALLOWED_KEYS: &[&str] = &[
     "CAUSAL_MEMORY_LLM_MODEL",
     "CAUSAL_MEMORY_HTTP_TIMEOUT_SECS",
     "CAUSAL_MEMORY_HTTP_AUTH_TOKEN",
+    "CAUSAL_MEMORY_TOKENS_FILE",
 ];
 
 /// Resolved config-file path.

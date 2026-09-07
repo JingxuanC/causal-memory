@@ -13,6 +13,7 @@ pub mod bench_tokens;
 pub mod commands;
 pub mod http_auth;
 pub mod server;
+pub mod tenant;
 
 use commands::distill::{run_distill, run_novelty};
 use commands::git::{

@@ -288,12 +288,42 @@ bearer auth: set `CAUSAL_MEMORY_HTTP_AUTH_TOKEN` (env or
 `causal-memory setconfig`) and they require
 `Authorization: Bearer <token>` (unset = open, the previous behavior).
 `/healthz` / `/readyz` stay open on purpose — kubelet probes cannot send
-bearer headers and leak nothing. `/mcp` auth is not covered by the token
-(rmcp 2.2.0 already restricts it to loopback Host headers by default; MCP
-client auth is tracked in the roadmap). Without the token, do not expose
+bearer headers and leak nothing. `/mcp` client auth is a separate
+mechanism: per-tenant bearer tokens (see *Multi-tenant HTTP* below).
+Without the token, do not expose
 the port to the public internet.
 
 Structured JSON logs on stderr: `CAUSAL_MEMORY_LOG_FORMAT=json`.
+
+#### Multi-tenant HTTP (per-tenant databases)
+
+Point `CAUSAL_MEMORY_TOKENS_FILE` (env or `causal-memory setconfig`) at a
+JSON file mapping bearer tokens to tenant names:
+
+```json
+{ "token-for-alice": "alice", "token-for-bob": "bob" }
+```
+
+With the file configured and non-empty, `/mcp` requires
+`Authorization: Bearer <token>`, and each tenant reads and writes its own
+SQLite store at `<db-dir>/tenants/<tenant>.<fnv1a-hash>.db` — one database
+per tenant, opened lazily on first request, so one tenant can never see
+another's facts or causal edges (covered by an end-to-end isolation test).
+Missing or unknown tokens get `401` and never create a database file. The
+file is reloaded when its mtime changes, so tenants can be added or revoked
+without a restart; if the file turns unreadable at runtime the last-good
+map stays in force (fail closed).
+
+Unset (or an empty/unreadable file) keeps the previous behavior: no `/mcp`
+auth, one shared store — local and stdio usage are unaffected. The startup
+log states the mode: `auth=multi-tenant (N tokens)` vs `auth=open`.
+
+Memory residency: every active tenant holds its own `CausalStore` and
+in-memory graph, so RSS grows with the tenant count — see
+[docs/design/enterprise-scaling.md](docs/design/enterprise-scaling.md)
+before packing many tenants into one process. The observability endpoints
+(`/metrics`, `/debug/*`) keep reporting on the default store and are still
+gated by `CAUSAL_MEMORY_HTTP_AUTH_TOKEN`, independently of tenant auth.
 
 ### With local embeddings (no API key needed)
 

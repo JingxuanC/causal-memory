@@ -64,6 +64,9 @@ chrono.workspace = true
 # commands and uses reqwest's blocking client on a short per-request timeout.
 reqwest = { workspace = true, features = ["blocking"] }
 futures.workspace = true
+# tower::ServiceExt::oneshot — the tenant /mcp dispatcher hands each request
+# to a freshly built StreamableHttpService (already transitive via axum).
+tower = { version = "0.5", features = ["util"] }
 sha2.workspace = true
 
 [target.'cfg(unix)'.dependencies]

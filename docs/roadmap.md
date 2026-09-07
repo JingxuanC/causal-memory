@@ -232,8 +232,8 @@ Ecosystem:
   [design](design/cloud-context-restore.md): upgrade `session_logs` from an
   audit table into a commit/archive/restore loop (OpenViking-style session
   lifecycle) — `commit_session` / `restore_session` tools, tiered L0/L1/L2
-  loading on the existing `detail_level` path, object-store sync, plus the
-  still-open `/mcp` auth + multi-tenant hardening. fork stays orthogonal:
+  loading on the existing `detail_level` path, object-store sync, plus
+  `/mcp` auth + multi-tenant stores (shipped 2026-09-07, see below). fork stays orthogonal:
   it compares same-context branches, it does not snapshot context.
 - [ ] **L0 file injection**: generate `CAUSAL_MEMORY.md` (< 200 lines,
   pointer-style) for constant system-prompt pinning — proactive, vs the
@@ -259,9 +259,14 @@ Ecosystem:
 - [x] MCP HTTP transport — ✅ shipped (`causal-memory http`, Streamable
   HTTP, stateless mode). Bearer auth for the observability routes
   shipped 2026-09-01 (`CAUSAL_MEMORY_HTTP_AUTH_TOKEN` gates `/metrics` +
-  `/debug/*`; probes intentionally open; AMC `/metrics` too) — MCP
-  endpoint auth + multi-tenant hardening still open
-- [ ] Multi-tenant support
+  `/debug/*`; probes intentionally open; AMC `/metrics` too). `/mcp`
+  endpoint auth shipped 2026-09-07 (`CAUSAL_MEMORY_TOKENS_FILE`, see
+  Multi-tenant below)
+- [x] Multi-tenant support — ✅ shipped 2026-09-07 (HTTP `/mcp` bearer
+  token → tenant, one SQLite store per tenant under
+  `<db-dir>/tenants/<tenant>.<fnv1a>.db`, lazy registry, tokens file
+  hot-reloads on mtime, unknown tokens get 401 without creating a store;
+  unset = open single-store mode, stdio/local unaffected)
 - [ ] Backup / restore tooling (migrations already done)
 - [x] Observability (Prometheus, OpenTelemetry) — ✅ shipped the core:
   hand-rolled in-process registry (no metrics/OTel crates), RED +
