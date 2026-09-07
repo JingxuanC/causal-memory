@@ -5,9 +5,31 @@ All notable changes to causal-memory are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.3] - Unreleased
+## [0.9.3] - 2026-09-07
 
 ### Added
+- **Memory git-sync — snapshot versioning + cross-location sync**
+  ([design](docs/design/memory-git-sync.md)): `commit` / `log` / `push` /
+  `pull` / `clone` / `checkout` / `remote` subcommands. `commit` snapshots
+  the whole store (full truth including invalidated edges, originals kept,
+  no redaction) into sha256 content-addressed commits under `<db>.cm/`;
+  `log` walks the chain without opening the DB; `push`/`pull` are
+  fast-forward checked and idempotent; `clone` builds a fresh DB from a
+  remote and sets origin; `checkout <hash|HEAD|HEAD~N>` hard-resets the DB
+  to a snapshot (rollback).
+- **git-sync P1: align import + https remotes + per-agent cloud tokens** —
+  `import --align` propagates forget/supersede state on pull; `https`
+  remotes talk to a sync object-store over HTTP; `cloud
+  register/list/revoke <agent_id> <server-url>` mints and revokes
+  per-agent tokens and saves the remote.
+- **git-sync P2: host-driven session auto-commit** — `session-commit
+  [<session>] [--push R] [--l0-llm]` snapshots a session's lessons (or the
+  whole store when no session file is given) and optionally pushes; skips
+  empty stores so no phantom genesis snapshots; `--l0-llm` renders a
+  one-line LLM summary as the commit message. The hermes-plugin
+  `on_session_end` hook runs it on a background thread when `agent_id` +
+  `auto_commit` are configured (silent no-op otherwise; never blocks
+  teardown).
 - **Native Claude Code plugin + marketplace** (`plugins/claude-code/` +
   root `.claude-plugin/marketplace.json`): install with
   `claude plugin marketplace add JingxuanC/causal-memory &&
@@ -125,6 +147,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `getconfig` now masks `*_TOKEN` values like `*_KEY`.
 
 ### Fixed
+- **Hermetic unit tests** — `init_embedder()` now returns `None` under
+  `cfg(test)`: `EmbedConfig::from_env` falls back to
+  `CAUSAL_MEMORY_LLM_API/KEY`, so a configured dev environment made
+  `cargo test` issue real HTTP calls and wedge on the global embed mutex
+  (observed 11+ min hangs; the suite finishes in seconds once isolated).
+- **Stable export chunk ids (git-sync)** — `export` now re-derives
+  edge/meta_edge chunk ids via `fnv1a(text)`, matching what `import`
+  regenerates, so snapshot hashes are stable across clones and `commit`
+  on a fresh clone correctly reports "nothing to commit".
 - **Paired-verdict ledger mis-coding** — the fork section's conclusion said
   "same-context evidence favor A/B" while the prediction-ledger matcher
   looked for "favors A/B", so every paired verdict was silently logged as
