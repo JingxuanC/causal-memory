@@ -238,8 +238,24 @@ pub(crate) fn export_jsonl(
             ))
         })?;
         for row in rows {
-            let (_fid, ftext, fcat, _tid, ttext, tcat, rel, pat, conf, dat, vto, sc, s, cfd, sim, vf) =
-                row?;
+            let (
+                _fid,
+                ftext,
+                fcat,
+                _tid,
+                ttext,
+                tcat,
+                rel,
+                pat,
+                conf,
+                dat,
+                vto,
+                sc,
+                s,
+                cfd,
+                sim,
+                vf,
+            ) = row?;
             // Same as the edge loop above: re-derive ids via fnv1a(text) so
             // they match import-side regeneration across clones.
             let fid = fnv1a(&ftext);
