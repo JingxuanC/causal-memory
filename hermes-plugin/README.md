@@ -113,7 +113,7 @@ Config keys (deliberately minimal, no secrets):
 | `sync_turn` | `remember()` on a daemon thread — **never blocks the turn** |
 | `on_memory_write` | mirrored into the fact layer (`scope="agent"`, replace-on-rewrite) |
 | `on_pre_compress` | conservative no-op (compaction survival is already structural; LLM distill TODO) |
-| `on_session_end` | conservative no-op (session distill needs an LLM key; TODO) |
+| `on_session_end` | cloud auto-commit: with `agent_id` configured and `auto_commit` enabled, a background thread runs `causal-memory session-commit -m <L0> --push <agent_id>`; missing CLI / unconfigured / disabled → silent no-op; never blocks teardown |
 | `shutdown` | drains pending remember threads, releases the store |
 
 ## CLI

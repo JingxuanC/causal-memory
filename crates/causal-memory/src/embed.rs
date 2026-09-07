@@ -239,30 +239,40 @@ impl UnifiedEmbedder {
 /// 2. Local ONNX (if `local-embed` feature is compiled in and HTTP is absent)
 /// 3. None (semantic search unavailable)
 pub fn init_embedder() -> Option<UnifiedEmbedder> {
-    // Priority 1: HTTP endpoint
-    if let Some(config) = EmbedConfig::from_env() {
-        return Some(UnifiedEmbedder::Http(Embedder::new(config)));
-    }
+    // Unit tests must be hermetic: EmbedConfig::from_env falls back to
+    // CAUSAL_MEMORY_LLM_API/KEY, so a configured dev environment would make
+    // tests issue real HTTP calls and wedge on the global embed mutex
+    // (observed: cargo test hung 11+ min; with this guard it passes in 0.01s).
+    #[cfg(test)]
+    return None;
 
-    // Priority 2: Local ONNX (feature-gated)
-    #[cfg(feature = "local-embed")]
+    #[cfg(not(test))]
     {
-        match LocalEmbedder::new() {
-            Ok(e) => {
-                eprintln!(
-                    "[causal-memory] local embedding initialized: {} ({} dims)",
-                    e.model(),
-                    "384"
-                );
-                return Some(UnifiedEmbedder::Local(e));
-            }
-            Err(e) => {
-                eprintln!("[causal-memory] local embedding init failed: {e}");
+        // Priority 1: HTTP endpoint
+        if let Some(config) = EmbedConfig::from_env() {
+            return Some(UnifiedEmbedder::Http(Embedder::new(config)));
+        }
+
+        // Priority 2: Local ONNX (feature-gated)
+        #[cfg(feature = "local-embed")]
+        {
+            match LocalEmbedder::new() {
+                Ok(e) => {
+                    eprintln!(
+                        "[causal-memory] local embedding initialized: {} ({} dims)",
+                        e.model(),
+                        "384"
+                    );
+                    return Some(UnifiedEmbedder::Local(e));
+                }
+                Err(e) => {
+                    eprintln!("[causal-memory] local embedding init failed: {e}");
+                }
             }
         }
-    }
 
-    None
+        None
+    }
 }
 
 /// Process-global shared embedder (C1): one reqwest Client (or one ONNX

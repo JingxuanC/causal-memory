@@ -175,7 +175,13 @@ pub(crate) fn export_jsonl(
             ))
         })?;
         for row in rows {
-            let (fid, ftext, fcat, tid, ttext, tcat, rel, conf, tag, et, dat, vto, dby, pol) = row?;
+            let (_fid, ftext, fcat, _tid, ttext, tcat, rel, conf, tag, et, dat, vto, dby, pol) =
+                row?;
+            // Export ids must match what import regenerates (fnv1a(text)),
+            // so git-sync snapshot hashes stay stable across clones and
+            // "nothing to commit" triggers correctly.
+            let fid = fnv1a(&ftext);
+            let tid = fnv1a(&ttext);
             chunks.entry(fid.clone()).or_insert((ftext, fcat));
             chunks.entry(tid.clone()).or_insert((ttext, tcat));
             lines.push(
@@ -232,8 +238,12 @@ pub(crate) fn export_jsonl(
             ))
         })?;
         for row in rows {
-            let (fid, ftext, fcat, tid, ttext, tcat, rel, pat, conf, dat, vto, sc, s, cfd, sim, vf) =
+            let (_fid, ftext, fcat, _tid, ttext, tcat, rel, pat, conf, dat, vto, sc, s, cfd, sim, vf) =
                 row?;
+            // Same as the edge loop above: re-derive ids via fnv1a(text) so
+            // they match import-side regeneration across clones.
+            let fid = fnv1a(&ftext);
+            let tid = fnv1a(&ttext);
             chunks.entry(fid.clone()).or_insert((ftext, fcat));
             chunks.entry(tid.clone()).or_insert((ttext, tcat));
             lines.push(
