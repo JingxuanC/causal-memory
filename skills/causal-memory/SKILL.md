@@ -99,7 +99,7 @@ The core loop (five tools cover 90% of usage):
 Keep `task_tag` consistent within a domain (e.g. `deployment`,
 `git-workflow`) — stratified pattern mining depends on it.
 
-## 3. Cross-machine / team sync (CLI git-sync)
+## 3. Context recovery & sync (CLI git-sync)
 
 The store snapshots like git — but the git semantics are **self-implemented**
 (no git binary or wire protocol involved): content-addressed sha256 objects
@@ -110,23 +110,34 @@ remote, zero infrastructure) or a **sync server** (`https` object store —
 contrib/docker for the server image). GitHub/GitLab repos do NOT work as
 remotes.
 
+**Primary purpose: context recovery.** Memory is the agent's *private*
+context, snapshotted under its `agent_id` namespace. `commit && push` keeps
+the cloud copy current; on a new machine `clone <agent_id>` restores the
+full context in one shot; `checkout <hash>` rolls back to any snapshot.
+Single-writer assumption → no merge algorithm; "merge" is just the
+idempotent import.
+
 - **`commit -m <msg>`** — snapshot the whole store (full truth incl.
   invalidated edges, no redaction). On a fresh clone with no local changes
   it correctly reports "nothing to commit".
 - **`push [<remote|path>]` / `pull`** — upload / import commits
   (fast-forward checked, idempotent; pull propagates forget/supersede).
 - **`clone <path|remote>`** — build a fresh DB from a remote + set origin.
+  This is the context-restore entry point: new machine → `clone` → back to
+  work with full memory.
 - **`checkout <hash|HEAD|HEAD~N>`** — hard-reset the DB to a snapshot
-  (rollback); **`log --oneline`** walks the chain without opening the DB.
+  (rollback; auto-backup first); **`log --oneline`** walks the chain
+  without opening the DB.
 - **`remote add|list|remove`** — named remotes; **`cloud register
   <agent_id> <server-url>`** — per-agent tokens against a sync server.
 - **`session-commit [<session>] [--push R]`** — snapshot a session's
   lessons and optionally push; designed for host auto-commit hooks
-  (skips empty stores).
+  (skips empty stores). Keeps the cloud copy from ever going stale.
 
-Team pattern: one shared remote per team (a shared directory is enough to
-start), each agent `clone`s once, then `commit && push` after meaningful
-work and `pull` at session start.
+Team pattern (a natural extension, not the primary goal): point several
+agents at one shared remote (a shared directory is enough to start), each
+`clone`s once, then `commit && push` after meaningful work and `pull` at
+session start.
 
 ## 4. Offline session extraction (CLI — backfill memory from past sessions)
 
