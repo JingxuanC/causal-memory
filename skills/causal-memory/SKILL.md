@@ -163,17 +163,53 @@ own session format (~1 hour of work), then `distill --dry-run` to verify.
 
 ## 5. Bundled scripts (ops & integration helpers)
 
-Shipped next to this SKILL.md under `scripts/` (stdlib-only Python unless
-noted; repo source of truth: `scripts/` in github.com/JingxuanC/causal-memory):
+Shipped in the `scripts/` directory **next to this SKILL.md** — resolve
+`<skill_dir>` from the skill listing path (e.g.
+`~/.agents/skills/causal-memory/scripts/…` once installed, or
+`scripts/…` at the source repo root). Repo source of truth:
+`scripts/` in github.com/JingxuanC/causal-memory.
 
-- **`session_to_turns.py`** — convert agent session logs (kimi-code wire
-  v1.5) to the turns-JSON interchange format for `distill` (see §4).
-- **`audit_fact_links.py`** — audit fact↔chunk entity links against the
-  real store; replicates the Rust linker policy to find orphaned or
-  mis-linked facts. Run after large imports or migrations.
-- **`causal_memory_client.py`** — minimal Python client for the MCP server
-  over BOTH stdio and HTTP transports; use it to script bulk reads/writes
-  or to probe a deployment (initialize → tools/list → call).
+- **`session_to_turns.py`** — CLI converter, agent session log → turns JSON
+  (the §4 interchange format). Use when the user's session format has no
+  Rust parser and they want history backfilled:
+  ```bash
+  python3 <skill_dir>/scripts/session_to_turns.py <session-file> /tmp/turns.json
+  causal-memory distill /tmp/turns.json --dry-run   # verify, then drop --dry-run
+  ```
+  Input is kimi-code wire.jsonl; for other agents copy the `convert_*`
+  function and adapt (docstring is the format spec). stdlib only.
+
+- **`audit_fact_links.py`** — read-only store audit: fact↔chunk entity
+  links, replicating the Rust linker policy; reports orphaned / mis-linked
+  facts. Run after large imports, migrations, or when `search_facts`
+  surfaces stale entries:
+  ```bash
+  python3 <skill_dir>/scripts/audit_fact_links.py            # default db
+  python3 <skill_dir>/scripts/audit_fact_links.py --db /path/to/causal.db --sample 5
+  ```
+  Options: `--db` (default `~/.local/share/causal-memory/causal.db`),
+  `--min-tokens N`, `--df-limit N` (0 disables), `--no-compare`,
+  `--sample N`. stdlib only; never writes.
+
+- **`causal_memory_client.py`** — importable Python client (NOT a CLI) for
+  scripting against the MCP server over **both** transports. Requires
+  `pip install requests`. Use for bulk reads/writes, deployment probes, or
+  automation beyond single MCP tool calls:
+  ```python
+  import sys; sys.path.insert(0, "<skill_dir>/scripts")
+  from causal_memory_client import CausalMemoryClient
+
+  cm = CausalMemoryClient.http("http://localhost:9938/mcp")   # remote deployment
+  assert cm.health()
+  print(cm.search_memory("deploy rollback"))
+
+  cm = CausalMemoryClient.stdio("causal-memory")              # local, spawns the binary
+  cm.record_decision("chose HRP over equal-weight", "sharpe 1.8 vs 1.1",
+                     "caused", "portfolio", context="120d lookback, 10 names")
+  cm.close()
+  ```
+  Wraps all 17 tools (`record_decision` / `search_*` / `trace_*` /
+  `intervention_query` / `counterfactual_query` / `reconstruct_lesson` …).
 
 Full reference (17 tools): repo README "MCP tools" —
 github.com/JingxuanC/causal-memory.
