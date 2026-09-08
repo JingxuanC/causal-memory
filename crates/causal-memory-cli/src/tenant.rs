@@ -176,10 +176,7 @@ impl TenantTokens {
         let files = source_files(&self.path);
         let mut inner = poison_lock(&self.inner);
         let file_set: std::collections::HashSet<&PathBuf> = files.iter().collect();
-        let stale = inner
-            .stamps
-            .keys()
-            .any(|k| !file_set.contains(k))
+        let stale = inner.stamps.keys().any(|k| !file_set.contains(k))
             || files.iter().any(|f| {
                 let stamp = std::fs::metadata(f).and_then(|m| m.modified()).ok();
                 inner.stamps.get(f).copied().flatten() != stamp
@@ -211,7 +208,11 @@ impl TenantTokens {
         }
         inner.stamps = new_stamps;
         if changed > 0 {
-            tracing::info!(sources = inner.stamps.len(), tokens = inner.total_len(), "reloaded tenant tokens");
+            tracing::info!(
+                sources = inner.stamps.len(),
+                tokens = inner.total_len(),
+                "reloaded tenant tokens"
+            );
         }
     }
 
@@ -497,11 +498,7 @@ mod tests {
     fn tokens_directory_mode_merges_and_revokes_per_file() {
         let dir = tempfile::tempdir().unwrap();
         write_tokens(dir.path(), r#"{"tok-alice": "alice"}"#);
-        std::fs::write(
-            dir.path().join("cloud.json"),
-            r#"{"tok-carol": "carol"}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("cloud.json"), r#"{"tok-carol": "carol"}"#).unwrap();
         // Non-json files in the dir are ignored.
         std::fs::write(dir.path().join("README.txt"), "not tokens").unwrap();
         let tokens = TenantTokens::from_path_for_test(dir.path());
@@ -521,24 +518,15 @@ mod tests {
             r#"{"tok-carol": "carol", "tok-dave": "dave"}"#,
         )
         .unwrap();
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer tok-dave".parse().unwrap(),
-        );
+        headers.insert(header::AUTHORIZATION, "Bearer tok-dave".parse().unwrap());
         assert_eq!(tokens.resolve(&headers).as_deref(), Some("dave"));
 
         // Deleting cloud.json revokes its tenants; tokens.json tenants stay.
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::remove_file(dir.path().join("cloud.json")).unwrap();
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer tok-carol".parse().unwrap(),
-        );
+        headers.insert(header::AUTHORIZATION, "Bearer tok-carol".parse().unwrap());
         assert_eq!(tokens.resolve(&headers), None);
-        headers.insert(
-            header::AUTHORIZATION,
-            "Bearer tok-alice".parse().unwrap(),
-        );
+        headers.insert(header::AUTHORIZATION, "Bearer tok-alice".parse().unwrap());
         assert_eq!(tokens.resolve(&headers).as_deref(), Some("alice"));
     }
 
