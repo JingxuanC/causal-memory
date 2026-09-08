@@ -51,8 +51,7 @@ impl CausalStore {
         limit: usize,
     ) -> Result<Vec<crate::store::CausalEntry>> {
         let scored = self.bm25_candidates_and_rank(task_tag, query, limit)?;
-        let entries: Vec<crate::store::CausalEntry> =
-            scored.into_iter().map(|(e, _)| e).collect();
+        let entries: Vec<crate::store::CausalEntry> = scored.into_iter().map(|(e, _)| e).collect();
         self.record_access(entries.iter().map(|e| e.edge_id))?;
         Ok(entries)
     }
@@ -78,8 +77,7 @@ impl CausalStore {
             let floor = top * min_ratio;
             scored.retain(|(_, s)| *s >= floor);
         }
-        let entries: Vec<crate::store::CausalEntry> =
-            scored.into_iter().map(|(e, _)| e).collect();
+        let entries: Vec<crate::store::CausalEntry> = scored.into_iter().map(|(e, _)| e).collect();
         self.record_access(entries.iter().map(|e| e.edge_id))?;
         Ok(entries)
     }

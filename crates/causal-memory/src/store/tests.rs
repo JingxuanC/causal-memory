@@ -1048,9 +1048,7 @@ fn test_bm25_gated_drops_weak_matches() {
         gated.len()
     );
     assert!(
-        gated[0]
-            .decision_text
-            .contains("qwertyu alpha branch"),
+        gated[0].decision_text.contains("qwertyu alpha branch"),
         "the strong match survives the gate"
     );
 }
