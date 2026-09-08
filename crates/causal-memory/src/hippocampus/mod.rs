@@ -1300,6 +1300,12 @@ impl CausalGraph {
         self.node_id_to_idx.contains_key(id)
     }
 
+    /// Node index by external id (for tests and refuters that work with
+    /// chunk ids rather than CSR indices).
+    pub fn node_index_of(&self, id: &str) -> Option<u32> {
+        self.node_id_to_idx.get(id).copied()
+    }
+
     /// Phase C: append a node to the graph (write-path patch). Node arrays
     /// are plain `Vec`s, so appending is O(1); the new node's CSR rows
     /// start empty (zero-width) — its edges go through [`add_patch_edge`].
@@ -1496,6 +1502,11 @@ impl CausalGraph {
         self.node_replay_count[idx]
     }
 
+    /// Event timestamp of a node (0 = unset). Used by the temporal refuter.
+    pub fn node_event_time(&self, idx: usize) -> i64 {
+        self.node_event_time[idx]
+    }
+
     /// Get raw weight of an edge by forward index.
     pub fn edge_raw_weight(&self, edge_idx: usize) -> f32 {
         self.raw_weights[edge_idx]
@@ -1563,6 +1574,103 @@ impl CausalGraph {
     /// Target node of a given edge index.
     pub fn edge_target(&self, edge_idx: usize) -> u32 {
         self.col_idx[edge_idx]
+    }
+
+    /// In-neighbors of a node (valid edges only). Reverse of `out_neighbors_of`.
+    pub fn in_neighbors_of(&self, node: u32) -> Vec<u32> {
+        let start = self.row_ptr_rev[node as usize] as usize;
+        let end = self.row_ptr_rev[(node + 1) as usize] as usize;
+        (start..end)
+            .filter(|&i| {
+                let fwd = self.rev_to_fwd_idx[i] as usize;
+                self.edge_valid.get(fwd).copied().unwrap_or(false)
+            })
+            .map(|i| self.col_idx_rev[i])
+            .collect()
+    }
+
+    /// Check whether `x` and `y` are d-separated given conditioning set `z`
+    /// in the causal graph (valid edges only).
+    ///
+    /// Standard algorithm: ancestral subgraph → moralization → remove Z →
+    /// connectivity check. Returns `true` when d-separated (no active path).
+    ///
+    /// Reference: DoVerifier `causal_equiv.py::is_d_separated` (same algorithm,
+    /// ported from NetworkX moralization to CSR adjacency).
+    pub fn is_d_separated(&self, x: u32, y: u32, z: &[u32]) -> bool {
+        if x == y {
+            return false;
+        }
+
+        // ── Step 1: ancestors of {x, y} ∪ Z (including the nodes themselves) ──
+        let mut ancestors: HashSet<u32> = HashSet::new();
+        let mut stack: Vec<u32> = vec![x, y];
+        stack.extend_from_slice(z);
+        while let Some(node) = stack.pop() {
+            if ancestors.insert(node) {
+                for parent in self.in_neighbors_of(node) {
+                    if !ancestors.contains(&parent) {
+                        stack.push(parent);
+                    }
+                }
+            }
+        }
+
+        // ── Step 2: moralize the ancestral subgraph ──
+        // Skeleton: undirected edges among ancestors.
+        let mut moral: HashMap<u32, HashSet<u32>> = HashMap::new();
+        for &node in &ancestors {
+            moral.entry(node).or_default();
+        }
+        for &node in &ancestors {
+            for neighbor in self.all_neighbors(node) {
+                if ancestors.contains(&neighbor) {
+                    moral.entry(node).or_default().insert(neighbor);
+                    moral.entry(neighbor).or_default().insert(node);
+                }
+            }
+        }
+        // Marry parents of common children (within the ancestral subgraph).
+        for &child in &ancestors {
+            let parents: Vec<u32> = self
+                .in_neighbors_of(child)
+                .into_iter()
+                .filter(|p| ancestors.contains(p))
+                .collect();
+            for i in 0..parents.len() {
+                for j in (i + 1)..parents.len() {
+                    moral.entry(parents[i]).or_default().insert(parents[j]);
+                    moral.entry(parents[j]).or_default().insert(parents[i]);
+                }
+            }
+        }
+
+        // ── Step 3: remove conditioning set Z ──
+        for &z_node in z {
+            moral.remove(&z_node);
+        }
+
+        // ── Step 4: connectivity via BFS ──
+        if !moral.contains_key(&x) || !moral.contains_key(&y) {
+            return true; // x or y was removed with Z
+        }
+        let mut visited: HashSet<u32> = HashSet::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(x);
+        visited.insert(x);
+        while let Some(node) = queue.pop_front() {
+            if node == y {
+                return false; // active path exists → NOT d-separated
+            }
+            if let Some(neighbors) = moral.get(&node) {
+                for &nb in neighbors {
+                    if visited.insert(nb) {
+                        queue.push_back(nb);
+                    }
+                }
+            }
+        }
+        true // no path → d-separated
     }
 }
 
