@@ -486,20 +486,21 @@ mod tests {
     async fn spawn_server(
         mode: WriteMode,
         auth_token: Option<String>,
-    ) -> (String, tokio::task::JoinHandle<()>, PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "amc-test-{}-{:?}",
-            std::process::id(),
-            std::time::Instant::now()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let app = build_app(Arc::new(UserMemories::new(dir.clone(), mode)), auth_token);
+    ) -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
+        // tempfile::tempdir() gives an O_EXCL-unique dir; the old
+        // pid+Instant::now() name could collide when the harness starts
+        // several tests in the same tick, and one test's remove_dir_all
+        // then deleted a sibling's db dir mid-run (intermittent 500
+        // "open store: unable to open database file").
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().to_path_buf();
+        let app = build_app(Arc::new(UserMemories::new(dir, mode)), auth_token);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        (format!("http://{addr}"), server, dir)
+        (format!("http://{addr}"), server, tmp)
     }
 
     fn add_body(user: &str, session: &str, msgs: &[(&str, &str)]) -> serde_json::Value {
@@ -513,7 +514,7 @@ mod tests {
 
     #[tokio::test]
     async fn raw_roundtrip_isolation_and_topk() {
-        let (base, _server, dir) = spawn_server(WriteMode::Raw, None).await;
+        let (base, _server, _tmp) = spawn_server(WriteMode::Raw, None).await;
         let client = test_client();
         wait_ready(&client, &base).await;
 
@@ -532,7 +533,12 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            assert!(resp.status().is_success());
+            assert!(
+                resp.status().is_success(),
+                "add failed: {} {}",
+                resp.status(),
+                resp.text().await.unwrap()
+            );
         }
 
         // Isolation: alice never sees bob's fruit and vice versa.
@@ -597,13 +603,11 @@ mod tests {
             2,
             "top_k=2 must bind"
         );
-
-        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]
     async fn empty_search_and_unknown_user() {
-        let (base, _server, dir) = spawn_server(WriteMode::Raw, None).await;
+        let (base, _server, _tmp) = spawn_server(WriteMode::Raw, None).await;
         let client = test_client();
         wait_ready(&client, &base).await;
         let resp = client
@@ -616,7 +620,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp["data"].as_array().unwrap().len(), 0);
-        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]
@@ -625,7 +628,7 @@ mod tests {
         // (remember's own fallback stores a raw stub). The contract's
         // synchronous-searchable rule holds either way.
         std::env::remove_var("CAUSAL_MEMORY_LLM_API");
-        let (base, _server, dir) = spawn_server(WriteMode::Distill, None).await;
+        let (base, _server, _tmp) = spawn_server(WriteMode::Distill, None).await;
         let client = test_client();
         wait_ready(&client, &base).await;
         let resp = client
@@ -635,7 +638,6 @@ mod tests {
             .await
             .unwrap();
         assert!(resp.status().is_success());
-        std::fs::remove_dir_all(dir).ok();
     }
 
     #[tokio::test]
@@ -643,7 +645,7 @@ mod tests {
         // Opt-in auth: token set → /metrics 401s without (or with a wrong)
         // bearer and serves with the right one; the challenge-contract
         // routes (/add /search) and probes stay open either way.
-        let (base, _server, dir) =
+        let (base, _server, _tmp) =
             spawn_server(WriteMode::Raw, Some("amc-bearer-token".into())).await;
         let client = test_client();
         wait_ready(&client, &base).await;
@@ -675,6 +677,5 @@ mod tests {
             .await
             .unwrap();
         assert!(resp.status().is_success());
-        std::fs::remove_dir_all(dir).ok();
     }
 }
