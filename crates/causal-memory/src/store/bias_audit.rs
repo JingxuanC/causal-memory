@@ -208,7 +208,7 @@ impl CausalStore {
                 }
             }
         }
-        out.sort_by(|a, b| b.repetitions.cmp(&a.repetitions));
+        out.sort_by_key(|a| std::cmp::Reverse(a.repetitions));
         Ok(out)
     }
 
