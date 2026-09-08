@@ -2099,4 +2099,82 @@ mod tests {
             "unrelated same-scope fact must NOT activate via the hub: {texts:?}"
         );
     }
+
+    // ─── d-separation tests ──────────────────────────────────────────────
+
+    fn build_test_graph(edges: &[(&str, &str)]) -> CausalGraph {
+        let mut node_ids: Vec<&str> = Vec::new();
+        for &(a, b) in edges {
+            if !node_ids.contains(&a) { node_ids.push(a); }
+            if !node_ids.contains(&b) { node_ids.push(b); }
+        }
+        let nodes: Vec<crate::hippocampus::NodeData> = node_ids
+            .iter()
+            .map(|id| crate::hippocampus::NodeData {
+                id: id.to_string(),
+                text: id.to_string(),
+                event_time: 0,
+                q_value: 0.5,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: None,
+                scope: None,
+            })
+            .collect();
+        let edge_data: Vec<crate::hippocampus::EdgeData> = edges
+            .iter()
+            .map(|(a, b)| crate::hippocampus::EdgeData {
+                from_id: a.to_string(),
+                to_id: b.to_string(),
+                relation: crate::hippocampus::Relation::Caused,
+                weight: 1.0,
+                valid: true,
+            })
+            .collect();
+        CausalGraph::build(&nodes, &edge_data)
+    }
+
+    #[test]
+    fn dsep_chain_blocked_by_mediator() {
+        // A → B → C: conditioning on B blocks the path.
+        let g = build_test_graph(&[("A", "B"), ("B", "C")]);
+        let (a, b, c) = (g.node_index_of("A").unwrap(), g.node_index_of("B").unwrap(), g.node_index_of("C").unwrap());
+        assert!(!g.is_d_separated(a, c, &[]), "A and C are marginally d-connected via B");
+        assert!(g.is_d_separated(a, c, &[b]), "conditioning on mediator B blocks the chain");
+    }
+
+    #[test]
+    fn dsep_fork_blocked_by_confounder() {
+        // A ← B → C: conditioning on B (common cause) blocks the path.
+        let g = build_test_graph(&[("B", "A"), ("B", "C")]);
+        let (a, b, c) = (g.node_index_of("A").unwrap(), g.node_index_of("B").unwrap(), g.node_index_of("C").unwrap());
+        assert!(!g.is_d_separated(a, c, &[]), "A and C are marginally d-connected via common cause B");
+        assert!(g.is_d_separated(a, c, &[b]), "conditioning on confounder B blocks the fork");
+    }
+
+    #[test]
+    fn dsep_collider_opened_by_conditioning() {
+        // A → B ← C: marginally separated, conditioning on B opens the path.
+        let g = build_test_graph(&[("A", "B"), ("C", "B")]);
+        let (a, b, c) = (g.node_index_of("A").unwrap(), g.node_index_of("B").unwrap(), g.node_index_of("C").unwrap());
+        assert!(g.is_d_separated(a, c, &[]), "collider B blocks the path marginally");
+        assert!(!g.is_d_separated(a, c, &[b]), "conditioning on collider B opens the path");
+    }
+
+    #[test]
+    fn dsep_backdoor_not_blocked() {
+        // B → A → C, B → C: A and C are d-connected (backdoor path through B).
+        let g = build_test_graph(&[("B", "A"), ("A", "C"), ("B", "C")]);
+        let (a, c) = (g.node_index_of("A").unwrap(), g.node_index_of("C").unwrap());
+        assert!(!g.is_d_separated(a, c, &[]), "backdoor path A←B→C keeps A and C connected");
+    }
+
+    #[test]
+    fn dsep_chain_confounder_mixed() {
+        // A → B → C, A → C: conditioning on B does NOT fully separate (direct edge A→C remains).
+        let g = build_test_graph(&[("A", "B"), ("B", "C"), ("A", "C")]);
+        let (a, b, c) = (g.node_index_of("A").unwrap(), g.node_index_of("B").unwrap(), g.node_index_of("C").unwrap());
+        assert!(!g.is_d_separated(a, c, &[]), "direct edge plus indirect path");
+        assert!(!g.is_d_separated(a, c, &[b]), "conditioning on B blocks the indirect path but direct edge remains");
+    }
 }
