@@ -1005,6 +1005,57 @@ fn test_bm25_task_tag_filter_scopes_idf() {
 }
 
 #[test]
+fn test_bm25_gated_drops_weak_matches() {
+    // Relative-floor gate (intervention_query seeds): a doc sharing only a
+    // rare token with the query scores far below the top match and must be
+    // dropped; the ungated search still returns it.
+    let store = CausalStore::open_in_memory().unwrap();
+    store
+        .record_decision(
+            "deploy qwertyu alpha branch with full canary rollout",
+            "production stayed healthy",
+            "caused",
+            Some("gated"),
+            0.9,
+            "test",
+        )
+        .unwrap();
+    store
+        .record_decision(
+            "rollback unrelated service during the same window",
+            "no customer impact observed",
+            "caused",
+            Some("gated"),
+            0.9,
+            "test",
+        )
+        .unwrap();
+    // Both docs share "deploy"-era tokens? No — make the query share only
+    // one rare-ish token with the second doc: "window".
+    let query = "deploy qwertyu alpha branch with full canary rollout window";
+    let ungated = store.search_causal_bm25(None, query, 10).unwrap();
+    assert!(
+        ungated.len() >= 2,
+        "ungated search returns the weak shared-token match too"
+    );
+    let gated = store
+        .search_causal_bm25_gated(None, query, 10, 0.5)
+        .unwrap();
+    assert_eq!(
+        gated.len(),
+        1,
+        "the 0.5-floor must drop the shared-token-only doc, got {} entries",
+        gated.len()
+    );
+    assert!(
+        gated[0]
+            .decision_text
+            .contains("qwertyu alpha branch"),
+        "the strong match survives the gate"
+    );
+}
+
+#[test]
 fn test_bm25_limit_and_score_order() {
     let store = bm25_store();
     let res = store.search_causal_bm25(None, "redis", 2).unwrap();

@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS causal_edges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     from_id TEXT NOT NULL,
     to_id TEXT NOT NULL,
-    relation TEXT NOT NULL CHECK(relation IN ('caused','enabled','prevented','no_effect')),
+    relation TEXT NOT NULL CHECK(relation IN ('caused','enabled','prevented','no_effect','co_occurrence')),
     confidence REAL NOT NULL DEFAULT 0.5,
     discovered_by TEXT NOT NULL DEFAULT 'llm_inferred',
     event_time INTEGER NOT NULL,

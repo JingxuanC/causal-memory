@@ -206,6 +206,12 @@ impl CausalStore {
                 {anchor}
                   AND ce.confidence >= ?{conf_p}
                   AND ce.valid_to IS NULL
+                  -- Non-causal relations (observational associations,
+                  -- co_occurrence, no_effect) are excluded from do()-style
+                  -- forward chains: an association whose confounding is not
+                  -- ruled out must never surface as a causal prediction
+                  -- (intervention_calibration: confounded overclaim fix).
+                  AND ce.relation NOT IN ('co_occurrence', 'co-occurrence', 'no_effect')
 
                 UNION ALL
 
@@ -227,6 +233,7 @@ impl CausalStore {
                   AND ce2.confidence >= ?{conf_p}
                   AND ch.chain_confidence * ce2.confidence >= ?{conf_p}
                   AND ce2.valid_to IS NULL
+                  AND ce2.relation NOT IN ('co_occurrence', 'co-occurrence', 'no_effect')
             )
             SELECT path_json FROM chain
             WHERE depth >= 1

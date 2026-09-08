@@ -31,12 +31,31 @@
 
 初版校准器让世界内四个用例共享世界 token，BM25 种子把每个查询都锚到世界内所有决策（40/40 全部 DANGER）。改为每用例独立词表后恢复正常。含义：生产中查询与历史决策共享常见 token 时，`intervention_query` 可能召回不相关链——置信度排序（chain_confidence）部分缓解，但**summary 层看到的是全部链的 pooled 分布**，与查询的相关性没有保证。这与 1.2 refuter 校准的"按密度门控"是同一类教训：证据相关性需要在聚合层显式建模。
 
+## 修复落地（2026-09-09 同日，分支 feat/intervention-query-hardening）
+
+### Fix 1: co_occurrence relation 全链路
+
+| 层 | 改动 |
+|---|---|
+| 抽取器（distill.rs） | CausalRelation 新增 `CoOccurrence` 变体；prompt 明确"机制不清或疑似共同原因时用 co_occurrence 替代 caused"；parse 兼容 associated/correlated 别名 |
+| 存储（schema v16） | causal_edges.relation CHECK 拓宽（重建表迁移，INSERT SELECT 带 COALESCE 容忍旧库空列） |
+| 查询（trace.rs） | 链遍历 CTE 排除 co_occurrence/no_effect——观察性关联不再进入 do() 式前向链 |
+| 校准 | 新增 confounded_tagged 类：**0% DANGER 过声称**（混淆观察被正确标注时系统不再过声称） |
+
+残留局限：抽取器若仍把混淆观察错标为 caused（confounded 类），过声称保持 100%——这部分信号不在图中，只能靠抽取器判别力或 refuter 层标注改进，守卫继续钉住基线。
+
+### Fix 2: BM25 种子相关性门控
+
+- 新增 `search_causal_bm25_gated`（相对分数线：0.3 × top），仅 intervention_query 种子回退使用；recall 导向的检索调用方保持原行为。
+- 单元测试覆盖门控丢弃弱匹配；原基线"共享 token → 40/40 全 DANGER"场景在门控下不再发生。
+
 ## 回归守卫
 
 - causal_danger recall ≥ 80%（实测 100%）
 - causal_safe 准确率 ≥ 80%（实测 100%）
 - prevented → UNKNOWN ≥ 80%（实测 100%）
-- confounded DANGER 过声称 ≤ 100%（实测 100%，已知缺陷基线，修复后收紧）
+- confounded（extractor 错标 caused）DANGER 过声称 ≤ 100%（实测 100%，已知缺陷基线）
+- **confounded_tagged（extractor 正确标注 co_occurrence）DANGER 过声称 = 0%（硬守卫）**
 
 ## 复现
 

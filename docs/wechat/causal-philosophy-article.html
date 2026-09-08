@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><title>因果记忆：从哲学因果论说起</title></head>
+<body>
+<section style="font-size:16px;color:#3f3f3f;line-height:1.9;letter-spacing:0.5px;padding:0 8px;">
+
+  <p>每次和大模型对话，它都像一个<span style="color:#b23b3b;font-weight:bold;">永远没有昨天的人</span>。</p>
+
+  <p>LLM 本质上是一个无状态函数：每一次推理调用都从零开始，上一次对话里"我为什么这么决定"、"那个改动引发了什么后果"，都会随着上下文压缩而消失。Agent 于是反复踩同一个坑、反复学同一课。</p>
+
+  <p>我们做了一个开源项目 <strong>causal-memory</strong>，想解决这个问题。但它的起点不在工程，而在一个很老的哲学问题：<strong>因果到底是什么？</strong>这篇文章就从这里说起，然后讲讲我们是怎么把它做成一个能跑的系统的。</p>
+
+  <h2 style="font-size:19px;color:#1a1a1a;border-left:4px solid #4a6fa5;padding-left:10px;margin:32px 0 16px;">一、休谟：因果也许只是一种"习惯"</h2>
+
+  <p>人类对因果的追问至少有两千多年。亚里士多德把"原因"拆成四种：质料因、形式因、动力因、目的因——一把椅子之所以是椅子，既因为它的木头，也因为它的形状、它的制造者、它的用途。这是人类第一次系统地问：<strong>"为什么"到底在问什么？</strong></p>
+
+  <p>真正把这问题逼到墙角的是休谟。他的结论让人不安：<strong>我们从来没有观察到因果本身，我们只观察到"恒常联结"</strong>——A 总是在 B 之前出现，于是我们"习惯性地"相信 A 导致了 B。太阳每天升起，但"太阳明天会升起"在逻辑上并不必然。</p>
+
+  <p>换句话说，休谟认为因果推理的内核是一种启发式：<strong>时间上的邻近和先后顺序</strong>。</p>
+
+  <p>有意思的是，两百多年后神经科学证明：大脑确实就是这么干的。Davachi（2006）的综述指出，海马体默认把时间上紧邻的事件绑定成"因果相关"——这是一种快速但经常出错的启发式，而不是逻辑推理。</p>
+
+  <p>这个洞察直接落进了我们的代码。在 causal-memory 里，因果边按证据来源分级置信度：</p>
+
+  <table style="width:100%;border-collapse:collapse;font-size:14px;margin:16px 0;">
+    <tr style="background:#f5f7fa;">
+      <th style="border:1px solid #ddd;padding:8px;text-align:left;">证据来源</th>
+      <th style="border:1px solid #ddd;padding:8px;text-align:left;">置信度</th>
+      <th style="border:1px solid #ddd;padding:8px;text-align:left;">含义</th>
+    </tr>
+    <tr><td style="border:1px solid #ddd;padding:8px;">temporal</td><td style="border:1px solid #ddd;padding:8px;">0.4</td><td style="border:1px solid #ddd;padding:8px;">只是先后发生（休谟式启发式，弱证据）</td></tr>
+    <tr><td style="border:1px solid #ddd;padding:8px;">llm_inferred</td><td style="border:1px solid #ddd;padding:8px;">0.6</td><td style="border:1px solid #ddd;padding:8px;">模型推断（类比泛化）</td></tr>
+    <tr><td style="border:1px solid #ddd;padding:8px;">rule</td><td style="border:1px solid #ddd;padding:8px;">0.7</td><td style="border:1px solid #ddd;padding:8px;">规则匹配（"改代码→测试挂"类模式）</td></tr>
+    <tr><td style="border:1px solid #ddd;padding:8px;">user_feedback</td><td style="border:1px solid #ddd;padding:8px;">0.95</td><td style="border:1px solid #ddd;padding:8px;">用户显式确认（金标准，永不GC）</td></tr>
+  </table>
+
+  <p>时间邻近性只值 0.4 分——这是我们对休谟的敬意，也是对大脑这个"易错默认策略"的纠正机制。</p>
+
+  <h2 style="font-size:19px;color:#1a1a1a;border-left:4px solid #4a6fa5;padding-left:10px;margin:32px 0 16px;">二、Pearl：把因果从哲学变成数学</h2>
+
+  <p>休谟把因果拉下神坛，Pearl 把它建成了科学。2009 年的《Causality》里，他提出著名的<strong>因果梯级（Ladder of Causation）</strong>——因果推理分三层，每层严格强于前一层：</p>
+
+  <table style="width:100%;border-collapse:collapse;font-size:14px;margin:16px 0;">
+    <tr style="background:#f5f7fa;">
+      <th style="border:1px solid #ddd;padding:8px;text-align:left;">梯级</th>
+      <th style="border:1px solid #ddd;padding:8px;text-align:left;">形式化</th>
+      <th style="border:1px solid #ddd;padding:8px;text-align:left;">典型问题</th>
+    </tr>
+    <tr><td style="border:1px solid #ddd;padding:8px;">1. 关联（看）</td><td style="border:1px solid #ddd;padding:8px;">P(Y|X)</td><td style="border:1px solid #ddd;padding:8px;">"吸烟者肺癌率更高"</td></tr>
+    <tr><td style="border:1px solid #ddd;padding:8px;">2. 干预（做）</td><td style="border:1px solid #ddd;padding:8px;">P(Y|do(X))</td><td style="border:1px solid #ddd;padding:8px;">"如果我采取行动 X，会发生什么"</td></tr>
+    <tr><td style="border:1px solid #ddd;padding:8px;">3. 反事实（想象）</td><td style="border:1px solid #ddd;padding:8px;">P(Y_x|X=x',Y=y)</td><td style="border:1px solid #ddd;padding:8px;">"如果当初没做 X，结果会不同吗"</td></tr>
+  </table>
+
+  <p>关键结论是：<strong>你不能只用关联数据回答干预问题，更不能回答反事实问题。</strong>这就是为什么一个只会"向量相似度检索"的记忆系统，天然爬不上第二层——它存的只是相关性。</p>
+
+  <p>这套理论给 causal-memory 划定了清晰的工程边界（后面详述）：关联、干预我们做了；反事实我们做了"诚实的工程子集"；Pearl 意义上完整的 SCM 反事实，我们明确不做。</p>
+
+  <h2 style="font-size:19px;color:#1a1a1a;border-left:4px solid #4a6fa5;padding-left:10px;margin:32px 0 16px;">三、为什么是因果？一组实验数据</h2>
+
+  <p>理论之外，还有一个很硬的实证动机。我们用生产级的上下文压缩提示词做了真实基准实验：让 LLM 反复压缩一段包含因果关系的对话，看信息还活多少：</p>
+
+  <table style="width:100%;border-collapse:collapse;font-size:14px;margin:16px 0;">
+    <tr style="background:#f5f7fa;">
+      <th style="border:1px solid #ddd;padding:8px;text-align:left;">压缩次数</th>
+      <th style="border:1px solid #ddd;padding:8px;text-align:left;">文本召回率</th>
+      <th style="border:1px solid #ddd;padding:8px;text-align:left;">因果表召回率</th>
+    </tr>
+    <tr><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">100%</td><td style="border:1px solid #ddd;padding:8px;">100%</td></tr>
+    <tr><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">85%</td><td style="border:1px solid #ddd;padding:8px;">100%</td></tr>
+    <tr><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">55%</td><td style="border:1px solid #ddd;padding:8px;">100%</td></tr>
+    <tr style="color:#b23b3b;font-weight:bold;"><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">45%</td><td style="border:1px solid #ddd;padding:8px;">100%</td></tr>
+  </table>
+
+  <p>压缩 5 次后，文本记忆已经丢了一半多——Agent 基本上"失忆"了。但<strong>因果链接存活率仍是 100%</strong>，因为它被存在压缩管道之外的结构化表里。"我决定了 X"和"X 导致了 Y"之间的这条链，恰恰是文本压缩下最脆弱、也最值得单独保护的信息。</p>
+
+  <p>这就是 causal-memory 的立足点：<strong>把"决策→结果"的因果关系当作一等公民存下来。</strong></p>
+
+  <h2 style="font-size:19px;color:#1a1a1a;border-left:4px solid #4a6fa5;padding-left:10px;margin:32px 0 16px;">四、工程实现：把两千年问题做成 SQLite 表</h2>
+
+  <h3 style="font-size:16px;color:#1a1a1a;margin:24px 0 8px;">4.1 数据模型：一张因果图，四种边</h3>
+
+  <p>认知心理学家 Sloman（2005）发现，人类默认用<strong>有向无环图（DAG）</strong>表征因果知识。我们照抄了这个结构。核心是一张因果边表：</p>
+
+  <section style="background:#f5f7fa;border-radius:8px;padding:12px 16px;font-size:13px;font-family:Menlo,monospace;line-height:1.7;margin:12px 0;">
+    causal_edges (<br>
+    &nbsp;&nbsp;from_id, <span style="color:#888;">-- 决策节点</span><br>
+    &nbsp;&nbsp;to_id, <span style="color:#888;">-- 结果节点</span><br>
+    &nbsp;&nbsp;relation, <span style="color:#888;">-- caused / enabled / prevented / no_effect</span><br>
+    &nbsp;&nbsp;confidence, <span style="color:#888;">-- 0.0 ~ 1.0</span><br>
+    &nbsp;&nbsp;discovered_by, <span style="color:#888;">-- 证据来源</span><br>
+    &nbsp;&nbsp;task_tag, <span style="color:#888;">-- 任务分层（防混淆）</span><br>
+    &nbsp;&nbsp;valid_to <span style="color:#888;">-- 软失效：可纠正、可审计</span><br>
+    )
+  </section>
+
+  <p>注意 <code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">relation</code> 的四种取值，它们恰好是 Pearl 因果语义的工程简化：<code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">caused</code> 是直接因果边，<code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">enabled</code> 是必要条件，<code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">prevented</code> 是抑制边（X 阻止了 Y），<code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">no_effect</code> 显式记录"没有因果关系"。</p>
+
+  <p><strong>文本和链接分离存储</strong>是另一个刻意的决定：决策/结果的原文放在普通 chunks 表（可以被压缩），边表只存关系本身。文本丢了还能搜回来，链接丢了就永远丢了。</p>
+
+  <h3 style="font-size:16px;color:#1a1a1a;margin:24px 0 8px;">4.2 抑制边：记忆系统的 GABA</h3>
+
+  <p>人脑的记忆回路里，兴奋（谷氨酸/LTP）和抑制（GABA/LTD）缺一不可——既要记住"什么导致了它"，也要记住"什么能阻止它再发生"。现有记忆系统（mem0、Zep 等）几乎都只有兴奋侧：连接只增不减。</p>
+
+  <img src="http://mmbiz.qpic.cn/mmbiz_png/mawRZIBLMVsAoaFSp2LF1cUoAbsecyqbDkWWqic59NxVGVExPibdRbfC75TUQEPXxspuR027KkL6mHUyEAJsjmnQwbGMewr9q3beIuzkdVq90/0?from=appmsg" style="width:100%;border-radius:8px;margin:12px 0;"/>
+
+  <p>causal-memory 的 <code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">prevented</code> 边在检索时传播 <strong>-0.3 的负激活</strong>——这是完整的因果语义。没有抑制侧的系统，甚至会把"被阻止的坏结局"当成相关结果推荐给你。</p>
+
+  <h3 style="font-size:16px;color:#1a1a1a;margin:24px 0 8px;">4.3 写入路径：双通道</h3>
+
+  <img src="http://mmbiz.qpic.cn/sz_mmbiz_png/mawRZIBLMVuJ5miceibpaAWyz1AiaxaS8AlyXUzSX31GEgfSQYb5hcmFlXPticiaNpNEeqEaRm86jdjwoia6SiclrXFPUtOjKthI5WzoKDoFT3dbK0/0?from=appmsg" style="width:100%;border-radius:8px;margin:12px 0;"/>
+
+  <p>写入有两条路：<strong>路径 A</strong> 是 <code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">record_decision</code> 直接写入——行动之后调一次，4 个必填参数（外加可选的 context 世界状态，4.7 会讲），零 LLM 开销，写完立即可检索；<strong>路径 B</strong> 是 <code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">remember</code> 管线——粘贴一段原始对话，写时门控过滤噪音，LLM 提取后三路分流进事实表、自指边和因果边。</p>
+
+  <p>原始对话永远进 <code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">session_logs</code> 审计表，但<strong>绝不进检索池</strong>——这是写时门控的意义：检索池里只有结构化记忆，没有垃圾。</p>
+
+  <h3 style="font-size:16px;color:#1a1a1a;margin:24px 0 8px;">4.4 检索：扩散激活，不是向量余弦</h3>
+
+  <img src="http://mmbiz.qpic.cn/sz_mmbiz_png/mawRZIBLMVssXrSZmK56xpMzsn7hnk8ySUm9icH2sSQB4I1kl1jVlOJR7AZweicefttl6BKkQZs2xd5U4a3XbnbJfI233eFaqVyfibc5hDCLek/0?from=appmsg" style="width:100%;border-radius:8px;margin:12px 0;"/>
+
+  <p>检索路径分两层：先用 BM25 + 语义向量双路召回、RRF 融合选出种子节点；然后沿因果图做 <strong>K-hop 扩散激活</strong>（前向+反向，每跳衰减 ×0.7）——<code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">caused</code> 边传 +1.0，<code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">prevented</code> 边传 -0.3，共现边走 Hebbian 学习。</p>
+
+  <p>这模拟的是海马体 CA3 区的模式补全：给一部分线索，沿关联结构把整条因果链点亮。查"cache stampede protection"，系统不只是返回包含这个词的记忆，而是把"Redis 互斥锁 → 挡住了击穿"这条链连同当年真正修好的方案一起激活。</p>
+
+  <h3 style="font-size:16px;color:#1a1a1a;margin:24px 0 8px;">4.5 睡眠巩固：记忆会做梦</h3>
+
+  <img src="http://mmbiz.qpic.cn/mmbiz_png/mawRZIBLMVvicVU6DkaYFyITPichoUicaAPtXd9lx1Ghf0ymTXic6FjSrTNVkrmf5iaPhM0wHNNDv0pSn5Nk5HFBbnpukB2B6BvFzv5oFA4eWDss/0?from=appmsg" style="width:100%;border-radius:8px;margin:12px 0;"/>
+
+  <p>大脑在睡眠中巩固记忆（Diekelmann & Born 2010），系统也照做：<code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">causal-memory sleep</code> 离线周期分四步——<strong>回放</strong>（随机采样因果链，失败和用户反馈优先）、<strong>LTP</strong>（强化被回放的边）、<strong>LTD</strong>（全局弱化身没访问的边）、<strong>GC 遗忘</strong>（弱 AND 休眠 AND 零访问，三判据全中才删）。</p>
+
+  <p>巩固还会做<strong>泛化</strong>：跨任务挖掘相似决策，蒸馏成 meta 边（similar_to / repeated / contradicts / refines）——这是 PC 算法的工程替代：模式必须在至少 2 个任务分层中独立复现才能晋升，分层间结论相反的触发 Simpson 悖论警告。</p>
+
+  <p>整个巩固过程是<strong>不可变的</strong>：产出 delta 和克隆，写审计日志，审查后原子切换——记忆系统的"睡眠"不能做梦做丢数据。</p>
+
+  <h3 style="font-size:16px;color:#1a1a1a;margin:24px 0 8px;">4.6 爬上 Pearl 的梯子</h3>
+
+  <p>回到因果梯级，每个层级都对应着实际可用的工具：</p>
+
+  <table style="width:100%;border-collapse:collapse;font-size:14px;margin:16px 0;">
+    <tr style="background:#f5f7fa;">
+      <th style="border:1px solid #ddd;padding:8px;text-align:left;">Pearl 梯级</th>
+      <th style="border:1px solid #ddd;padding:8px;text-align:left;">工具</th>
+      <th style="border:1px solid #ddd;padding:8px;text-align:left;">能力</th>
+    </tr>
+    <tr><td style="border:1px solid #ddd;padding:8px;">1. 关联</td><td style="border:1px solid #ddd;padding:8px;">search_causal / trace_cause</td><td style="border:1px solid #ddd;padding:8px;">"过去类似情况下发生过什么"</td></tr>
+    <tr><td style="border:1px solid #ddd;padding:8px;">2. 干预</td><td style="border:1px solid #ddd;padding:8px;">intervention_query</td><td style="border:1px solid #ddd;padding:8px;">行动前预测：safe / warning / danger</td></tr>
+    <tr><td style="border:1px solid #ddd;padding:8px;">3. 反事实</td><td style="border:1px solid #ddd;padding:8px;">counterfactual_query / prediction_report</td><td style="border:1px solid #ddd;padding:8px;">对比反事实 + 同情境分叉证据（见 4.7）</td></tr>
+  </table>
+
+  <h3 style="font-size:16px;color:#1a1a1a;margin:24px 0 8px;">4.7 第三层不是口号：溯因、自然实验与预测账本</h3>
+
+  <p>反事实是 Pearl 梯级里最难的一层。完整的 SCM 反事实需要三步：<strong>溯因</strong>（从观测推断出世界状态）、<strong>干预</strong>（改写结构方程）、<strong>预测</strong>（在新世界里重算）。对 Agent 来说，真正的卡点不是算法，而是<strong>溯因没有原料</strong>——你从来没把"做决策时世界是什么样子"记下来，事后拿什么去 condition？</p>
+
+  <p>v14（2026-09，Rung-3 Phase A）补的正是这块地基，三件事：</p>
+
+  <p><strong>① 溯因基底。</strong><code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">record_decision</code> 新增 <code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">context</code> 参数，把决策发生时的世界状态（环境、约束、关键参数）随边一起落库，归一化成 <code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">context_fingerprint</code>。同一个 fingerprint，意味着"同一个世界"。</p>
+
+  <p><strong>② 自然实验分叉。</strong>写入时自动检测：<strong>同一个世界状态、不同的决策</strong>，配对进 <code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">decision_forks</code> 表——这就是真实世界里自然积累出来的"对照实验"。<code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">counterfactual_query</code> 下结论时有一条硬规则：<strong>同世界状态的成对证据，优先级高于跨情境混合出来的分布</strong>。前者说的是一个世界的事，后者混了很多个世界——这正是混杂偏差的解药。</p>
+
+  <p><strong>③ 预测账本。</strong>每一次反事实判定都会登记为一条<strong>可证伪的预测</strong>：当 A 或 B 任何一个选项日后被真实执行并记录，账本就自动结算这次判断是对是错。<code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;">prediction_report</code> 给出按方法、按任务分层的校准准确率——反事实从"听起来有道理"的修辞，变成有命中率考核的科学。</p>
+
+  <p>还有一条面向未来的路由：对代码这类<strong>封闭世界</strong>任务，系统不满足于估算，会直接建议"把备选方案在沙盒里真的跑一遍"，执行结果回流账本——估算和事实从此分开统计。</p>
+
+  <p>诚实的边界也要说清楚：结构方程级别的机制拟合（noisy-OR micro-SCM）我们留了设计，但刻意等分叉图密度够了再上——数据不够时假装能拟合机制，那不是因果推断，是讲故事。</p>
+
+  <h2 style="font-size:19px;color:#1a1a1a;border-left:4px solid #4a6fa5;padding-left:10px;margin:32px 0 16px;">五、尾声</h2>
+
+  <p>从亚里士多德的四因，到休谟的"恒常联结"，再到 Pearl 的因果梯级——这个老问题每次被重新回答，都会重塑一代技术。LLM 时代的 Agent 记忆，刚好站在必须回答它的位置上：一个记不住"为什么"的智能体，谈不上真正的经验。</p>
+
+  <p>causal-memory 是我们给出的工程答案：Rust + SQLite，MCP 协议接入，17 个工具，图结构存因果，睡眠周期做巩固，反事实判定有预测账本兜底。已开源：</p>
+
+  <p style="background:#f5f7fa;border-radius:8px;padding:12px 16px;font-size:14px;word-break:break-all;">github.com/JingxuanC/causal-memory</p>
+
+  <p>如果你也在做 Agent 记忆，欢迎在评论区聊聊：你的系统，爬到第几级梯子了？</p>
+
+</section>
+</body>
+</html>

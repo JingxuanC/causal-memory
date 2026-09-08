@@ -31,7 +31,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 15;
+pub const SCHEMA_VERSION: u32 = 16;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -88,6 +88,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 15 {
         migrate_to_v15(&tx)?;
+    }
+    if version < 16 {
+        migrate_to_v16(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -860,6 +863,8 @@ mod tests {
                 discovered_by TEXT NOT NULL DEFAULT 'llm_inferred',
                 task_tag TEXT, created_at INTEGER NOT NULL,
                 event_time INTEGER, valid_to INTEGER,
+                discovered_at INTEGER, access_count INTEGER, last_accessed_at INTEGER,
+                outcome_polarity TEXT, superseded_by INTEGER,
                 context_fingerprint TEXT, context_text TEXT
              );
              CREATE TABLE decision_forks (
@@ -1080,5 +1085,56 @@ fn migrate_to_v15(conn: &Connection) -> Result<()> {
     {
         conn.execute_batch("ALTER TABLE decision_forks DROP COLUMN fingerprint")?;
     }
+    Ok(())
+}
+
+/// v16: widen the causal_edges.relation CHECK with 'co_occurrence' —
+/// observational associations whose confounding is not ruled out
+/// (intervention_calibration Fix-1, 2026-09-09). SQLite cannot alter a
+/// CHECK constraint, so the table is rebuilt (12-step recipe).
+fn migrate_to_v16(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "causal_edges")? {
+        return Ok(()); // fresh DB: CAUSAL_SCHEMA_SQL creates the v16 shape
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE causal_edges_v16 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_id TEXT NOT NULL,
+            to_id TEXT NOT NULL,
+            relation TEXT NOT NULL CHECK(relation IN ('caused','enabled','prevented','no_effect','co_occurrence')),
+            confidence REAL NOT NULL DEFAULT 0.5,
+            discovered_by TEXT NOT NULL DEFAULT 'llm_inferred',
+            event_time INTEGER NOT NULL,
+            discovered_at INTEGER NOT NULL,
+            valid_to INTEGER,
+            task_tag TEXT,
+            access_count INTEGER NOT NULL DEFAULT 0,
+            last_accessed_at INTEGER,
+            outcome_polarity TEXT CHECK(outcome_polarity IN ('positive','negative','mixed','neutral')),
+            superseded_by INTEGER,
+            context_fingerprint TEXT,
+            context_text TEXT,
+            FOREIGN KEY (from_id) REFERENCES chunks(id),
+            FOREIGN KEY (to_id) REFERENCES chunks(id)
+        );
+        INSERT INTO causal_edges_v16
+            SELECT id, from_id, to_id, relation, confidence, discovered_by,
+                   COALESCE(event_time, 0), COALESCE(discovered_at, 0),
+                   valid_to, task_tag, COALESCE(access_count, 0),
+                   last_accessed_at, outcome_polarity, superseded_by,
+                   context_fingerprint, context_text
+            FROM causal_edges;
+        DROP TABLE causal_edges;
+        ALTER TABLE causal_edges_v16 RENAME TO causal_edges;
+        CREATE INDEX IF NOT EXISTS idx_causal_from ON causal_edges(from_id);
+        CREATE INDEX IF NOT EXISTS idx_causal_to ON causal_edges(to_id);
+        CREATE INDEX IF NOT EXISTS idx_causal_task ON causal_edges(task_tag);
+        CREATE INDEX IF NOT EXISTS idx_causal_event_time ON causal_edges(event_time);
+        CREATE INDEX IF NOT EXISTS idx_causal_valid ON causal_edges(valid_to);
+        CREATE INDEX IF NOT EXISTS idx_causal_fingerprint
+            ON causal_edges(context_fingerprint) WHERE context_fingerprint IS NOT NULL;
+        ",
+    )?;
     Ok(())
 }

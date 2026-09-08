@@ -50,11 +50,54 @@ impl CausalStore {
         query: &str,
         limit: usize,
     ) -> Result<Vec<crate::store::CausalEntry>> {
+        let scored = self.bm25_candidates_and_rank(task_tag, query, limit)?;
+        let entries: Vec<crate::store::CausalEntry> =
+            scored.into_iter().map(|(e, _)| e).collect();
+        self.record_access(entries.iter().map(|e| e.edge_id))?;
+        Ok(entries)
+    }
+
+    /// BM25 retrieval with a RELATIVE relevance floor: entries scoring below
+    /// `min_ratio` × the top score are dropped. Used by intervention_query's
+    /// BM25 seed fallback — without the floor, a rare token shared between
+    /// the queried action and an unrelated decision seeds chains from that
+    /// decision, and the stratified summary then aggregates evidence that
+    /// has nothing to do with the query (intervention_calibration finding,
+    /// 2026-09-09: every query in a world returned DANGER via cross-matching).
+    /// The ungated `search_causal_bm25` is unchanged for recall-oriented
+    /// retrieval callers.
+    pub fn search_causal_bm25_gated(
+        &self,
+        task_tag: Option<&str>,
+        query: &str,
+        limit: usize,
+        min_ratio: f64,
+    ) -> Result<Vec<crate::store::CausalEntry>> {
+        let mut scored = self.bm25_candidates_and_rank(task_tag, query, limit)?;
+        if let Some((_, top)) = scored.first() {
+            let floor = top * min_ratio;
+            scored.retain(|(_, s)| *s >= floor);
+        }
+        let entries: Vec<crate::store::CausalEntry> =
+            scored.into_iter().map(|(e, _)| e).collect();
+        self.record_access(entries.iter().map(|e| e.edge_id))?;
+        Ok(entries)
+    }
+
+    /// Shared candidate collection + BM25 ranking for the two public BM25
+    /// searches. Returns entries paired with their BM25 scores, best first,
+    /// at most `limit`.
+    fn bm25_candidates_and_rank(
+        &self,
+        task_tag: Option<&str>,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(crate::store::CausalEntry, f64)>> {
         let query_tokens = crate::patterns::tokenize(query);
         if query_tokens.is_empty() {
             let mut entries = self.search_causal(task_tag, None)?;
             entries.truncate(limit);
-            return Ok(entries);
+            return Ok(entries.into_iter().map(|e| (e, 0.0)).collect());
         }
 
         let conn = self.acquire()?;
@@ -133,12 +176,11 @@ impl CausalStore {
 
         let by_id: std::collections::HashMap<i64, crate::store::CausalEntry> =
             candidates.into_iter().map(|e| (e.edge_id, e)).collect();
-        let entries: Vec<crate::store::CausalEntry> = scored
+        let entries: Vec<(crate::store::CausalEntry, f64)> = scored
             .iter()
-            .filter_map(|(key, _)| key.parse::<i64>().ok())
-            .filter_map(|id| by_id.get(&id).cloned())
+            .filter_map(|(key, score)| key.parse::<i64>().ok().map(|id| (id, *score)))
+            .filter_map(|(id, score)| by_id.get(&id).cloned().map(|e| (e, score)))
             .collect();
-        self.record_access(entries.iter().map(|e| e.edge_id))?;
         Ok(entries)
     }
 
