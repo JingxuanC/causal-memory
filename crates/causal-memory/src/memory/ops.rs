@@ -347,10 +347,87 @@ impl Memory {
         max_tokens: Option<usize>,
         explain: Option<bool>,
     ) -> String {
+        let explain = explain.unwrap_or(false);
+        let out =
+            self.search_causal_body(task_tag, query, limit, detail_level, max_tokens, explain);
+        // §2.1 proactive contradiction retrieval: in explain mode with a
+        // query, also surface the history that OPPOSES what the top hits
+        // confirm. Default (explain=false) output stays byte-identical.
+        if explain {
+            if let Some(q) = query.filter(|q| !q.trim().is_empty()) {
+                return self.with_contradicting_history(
+                    out,
+                    task_tag,
+                    q,
+                    limit.unwrap_or(5),
+                    detail_level.unwrap_or("l2"),
+                );
+            }
+        }
+        out
+    }
+
+    /// §2.1 contradicting-history section for explain-mode causal search.
+    ///
+    /// Retrieval uses a pool larger than the display limit: contradictions
+    /// are by definition NOT the top-ranked entries, so ranking only
+    /// `limit` candidates would almost always find none. Failures here are
+    /// swallowed (the plain search result must stand on its own).
+    fn with_contradicting_history(
+        &self,
+        mut out: String,
+        task_tag: Option<&str>,
+        query: &str,
+        limit: usize,
+        detail_level: &str,
+    ) -> String {
+        let pool = (limit * 4).max(20);
+        let contradictions = match self
+            .store
+            .search_causal_bm25_contradicting(task_tag, query, pool, limit)
+        {
+            Ok(c) => c,
+            Err(_) => return out,
+        };
+        if contradictions.is_empty() {
+            out.push_str("\n⚠️ contradicting history: none found in top evidence pool.\n");
+            return out;
+        }
+        out.push_str(&format!(
+            "\n⚠️ contradicting history ({} episode(s) opposing the top belief):\n\n",
+            contradictions.len()
+        ));
+        for (i, (entry, belief)) in contradictions.iter().enumerate() {
+            let (line, _) = format_entry_layered(entry, i + 1, detail_level);
+            // Tag hugs its entry, same discipline as the [seed] tags above.
+            out.push_str(line.trim_end());
+            out.push('\n');
+            out.push_str(&format!(
+                "   ↳ [contradiction: opposes the {}-belief of your top hit{}]\n\n",
+                if *belief { "success" } else { "failure" },
+                if task_tag.is_some() {
+                    ""
+                } else {
+                    " (no task_tag scope)"
+                },
+            ));
+        }
+        out
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn search_causal_body(
+        &self,
+        task_tag: Option<&str>,
+        query: Option<&str>,
+        limit: Option<usize>,
+        detail_level: Option<&str>,
+        max_tokens: Option<usize>,
+        explain: bool,
+    ) -> String {
         let limit = limit.unwrap_or(5);
         let detail_level = detail_level.unwrap_or("l2");
         let max_tokens = max_tokens.unwrap_or(0);
-        let explain = explain.unwrap_or(false);
         let mut budget = TokenBudget::new(max_tokens);
         // Non-spread paths surface direct store hits — provenance-wise they
         // are seeds by definition.

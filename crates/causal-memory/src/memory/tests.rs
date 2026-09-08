@@ -970,6 +970,65 @@ fn search_explain_tags_and_default_invariance() {
     assert!(!row.results.as_array().unwrap().is_empty());
 }
 
+// ─── §2.1 proactive contradiction retrieval (explain mode) ───────────
+
+#[test]
+fn search_explain_surfaces_contradicting_history() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "used Redis as the session cache",
+        "cache held through the flash sale and checkout succeeded",
+        "caused",
+        "shop",
+        None,
+        None,
+    );
+    memory.record_decision(
+        "kept Redis as the session cache for the anniversary sale",
+        "redis cache stampede crashed checkout for ten minutes",
+        "caused",
+        "shop",
+        None,
+        None,
+    );
+
+    // explain=false: byte-stable, no contradiction section.
+    let plain = memory.search_causal(
+        Some("shop"),
+        Some("redis session cache"),
+        Some(5),
+        None,
+        None,
+        Some(false),
+    );
+    assert!(
+        !plain.contains("contradicting history"),
+        "default output unchanged: {plain}"
+    );
+
+    // explain=true: the failure episode is proactively surfaced.
+    let explained = memory.search_causal(
+        Some("shop"),
+        Some("redis session cache"),
+        Some(5),
+        None,
+        None,
+        Some(true),
+    );
+    assert!(
+        explained.contains("contradicting history"),
+        "section header present: {explained}"
+    );
+    assert!(
+        explained.contains("stampede"),
+        "the negative episode is surfaced: {explained}"
+    );
+    assert!(
+        explained.contains("[contradiction"),
+        "tag shape: {explained}"
+    );
+}
+
 // ── v14 fork-aware counterfactual ────────────────────────────────
 
 #[test]
