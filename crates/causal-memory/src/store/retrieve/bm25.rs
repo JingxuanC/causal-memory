@@ -2,7 +2,7 @@
 
 use anyhow::{anyhow, Result};
 
-use crate::store::{entry_from_row, CausalStore, ENTRY_COLUMNS};
+use crate::store::{effective_polarity, entry_from_row, CausalStore, ENTRY_COLUMNS};
 
 impl CausalStore {
     pub fn search_causal(
@@ -51,8 +51,7 @@ impl CausalStore {
         limit: usize,
     ) -> Result<Vec<crate::store::CausalEntry>> {
         let scored = self.bm25_candidates_and_rank(task_tag, query, limit)?;
-        let entries: Vec<crate::store::CausalEntry> =
-            scored.into_iter().map(|(e, _)| e).collect();
+        let entries: Vec<crate::store::CausalEntry> = scored.into_iter().map(|(e, _)| e).collect();
         self.record_access(entries.iter().map(|e| e.edge_id))?;
         Ok(entries)
     }
@@ -78,10 +77,56 @@ impl CausalStore {
             let floor = top * min_ratio;
             scored.retain(|(_, s)| *s >= floor);
         }
-        let entries: Vec<crate::store::CausalEntry> =
-            scored.into_iter().map(|(e, _)| e).collect();
+        let entries: Vec<crate::store::CausalEntry> = scored.into_iter().map(|(e, _)| e).collect();
         self.record_access(entries.iter().map(|e| e.edge_id))?;
         Ok(entries)
+    }
+
+    /// Contradiction retrieval (hardening §2.1): same candidate pool and
+    /// ranking as `search_causal_bm25`, but returns only entries whose
+    /// effective outcome polarity OPPOSES the pool's belief polarity.
+    ///
+    /// The belief polarity is taken from the highest-ranked entry with a
+    /// known polarity — i.e. what the agent's current intent would be
+    /// confirmed by (the top hit of a plain `search_causal`). Entries whose
+    /// effective polarity is unknown can never contradict and are dropped.
+    ///
+    /// `pool_limit` should be larger than `out_limit`: contradictions are by
+    /// definition NOT the top-ranked entries, so ranking the same-size list
+    /// the plain search uses would almost always find zero of them.
+    ///
+    /// Returns (entry, belief) pairs so the caller can render what belief
+    /// each contradiction opposes (`belief == true` = the intent is believed
+    /// to succeed).
+    pub fn search_causal_bm25_contradicting(
+        &self,
+        task_tag: Option<&str>,
+        query: &str,
+        pool_limit: usize,
+        out_limit: usize,
+    ) -> Result<Vec<(crate::store::CausalEntry, bool)>> {
+        let scored = self.bm25_candidates_and_rank(task_tag, query, pool_limit)?;
+
+        // Belief = effective polarity of the highest-ranked entry that has
+        // one. No polarized entry in the pool → nothing can contradict.
+        let belief = scored
+            .iter()
+            .find_map(|(e, _)| effective_polarity(e.outcome_polarity.as_deref(), &e.outcome_text));
+        let Some(belief) = belief else {
+            return Ok(Vec::new());
+        };
+
+        let out: Vec<(crate::store::CausalEntry, bool)> = scored
+            .into_iter()
+            .filter(|(e, _)| {
+                effective_polarity(e.outcome_polarity.as_deref(), &e.outcome_text) == Some(!belief)
+            })
+            .map(|(e, _)| (e, belief))
+            .take(out_limit)
+            .collect();
+        // record_access expects an iterator; drain to avoid cloning ids.
+        self.record_access(out.iter().map(|(e, _)| e.edge_id))?;
+        Ok(out)
     }
 
     /// Shared candidate collection + BM25 ranking for the two public BM25

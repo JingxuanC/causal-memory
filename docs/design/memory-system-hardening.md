@@ -103,6 +103,11 @@ search_contradicting 返回: "Redis 缓存雪崩了" (negative, same task_tag)
 
 实现：在现有 retrieval 上 polarity 反转过滤 + 相同 task_tag 约束。
 
+**已落地（2026-09-09，PR #29）**：
+- store 层 `search_causal_bm25_contradicting(task_tag, query, pool_limit, out_limit)`：复用 BM25 候选池，belief 取排名最高且有效 polarity 已知的条目（即普通 search_causal 会确认的意图）；返回有效 polarity 与 belief 相反的条目。pool 比输出 limit 大（4×，下限 20）——矛盾项按定义不在 top 排名里，同尺寸池几乎必然零命中。polarity 未知的条目永远不会矛盾。
+- ops 层：`search_causal` 主体下沉为私有 `search_causal_body`；explain=true 且有 query 时，包装器追加 `⚠️ contradicting history` 段（每条带 `[contradiction: opposes the success-belief of your top hit]` 标签）。explain=false 输出字节不变。检索失败静默吞掉（普通搜索结果必须独立成立）。
+- 测试：store 层 3 个（反向 polarity 命中 / task_tag 作用域 / 无 belief 为空）+ ops 层 explain 集成 1 个。
+
 ### 2.2 自动偏差检测（记忆漂移监控）
 
 **现状**：有半衰期衰减（`halflife_hours`）和手动 `invalidate_decision`，但没有**自动检测记忆系统性偏差**的机制。

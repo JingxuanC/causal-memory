@@ -1048,10 +1048,152 @@ fn test_bm25_gated_drops_weak_matches() {
         gated.len()
     );
     assert!(
-        gated[0]
-            .decision_text
-            .contains("qwertyu alpha branch"),
+        gated[0].decision_text.contains("qwertyu alpha branch"),
         "the strong match survives the gate"
+    );
+}
+
+#[test]
+fn test_bm25_contradicting_surfaces_opposite_polarity() {
+    // §2.1 proactive contradiction retrieval: the plain search's top hit
+    // confirms the intent (Redis cache works); contradiction retrieval must
+    // surface the failure episode that shares the evidence pool but opposes
+    // the belief. The no-polarity episode can never contradict.
+    let store = CausalStore::open_in_memory().unwrap();
+    for (decision, outcome, polarity) in [
+        (
+            "used Redis as the session cache",
+            "cache hit ratio stayed high and latency dropped",
+            Some("positive"),
+        ),
+        (
+            "kept the Redis cache backend for the flash sale",
+            "redis cache stampede crashed the checkout service",
+            Some("negative"),
+        ),
+        (
+            "chose memcached for a similar session workload",
+            "evictions caused some session loss during peaks",
+            None,
+        ),
+    ] {
+        store
+            .record_decision_full(
+                decision,
+                outcome,
+                "caused",
+                Some("cache"),
+                0.9,
+                "test",
+                1_700_000_000,
+                polarity,
+                None,
+            )
+            .unwrap();
+    }
+    let contradictions = store
+        .search_causal_bm25_contradicting(Some("cache"), "redis session cache", 20, 5)
+        .unwrap();
+    assert_eq!(
+        contradictions.len(),
+        1,
+        "exactly the negative episode contradicts the positive belief: {contradictions:?}"
+    );
+    let (entry, belief) = &contradictions[0];
+    assert!(*belief, "top-hit belief is success");
+    assert!(
+        entry.outcome_text.contains("stampede"),
+        "the surfaced contradiction is the failure episode"
+    );
+}
+
+#[test]
+fn test_bm25_contradicting_respects_task_tag_scope() {
+    // The failure lives under a different task_tag: a scoped contradiction
+    // search must not see it; an unscoped one may (same evidence pool).
+    let store = CausalStore::open_in_memory().unwrap();
+    for (decision, outcome, polarity, tag) in [
+        (
+            "used Redis as the session cache in the shop monolith",
+            "cache held and checkout succeeded",
+            Some("positive"),
+            "shop",
+        ),
+        (
+            "kept the Redis cache backend in the legacy perl stack",
+            "redis cache stampede crashed the legacy stack",
+            Some("negative"),
+            "legacy",
+        ),
+    ] {
+        store
+            .record_decision_full(
+                decision,
+                outcome,
+                "caused",
+                Some(tag),
+                0.9,
+                "test",
+                1_700_000_000,
+                polarity,
+                None,
+            )
+            .unwrap();
+    }
+    let scoped = store
+        .search_causal_bm25_contradicting(Some("shop"), "redis session cache", 20, 5)
+        .unwrap();
+    assert!(
+        scoped.is_empty(),
+        "scoped search must not contradict across task tags: {scoped:?}"
+    );
+    let unscoped = store
+        .search_causal_bm25_contradicting(None, "redis session cache", 20, 5)
+        .unwrap();
+    assert_eq!(
+        unscoped.len(),
+        1,
+        "unscoped search sees the cross-tag failure: {unscoped:?}"
+    );
+}
+
+#[test]
+fn test_bm25_contradicting_empty_without_polarized_belief() {
+    // No entry in the pool has a known effective polarity → nothing can
+    // contradict; stored 'mixed'/'neutral' never become beliefs either.
+    let store = CausalStore::open_in_memory().unwrap();
+    for (decision, outcome, polarity) in [
+        (
+            "configured nginx gzip for static assets",
+            "payload sizes shrank",
+            Some("neutral"),
+        ),
+        (
+            "enabled nginx gzip for the api layer",
+            "sometimes fast sometimes slow",
+            Some("mixed"),
+        ),
+    ] {
+        store
+            .record_decision_full(
+                decision,
+                outcome,
+                "caused",
+                Some("web"),
+                0.9,
+                "test",
+                1_700_000_000,
+                polarity,
+                None,
+            )
+            .unwrap();
+    }
+    let contradictions = store
+        .search_causal_bm25_contradicting(Some("web"), "nginx gzip", 20, 5)
+        .unwrap();
+    assert!(
+        contradictions.is_empty(),
+        "no polarized belief → no contradictions: {contradictions:?}"
     );
 }
 
