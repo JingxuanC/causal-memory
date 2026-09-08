@@ -79,7 +79,9 @@ impl CausalRelation {
             "caused" => Some(Self::Caused),
             "enabled" => Some(Self::Enabled),
             "prevented" => Some(Self::Prevented),
-            "co_occurrence" | "co-occurrence" | "associated" | "correlated" => Some(Self::CoOccurrence),
+            "co_occurrence" | "co-occurrence" | "associated" | "correlated" => {
+                Some(Self::CoOccurrence)
+            }
             _ => None,
         }
     }

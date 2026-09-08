@@ -162,7 +162,10 @@ impl<'a> EdgeRefuter<'a> {
         let (result, detail) = if union < 4 {
             (
                 TestResult::Inconclusive,
-                format!("Only {} shared neighbors — too sparse to judge overlap", union),
+                format!(
+                    "Only {} shared neighbors — too sparse to judge overlap",
+                    union
+                ),
             )
         } else if jaccard >= 0.15 {
             (
@@ -585,8 +588,12 @@ mod tests {
     fn build_graph(edges: &[(&str, &str)]) -> CausalGraph {
         let mut ids: Vec<&str> = Vec::new();
         for &(a, b) in edges {
-            if !ids.contains(&a) { ids.push(a); }
-            if !ids.contains(&b) { ids.push(b); }
+            if !ids.contains(&a) {
+                ids.push(a);
+            }
+            if !ids.contains(&b) {
+                ids.push(b);
+            }
         }
         let nodes: Vec<NodeData> = ids
             .iter()
@@ -630,7 +637,8 @@ mod tests {
         assert!(
             backdoor.result == TestResult::Refuted || backdoor.result == TestResult::Inconclusive,
             "confounded A→C must trigger backdoor refuter, got {:?}: {}",
-            backdoor.result, backdoor.detail
+            backdoor.result,
+            backdoor.detail
         );
     }
 
@@ -684,12 +692,19 @@ mod tests {
     fn build_graph_with_times(edges: &[(&str, &str, i64, i64)]) -> CausalGraph {
         let mut ids: Vec<&str> = Vec::new();
         for &(a, b, _, _) in edges {
-            if !ids.contains(&a) { ids.push(a); }
-            if !ids.contains(&b) { ids.push(b); }
+            if !ids.contains(&a) {
+                ids.push(a);
+            }
+            if !ids.contains(&b) {
+                ids.push(b);
+            }
         }
         // time lookup: first occurrence of an id wins
         let time_of = |id: &str| -> i64 {
-            edges.iter().find(|e| e.0 == id).map(|e| e.2)
+            edges
+                .iter()
+                .find(|e| e.0 == id)
+                .map(|e| e.2)
                 .or_else(|| edges.iter().find(|e| e.1 == id).map(|e| e.3))
                 .unwrap_or(0)
         };
@@ -725,8 +740,12 @@ mod tests {
         let eidx = (0..g.num_edges())
             .find(|&i| g.edge_source_node(i) == fi && g.edge_target(i) == ti)
             .expect("edge must exist");
-        refuter.refute_edge(eidx)
-            .tests.iter().find(|t| t.name == "temporal").unwrap()
+        refuter
+            .refute_edge(eidx)
+            .tests
+            .iter()
+            .find(|t| t.name == "temporal")
+            .unwrap()
             .result
     }
 

@@ -57,10 +57,11 @@ fn migration_from_v15_widens_relation_check() {
             let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
             assert_eq!(version, i64::from(causal_memory::migrate::SCHEMA_VERSION));
             // Legacy row survived the table rebuild.
-            let kept: i64 =
-                conn.query_row("SELECT COUNT(*) FROM causal_edges WHERE relation = 'caused'", [], |r| {
-                    r.get(0)
-                })?;
+            let kept: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM causal_edges WHERE relation = 'caused'",
+                [],
+                |r| r.get(0),
+            )?;
             assert_eq!(kept, 1);
             // Indexes rebuilt.
             let idx: i64 = conn.query_row(
@@ -91,7 +92,9 @@ fn migration_from_v15_widens_relation_check() {
     assert_eq!(store.count_edges().unwrap(), 2);
 
     // …and the forward chain walk excludes the associational edge.
-    let chains = store.trace_effect_chain("purge edge cache", 3, 0.3).unwrap();
+    let chains = store
+        .trace_effect_chain("purge edge cache", 3, 0.3)
+        .unwrap();
     assert!(
         chains.is_empty(),
         "co_occurrence edges must not appear in do()-style chains"
