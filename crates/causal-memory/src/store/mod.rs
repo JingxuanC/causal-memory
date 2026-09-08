@@ -88,6 +88,11 @@ CREATE TABLE IF NOT EXISTS causal_edges (
     -- raw description for display/audit.
     context_fingerprint TEXT,
     context_text TEXT,
+    -- v17 (hardening §2.2): bias-audit flag. One cycle's BiasAudit stage
+    -- stamps edges that participate in a suspicious statistical pattern
+    -- (polarity-skewed task_tag, zero-variance repeated decision). Purely
+    -- an annotation for human review — retrieval, decay, and GC ignore it.
+    bias_flag TEXT,
     FOREIGN KEY (from_id) REFERENCES chunks(id),
     FOREIGN KEY (to_id) REFERENCES chunks(id)
 );
@@ -633,6 +638,7 @@ impl Drop for PooledConn {
 
 // Submodules — each adds methods to `impl CausalStore`.
 mod audit;
+mod bias_audit;
 mod embed;
 mod facts;
 pub mod retrieve;
@@ -642,6 +648,7 @@ mod write;
 
 // Re-export all public types so `causal_memory::store::CausalEntry` still works.
 pub use audit::{RecallAuditEntry, RecallAuditRow};
+pub use bias_audit::{ConfidenceDrift, FlaggedEdge, LowVariancePattern, PolaritySkew};
 pub use types::*;
 pub use utils::{
     containment_similarity, date_tokens, effective_polarity, is_retraction_record,
