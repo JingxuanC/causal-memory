@@ -73,6 +73,10 @@ SingleTest {
 
 **已完成（2026-09-09）**：`tests/intervention_calibration.rs` + `docs/evaluations/intervention-calibration.md`。结果：可解类（真危险/真安全/prevented）100% 准确；混淆类（潜变量驱动的伪 caused 边）**100% DANGER 过声称**——结构性缺陷（relation 词表无关联性类型 + 链遍历 relation 盲视），修复方向在上游（抽取器/ refuter 标注），回归守卫已钉住基线。另发现种子交叉匹配风险：查询与历史共享 token 时 summary 聚合层不保证相关性。
 
+**修复已落地（2026-09-09，PR #28）**：
+1. **co_occurrence relation 全链路**：抽取器新增第 4 种 causal_relation（机制不清/疑似共同原因时用，替代 caused）；schema v16 迁移拓宽 CHECK；trace.rs 链遍历排除非因果 relation。校准新增 confounded_tagged 类：**0% 过声称**。残留局限：抽取器错标为 caused 时仍 100% 过声称（信号不在图中，靠抽取器判别力改进）。
+2. **BM25 种子门控**：`search_causal_bm25_gated`（0.3 × top 相对分数线）仅用于 intervention_query 种子回退，消除共享 token 的交叉匹配。
+
 ### 1.4 多证据融合 refuter（1.2 校准的衍生任务，已完成）
 
 **动机**：1.2 校准发现纯结构 refuter 存在 keep-flag 前沿（二者之和 ~110%，密度只改变证据可裁判性，不改变真/伪边结构签名的可分离性）。突破前沿必须引入 NodeData/EdgeData 中未用的非结构证据。

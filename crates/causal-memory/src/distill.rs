@@ -55,6 +55,13 @@ pub enum CausalRelation {
     Enabled,
     /// "Doing X prevented Y" — NEGATIVE activation (-0.3, GABA)
     Prevented,
+    /// "X and Y repeatedly co-occur, but the causal mechanism is unclear or
+    /// a common cause is suspected (confounding NOT ruled out)" —
+    /// observational association only. These edges are excluded from
+    /// do()-style forward chain walks (trace.rs) so intervention_query
+    /// never presents them as causal predictions; the refuter layer can
+    /// still investigate them as confounding suspects.
+    CoOccurrence,
 }
 
 impl CausalRelation {
@@ -63,6 +70,7 @@ impl CausalRelation {
             Self::Caused => "caused",
             Self::Enabled => "enabled",
             Self::Prevented => "prevented",
+            Self::CoOccurrence => "co_occurrence",
         }
     }
 
@@ -71,6 +79,9 @@ impl CausalRelation {
             "caused" => Some(Self::Caused),
             "enabled" => Some(Self::Enabled),
             "prevented" => Some(Self::Prevented),
+            "co_occurrence" | "co-occurrence" | "associated" | "correlated" => {
+                Some(Self::CoOccurrence)
+            }
             _ => None,
         }
     }
@@ -178,10 +189,11 @@ Each item has:
   - lesson: decisions made, advice given, feedback received
   - event: dated happenings (plans, purchases, activities, todo changes)
   - causal: a decision→outcome relationship — "doing X caused/enabled/prevented Y"
-- "causal_relation": ONLY for kind="causal". One of "caused" | "enabled" | "prevented".
+- "causal_relation": ONLY for kind="causal". One of "caused" | "enabled" | "prevented" | "co_occurrence".
   - caused: the decision directly led to the outcome (e.g. "deploying without tests caused a production crash")
   - enabled: the decision made the outcome possible (e.g. "adding caching enabled faster response times")
   - prevented: the decision blocked something bad from happening (e.g. "adding input validation prevented SQL injection", "setting up health checks prevented cascading failures")
+  - co_occurrence: the decision and the outcome repeatedly happen TOGETHER, but the mechanism is unclear or a common cause is suspected (e.g. "every deploy-window broker restart coincided with webhook failures" — the restart and the failures may both be driven by deploy-window load). Use this instead of "caused" whenever confounding is NOT ruled out. co_occurrence edges are never presented as causal predictions in intervention queries.
 - "decision": ONLY for kind="causal". The action/decision text (the "cause"). The "text" field holds the outcome (the "effect").
 - "text": one self-contained, absolutely-dated sentence
 - "date": YYYY-MM-DD (usually the session date)

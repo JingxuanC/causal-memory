@@ -1514,8 +1514,11 @@ impl Memory {
 
         // Semantic seed path: embed the action, find similar past decisions by
         // cosine, walk forward chains from them. Failure chain: BM25 ranks
-        // similar decisions by token overlap and seeds chains from them; the
-        // LIKE anchor is the last resort (pre-embedding behavior).
+        // similar decisions by token overlap and seeds chains from them —
+        // GATED by a relative relevance floor (0.3 × top score) so a rare
+        // token shared with an unrelated decision doesn't seed cross-matched
+        // chains (intervention_calibration finding, 2026-09-09). The LIKE
+        // anchor is the last resort (pre-embedding behavior).
         let mut tag = "[keyword]";
         let chains = match self.semantic_effect_chains(action, max_depth, min_confidence, limit) {
             Some(c) => {
@@ -1525,7 +1528,7 @@ impl Memory {
             None => {
                 let bm25_seeds = self
                     .store
-                    .search_causal_bm25(None, action, limit)
+                    .search_causal_bm25_gated(None, action, limit, 0.3)
                     .ok()
                     .filter(|r| !r.is_empty());
                 match bm25_seeds {

@@ -51,6 +51,13 @@ enum GtClass {
     CausalSafe,
     Prevented,
     Confounded,
+<<<<<<< HEAD
+    /// Same latent-confounder ground truth as Confounded, but the extractor
+    /// correctly tagged the observation as `co_occurrence` (the Fix-1
+    /// relation). Chain walk must exclude it → no DANGER overclaim.
+    ConfoundedTagged,
+=======
+>>>>>>> origin/main
 }
 
 impl GtClass {
@@ -60,6 +67,10 @@ impl GtClass {
             GtClass::CausalSafe => "causal_safe",
             GtClass::Prevented => "prevented",
             GtClass::Confounded => "confounded",
+<<<<<<< HEAD
+            GtClass::ConfoundedTagged => "confounded_tagged",
+=======
+>>>>>>> origin/main
         }
     }
 }
@@ -101,9 +112,18 @@ fn label_correct(class: GtClass, label: Label) -> bool {
         GtClass::CausalDanger => label == Label::Danger,
         GtClass::CausalSafe => label == Label::Safe,
         GtClass::Prevented => label == Label::Unknown,
+<<<<<<< HEAD
+        // Confounded: A→NEG recorded as caused, but driven by a latent cause
+        // (e.g. both happen during deploy windows). do(A) does not cause NEG.
+        GtClass::Confounded => matches!(label, Label::Warning | Label::Unknown | Label::NoChains),
+        GtClass::ConfoundedTagged => {
+            matches!(label, Label::Warning | Label::Unknown | Label::NoChains)
+        }
+=======
         // Confounded: any non-DANGER label is the ideal; DANGER is the
         // known overclaim (tracked separately, not asserted as "correct").
         GtClass::Confounded => matches!(label, Label::Warning | Label::Unknown | Label::NoChains),
+>>>>>>> origin/main
     }
 }
 
@@ -134,11 +154,19 @@ fn intervention_query_calibration() {
     let mut rng = Rng::new(7);
     let world_count = 10;
     // Per class: (correct, total, danger_overclaims)
+<<<<<<< HEAD
+    let mut stats: [(GtClass, usize, usize, usize); 5] = [
+=======
     let mut stats: [(GtClass, usize, usize, usize); 4] = [
+>>>>>>> origin/main
         (GtClass::CausalDanger, 0, 0, 0),
         (GtClass::CausalSafe, 0, 0, 0),
         (GtClass::Prevented, 0, 0, 0),
         (GtClass::Confounded, 0, 0, 0),
+<<<<<<< HEAD
+        (GtClass::ConfoundedTagged, 0, 0, 0),
+=======
+>>>>>>> origin/main
     ];
 
     for w in 0..world_count {
@@ -150,6 +178,10 @@ fn intervention_query_calibration() {
         let ts = format!("w{w}b{}q", rng.below(1000));
         let tp = format!("w{w}c{}q", rng.below(1000));
         let tc = format!("w{w}d{}q", rng.below(1000));
+<<<<<<< HEAD
+        let tt = format!("w{w}e{}q", rng.below(1000));
+=======
+>>>>>>> origin/main
 
         // causal_danger: A → MID → NEG (two-hop caused chain).
         let a_danger = format!("deploy {td} branch to production");
@@ -174,6 +206,16 @@ fn intervention_query_calibration() {
         let neg3 = format!("{tc} webhook delivery failures");
         rec(&store, &a_conf, &neg3, "caused", "negative");
 
+<<<<<<< HEAD
+        // confounded_tagged: same ground truth, but the extractor correctly
+        // tagged the observation as co_occurrence (Fix-1 relation). The
+        // chain walk must exclude it — expect NO DANGER overclaim.
+        let a_tagged = format!("purge {tt} edge cache");
+        let neg4 = format!("{tt} elevated origin error rate");
+        rec(&store, &a_tagged, &neg4, "co_occurrence", "negative");
+
+=======
+>>>>>>> origin/main
         let memory = Memory::new(store);
 
         let cases = [
@@ -181,6 +223,10 @@ fn intervention_query_calibration() {
             (GtClass::CausalSafe, a_safe),
             (GtClass::Prevented, a_prev),
             (GtClass::Confounded, a_conf),
+<<<<<<< HEAD
+            (GtClass::ConfoundedTagged, a_tagged),
+=======
+>>>>>>> origin/main
         ];
         for (class, action) in cases {
             let out = run_query(&memory, &action);
@@ -190,7 +236,13 @@ fn intervention_query_calibration() {
             if label_correct(class, label) {
                 slot.1 += 1;
             }
+<<<<<<< HEAD
+            if matches!(class, GtClass::Confounded | GtClass::ConfoundedTagged)
+                && label == Label::Danger
+            {
+=======
             if class == GtClass::Confounded && label == Label::Danger {
+>>>>>>> origin/main
                 slot.3 += 1; // overclaim counter
             }
             println!(
@@ -209,10 +261,18 @@ fn intervention_query_calibration() {
         world_count
     );
     let mut confounded_overclaim = 0.0f64;
+<<<<<<< HEAD
+    let mut tagged_overclaim = 0.0f64;
+    for (class, correct, total, overclaims) in &stats {
+        let rate = *correct as f64 / *total as f64;
+        println!(
+            "  {:19}: {:>3}/{:<3} correct ({:5.1}%)",
+=======
     for (class, correct, total, overclaims) in &stats {
         let rate = *correct as f64 / *total as f64;
         println!(
             "  {:15}: {:>3}/{:<3} correct ({:5.1}%)",
+>>>>>>> origin/main
             class.name(),
             correct,
             total,
@@ -221,10 +281,24 @@ fn intervention_query_calibration() {
         if *class == GtClass::Confounded {
             confounded_overclaim = *overclaims as f64 / *total as f64;
             println!(
+<<<<<<< HEAD
+                "    └ DANGER overclaim (extractor said 'caused'): {:5.1}%",
+                confounded_overclaim * 100.0
+            );
+        }
+        if *class == GtClass::ConfoundedTagged {
+            tagged_overclaim = *overclaims as f64 / *total as f64;
+            println!(
+                "    └ DANGER overclaim (extractor said 'co_occurrence'): {:5.1}%",
+                tagged_overclaim * 100.0
+            );
+        }
+=======
                 "    └ DANGER overclaim on unidentifiable queries: {:5.1}%",
                 confounded_overclaim * 100.0
             );
         }
+>>>>>>> origin/main
     }
 
     // ── Assertions (regression guards) ──
@@ -264,4 +338,14 @@ fn intervention_query_calibration() {
         "confounded DANGER overclaim regressed beyond baseline: {:.1}%",
         confounded_overclaim * 100.0
     );
+<<<<<<< HEAD
+    // Fix-1 guard: co_occurrence-tagged observations must never surface as
+    // DANGER chains (trace.rs excludes non-causal relations from the walk).
+    assert!(
+        tagged_overclaim == 0.0,
+        "co_occurrence edges leaked into causal chain predictions: {:.1}%",
+        tagged_overclaim * 100.0
+    );
+=======
+>>>>>>> origin/main
 }
