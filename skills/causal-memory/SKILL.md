@@ -35,6 +35,12 @@ This skill has two parts:
      ```json
      { "mcpServers": { "causal-memory": { "command": "causal-memory" } } }
      ```
+   - **Opencode** — edit `~/.config/opencode/opencode.jsonc` (or opencode.json):
+     ```json
+     { "mcp": { "causal-memory": {"type":"local", "command": "causal-memory", "enabled":true, "environment":{
+       "CAUSAL_MEMORY_DB": ".local/share/causal-memory/causal.db"
+     } } } }
+     ```
    - **Claude Desktop** — edit
      `~/Library/Application Support/Claude/claude_desktop_config.json`
      (same `mcpServers` shape as above).
