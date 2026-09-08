@@ -38,13 +38,15 @@ use crate::store::CausalStore;
 mod stages;
 mod types;
 
-pub use types::{ConsolidateConfig, ConsolidateReport, ReactivationEntry, SupersessionAction};
+pub use types::{
+    BiasAuditReport, ConsolidateConfig, ConsolidateReport, ReactivationEntry, SupersessionAction,
+};
 
 use rusqlite::params;
 
 use stages::{
-    downscale, merge_redundant_edges, rem_integrate, replay_writeback, score_reactivation,
-    snapshot_meta_edges,
+    bias_audit, downscale, merge_redundant_edges, rem_integrate, replay_writeback,
+    score_reactivation, snapshot_meta_edges,
 };
 
 /// Run one full sleep-consolidation cycle over `store`.
@@ -167,6 +169,20 @@ pub fn consolidate(
         "[consolidate] stage 4 done ({} rem transfers)",
         report.rem_transfers
     );
+
+    // ── Stage 5: BiasAudit — statistical self-consistency detectors ─────
+    // Runs last, on the post-consolidation population: flags suspicious
+    // edges (polarity-skewed tags, zero-variance repeats) for human review
+    // and reports confidence drift. Pure annotation — no invalidation.
+    if config.bias_audit_enabled {
+        let flagged = bias_audit(store, config, dry_run, &mut report.bias_audit)?;
+        eprintln!(
+            "[consolidate] stage 5 done ({} skewed tags, {} low-variance patterns, {} flagged)",
+            report.bias_audit.polarity_skew.len(),
+            report.bias_audit.low_variance.len(),
+            flagged
+        );
+    }
 
     Ok(report)
 }

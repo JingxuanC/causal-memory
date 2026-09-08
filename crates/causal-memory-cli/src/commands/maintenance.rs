@@ -531,6 +531,53 @@ fn print_consolidation_report(
         report.q_updates
     );
 
+    // ── ⑤.1 BiasAudit (hardening §2.2): annotation only, never invalidates ──
+    let audit = &report.bias_audit;
+    println!("\n⑤.1 Bias audit (statistical self-consistency):");
+    if audit.polarity_skew.is_empty()
+        && audit.low_variance.is_empty()
+        && audit.confidence_drift.is_none()
+    {
+        println!("  ✅ no suspicious patterns detected");
+    } else {
+        for skew in &audit.polarity_skew {
+            println!(
+                "  ⚠️ polarity skew [{}]: {}/{} outcomes {} ({:.0}%) — tag may be one-sided",
+                skew.task_tag,
+                (skew.dominant_ratio * skew.polarized as f64).round(),
+                skew.polarized,
+                if skew.dominant_positive {
+                    "positive"
+                } else {
+                    "negative"
+                },
+                skew.dominant_ratio * 100.0
+            );
+        }
+        for pattern in &audit.low_variance {
+            println!(
+                "  ⚠️ zero-variance repeat: \"{}…\" ×{} (always {}) — self-reinforcement suspect",
+                pattern.decision_text.chars().take(40).collect::<String>(),
+                pattern.repetitions,
+                if pattern.polarity {
+                    "success"
+                } else {
+                    "failure"
+                }
+            );
+        }
+        if let Some(drift) = &audit.confidence_drift {
+            println!(
+                "  ⚠️ confidence drift: recent {} edges mean {:.2} vs historical {:.2} (Δ {:+.2})",
+                drift.window, drift.recent_mean, drift.historical_mean, drift.delta
+            );
+        }
+        println!(
+            "  → {} edge(s) flagged for human review (bias_flag; see `status`)",
+            audit.edges_flagged
+        );
+    }
+
     if report.dry_run {
         println!("\n(dry run — no changes were written)");
     }

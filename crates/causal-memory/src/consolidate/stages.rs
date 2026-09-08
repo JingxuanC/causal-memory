@@ -8,7 +8,8 @@ use crate::patterns::{boilerplate_tokens, content_tokens, jaccard, tokenize};
 use crate::store::{outcome_polarity, outcomes_contradict, CausalStore};
 
 use super::types::{
-    ConsolidateConfig, ConsolidateReport, MetaNode, ReactivationEntry, SECS_PER_DAY,
+    BiasAuditReport, ConsolidateConfig, ConsolidateReport, MetaNode, ReactivationEntry,
+    SECS_PER_DAY,
 };
 
 /// Stage 1: replay-priority score for every valid edge.
@@ -570,4 +571,48 @@ pub fn rem_integrate(
         }
     }
     Ok(transfers)
+}
+
+/// Stage 5: BiasAudit (hardening §2.2) — statistical self-consistency
+/// detectors over the valid-edge population. Flags suspicious edges for
+/// human review (`bias_flag`, v17); nothing is invalidated, decayed, or
+/// hidden. Pure analysis in dry runs.
+///
+/// An edge caught by two detectors keeps the LAST stamp (detector 2 runs
+/// after detector 1); the report lists both findings regardless.
+pub fn bias_audit(
+    store: &CausalStore,
+    config: &ConsolidateConfig,
+    dry_run: bool,
+    report: &mut BiasAuditReport,
+) -> Result<usize> {
+    report.polarity_skew =
+        store.audit_polarity_skew(config.bias_min_tag_edges, config.bias_skew_ratio)?;
+    report.low_variance = store.audit_low_variance_decisions(config.bias_min_repetitions)?;
+    report.confidence_drift =
+        store.audit_confidence_drift(config.bias_drift_window, config.bias_drift_threshold)?;
+
+    let mut flagged = 0usize;
+    if !dry_run {
+        for skew in &report.polarity_skew {
+            let flag = format!("polarity_skew:{}", skew.task_tag);
+            for &edge_id in &skew.edge_ids {
+                // Best-effort: a failed stamp must never break the cycle.
+                if store.set_bias_flag(edge_id, &flag).is_ok() {
+                    flagged += 1;
+                }
+            }
+        }
+        for pattern in &report.low_variance {
+            let snippet: String = pattern.decision_text.chars().take(40).collect();
+            let flag = format!("low_variance:{snippet}");
+            for &edge_id in &pattern.edge_ids {
+                if store.set_bias_flag(edge_id, &flag).is_ok() {
+                    flagged += 1;
+                }
+            }
+        }
+    }
+    report.edges_flagged = flagged;
+    Ok(flagged)
 }

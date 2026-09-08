@@ -31,7 +31,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 16;
+pub const SCHEMA_VERSION: u32 = 17;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -91,6 +91,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 16 {
         migrate_to_v16(&tx)?;
+    }
+    if version < 17 {
+        migrate_to_v17(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -1136,5 +1139,20 @@ fn migrate_to_v16(conn: &Connection) -> Result<()> {
             ON causal_edges(context_fingerprint) WHERE context_fingerprint IS NOT NULL;
         ",
     )?;
+    Ok(())
+}
+
+/// v17: add the bias-audit annotation column (hardening §2.2). Nullable,
+/// unconstrained TEXT — one ALTER, no table rebuild. Guarded by a column
+/// check so a store that somehow already carries the column (restore from a
+/// newer backup, hand-edited DB) skips instead of erroring.
+fn migrate_to_v17(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "causal_edges")? {
+        return Ok(()); // fresh DB: CAUSAL_SCHEMA_SQL creates the v17 shape
+    }
+    if table_columns(conn, "causal_edges")?.contains("bias_flag") {
+        return Ok(()); // already migrated (idempotent re-run)
+    }
+    conn.execute_batch("ALTER TABLE causal_edges ADD COLUMN bias_flag TEXT")?;
     Ok(())
 }

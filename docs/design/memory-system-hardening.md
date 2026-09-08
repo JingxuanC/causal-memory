@@ -124,6 +124,17 @@ search_contradicting 返回: "Redis 缓存雪崩了" (negative, same task_tag)
 
 产出：审计报告写入 `consolidation_report`，标记可疑边供人工审查。
 
+**已落地（2026-09-09，PR #30）**：
+- **Stage 5 BiasAudit**（consolidate 管线末尾，post-consolidation 种群上运行）：三个检测器在 `store/bias_audit.rs`——
+  1. `audit_polarity_skew(min_edges=5, skew_ratio=0.9)`：同一 task_tag 下已知 polarity 的 outcome 一边倒 ≥90% 即标记该 tag 全部边（`bias_flag = polarity_skew:<tag>`）。
+  2. `audit_low_variance_decisions(min_count=3)`：同一决策（from chunk）重复 ≥3 次且已知 polarity 零方差 → 自我强化嫌疑（`bias_flag = low_variance:<snippet>`）。
+  3. `audit_confidence_drift(window=20, threshold=0.15)`：最近 N 条边 confidence 均值 vs 历史均值漂移超阈值 → 仅进报告，不标边（无单一边有错）。
+- **纯标注原则**：bias_flag 只供人工审查（`bias_flagged_edges()` 是审查队列），检索/衰减/GC 一律无视；dry run 只报告不落标记。检测器失败 best-effort，永不中断固化周期。
+- **schema v17**：`causal_edges` 加可空 `bias_flag` 列（一次 ALTER，列存在性守卫幂等）；迁移测试覆盖 v16→v17 数据保留 + 重开幂等。
+- **配置项**：`ConsolidateConfig` 新增 `bias_audit_enabled` + 五个阈值旋钮。
+- **CLI**：sleep 报告新增 `⑤.1 Bias audit` 段（skew/low-variance/drift 三类发现 + 标记计数）。
+- **测试**：consolidate 层 4 个（skew 命中/平衡对照、零方差命中/有方差对照、drift 单测含无基线 None、dry run 不落标记）+ v17 迁移 e2e。326 lib + 48 cli 全绿。
+
 ### 2.3 记忆溯源增强
 
 **现状**：`discovered_by` 记录来源（rule/llm_inferred/user_feedback），`recall_audit` 记录检索历史。但没有记录"这条记忆影响了哪些后续决策"。

@@ -1272,3 +1272,208 @@ fn test_fact_replace_records_supersession_lineage() {
     assert!(valid, "re-recorded fact revives");
     assert_eq!(superseded_by, None, "revive clears the lineage");
 }
+
+// ── Stage 5: BiasAudit (hardening §2.2) ─────────────────────────────
+
+#[test]
+fn test_bias_audit_flags_polarity_skewed_tag() {
+    // 6/6 positive edges under one tag → skew detector fires; a balanced
+    // tag with the same population stays clean. Flags land on the edges
+    // and are listed for human review.
+    let store = CausalStore::open_in_memory().unwrap();
+    for i in 0..6 {
+        insert_edge(
+            &store,
+            &format!("rolled out feature flag v{i}"),
+            "rollout succeeded with no incidents",
+            0.9,
+            "test",
+            Some("rosy"),
+            NOW,
+            None,
+        );
+    }
+    for i in 0..6 {
+        let outcome = if i % 2 == 0 {
+            "deploy crashed twice"
+        } else {
+            "deploy succeeded smoothly"
+        };
+        insert_edge(
+            &store,
+            &format!("shipped service s{i}"),
+            outcome,
+            0.9,
+            "test",
+            Some("mixed"),
+            NOW,
+            None,
+        );
+    }
+
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    let skewed: Vec<_> = report
+        .bias_audit
+        .polarity_skew
+        .iter()
+        .map(|s| s.task_tag.as_str())
+        .collect();
+    assert!(
+        skewed.contains(&"rosy"),
+        "all-positive tag must be flagged: {skewed:?}"
+    );
+    assert!(
+        !skewed.contains(&"mixed"),
+        "balanced tag must not be flagged: {skewed:?}"
+    );
+    assert!(
+        report.bias_audit.edges_flagged >= 6,
+        "every edge in the skewed tag is flagged, got {}",
+        report.bias_audit.edges_flagged
+    );
+    let flagged = store.bias_flagged_edges().unwrap();
+    assert!(
+        flagged.iter().all(|f| f.flag == "polarity_skew:rosy"),
+        "flag names carry the detector and tag: {flagged:?}"
+    );
+    assert_eq!(flagged.len(), 6, "exactly the rosy edges: {flagged:?}");
+}
+
+#[test]
+fn test_bias_audit_flags_zero_variance_repeats() {
+    // The same decision recorded 3× with the same outcome polarity is a
+    // self-reinforcement suspect. Outcome texts differ slightly so stage 2a
+    // (duplicate merge) doesn't collapse them into one edge.
+    let store = CausalStore::open_in_memory().unwrap();
+    for day in ["monday", "tuesday", "wednesday"] {
+        insert_edge(
+            &store,
+            "rebuilt the search index nightly",
+            &format!("rebuild succeeded on {day}"),
+            0.85,
+            "test",
+            Some("ops"),
+            NOW,
+            None,
+        );
+    }
+    // A contrasting decision with real variance stays clean.
+    insert_edge(
+        &store,
+        "deployed the api gateway",
+        "deploy crashed on thursday",
+        0.85,
+        "test",
+        Some("ops"),
+        NOW,
+        None,
+    );
+    insert_edge(
+        &store,
+        "deployed the api gateway",
+        "deploy succeeded on friday",
+        0.85,
+        "test",
+        Some("ops"),
+        NOW,
+        None,
+    );
+
+    let report = consolidate(&store, &default_config(), false, NOW).unwrap();
+    let patterns: Vec<_> = report
+        .bias_audit
+        .low_variance
+        .iter()
+        .map(|p| p.decision_text.as_str())
+        .collect();
+    assert!(
+        patterns.contains(&"rebuilt the search index nightly"),
+        "zero-variance repeat must be flagged: {patterns:?}"
+    );
+    assert!(
+        !patterns.contains(&"deployed the api gateway"),
+        "varied decision must not be flagged: {patterns:?}"
+    );
+    let flagged = store.bias_flagged_edges().unwrap();
+    assert!(
+        flagged.iter().all(|f| f.flag.starts_with("low_variance:")),
+        "flag names carry the detector: {flagged:?}"
+    );
+    assert_eq!(flagged.len(), 3, "the three repeat edges: {flagged:?}");
+}
+
+#[test]
+fn test_bias_audit_confidence_drift_unit() {
+    // Detector 3 is report-only: drift shows up in the audit report but
+    // stamps no flags.
+    let store = CausalStore::open_in_memory().unwrap();
+    // 20 historical edges at 0.5, then 10 recent at 0.9: window=20 sees
+    // mean(10×0.9 + 10×0.5) = 0.7 vs historical 0.5 → Δ+0.2 ≥ 0.15.
+    for i in 0..20 {
+        insert_edge(
+            &store,
+            &format!("historical decision h{i}"),
+            "result succeeded",
+            0.5,
+            "test",
+            Some("drift"),
+            NOW - 40 * DAY,
+            None,
+        );
+    }
+    for i in 0..10 {
+        insert_edge(
+            &store,
+            &format!("recent decision r{i}"),
+            "result succeeded",
+            0.9,
+            "test",
+            Some("drift"),
+            NOW,
+            None,
+        );
+    }
+
+    let drift = store
+        .audit_confidence_drift(20, 0.15)
+        .unwrap()
+        .expect("drift beyond threshold must be reported");
+    assert!(drift.delta > 0.15, "delta = {}", drift.delta);
+
+    // Small store: no historical baseline → None.
+    let small = CausalStore::open_in_memory().unwrap();
+    insert_edge(&small, "only edge", "ok", 0.9, "test", None, NOW, None);
+    assert!(
+        small.audit_confidence_drift(20, 0.15).unwrap().is_none(),
+        "no baseline, no drift report"
+    );
+}
+
+#[test]
+fn test_bias_audit_dry_run_flags_nothing() {
+    // Dry runs report the findings but stamp nothing — the review queue
+    // stays empty.
+    let store = CausalStore::open_in_memory().unwrap();
+    for i in 0..6 {
+        insert_edge(
+            &store,
+            &format!("nightly backup run {i}"),
+            "backup succeeded",
+            0.9,
+            "test",
+            Some("backups"),
+            NOW,
+            None,
+        );
+    }
+    let report = consolidate(&store, &default_config(), true, NOW).unwrap();
+    assert_eq!(report.bias_audit.polarity_skew.len(), 1, "skew detected");
+    assert!(
+        report.bias_audit.edges_flagged == 0,
+        "dry run stamps nothing"
+    );
+    assert!(
+        store.bias_flagged_edges().unwrap().is_empty(),
+        "review queue empty after dry run"
+    );
+}

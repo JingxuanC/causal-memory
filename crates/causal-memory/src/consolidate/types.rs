@@ -91,6 +91,25 @@ pub struct ConsolidateConfig {
     /// the CausalEval v13 action layer. Default `Retire` until the 140q
     /// A/B (detect vs detect-retire) says otherwise.
     pub supersession_action: SupersessionAction,
+    /// Stage 5 (BiasAudit): run the statistical self-consistency detectors
+    /// and stamp `bias_flag` on suspicious edges. Pure annotation — nothing
+    /// here invalidates, decays, or hides a memory.
+    pub bias_audit_enabled: bool,
+    /// Stage 5 detector 1: a task_tag needs at least this many known-polarity
+    /// outcomes before skew is meaningful.
+    pub bias_min_tag_edges: usize,
+    /// Stage 5 detector 1: dominant-direction share at/above which the tag
+    /// is flagged (0.9 = 90% one direction).
+    pub bias_skew_ratio: f64,
+    /// Stage 5 detector 2: a decision recorded at least this many times with
+    /// identical outcome polarity is a self-reinforcement suspect.
+    pub bias_min_repetitions: usize,
+    /// Stage 5 detector 3: recency window (edge count) for the confidence
+    /// drift comparison.
+    pub bias_drift_window: usize,
+    /// Stage 5 detector 3: absolute recent-vs-historical mean-confidence
+    /// shift that counts as drift.
+    pub bias_drift_threshold: f64,
     /// Pattern-miner configuration, reused for stages 2 and 4.
     pub miner: MinerConfig,
 }
@@ -128,6 +147,12 @@ impl Default for ConsolidateConfig {
             half_life_fact_hours: 2160, // 90d — facts fade slowest
             supersession_limit: 20,
             supersession_action: SupersessionAction::Retire,
+            bias_audit_enabled: true,
+            bias_min_tag_edges: 5,
+            bias_skew_ratio: 0.9,
+            bias_min_repetitions: 3,
+            bias_drift_window: 20,
+            bias_drift_threshold: 0.15,
             q_alpha: 0.1,
             q_gamma: 0.9,
             min_diversity: 0.0,
@@ -161,6 +186,22 @@ pub struct ReactivationEntry {
     pub score: f64,
     /// Why this score: e.g. "base confidence", "outcome failed (+0.5)".
     pub reasons: Vec<String>,
+}
+
+/// Stage 5 (BiasAudit) findings: what the statistical self-consistency
+/// detectors saw this cycle. Pure annotation — flagged edges stay fully
+/// retrievable; the flags are a human review queue (`bias_flagged_edges`).
+#[derive(Debug, Default)]
+pub struct BiasAuditReport {
+    /// Detector 1: task_tags with a one-sided outcome polarity distribution.
+    pub polarity_skew: Vec<crate::store::PolaritySkew>,
+    /// Detector 2: decisions repeated ≥ N times with zero outcome variance.
+    pub low_variance: Vec<crate::store::LowVariancePattern>,
+    /// Detector 3: recent-vs-historical confidence mean shift, if beyond
+    /// threshold. Report-only — no per-edge flag (no single edge is at fault).
+    pub confidence_drift: Option<crate::store::ConfidenceDrift>,
+    /// Edges stamped with `bias_flag` this cycle.
+    pub edges_flagged: usize,
 }
 
 /// What one consolidation cycle did (or would do, when `dry_run`).
@@ -201,6 +242,8 @@ pub struct ConsolidateReport {
     pub diversity: f64,
     /// P6: consolidation skipped because diversity < min_diversity.
     pub skipped_low_diversity: bool,
+    /// Stage 5: BiasAudit findings (polarity skew / low variance / drift).
+    pub bias_audit: BiasAuditReport,
     pub dry_run: bool,
 }
 
