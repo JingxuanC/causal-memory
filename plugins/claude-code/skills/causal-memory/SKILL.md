@@ -133,5 +133,5 @@ deltas, keep the assistant's reasoning prefixed `[think] `, inline
 outcome-bearing tool results. Adapt the `convert_*` function to your own
 session format (~1 hour of work), then `distill --dry-run` to verify.
 
-Full reference (16 tools): repo README "Sixteen MCP tools" —
+Full reference (17 tools): repo README "MCP tools" —
 github.com/JingxuanC/causal-memory.

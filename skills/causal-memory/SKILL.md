@@ -1,7 +1,7 @@
 ---
 name: causal-memory
 description: Causal memory for agents — install/setup the causal-memory MCP server, then record decisions/outcomes and recall them before acting. Trigger when the user asks to install or set up causal-memory/agent memory, when causal-memory MCP tools are available and the agent faces a non-trivial decision (architecture, debugging approach, library/deployment choice), when something fails unexpectedly, or when the user asks to "remember" something.
-version: v1.1
+version: v1.2
 ---
 
 # Causal Memory
@@ -99,7 +99,29 @@ The core loop (five tools cover 90% of usage):
 Keep `task_tag` consistent within a domain (e.g. `deployment`,
 `git-workflow`) — stratified pattern mining depends on it.
 
-## 3. Offline session extraction (CLI — backfill memory from past sessions)
+## 3. Cross-machine / team sync (CLI git-sync)
+
+The store snapshots like git — content-addressed commits under `<db>.cm/`,
+no server required (any git remote or shared directory works):
+
+- **`commit -m <msg>`** — snapshot the whole store (full truth incl.
+  invalidated edges, no redaction). On a fresh clone with no local changes
+  it correctly reports "nothing to commit".
+- **`push [<remote|path>]` / `pull`** — upload / import commits
+  (fast-forward checked, idempotent; pull propagates forget/supersede).
+- **`clone <path|remote>`** — build a fresh DB from a remote + set origin.
+- **`checkout <hash|HEAD|HEAD~N>`** — hard-reset the DB to a snapshot
+  (rollback); **`log --oneline`** walks the chain without opening the DB.
+- **`remote add|list|remove`** — named remotes; **`cloud register
+  <agent_id> <server-url>`** — per-agent tokens against a sync server.
+- **`session-commit [<session>] [--push R]`** — snapshot a session's
+  lessons and optionally push; designed for host auto-commit hooks
+  (skips empty stores).
+
+Team pattern: one shared remote per team, each agent `clone`s once, then
+`commit && push` after meaningful work and `pull` at session start.
+
+## 4. Offline session extraction (CLI — backfill memory from past sessions)
 
 All four commands need an LLM: `CAUSAL_MEMORY_LLM_API` +
 `CAUSAL_MEMORY_LLM_KEY` (or `DEEPSEEK_API_KEY`). They write into the same
@@ -132,12 +154,26 @@ own-format corpora → `distill`.
 
 **Unsupported session format? Convert it yourself.** The turns JSON is the
 universal interchange format — any agent can emit it and run `distill`, no
-Rust parser needed. `scripts/session_to_turns.py` is the reference
-converter (kimi-code wire v1.5 → turns JSON, ~60 lines) and its docstring
-IS the format spec: ordered `["speaker", message]` pairs, stitch streaming
-deltas, keep the assistant's reasoning prefixed `[think] `, inline
-outcome-bearing tool results. Adapt the `convert_*` function to your own
-session format (~1 hour of work), then `distill --dry-run` to verify.
+Rust parser needed. The bundled `scripts/session_to_turns.py` is the
+reference converter (kimi-code wire v1.5 → turns JSON, ~60 lines) and its
+docstring IS the format spec: ordered `["speaker", message]` pairs, stitch
+streaming deltas, keep the assistant's reasoning prefixed `[think] `,
+inline outcome-bearing tool results. Adapt the `convert_*` function to your
+own session format (~1 hour of work), then `distill --dry-run` to verify.
 
-Full reference (16 tools): repo README "Sixteen MCP tools" —
+## 5. Bundled scripts (ops & integration helpers)
+
+Shipped next to this SKILL.md under `scripts/` (stdlib-only Python unless
+noted; repo source of truth: `scripts/` in github.com/JingxuanC/causal-memory):
+
+- **`session_to_turns.py`** — convert agent session logs (kimi-code wire
+  v1.5) to the turns-JSON interchange format for `distill` (see §4).
+- **`audit_fact_links.py`** — audit fact↔chunk entity links against the
+  real store; replicates the Rust linker policy to find orphaned or
+  mis-linked facts. Run after large imports or migrations.
+- **`causal_memory_client.py`** — minimal Python client for the MCP server
+  over BOTH stdio and HTTP transports; use it to script bulk reads/writes
+  or to probe a deployment (initialize → tools/list → call).
+
+Full reference (17 tools): repo README "MCP tools" —
 github.com/JingxuanC/causal-memory.
