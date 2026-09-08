@@ -28,7 +28,9 @@ use causal_memory::store::CausalStore;
 
 struct Rng(u64);
 impl Rng {
-    fn new(seed: u64) -> Self { Self(seed) }
+    fn new(seed: u64) -> Self {
+        Self(seed)
+    }
     fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
         let mut z = self.0;
@@ -36,7 +38,9 @@ impl Rng {
         z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
         z ^ (z >> 31)
     }
-    fn below(&mut self, n: usize) -> usize { (self.next() % n as u64) as usize }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
 }
 
 // ─── Ground-truth classes ─────────────────────────────────────────────────
@@ -105,13 +109,7 @@ fn label_correct(class: GtClass, label: Label) -> bool {
 
 // ─── World construction ───────────────────────────────────────────────────
 
-fn rec(
-    store: &CausalStore,
-    decision: &str,
-    outcome: &str,
-    relation: &str,
-    polarity: &str,
-) {
+fn rec(store: &CausalStore, decision: &str, outcome: &str, relation: &str, polarity: &str) {
     store
         .record_decision_full(
             decision,
@@ -206,7 +204,10 @@ fn intervention_query_calibration() {
     }
 
     // ── Report ──
-    println!("\n══════ INTERVENTION QUERY CALIBRATION ({} worlds) ══════", world_count);
+    println!(
+        "\n══════ INTERVENTION QUERY CALIBRATION ({} worlds) ══════",
+        world_count
+    );
     let mut confounded_overclaim = 0.0f64;
     for (class, correct, total, overclaims) in &stats {
         let rate = *correct as f64 / *total as f64;

@@ -32,7 +32,9 @@ use std::collections::{HashMap, HashSet};
 
 struct Rng(u64);
 impl Rng {
-    fn new(seed: u64) -> Self { Self(seed) }
+    fn new(seed: u64) -> Self {
+        Self(seed)
+    }
     fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E3779B97F4A7C15);
         let mut z = self.0;
@@ -40,8 +42,12 @@ impl Rng {
         z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
         z ^ (z >> 31)
     }
-    fn below(&mut self, n: usize) -> usize { (self.next() % n as u64) as usize }
-    fn chance(&mut self, pct: u64) -> bool { self.next() % 100 < pct }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+    fn chance(&mut self, pct: u64) -> bool {
+        self.next() % 100 < pct
+    }
 }
 
 // ─── Synthetic DAG generator (planted communities) ─────────────────────────
@@ -73,7 +79,11 @@ impl SynthWorld {
         let mut true_edges: HashSet<(usize, usize)> = HashSet::new();
         for i in 0..n {
             for j in (i + 1)..n {
-                let p = if community[i] == community[j] { p_in } else { p_out };
+                let p = if community[i] == community[j] {
+                    p_in
+                } else {
+                    p_out
+                };
                 if rng.chance(p) {
                     true_edges.insert((i, j));
                 }
@@ -93,14 +103,26 @@ impl SynthWorld {
             attempts += 1;
             let a = rng.below(n);
             let b = rng.below(n);
-            if a == b { continue; }
-            if a < b && true_edges.contains(&(a, b)) { continue; }
-            if a > b && true_edges.contains(&(b, a)) { continue; }
+            if a == b {
+                continue;
+            }
+            if a < b && true_edges.contains(&(a, b)) {
+                continue;
+            }
+            if a > b && true_edges.contains(&(b, a)) {
+                continue;
+            }
             pseudo_edges.push((a, b, false)); // hardness classified below
         }
 
         let time_jitter: Vec<i64> = (0..n).map(|_| rng.below(5) as i64).collect();
-        let mut world = Self { true_edges, pseudo_edges, node_count: n, community, time_jitter };
+        let mut world = Self {
+            true_edges,
+            pseudo_edges,
+            node_count: n,
+            community,
+            time_jitter,
+        };
         world.classify_pseudo();
         world
     }
@@ -120,11 +142,15 @@ impl SynthWorld {
             let mut stack: Vec<usize> = vec![node];
             let mut visited = HashSet::new();
             while let Some(cur) = stack.pop() {
-                if !visited.insert(cur) { continue; }
+                if !visited.insert(cur) {
+                    continue;
+                }
                 for &(f, t) in &self.true_edges {
                     if t == cur {
                         anc.insert(f);
-                        if !visited.contains(&f) { stack.push(f); }
+                        if !visited.contains(&f) {
+                            stack.push(f);
+                        }
                     }
                 }
             }
@@ -138,7 +164,9 @@ impl SynthWorld {
             while let Some(cur) = stack.pop() {
                 if let Some(nexts) = adj.get(&cur) {
                     for &nx in nexts {
-                        if r.insert(nx) { stack.push(nx); }
+                        if r.insert(nx) {
+                            stack.push(nx);
+                        }
                     }
                 }
             }
@@ -150,9 +178,11 @@ impl SynthWorld {
             // Hard if: (a) forward path exists (mediated alternative), or
             //          (b) common ancestor exists (backdoor confounding path).
             let fwd = reach.get(&from).map_or(false, |r| r.contains(&to));
-            let backdoor = ancestors.get(&from)
-                .map_or(false, |af| ancestors.get(&to)
-                    .map_or(false, |at| af.iter().any(|a| at.contains(a))));
+            let backdoor = ancestors.get(&from).map_or(false, |af| {
+                ancestors
+                    .get(&to)
+                    .map_or(false, |at| af.iter().any(|a| at.contains(a)))
+            });
             pe.2 = fwd || backdoor;
         }
     }
@@ -190,7 +220,8 @@ impl SynthWorld {
     /// separately so each can be refuted individually).
     fn build_graph(&self) -> CausalGraph {
         let nodes = self.make_nodes();
-        let edges: Vec<EdgeData> = self.true_edges
+        let edges: Vec<EdgeData> = self
+            .true_edges
             .iter()
             .map(|&(f, t)| Self::make_edge(f, t))
             .collect();
@@ -212,7 +243,11 @@ struct RefuterStats {
 }
 
 fn bucket(r: TestResult) -> usize {
-    match r { TestResult::Robust => 0, TestResult::Inconclusive => 1, TestResult::Refuted => 2 }
+    match r {
+        TestResult::Robust => 0,
+        TestResult::Inconclusive => 1,
+        TestResult::Refuted => 2,
+    }
 }
 
 // ─── The calibration test ─────────────────────────────────────────────────
@@ -226,8 +261,8 @@ fn refuter_calibration_synthetic() {
     let mut per_refuter: HashMap<&str, [usize; 6]> = HashMap::new();
 
     for _ in 0..world_count {
-        let n = 6 + rng.below(8);            // 6–13 nodes
-        let k = 2 + rng.below(2);            // 2–3 communities (bigger clusters)
+        let n = 6 + rng.below(8); // 6–13 nodes
+        let k = 2 + rng.below(2); // 2–3 communities (bigger clusters)
         let world = SynthWorld::generate(&mut rng, n, k, 40, 12);
 
         // Refute all TRUE edges on the clean graph.
@@ -252,7 +287,8 @@ fn refuter_calibration_synthetic() {
         // Refute each PSEUDO edge by adding it to the graph temporarily.
         for &(f, t, hard) in &world.pseudo_edges {
             let nodes = world.make_nodes();
-            let mut edges: Vec<EdgeData> = world.true_edges
+            let mut edges: Vec<EdgeData> = world
+                .true_edges
                 .iter()
                 .map(|&(af, at)| SynthWorld::make_edge(af, at))
                 .collect();
@@ -262,8 +298,8 @@ fn refuter_calibration_synthetic() {
             let refuter = EdgeRefuter::new(&g);
             let fi = g.node_index_of(&format!("n{f}")).unwrap();
             let ti = g.node_index_of(&format!("n{t}")).unwrap();
-            let eidx = (0..g.num_edges())
-                .find(|&i| g.edge_source_node(i) == fi && g.edge_target(i) == ti);
+            let eidx =
+                (0..g.num_edges()).find(|&i| g.edge_source_node(i) == fi && g.edge_target(i) == ti);
             let Some(eidx) = eidx else { continue };
             let r = refuter.refute_edge(eidx);
             for test in &r.tests {
@@ -271,28 +307,42 @@ fn refuter_calibration_synthetic() {
                 entry[3 + bucket(test.result)] += 1;
             }
             let worst = r.tests.iter().map(|t| bucket(t.result)).max().unwrap_or(0);
-            if hard { all_stats.pseudo_hard[worst] += 1; }
-            else { all_stats.pseudo_easy[worst] += 1; }
+            if hard {
+                all_stats.pseudo_hard[worst] += 1;
+            } else {
+                all_stats.pseudo_easy[worst] += 1;
+            }
             *all_stats.grades_pseudo.entry(r.grade).or_insert(0) += 1;
         }
     }
 
     // ── Report ──
-    println!("\n══════ REFUTER CALIBRATION ({} worlds, planted communities) ══════", world_count);
+    println!(
+        "\n══════ REFUTER CALIBRATION ({} worlds, planted communities) ══════",
+        world_count
+    );
     println!("\nAggregate (worst refuter verdict per edge):");
-    println!("  True causal:  Robust={} Inconc={} Refuted={}",
-        all_stats.true_causal[0], all_stats.true_causal[1], all_stats.true_causal[2]);
-    println!("  Pseudo hard:  Robust={} Inconc={} Refuted={}",
-        all_stats.pseudo_hard[0], all_stats.pseudo_hard[1], all_stats.pseudo_hard[2]);
-    println!("  Pseudo easy:  Robust={} Inconc={} Refuted={}",
-        all_stats.pseudo_easy[0], all_stats.pseudo_easy[1], all_stats.pseudo_easy[2]);
+    println!(
+        "  True causal:  Robust={} Inconc={} Refuted={}",
+        all_stats.true_causal[0], all_stats.true_causal[1], all_stats.true_causal[2]
+    );
+    println!(
+        "  Pseudo hard:  Robust={} Inconc={} Refuted={}",
+        all_stats.pseudo_hard[0], all_stats.pseudo_hard[1], all_stats.pseudo_hard[2]
+    );
+    println!(
+        "  Pseudo easy:  Robust={} Inconc={} Refuted={}",
+        all_stats.pseudo_easy[0], all_stats.pseudo_easy[1], all_stats.pseudo_easy[2]
+    );
     println!("  Grades true:   {:?}", all_stats.grades_true);
     println!("  Grades pseudo: {:?}", all_stats.grades_pseudo);
 
     println!("\nPer-refuter (true vs pseudo):");
     for (name, c) in &per_refuter {
-        println!("  {:13}: true[R={} I={} F={}]  pseudo[R={} I={} F={}]",
-            name, c[0], c[1], c[2], c[3], c[4], c[5]);
+        println!(
+            "  {:13}: true[R={} I={} F={}]  pseudo[R={} I={} F={}]",
+            name, c[0], c[1], c[2], c[3], c[4], c[5]
+        );
     }
 
     // ── Operational metrics (memory-pruning policy) ──
@@ -301,7 +351,8 @@ fn refuter_calibration_synthetic() {
     let g = |m: &HashMap<char, usize>, c: char| m.get(&c).copied().unwrap_or(0);
     let total_true: usize = all_stats.grades_true.values().sum();
     let total_pseudo: usize = all_stats.grades_pseudo.values().sum();
-    let true_kept = g(&all_stats.grades_true, 'A') + g(&all_stats.grades_true, 'B')
+    let true_kept = g(&all_stats.grades_true, 'A')
+        + g(&all_stats.grades_true, 'B')
         + g(&all_stats.grades_true, 'C');
     let pseudo_quarantined = g(&all_stats.grades_pseudo, 'F');
     let pseudo_flagged = pseudo_quarantined + g(&all_stats.grades_pseudo, 'D');
@@ -311,9 +362,18 @@ fn refuter_calibration_synthetic() {
     let flag_rate = pseudo_flagged as f64 / total_pseudo.max(1) as f64;
 
     println!("\nKey metrics (grade-based policy):");
-    println!("  Keep rate        (true, 0 refuters):    {:.1}%", keep_rate * 100.0);
-    println!("  Quarantine rate  (pseudo, ≥2 refuters): {:.1}%", quarantine_rate * 100.0);
-    println!("  Flag rate        (pseudo, ≥1 refuter):  {:.1}%", flag_rate * 100.0);
+    println!(
+        "  Keep rate        (true, 0 refuters):    {:.1}%",
+        keep_rate * 100.0
+    );
+    println!(
+        "  Quarantine rate  (pseudo, ≥2 refuters): {:.1}%",
+        quarantine_rate * 100.0
+    );
+    println!(
+        "  Flag rate        (pseudo, ≥1 refuter):  {:.1}%",
+        flag_rate * 100.0
+    );
 
     // ── Assertions (regression guards, set from observed calibration ──
     // run 2026-09-08, moderate-density community regime 40/12 + temporal
@@ -321,7 +381,19 @@ fn refuter_calibration_synthetic() {
     // The temporal refuter lifted flag from 35.7% → 64.3% while keep held —
     // breaking the structural keep/flag frontier (~108% → 135%).
     let true_f = g(&all_stats.grades_true, 'F') as f64 / total_true.max(1) as f64;
-    assert!(keep_rate > 0.65, "true-edge keep rate too low: {:.1}%", keep_rate * 100.0);
-    assert!(flag_rate > 0.55, "pseudo-edge flag rate too low: {:.1}%", flag_rate * 100.0);
-    assert!(true_f < 0.08, "too many true edges quarantined: {:.1}%", true_f * 100.0);
+    assert!(
+        keep_rate > 0.65,
+        "true-edge keep rate too low: {:.1}%",
+        keep_rate * 100.0
+    );
+    assert!(
+        flag_rate > 0.55,
+        "pseudo-edge flag rate too low: {:.1}%",
+        flag_rate * 100.0
+    );
+    assert!(
+        true_f < 0.08,
+        "too many true edges quarantined: {:.1}%",
+        true_f * 100.0
+    );
 }
