@@ -71,6 +71,8 @@ SingleTest {
 
 **回答的问题**：当前 `intervention_query` 的"safe / warning / danger"标签，在已知 ground truth 下准确率多少？
 
+**已完成（2026-09-09）**：`tests/intervention_calibration.rs` + `docs/evaluations/intervention-calibration.md`。结果：可解类（真危险/真安全/prevented）100% 准确；混淆类（潜变量驱动的伪 caused 边）**100% DANGER 过声称**——结构性缺陷（relation 词表无关联性类型 + 链遍历 relation 盲视），修复方向在上游（抽取器/ refuter 标注），回归守卫已钉住基线。另发现种子交叉匹配风险：查询与历史共享 token 时 summary 聚合层不保证相关性。
+
 ### 1.4 多证据融合 refuter（1.2 校准的衍生任务，已完成）
 
 **动机**：1.2 校准发现纯结构 refuter 存在 keep-flag 前沿（二者之和 ~110%，密度只改变证据可裁判性，不改变真/伪边结构签名的可分离性）。突破前沿必须引入 NodeData/EdgeData 中未用的非结构证据。
