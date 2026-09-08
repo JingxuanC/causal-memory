@@ -101,8 +101,14 @@ Keep `task_tag` consistent within a domain (e.g. `deployment`,
 
 ## 3. Cross-machine / team sync (CLI git-sync)
 
-The store snapshots like git — content-addressed commits under `<db>.cm/`,
-no server required (any git remote or shared directory works):
+The store snapshots like git — but the git semantics are **self-implemented**
+(no git binary or wire protocol involved): content-addressed sha256 objects
+under `<db>.cm/objects/`, plain-text refs, hand-rolled fast-forward checks.
+A "remote" is one of exactly two things: a **shared directory** (file
+remote, zero infrastructure) or a **sync server** (`https` object store —
+`GET/PUT {base}/objects/{hash}` + `/refs/heads/main`, bearer auth; see
+contrib/docker for the server image). GitHub/GitLab repos do NOT work as
+remotes.
 
 - **`commit -m <msg>`** — snapshot the whole store (full truth incl.
   invalidated edges, no redaction). On a fresh clone with no local changes
@@ -118,8 +124,9 @@ no server required (any git remote or shared directory works):
   lessons and optionally push; designed for host auto-commit hooks
   (skips empty stores).
 
-Team pattern: one shared remote per team, each agent `clone`s once, then
-`commit && push` after meaningful work and `pull` at session start.
+Team pattern: one shared remote per team (a shared directory is enough to
+start), each agent `clone`s once, then `commit && push` after meaningful
+work and `pull` at session start.
 
 ## 4. Offline session extraction (CLI — backfill memory from past sessions)
 
