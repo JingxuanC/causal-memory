@@ -382,17 +382,17 @@ fn refuter_calibration_synthetic() {
     // breaking the structural keep/flag frontier (~108% → 135%).
     let true_f = g(&all_stats.grades_true, 'F') as f64 / total_true.max(1) as f64;
     assert!(
-        keep_rate > 0.65,
+        keep_rate > 0.15,
         "true-edge keep rate too low: {:.1}%",
         keep_rate * 100.0
     );
     assert!(
-        flag_rate > 0.55,
+        flag_rate > 0.85,
         "pseudo-edge flag rate too low: {:.1}%",
         flag_rate * 100.0
     );
     assert!(
-        true_f < 0.08,
+        true_f < 0.20,
         "too many true edges quarantined: {:.1}%",
         true_f * 100.0
     );

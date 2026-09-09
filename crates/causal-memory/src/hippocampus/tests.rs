@@ -2148,11 +2148,11 @@ mod tests {
             g.node_index_of("C").unwrap(),
         );
         assert!(
-            !g.is_d_separated(a, c, &[]),
+            !g.is_d_separated(a, c, &[], None),
             "A and C are marginally d-connected via B"
         );
         assert!(
-            g.is_d_separated(a, c, &[b]),
+            g.is_d_separated(a, c, &[b], None),
             "conditioning on mediator B blocks the chain"
         );
     }
@@ -2167,11 +2167,11 @@ mod tests {
             g.node_index_of("C").unwrap(),
         );
         assert!(
-            !g.is_d_separated(a, c, &[]),
+            !g.is_d_separated(a, c, &[], None),
             "A and C are marginally d-connected via common cause B"
         );
         assert!(
-            g.is_d_separated(a, c, &[b]),
+            g.is_d_separated(a, c, &[b], None),
             "conditioning on confounder B blocks the fork"
         );
     }
@@ -2186,11 +2186,11 @@ mod tests {
             g.node_index_of("C").unwrap(),
         );
         assert!(
-            g.is_d_separated(a, c, &[]),
+            g.is_d_separated(a, c, &[], None),
             "collider B blocks the path marginally"
         );
         assert!(
-            !g.is_d_separated(a, c, &[b]),
+            !g.is_d_separated(a, c, &[b], None),
             "conditioning on collider B opens the path"
         );
     }
@@ -2201,7 +2201,7 @@ mod tests {
         let g = build_test_graph(&[("B", "A"), ("A", "C"), ("B", "C")]);
         let (a, c) = (g.node_index_of("A").unwrap(), g.node_index_of("C").unwrap());
         assert!(
-            !g.is_d_separated(a, c, &[]),
+            !g.is_d_separated(a, c, &[], None),
             "backdoor path A←B→C keeps A and C connected"
         );
     }
@@ -2216,11 +2216,11 @@ mod tests {
             g.node_index_of("C").unwrap(),
         );
         assert!(
-            !g.is_d_separated(a, c, &[]),
+            !g.is_d_separated(a, c, &[], None),
             "direct edge plus indirect path"
         );
         assert!(
-            !g.is_d_separated(a, c, &[b]),
+            !g.is_d_separated(a, c, &[b], None),
             "conditioning on B blocks the indirect path but direct edge remains"
         );
     }
