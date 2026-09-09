@@ -327,119 +327,35 @@ impl<'a> EdgeRefuter<'a> {
 
     // ─── Refuter 4: Backdoor path (d-separation) ─────────────────────────
 
-    /// Real causal edge X→Y should not be fully explained by a common cause.
-    /// If X has an ancestor that can also reach Y (a backdoor path X←…→Y),
-    /// the recorded association may be confounded rather than causal.
-    ///
-    /// Uses `CausalGraph::is_d_separated` on the graph with the candidate
-    /// edge removed: if X and Y remain d-connected purely through ancestor
-    /// paths, the direct-causal claim is weakened.
+    /// Real causal edge X→Y should not be fully explained by a confounding path.
+    /// Remove the candidate edge and check if X and Y remain d-connected.
+    /// If d-separated, the edge is structurally necessary → Robust.
+    /// If d-connected, a backdoor path exists → Refuted.
     fn backdoor_test(&self, from: u32, to: u32, exclude_edge: usize) -> SingleTest {
-        // Ancestors of `from` = nodes with a directed path into `from`.
-        let mut ancestors: HashSet<u32> = HashSet::new();
-        let mut stack: Vec<u32> = vec![from];
-        while let Some(node) = stack.pop() {
-            if ancestors.insert(node) {
-                for parent in self.graph.in_neighbors_of(node) {
-                    if !ancestors.contains(&parent) {
-                        stack.push(parent);
-                    }
-                }
-            }
-        }
-        ancestors.remove(&from); // `from` itself is not its own ancestor.
+        let d_separated = self
+            .graph
+            .is_d_separated(from, to, &[], Some(exclude_edge));
 
-        // Count ancestors that can reach `to` without the excluded edge.
-        let mut backdoor_paths = 0usize;
-        let mut detail_parts: Vec<String> = Vec::new();
-        for &anc in &ancestors {
-            if self.can_reach_excluding(anc, to, exclude_edge, 5) {
-                backdoor_paths += 1;
-                if detail_parts.len() < 3 {
-                    detail_parts.push(format!(
-                        "{}→…→{}",
-                        self.graph.node_text(anc as usize),
-                        self.graph.node_text(to as usize)
-                    ));
-                }
-            }
-        }
-
-        let (result, detail) = if backdoor_paths == 0 {
+        let (result, detail, score) = if d_separated {
             (
                 TestResult::Robust,
-                "No backdoor path: no common ancestor reaches both endpoints".to_string(),
-            )
-        } else if backdoor_paths == 1 {
-            (
-                TestResult::Inconclusive,
-                format!(
-                    "1 backdoor path ({}): possible confounding",
-                    detail_parts.join(", ")
-                ),
+                "No backdoor path: edge is structurally necessary".to_string(),
+                0.0,
             )
         } else {
-            // Calibration note (2026-09-08): an absolute-count threshold is
-            // deliberately kept over a density-normalized fraction. Tested
-            // alternative — fraction of X's ancestors reaching Y — refuted 38%
-            // of true edges at high density because dense graphs put ancestor
-            // paths between nearly all pairs; the count is only meaningful in
-            // moderate-density regimes, which is where this refuter should be
-            // consulted anyway (see docs/evaluations/refuter-calibration.md).
             (
                 TestResult::Refuted,
-                format!(
-                    "{} backdoor paths ({}): association likely confounded, not causal",
-                    backdoor_paths,
-                    detail_parts.join(", ")
-                ),
+                "Backdoor path exists: association likely confounded, not causal".to_string(),
+                1.0,
             )
         };
 
         SingleTest {
             name: "backdoor",
             result,
-            score: backdoor_paths as f32,
+            score,
             detail,
         }
-    }
-
-    /// Can `from` reach `to` via valid edges (excluding `exclude_edge`),
-    /// within `max_hops` directed hops? Used by the backdoor refuter.
-    fn can_reach_excluding(
-        &self,
-        from: u32,
-        to: u32,
-        exclude_edge: usize,
-        max_hops: usize,
-    ) -> bool {
-        if from == to {
-            return true;
-        }
-        let mut visited: HashSet<u32> = HashSet::new();
-        let mut frontier = vec![from];
-        visited.insert(from);
-        for _ in 0..max_hops {
-            let mut next = Vec::new();
-            for node in frontier {
-                for (neighbor, edge_idx) in self.graph.out_neighbors_of(node) {
-                    if edge_idx == exclude_edge || !self.graph.edge_is_valid(edge_idx) {
-                        continue;
-                    }
-                    if neighbor == to {
-                        return true;
-                    }
-                    if visited.insert(neighbor) {
-                        next.push(neighbor);
-                    }
-                }
-            }
-            if next.is_empty() {
-                break;
-            }
-            frontier = next;
-        }
-        false
     }
 
     // ─── Refuter 5: Temporal consistency (cause precedes effect) ─────────

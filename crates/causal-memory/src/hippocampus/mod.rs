@@ -1597,7 +1597,13 @@ impl CausalGraph {
     ///
     /// Reference: DoVerifier `causal_equiv.py::is_d_separated` (same algorithm,
     /// ported from NetworkX moralization to CSR adjacency).
-    pub fn is_d_separated(&self, x: u32, y: u32, z: &[u32]) -> bool {
+    pub fn is_d_separated(
+        &self,
+        x: u32,
+        y: u32,
+        z: &[u32],
+        exclude_edge: Option<usize>,
+    ) -> bool {
         if x == y {
             return false;
         }
@@ -1622,8 +1628,18 @@ impl CausalGraph {
         for &node in &ancestors {
             moral.entry(node).or_default();
         }
+        // Build skeleton from forward CSR, respecting edge validity and optional exclusion.
         for &node in &ancestors {
-            for neighbor in self.all_neighbors(node) {
+            let start = self.row_ptr[node as usize] as usize;
+            let end = self.row_ptr[(node + 1) as usize] as usize;
+            for edge_idx in start..end {
+                if !self.edge_valid[edge_idx] {
+                    continue;
+                }
+                if exclude_edge == Some(edge_idx) {
+                    continue;
+                }
+                let neighbor = self.col_idx[edge_idx];
                 if ancestors.contains(&neighbor) {
                     moral.entry(node).or_default().insert(neighbor);
                     moral.entry(neighbor).or_default().insert(node);
