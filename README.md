@@ -256,6 +256,18 @@ To teach the agent *when* to use the memory tools (agents don't call them
 proactively without instruction), install the bundled agent skill
 [skills/causal-memory/SKILL.md](skills/causal-memory/SKILL.md):
 
+**Guided installer (recommended)** — one command installs the skill, the
+`causal-memory` server, and the MCP registration across every detected client
+(Claude Code / Cursor / Opencode / Claude Desktop / Kimi Code):
+
+```bash
+./install.sh                     # interactive, walks you through each step
+./install.sh --yes               # non-interactive, accept all defaults
+./install.sh --uninstall         # remove the skill (+ optional MCP)
+```
+
+Or via the Skills CLI, or by hand:
+
 ```bash
 # Skills CLI (skills.sh ecosystem) — works with Claude Code, Cursor,
 # Kimi Code CLI, Codex, Copilot and more:
