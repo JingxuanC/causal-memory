@@ -1,15 +1,18 @@
 # Agent Memory Challenge (AMC/01) — causal-memory submission image.
 #
-# Builds and runs the Add/Search integration server (`causal-memory-amc`).
-# The platform (or any host) starts the documented entrypoint and evaluates
-# the exposed HTTP contract:
-#   POST /add      store memory chunks (user_id-isolated)
+# Builds and runs the Add/Search integration server (`causal-memory-amc`)
+# on the shared memory facade — the same retrieval pipeline as the MCP
+# server and Python bindings (BM25 inverted index + optional semantic +
+# entity boost + hop expansion + RRF fusion).
+#   POST /add      store memory chunks (one store per user_id)
 #   POST /search   return ordered memory evidence
 #   GET  /health   liveness
 #
 # Build:  docker build -t causal-memory-amc .
 # Run:    docker run -p 8787:8787 -v amc-data:/data causal-memory-amc
-#         (the DB lives at /data/amc.db; override with AMC_DB)
+#         (per-user DBs live under /data/stores; override with AMC_DB_DIR.
+#          Write strategy defaults to raw — no LLM keys on the platform;
+#          AMC_WRITE_MODE=distill needs CAUSAL_MEMORY_LLM_* env.)
 
 # ── Builder: compile the workspace, take only the amc binary ───────────────
 FROM rust:1.92-trixie AS builder
@@ -30,9 +33,13 @@ RUN cargo build --release --bin causal-memory-amc --features local-embed
 FROM debian:trixie
 COPY --from=builder /build/target/release/causal-memory-amc /usr/local/bin/causal-memory-amc
 
-ENV AMC_DB=/data/amc.db \
-    AMC_PORT=8787
+# First cold start downloads the fastembed model (~130 MB, one-time);
+# mount a pre-warmed .fastembed_cache at /data/fastembed-cache to skip it.
+ENV AMC_DB_DIR=/data/stores \
+    AMC_PORT=8787 \
+    AMC_WRITE_MODE=raw \
+    FASTEMBED_CACHE_DIR=/data/fastembed-cache
 VOLUME /data
 EXPOSE 8787
 
-CMD ["sh", "-c", "causal-memory-amc --db \"$AMC_DB\" --port \"$AMC_PORT\""]
+CMD ["sh", "-c", "causal-memory-amc --db-dir \"$AMC_DB_DIR\" --port \"$AMC_PORT\" --write-mode \"$AMC_WRITE_MODE\""]

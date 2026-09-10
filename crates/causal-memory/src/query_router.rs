@@ -29,7 +29,10 @@ impl QueryIntent {
     /// A clear, high-confidence intent (>= 0.8) — routing may prefer the
     /// single layer; anything else keeps the fused fallback.
     pub fn is_confident(self) -> bool {
-        matches!(self, QueryIntent::Fact | QueryIntent::Causal | QueryIntent::Chain | QueryIntent::Directory)
+        matches!(
+            self,
+            QueryIntent::Fact | QueryIntent::Causal | QueryIntent::Chain | QueryIntent::Directory
+        )
     }
 }
 
@@ -43,9 +46,22 @@ fn has_time_expression(q: &str) -> bool {
     has_any(
         &lower,
         &[
-            "yesterday", "today", "last week", "last month", "last year",
-            "前天", "昨天", "上周", "上个月", "去年", "今年", "之前", "以前",
-            "when", "什么时候", "何时",
+            "yesterday",
+            "today",
+            "last week",
+            "last month",
+            "last year",
+            "前天",
+            "昨天",
+            "上周",
+            "上个月",
+            "去年",
+            "今年",
+            "之前",
+            "以前",
+            "when",
+            "什么时候",
+            "何时",
         ],
     ) || lower.chars().any(|c| c.is_ascii_digit())
         && (lower.contains('-') || lower.contains("/") || lower.contains("年"))
@@ -59,9 +75,25 @@ pub fn classify_query(query: &str) -> QueryIntent {
     if has_any(
         &q,
         &[
-            "为什么", "为何", "因为", "导致", "造成", "引发", "根因", "根因是",
-            "why", "because", "caused", "cause", "root cause", "lesson",
-            "教训", "失败原因", "什么原因", "how did", "怎么回事",
+            "为什么",
+            "为何",
+            "因为",
+            "导致",
+            "造成",
+            "引发",
+            "根因",
+            "根因是",
+            "why",
+            "because",
+            "caused",
+            "cause",
+            "root cause",
+            "lesson",
+            "教训",
+            "失败原因",
+            "什么原因",
+            "how did",
+            "怎么回事",
         ],
     ) {
         return QueryIntent::Causal;
@@ -71,10 +103,27 @@ pub fn classify_query(query: &str) -> QueryIntent {
     if has_any(
         &q,
         &[
-            "是什么", "什么是", "what is", "what's", "what are",
-            "preference", "偏好", "喜欢什么", "配置", "config", "技术栈",
-            "tech stack", "用的什么", "使用什么", "哪个版本", "who is",
-            "谁", "哪台", "多少", "how many", "how much",
+            "是什么",
+            "什么是",
+            "what is",
+            "what's",
+            "what are",
+            "preference",
+            "偏好",
+            "喜欢什么",
+            "配置",
+            "config",
+            "技术栈",
+            "tech stack",
+            "用的什么",
+            "使用什么",
+            "哪个版本",
+            "who is",
+            "谁",
+            "哪台",
+            "多少",
+            "how many",
+            "how much",
         ],
     ) {
         return QueryIntent::Fact;
@@ -83,7 +132,14 @@ pub fn classify_query(query: &str) -> QueryIntent {
     // Directory browsing.
     if has_any(
         &q,
-        &["目录", "recent decisions", "recent lessons", "最近的决定", "decision list", "list of"],
+        &[
+            "目录",
+            "recent decisions",
+            "recent lessons",
+            "最近的决定",
+            "decision list",
+            "list of",
+        ],
     ) {
         return QueryIntent::Directory;
     }
@@ -91,7 +147,16 @@ pub fn classify_query(query: &str) -> QueryIntent {
     // Multi-hop chain signals.
     if has_any(
         &q,
-        &["链路", "链条", "链式", "连锁反应", "multi-hop", "chain", "trace", "连锁"],
+        &[
+            "链路",
+            "链条",
+            "链式",
+            "连锁反应",
+            "multi-hop",
+            "chain",
+            "trace",
+            "连锁",
+        ],
     ) {
         return QueryIntent::Chain;
     }
@@ -178,7 +243,10 @@ mod tests {
             .count();
         let total = cases.len();
         let acc = correct as f64 / total as f64;
-        eprintln!("classifier accuracy: {correct}/{total} = {:.0}%", acc * 100.0);
+        eprintln!(
+            "classifier accuracy: {correct}/{total} = {:.0}%",
+            acc * 100.0
+        );
         assert!(
             acc >= 0.85,
             "accuracy {:.0}% below the 85% acceptance bar",

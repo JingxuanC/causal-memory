@@ -2,8 +2,7 @@
 
 use anyhow::{anyhow, Result};
 
-
-use crate::store::{CausalStore, ENTRY_COLUMNS, entry_from_row};
+use crate::store::{entry_from_row, CausalStore, ENTRY_COLUMNS};
 
 impl CausalStore {
     pub fn search_causal_semantic(
@@ -31,7 +30,7 @@ impl CausalStore {
         let mut stmt = conn.prepare(&sql)?;
         let bind_refs: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
         let rows = stmt.query_map(bind_refs.as_slice(), |row| {
-            Ok((entry_from_row(row)?, row.get::<_, Vec<u8>>(16)?))
+            Ok((entry_from_row(row)?, row.get::<_, Vec<u8>>(18)?))
         })?;
 
         let mut scored: Vec<(crate::store::CausalEntry, f64)> = Vec::new();
@@ -90,7 +89,7 @@ impl CausalStore {
         let mut stmt = conn.prepare(&sql)?;
         let bind_refs: Vec<&dyn rusqlite::ToSql> = bind.iter().map(|b| b.as_ref()).collect();
         let rows = stmt.query_map(rusqlite::params_from_iter(bind_refs), |row| {
-            Ok((entry_from_row(row)?, row.get::<_, Vec<u8>>(16)?))
+            Ok((entry_from_row(row)?, row.get::<_, Vec<u8>>(18)?))
         })?;
         let mut scored: Vec<(crate::store::CausalEntry, f64)> = Vec::new();
         for row in rows {
@@ -99,7 +98,8 @@ impl CausalStore {
                 continue;
             };
             let sim = crate::embed::cosine_similarity(query_vec, &vec);
-            let ents = self.entity_tokens_for(entry.edge_id, &entry.decision_text, &entry.outcome_text);
+            let ents =
+                self.entity_tokens_for(entry.edge_id, &entry.decision_text, &entry.outcome_text);
             let overlap = q_entities.iter().filter(|q| ents.contains(q)).count();
             scored.push((entry, sim * (1.0 + entity_boost * overlap as f64)));
         }
@@ -130,5 +130,4 @@ impl CausalStore {
         scored.retain(|(_, sim)| *sim >= min_similarity);
         Ok(scored)
     }
-
 }

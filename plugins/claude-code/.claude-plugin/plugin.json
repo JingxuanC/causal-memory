@@ -1,0 +1,9 @@
+{
+  "name": "causal-memory",
+  "version": "0.9.3",
+  "description": "Persistent causal memory for Claude Code — decisions, outcomes, and lessons that survive compaction. Same-context counterfactuals (natural experiments), a falsifiable prediction ledger, and an activation skill that teaches when to recall and record.",
+  "author": {
+    "name": "JingxuanC"
+  },
+  "homepage": "https://github.com/JingxuanC/causal-memory"
+}

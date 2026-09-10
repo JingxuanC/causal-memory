@@ -1,4 +1,4 @@
-//! MCP server handler — exposes 15 tools for unified agent memory.
+//! MCP server handler — exposes 16 tools for unified agent memory.
 //!
 //! Thin shell: every tool handler parses its rmcp parameters and delegates
 //! to the shared library facade `causal_memory::memory::Memory`, which owns
@@ -17,16 +17,47 @@ use causal_memory::store::CausalStore;
 /// name used by the CLI wiring (misc.rs) and the rmcp macros.
 pub struct CausalMemoryServer {
     pub(crate) memory: Memory,
+    /// Observability label: "mcp-stdio" (default) or "mcp-http".
+    pub(crate) label: &'static str,
 }
 
 impl CausalMemoryServer {
     pub fn new(store: CausalStore) -> Self {
+        Self::new_with_label(store, "mcp-stdio")
+    }
+
+    /// Same facade, labeled for observability (request metrics + recall
+    /// audit rows carry the label).
+    pub fn new_with_label(store: CausalStore, label: &'static str) -> Self {
         Self {
-            memory: Memory::new(store),
+            memory: Memory::new_with_label(store, label),
+            label,
         }
+    }
+
+    /// RED metrics + one tracing span per tool call. Status is derived from
+    /// the facade's error marker (❌ prefix) — the facade's contract.
+    pub(crate) fn timed(&self, tool: &'static str, f: impl FnOnce() -> String) -> String {
+        let t0 = std::time::Instant::now();
+        let out = f();
+        let status = if out.starts_with('❌') {
+            "error"
+        } else {
+            "ok"
+        };
+        let latency_ms = t0.elapsed().as_millis() as u64;
+        causal_memory::observability::metrics().record_request(
+            self.label,
+            tool,
+            status,
+            t0.elapsed().as_secs_f64(),
+        );
+        tracing::info!(tool, status, latency_ms, server = self.label, "tool call");
+        out
     }
 }
 
+pub mod sync;
 pub mod tools;
 
 #[cfg(test)]

@@ -12,6 +12,7 @@
 | [Park et al. — Generative Agents](generative-agents.md) | 2023 | Multi-day agent simulation with memory streams | Memory stream + reflection as closest precedent |
 | [Goyal & Bengio — System 2 Inductive Biases](system2-explicit-representation.md) | 2022 | System 2 cognition needs explicit representations | Externalizing causal structure into explicit graph |
 | [Hermes Agent — memory provider ecosystem](hermes-provider-ecosystem.md) | 2026 | First agent runtime with a first-class memory plugin slot (ecosystem analysis, not a paper) | Distribution channel identification; hybrid recall-mode design; PyO3 reprioritization |
+| [Rung-3 Prior Art survey](rung3-prior-art.md) | 2026 | Counterfactual reasoning: papers + engineering between us and Pearl's third rung | The five-phase Rung-3 plan (context snapshots → fork edges → micro-SCM → simulation → executable replay + prediction ledger) |
 
 ---
 

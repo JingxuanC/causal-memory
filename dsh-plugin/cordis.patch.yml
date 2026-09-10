@@ -1,0 +1,5 @@
+# dsh.bundle patch — applied automatically on `dsh plugin add`.
+# Same insert the README previously asked users to add by hand.
+- insert:
+    - id: causal-memory-plugin
+      name: causal-memory-dsh-plugin

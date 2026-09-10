@@ -572,7 +572,9 @@ async fn ingest_persona_distill(
             .collect();
         let date = session.date.clone();
         let ctx = stored_texts.clone();
-        let result = distiller.distill_session_with_context(&date, &turns, &ctx).await;
+        let result = distiller
+            .distill_session_with_context(&date, &turns, &ctx)
+            .await;
         results.push((result, 1usize));
         // After distill, add this session's items to the context for the next.
         // We peek at the result here; actual recording happens in the loop below.
@@ -730,7 +732,7 @@ fn semantic_search(
              JOIN causal_edges e ON e.id = ee.edge_id
              JOIN chunks cf ON cf.id = e.from_id
              JOIN chunks ct ON ct.id = e.to_id
-             WHERE e.valid_to IS NULL AND e.task_tag = ?1"
+             WHERE e.valid_to IS NULL AND e.task_tag = ?1",
         )?;
         let mut scored: Vec<(CausalEntry, f64)> = Vec::new();
         let rows = stmt.query_map(rusqlite::params![persona], |row| {
@@ -751,24 +753,29 @@ fn semantic_search(
         for (edge_id, blob, dec_text, out_text, relation, confidence, task_tag) in row_data {
             if let Ok(vec) = blob_to_vec(&blob) {
                 let sim = cosine_similarity(query_vec, &vec);
-                scored.push((CausalEntry {
-                    edge_id,
-                    decision_id: String::new(),
-                    decision_text: dec_text,
-                    outcome_id: String::new(),
-                    outcome_text: out_text,
-                    relation,
-                    confidence,
-                    task_tag,
-                    event_time: 0,
-                    valid_to: None,
-                    access_count: 0,
-                    last_accessed_at: None,
-                    discovered_by: String::new(),
-                    discovered_at: 0,
-                    outcome_polarity: None,
-                    superseded_by: None,
-                }, sim));
+                scored.push((
+                    CausalEntry {
+                        edge_id,
+                        decision_id: String::new(),
+                        decision_text: dec_text,
+                        outcome_id: String::new(),
+                        outcome_text: out_text,
+                        relation,
+                        confidence,
+                        task_tag,
+                        event_time: 0,
+                        valid_to: None,
+                        access_count: 0,
+                        last_accessed_at: None,
+                        discovered_by: String::new(),
+                        discovered_at: 0,
+                        outcome_polarity: None,
+                        superseded_by: None,
+                        context_fingerprint: None,
+                        context_text: None,
+                    },
+                    sim,
+                ));
             }
         }
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -878,7 +885,11 @@ fn memory_lines(entries: &[CausalEntry], question: &str) -> String {
                 continue;
             }
             // Filter entries whose topic matches a superseded topic
-            if !history && suppressed_topics.iter().any(|t| text.to_lowercase().contains(t)) {
+            if !history
+                && suppressed_topics
+                    .iter()
+                    .any(|t| text.to_lowercase().contains(t))
+            {
                 continue;
             }
             lines.push(format!("- {text}"));
@@ -1256,7 +1267,8 @@ async fn answer_question(
     } else {
         None
     };
-    let retrieved = retrieve(store, persona, &q.question, topk, query_vec.as_deref()).unwrap_or_default();
+    let retrieved =
+        retrieve(store, persona, &q.question, topk, query_vec.as_deref()).unwrap_or_default();
     // Distill mode additionally queries the fact layer (BM25, scope "user" —
     // this persona's own DB, same topk) and puts fact lines FIRST: they are
     // the high-precision layer for the factual-recall slice. Retired facts
@@ -2100,7 +2112,11 @@ mod tests {
             ("p1", "user added Pick up dry cleaning to todo list"),
             ("p2", "user asked about dentist appointment scheduling"),
         ] {
-            let outcome = if persona == "p1" { "todo list updated" } else { "appointment noted" };
+            let outcome = if persona == "p1" {
+                "todo list updated"
+            } else {
+                "appointment noted"
+            };
             store
                 .record_decision_at(text, outcome, "caused", Some(persona), 0.8, "rule", 0)
                 .unwrap();
@@ -2112,10 +2128,7 @@ mod tests {
         // no persona prefix).
         assert!(res.iter().all(|e| e.task_tag.as_deref() == Some("p1")));
         let res2 = retrieve(&store, "p2", "todo list groceries", 10, None).unwrap();
-        assert!(
-            res2.is_empty(),
-            "p2 has no grocery edges: {res2:?}"
-        );
+        assert!(res2.is_empty(), "p2 has no grocery edges: {res2:?}");
     }
 
     #[test]
@@ -2126,7 +2139,13 @@ mod tests {
         // semantics the forgetting (FAA) evaluation relies on.
         let store = CausalStore::open_in_memory().unwrap();
         store
-            .record_fact("preference", "User likes jazz music.", "user", "distill", 0.8)
+            .record_fact(
+                "preference",
+                "User likes jazz music.",
+                "user",
+                "distill",
+                0.8,
+            )
             .unwrap();
         store
             .record_fact(

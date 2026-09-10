@@ -38,12 +38,19 @@ pub struct CausalEntry {
     /// v8: id of the edge that superseded this one (reversible consolidation).
     /// Non-NULL implies `valid_to` is also set; `restore_edge` clears both.
     pub superseded_by: Option<i64>,
+    /// v14 (Rung-3 Phase A): task_tag + US + normalized context — the
+    /// recorded world state this decision was made in. Same fingerprint ⇒
+    /// comparable branch (see `decision_forks`). None = no context recorded.
+    pub context_fingerprint: Option<String>,
+    /// v14: the raw context description as given (display/audit).
+    pub context_text: Option<String>,
 }
 
 /// Columns selected when materializing a `CausalEntry` (order matters, see `entry_from_row`).
 pub const ENTRY_COLUMNS: &str = "ce.id, cf.id, cf.text, ct.id, ct.text, ce.relation, ce.confidence,
          ce.task_tag, ce.event_time, ce.valid_to, ce.access_count, ce.last_accessed_at,
-         ce.discovered_by, ce.discovered_at, ce.outcome_polarity, ce.superseded_by";
+         ce.discovered_by, ce.discovered_at, ce.outcome_polarity, ce.superseded_by,
+         ce.context_fingerprint, ce.context_text";
 
 /// Map a row selected with `ENTRY_COLUMNS` (plus the standard chunk joins) to a `CausalEntry`.
 pub fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<CausalEntry> {
@@ -64,6 +71,8 @@ pub fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<CausalEntry> {
         discovered_at: row.get(13)?,
         outcome_polarity: row.get(14)?,
         superseded_by: row.get(15)?,
+        context_fingerprint: row.get(16)?,
+        context_text: row.get(17)?,
     })
 }
 
@@ -159,11 +168,65 @@ pub struct SessionSegment {
     pub task_tag: Option<String>,
     pub hops: Vec<ChainHop>,
 }
-
 /// Cross-session causal chain: multiple session segments linked by
 /// meta-causal edges (pattern-miner bridges).
 #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct CrossSessionChain {
     pub segments: Vec<SessionSegment>,
     pub overall_confidence: f64,
+}
+
+/// A natural experiment (v14, Rung-3 Phase A): two valid edges that share
+/// a context fingerprint but took different decisions. `a`/`b` echo the
+/// id-ordered pair; endpoint texts + polarities are joined in for direct
+/// display. This is same-world-state evidence — stronger for
+/// counterfactuals than pooling cross-context distributions.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct ForkPair {
+    pub pair_id: i64,
+    pub edge_id_a: i64,
+    pub edge_id_b: i64,
+    pub fingerprint: String,
+    pub a_decision: String,
+    pub a_outcome: String,
+    pub a_relation: String,
+    pub a_polarity: Option<String>,
+    pub b_decision: String,
+    pub b_outcome: String,
+    pub b_relation: String,
+    pub b_polarity: Option<String>,
+}
+
+/// One still-pending prediction row (v14 ledger, for the report footer).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingPrediction {
+    pub id: i64,
+    pub created_at: i64,
+    pub option_a: String,
+    pub option_b: String,
+    pub task_tag: String,
+    pub method: String,
+}
+
+/// Per-slice (method or task_tag) rollup of resolved predictions.
+/// `correct` counts correct=1 rows only; accuracy = correct / (resolved −
+/// ambiguous) — ambiguous rows resolve but carry no truth value.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct PredictionStatsEntry {
+    pub resolved: i64,
+    pub correct: i64,
+    pub ambiguous: i64,
+}
+
+/// Calibration stats over the prediction ledger (v14): the
+/// counterfactual-honesty dashboard — over time it shows which method is
+/// trustworthy in which stratum.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct PredictionStats {
+    pub resolved: i64,
+    pub correct: i64,
+    pub ambiguous: i64,
+    pub pending: i64,
+    pub by_method: std::collections::HashMap<String, PredictionStatsEntry>,
+    pub by_task_tag: std::collections::HashMap<String, PredictionStatsEntry>,
 }

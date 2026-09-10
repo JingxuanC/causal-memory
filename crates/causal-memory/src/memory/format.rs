@@ -1,7 +1,7 @@
 //! Layered formatting, token budgets, and the shared RRF fusion.
 
 use super::RRF_K;
-use crate::store::CausalEntry;
+use crate::store::{AgentFact, CausalEntry};
 
 /// Format one entry at L0/L1/L2 detail, with an approximate token cost.
 /// Pub: the CLI's bench_tokens binary re-uses it for token measurements.
@@ -40,6 +40,135 @@ pub fn format_entry_layered(entry: &CausalEntry, rank: usize, level: &str) -> (S
             );
             (line, 100)
         }
+    }
+}
+
+/// Format one spreading-activation hit at L0/L1/L2 detail, with an
+/// approximate token cost. Activation hits carry only chunk text (no
+/// decision/outcome pair), so the levels differ by text verbosity:
+/// l0 pointer (40 chars), l1 overview (80 chars), l2 full text.
+pub fn format_activation_layered(
+    text: &str,
+    activation: f32,
+    rank: usize,
+    level: &str,
+) -> (String, usize) {
+    let sign = if activation > 0.0 { "+" } else { "-" };
+    let act = activation.abs() * 100.0;
+    match level {
+        "l0" => (
+            format!(
+                "{rank}. [{act:.0}%{sign}] \"{}\"\n",
+                truncate_chars(text, 40)
+            ),
+            25,
+        ),
+        "l1" => (
+            format!(
+                "{rank}. [{act:.0}%{sign}] \"{}\"\n",
+                truncate_chars(text, 80)
+            ),
+            60,
+        ),
+        _ => (format!("{rank}. [{act:.0}%{sign}] \"{text}\"\n"), 100),
+    }
+}
+
+/// Format one fact (unified-display style) at L0/L1/L2 detail, with an
+/// approximate token cost. L2 is byte-identical to the historical
+/// `render_unified` fact line — the 60-char display cap stays (full text
+/// remains available via the search_facts deep-dive); L0/L1 are cheaper
+/// tiers for token-constrained agents.
+pub fn format_fact_layered(fact: &AgentFact, rank: usize, level: &str) -> (String, usize) {
+    let conf = (fact.confidence * 100.0).round() as u32;
+    match level {
+        "l0" => (
+            format!(
+                "  #{rank} [{}] {} = \"{}\"\n",
+                fact.scope,
+                fact.key,
+                truncate_chars(&fact.value, 40)
+            ),
+            25,
+        ),
+        "l1" => (
+            format!(
+                "  #{rank} [{}] {} = \"{}\" (confidence: {conf}%)\n",
+                fact.scope,
+                fact.key,
+                truncate_chars(&fact.value, 40)
+            ),
+            60,
+        ),
+        _ => (
+            format!(
+                "  #{rank} [{}] {} = \"{}\" (confidence: {conf}%)\n",
+                fact.scope,
+                fact.key,
+                truncate_chars(&fact.value, 60)
+            ),
+            100,
+        ),
+    }
+}
+
+/// Format one causal lesson (unified-display style) at L0/L1/L2 detail,
+/// with an approximate token cost. L2 is byte-identical to the historical
+/// `render_unified` causal line — the 50-char display caps stay (the
+/// search_causal deep-dive renders full text via
+/// [`format_entry_layered`]). L0/L1 are the cheaper tiers.
+pub fn format_lesson_layered(entry: &CausalEntry, rank: usize, level: &str) -> (String, usize) {
+    let tag = entry.task_tag.as_deref().unwrap_or("untagged");
+    let conf = (entry.confidence * 100.0).round() as u32;
+    match level {
+        "l0" => (
+            format!(
+                "  #{rank} [{tag}] {} →({})→ {}\n",
+                truncate_chars(&entry.decision_text, 40),
+                entry.relation,
+                truncate_chars(&entry.outcome_text, 40),
+            ),
+            25,
+        ),
+        "l1" => (
+            format!(
+                "  #{rank} [{tag}] \"{}\" →({})→ \"{}\"\n",
+                truncate_chars(&entry.decision_text, 50),
+                entry.relation,
+                truncate_chars(&entry.outcome_text, 50),
+            ),
+            60,
+        ),
+        _ => (
+            format!(
+                "  #{rank} [{tag}] \"{}\" →({})→ \"{}\" (confidence: {conf}%)\n",
+                truncate_chars(&entry.decision_text, 50),
+                entry.relation,
+                truncate_chars(&entry.outcome_text, 50),
+            ),
+            100,
+        ),
+    }
+}
+
+/// Flip-path marking: the explain tag for one hit — `[seed]` for direct
+/// seed hits, `[spread hop=N via relation←"from"]` for spread-lit hits.
+pub(crate) fn provenance_tag(
+    hop: u8,
+    via_relation: Option<&'static str>,
+    via_from_text: Option<&str>,
+) -> String {
+    if hop == 0 {
+        return "[seed]".to_string();
+    }
+    match (via_relation, via_from_text) {
+        (Some(rel), Some(from)) => format!(
+            "[spread hop={} via {}←\"{}\"]",
+            hop,
+            rel,
+            truncate_chars(from, 40)
+        ),
+        _ => format!("[spread hop={hop}]"),
     }
 }
 

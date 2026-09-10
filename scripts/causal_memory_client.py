@@ -23,7 +23,7 @@ from typing import Optional, List, Dict, Any
 
 
 class CausalMemoryClient:
-    """Client for the causal-memory MCP server (14 tools)."""
+    """Client for the causal-memory MCP server (17 tools)."""
 
     def __init__(self, transport: str = "http", url: str = "", binary_path: str = "", db_path: str = ""):
         self._transport = transport

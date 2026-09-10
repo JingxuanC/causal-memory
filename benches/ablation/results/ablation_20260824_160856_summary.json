@@ -1,0 +1,62 @@
+{
+  "arms": [
+    {
+      "arm": "baseline",
+      "avg_pool_tokens": 1270,
+      "delta_avg_pool_tokens_vs_baseline": 0,
+      "delta_hit_rate_vs_baseline": 0.0,
+      "delta_mean_rank_vs_baseline": 0.0,
+      "evidence_hit_rate": 0.95,
+      "evidence_hits": 209,
+      "mean_rank": 12.205741626794259,
+      "total_questions": 220
+    },
+    {
+      "arm": "no-spread",
+      "avg_pool_tokens": 892,
+      "delta_avg_pool_tokens_vs_baseline": -378,
+      "delta_hit_rate_vs_baseline": 0.0,
+      "delta_mean_rank_vs_baseline": -1.8181818181818183,
+      "evidence_hit_rate": 0.95,
+      "evidence_hits": 209,
+      "mean_rank": 10.38755980861244,
+      "total_questions": 220
+    },
+    {
+      "arm": "no-inhibition",
+      "avg_pool_tokens": 1271,
+      "delta_avg_pool_tokens_vs_baseline": 1,
+      "delta_hit_rate_vs_baseline": 0.0,
+      "delta_mean_rank_vs_baseline": 0.009569377990430894,
+      "evidence_hit_rate": 0.95,
+      "evidence_hits": 209,
+      "mean_rank": 12.21531100478469,
+      "total_questions": 220
+    },
+    {
+      "arm": "no-swr",
+      "avg_pool_tokens": 1260,
+      "delta_avg_pool_tokens_vs_baseline": -10,
+      "delta_hit_rate_vs_baseline": 0.01818181818181813,
+      "delta_mean_rank_vs_baseline": -0.33250219017454086,
+      "evidence_hit_rate": 0.9681818181818181,
+      "evidence_hits": 213,
+      "mean_rank": 11.873239436619718,
+      "total_questions": 220
+    }
+  ],
+  "data": "self-derived from causal_edges (query=outcome text, gold=causal edge hit key)",
+  "date": "2026-08-24T16:08:57.015726+08:00",
+  "db": "/tmp/ablation_real_para.db",
+  "git_commit": "cca8f3e",
+  "metric": "retrieval-level: evidence hit rate + mean evidence rank + pool token mass (judge-free)",
+  "n": 220,
+  "notes": {
+    "no-inhibition": "DB copy with prevented edges flipped to caused (inhibitory side removed, negative spread gone)",
+    "no-spread": "engine-level switch (Memory::disable_spread): seeding layer intact (BM25/semantic direct hits, Q-weighted), zero spreading-activation hops — seed-hits-only retrieval over the same store",
+    "no-swr": "DB copy with chunk q_value flattened to 0.5 (approximates a never-consolidated store; decayed confidence is lossy and not restored)",
+    "run": "verbatim control on fresh copy (sleep x2, 221 valid edges, 25 prevented, q_value 116 distinct); paraphrase comparison run follows on same copy"
+  },
+  "run_id": "20260824_160856",
+  "skipped_queries": 0
+}

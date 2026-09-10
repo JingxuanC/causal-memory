@@ -1,0 +1,60 @@
+{
+  "arms": [
+    {
+      "arm": "baseline",
+      "avg_pool_tokens": 1221,
+      "delta_avg_pool_tokens_vs_baseline": 0,
+      "delta_hit_rate_vs_baseline": 0.0,
+      "delta_mean_rank_vs_baseline": 0.0,
+      "evidence_hit_rate": 0.84,
+      "evidence_hits": 84,
+      "mean_rank": 2.5952380952380953,
+      "total_questions": 100
+    },
+    {
+      "arm": "no-spread",
+      "avg_pool_tokens": 1035,
+      "delta_avg_pool_tokens_vs_baseline": -186,
+      "delta_hit_rate_vs_baseline": -0.01,
+      "delta_mean_rank_vs_baseline": -0.12535857716580612,
+      "evidence_hit_rate": 0.83,
+      "evidence_hits": 83,
+      "mean_rank": 2.4698795180722892,
+      "total_questions": 100
+    },
+    {
+      "arm": "no-inhibition",
+      "avg_pool_tokens": 1221,
+      "delta_avg_pool_tokens_vs_baseline": 0,
+      "delta_hit_rate_vs_baseline": 0.0,
+      "delta_mean_rank_vs_baseline": 0.0,
+      "evidence_hit_rate": 0.84,
+      "evidence_hits": 84,
+      "mean_rank": 2.5952380952380953,
+      "total_questions": 100
+    },
+    {
+      "arm": "no-swr",
+      "avg_pool_tokens": 1221,
+      "delta_avg_pool_tokens_vs_baseline": 0,
+      "delta_hit_rate_vs_baseline": 0.0,
+      "delta_mean_rank_vs_baseline": 0.0,
+      "evidence_hit_rate": 0.84,
+      "evidence_hits": 84,
+      "mean_rank": 2.5952380952380953,
+      "total_questions": 100
+    }
+  ],
+  "data": "benches/longmemeval/data/longmemeval_s_cleaned.json",
+  "date": "2026-08-24T13:07:35.434095+08:00",
+  "db": "benches/longmemeval/db/longmemeval_distill.db",
+  "git_commit": "af190a9",
+  "metric": "retrieval-level: evidence hit rate + mean evidence rank + pool token mass (judge-free)",
+  "n": 100,
+  "notes": {
+    "no-inhibition": "DB copy with prevented edges flipped to caused (inhibitory side removed, negative spread gone)",
+    "no-spread": "engine-level switch (Memory::disable_spread): seeding layer intact (BM25/semantic direct hits, Q-weighted), zero spreading-activation hops — seed-hits-only retrieval over the same store",
+    "no-swr": "DB copy with chunk q_value flattened to 0.5 (approximates a never-consolidated store; decayed confidence is lossy and not restored)"
+  },
+  "run_id": "20260824_130735"
+}

@@ -1,0 +1,875 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>causal-memory 深度拆解：唯一建模「抑制」的 Agent 记忆系统</title>
+<style>
+  :root{
+    --bg:#eef2f7; --card:#ffffff; --ink:#0f172a; --muted:#64748b; --line:#e2e8f0;
+    --indigo:#4f46e5; --violet:#7c3aed; --blue:#3b82f6; --sky:#0ea5e9;
+    --green:#10b981; --red:#ef4444; --amber:#f59e0b; --slate:#94a3b8; --soft:#f8fafc;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{background:var(--bg); color:var(--ink); padding:40px 18px;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Segoe UI",sans-serif;
+    -webkit-font-smoothing:antialiased;}
+  .article{max-width:880px; margin:0 auto; background:var(--card); border-radius:22px;
+    padding:58px 64px 64px; box-shadow:0 14px 44px rgba(15,23,42,.09);}
+  .kicker{color:var(--indigo); font-weight:700; font-size:12.5px; letter-spacing:.16em; text-transform:uppercase;}
+  .title{font-size:32px; font-weight:800; letter-spacing:-.02em; margin:10px 0 18px; line-height:1.25;}
+  .meta{color:var(--muted); font-size:13px; margin-bottom:18px; line-height:1.7;}
+  .meta code{font-size:12px;}
+  .lede{font-size:16.5px; color:#475569; line-height:1.8; background:#f5f3ff; border-left:4px solid var(--violet);
+    padding:16px 20px; border-radius:0 12px 12px 0; margin-bottom:6px;}
+  .lede b{color:var(--ink);}
+  .sep{height:1px; background:var(--line); margin:40px 0;}
+  h2{font-size:23px; font-weight:800; margin:48px 0 20px; letter-spacing:-.01em;
+    display:flex; align-items:baseline; gap:12px;}
+  h2 .num{color:var(--indigo); font-size:16px; font-weight:800;}
+  h3{font-size:17px; font-weight:700; margin:28px 0 12px; color:var(--ink);}
+  h4{font-size:15px; font-weight:700; margin:20px 0 8px; color:var(--indigo);}
+  p{font-size:15.5px; line-height:1.85; color:#334155; margin:13px 0;}
+  p b, li b{color:var(--ink);}
+  ul,ol{margin:13px 0 13px 22px; color:#334155;}
+  li{font-size:15.5px; line-height:1.85; margin:6px 0;}
+  blockquote{background:var(--soft); border-left:4px solid var(--indigo); padding:14px 18px;
+    border-radius:0 10px 10px 0; margin:18px 0; color:#475569; font-size:15px; line-height:1.8;}
+  blockquote b{color:var(--ink);}
+  blockquote.danger{background:#fef2f2; border-left-color:var(--red);}
+  blockquote.warn{background:#fffbeb; border-left-color:var(--amber);}
+  table{width:100%; border-collapse:collapse; margin:18px 0; font-size:14px; border-radius:10px; overflow:hidden;}
+  th{background:var(--indigo); color:#fff; padding:10px 12px; text-align:left; font-weight:600; font-size:13.5px;}
+  td{padding:9px 12px; border-bottom:1px solid var(--line); color:#334155; vertical-align:top;}
+  tr:nth-child(even) td{background:#fafbfc;}
+  tr:last-child td{border-bottom:none;}
+  td.hlcell{background:#eef2ff !important; font-weight:700; color:var(--ink);}
+  code{font-family:"SF Mono",ui-monospace,Menlo,monospace; background:#eef2ff; color:var(--indigo);
+    padding:2px 6px; border-radius:5px; font-size:13px;}
+  pre{background:#0f172a; color:#e2e8f0; border-radius:12px; padding:16px 18px; margin:16px 0;
+    font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12.8px; line-height:1.7; overflow-x:auto;}
+  pre code{background:none; color:inherit; padding:0; font-size:inherit;}
+  pre .c{color:#64748b;} pre .k{color:#7dd3fc;} pre .s{color:#86efac;}
+  figure{margin:26px 0;}
+  .figbody{background:var(--soft); border:1px solid var(--line); border-radius:16px; padding:26px 22px;}
+  figcaption{font-size:12.5px; color:var(--muted); margin-top:12px; text-align:center; line-height:1.6;}
+  figcaption b{color:var(--ink);}
+
+  /* ---- inline diagram elements ---- */
+  .row{display:flex; align-items:center; justify-content:center; gap:16px; flex-wrap:wrap;}
+  .box{background:#fff; border:1.5px solid var(--line); border-radius:13px; padding:14px 18px; text-align:center; min-width:130px;}
+  .box .t{font-weight:700; font-size:14.5px;}
+  .box .d{font-size:12px; color:var(--muted); margin-top:5px; line-height:1.5;}
+  .box.indigo{border-color:#c7d2fe; background:#eef2ff;} .box.indigo .t{color:var(--indigo);}
+  .box.violet{border-color:#ddd6fe; background:#f5f3ff;} .box.violet .t{color:var(--violet);}
+  .box.green{border-color:#a7f3d0; background:#ecfdf5;} .box.green .t{color:#047857;}
+  .box.red{border-color:#fecaca; background:#fef2f2;} .box.red .t{color:#b91c1c;}
+  .box.amber{border-color:#fde68a; background:#fffbeb;} .box.amber .t{color:#92400e;}
+  .arrow{font-size:24px; color:var(--slate); font-weight:300;}
+  .chips{display:flex; gap:9px; justify-content:center; flex-wrap:wrap; margin-top:14px;}
+  .chip{padding:6px 13px; border-radius:999px; font-size:12.5px; font-weight:600; border:1.5px solid;}
+  .chip.g{color:#047857; border-color:#a7f3d0; background:#ecfdf5;}
+  .chip.b{color:#1d4ed8; border-color:#bfdbfe; background:#eff6ff;}
+  .chip.v{color:#6d28d9; border-color:#ddd6fe; background:#f5f3ff;}
+  .chip.r{color:#b91c1c; border-color:#fecaca; background:#fef2f2;}
+  .chip.x{color:#475569; border-color:#e2e8f0; background:#f8fafc;}
+  .chain{display:flex; align-items:stretch; gap:0; justify-content:center; flex-wrap:wrap;}
+  .chain .step{flex:1; min-width:120px; padding:14px 10px; border-radius:13px; text-align:center; border:1.5px solid;}
+  .chain .step .n{font-size:10.5px; font-weight:700; opacity:.7;}
+  .chain .step .t{font-weight:700; font-size:13.5px; margin-top:4px;}
+  .chain .step .d{font-size:11px; margin-top:4px; opacity:.85; line-height:1.5;}
+  .chain .conn{display:flex; align-items:center; color:var(--slate); font-size:20px; padding:0 5px;}
+  .s1{background:#fffbeb; border-color:#fde68a; color:#92400e;}
+  .s2{background:#fff7ed; border-color:#fed7aa; color:#9a3412;}
+  .s3{background:#fef2f2; border-color:#fca5a5; color:#991b1b;}
+  .s4{background:#eef2ff; border-color:#c7d2fe; color:#3730a3;}
+  .dual{display:grid; grid-template-columns:1fr 1fr; gap:0; border:1.5px solid var(--line); border-radius:14px; overflow:hidden;}
+  .dual .cell{padding:18px; border-right:1.5px solid var(--line); border-bottom:1.5px solid var(--line);}
+  .dual .cell:nth-child(2n){border-right:none;}
+  .dual .cell:nth-child(n+3){border-bottom:none;}
+  .dual .grp{font-size:10.5px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; color:var(--muted); margin-bottom:9px;}
+  .dual .exc{background:#eff6ff;} .dual .inh{background:#fef2f2;}
+  .dual .t{font-weight:700; font-size:14.5px;}
+  .dual .d{font-size:12px; color:var(--muted); margin-top:5px; line-height:1.5;}
+  .badge{display:inline-block; font-size:11px; font-weight:700; padding:3px 9px; border-radius:6px; margin-top:8px;}
+  .badge.gap{background:#fee2e2; color:#b91c1c;} .badge.has{background:#d1fae5; color:#047857;}
+  .mapnote{text-align:center; color:var(--muted); font-size:12px; margin-top:12px; line-height:1.7;}
+  .legend{display:flex; gap:18px; justify-content:center; margin-top:12px; font-size:12.5px; color:#475569; flex-wrap:wrap;}
+  .legend span{display:flex; align-items:center; gap:8px;}
+  .legend i{width:20px; height:4px; border-radius:3px; display:inline-block;}
+
+  /* ---- tool group cards ---- */
+  .toolgroup{margin:18px 0;}
+  .toolgrid{display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:10px;}
+  .tool{border:1.5px solid var(--line); border-radius:12px; padding:12px 14px; background:#fff;}
+  .tool .tn{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:13px; font-weight:700; color:var(--indigo);}
+  .tool .tw{font-size:11px; color:var(--muted); margin-top:3px; font-weight:600;}
+  .tool .td{font-size:12.5px; color:#475569; margin-top:5px; line-height:1.6;}
+  .tool.star{border-color:#c7d2fe; background:#eef2ff;}
+  .tool.star .td{color:#334155;}
+
+  /* ---- interactive figure player ---- */
+  .player{margin-top:16px;}
+  .stage{border:1px solid var(--line); border-radius:14px; background:#fff; padding:8px;}
+  .stage svg{display:block; width:100%; height:auto;}
+  .capbar{margin-top:10px; background:#eef2ff; border:1px solid #c7d2fe; border-radius:10px;
+    padding:11px 14px; font-size:13.5px; line-height:1.7; color:#334155; min-height:48px;}
+  .capbar .stepno{display:inline-block; background:var(--indigo); color:#fff; border-radius:6px;
+    font-size:11px; font-weight:700; padding:2px 8px; margin-right:9px; vertical-align:1px;}
+  .pcontrols{display:flex; align-items:center; gap:8px; justify-content:center; margin-top:10px; flex-wrap:wrap;}
+  .pcontrols button{border:1px solid var(--line); background:#fff; color:var(--ink); min-width:44px; height:34px;
+    border-radius:9px; font-size:14px; cursor:pointer; padding:0 10px;}
+  .pcontrols button:hover{border-color:var(--indigo); color:var(--indigo);}
+  .pcontrols .play{background:var(--indigo); border-color:var(--indigo); color:#fff; min-width:58px;}
+  .pcontrols .pinfo{font-size:12px; color:var(--muted); min-width:56px; text-align:center;}
+  /* svg shared styles */
+  .gnode rect{transition:stroke-width .2s, filter .2s;}
+  .gnode.on rect{stroke-width:3 !important; filter:drop-shadow(0 4px 8px rgba(15,23,42,.18));}
+  .gedge{opacity:.5;}
+  .gedge.on{opacity:1;}
+  .gedge.on path{stroke-width:3.4;}
+  .node-label{font-size:13px; font-weight:600; fill:var(--ink);}
+  .node-sub{font-size:10.5px; fill:var(--muted);}
+  .panel-title{font-size:11.5px; font-weight:700; fill:var(--slate); letter-spacing:1px;}
+  .edge-label{font-size:10.5px; fill:#475569; paint-order:stroke; stroke:#ffffff; stroke-width:3px; font-weight:600;}
+  .actv{font-size:11px; font-weight:700; fill:#94a3b8; paint-order:stroke; stroke:#ffffff; stroke-width:3px;}
+  .actv.pos{fill:#047857;} .actv.neg{fill:#dc2626;} .actv.seed{fill:#4f46e5;}
+  .pkt-label{font-size:11px; font-weight:700; paint-order:stroke; stroke:#ffffff; stroke-width:3px;}
+  .steps-doc{font-size:13px; color:#475569; line-height:1.8; margin-top:12px;}
+  .steps-doc li{margin:4px 0; font-size:13px;}
+
+  .refs{font-size:13px; color:#475569; line-height:2;}
+  .refs b{color:var(--ink);}
+  .refs a{color:var(--indigo); text-decoration:none;}
+  .foot{text-align:center; color:var(--slate); font-size:12px; margin-top:40px; padding-top:24px; border-top:1px solid var(--line); line-height:1.8;}
+  .foot a{color:var(--indigo); text-decoration:none;}
+
+  @media (max-width:720px){
+    body{padding:20px 10px;}
+    .article{padding:32px 20px 40px; border-radius:16px;}
+    .title{font-size:25px;}
+    .toolgrid{grid-template-columns:1fr;}
+    h2{font-size:20px;}
+    table{font-size:12.5px;}
+    th,td{padding:7px 8px;}
+  }
+</style>
+</head>
+<body>
+<article class="article">
+
+  <div class="kicker">Agent 记忆系统 · 开源项目深度分享</div>
+  <h1 class="title">causal-memory 深度拆解：唯一建模「抑制」的 Agent 记忆系统</h1>
+  <div class="meta">
+    Rust · MCP Server · Apache-2.0 · v0.9.2-alpha · 368/368 测试全过 ·
+    <code>github.com/JingxuanC/causal-memory</code>
+  </div>
+  <div class="lede">
+    现有的 agent 记忆系统都在回答「<b>发生了什么</b>」——事实、偏好、时序状态。causal-memory 回答的是另外三个问题：
+    「<b>当时为什么这么做</b>」「<b>这么做会怎样</b>」「<b>换个做法会怎样</b>」。它把事实、时序状态、
+    <code>decision → outcome</code> 因果边统一存进一个 SQLite，用一套仿海马体引擎驱动：带类型的扩散激活（兴奋性 <b>和</b> 抑制性）、
+    Hebbian 共现强化、Q-value 动力学、不可变 SWR 固化。这篇文章把设计动机、引擎原理、14 个工具、查询/写入两条链路讲透，
+    并和 mem0、OpenViking 做一次公允对比。
+  </div>
+
+  <div class="sep"></div>
+
+  <!-- ================= §1 ================= -->
+  <h2><span class="num">01</span>为什么做：agent 会忘记「当初为什么」</h2>
+  <p>用过 coding agent 的人都有这个体验：长任务跑到一半，框架把历史对话压缩（compaction）了一轮又一轮，
+  然后 agent 开始用<b>同样的错误方法反复修同一个 bug</b>，重新争论早已定下来的架构选型——它不是忘了「做过什么」，
+  而是忘了「<b>当初为什么那么做、那么做的后果是什么</b>」。</p>
+  <p>这不是玄学，可以实测。我们用 grok-build 的生产压缩 prompt 做了一个真实 LLM 基准：把一段包含因果细节的对话反复压缩，
+  每轮压缩后测两类召回——纯文本召回 vs 存在外部因果表里的同一信息：</p>
+
+  <table>
+    <tr><th>压缩次数 k</th><th>文本召回率</th><th>因果表召回率</th></tr>
+    <tr><td>1</td><td>100%</td><td>100%</td></tr>
+    <tr><td>2</td><td>85%</td><td>100%</td></tr>
+    <tr><td>3</td><td>55%</td><td>100%</td></tr>
+    <tr><td>5</td><td class="hlcell">45%</td><td class="hlcell">100%</td></tr>
+  </table>
+
+  <p>两个值得注意的点：① 衰退不是渐进的，是 k=2→3 之间的<b>断崖</b>（85% → 55%）；② 压缩 5 次之后，
+  文本只剩 45%，而因果表一行没丢。原因朴素得近乎无聊：<b>因果表活在 agent 的上下文窗口之外</b>，
+  压缩作用于 messages 数组，够不着一张外部 SQLite 表。真正的问题不是「怎么让记忆活下来」（任何外部存储都能活），
+  而是「活下来之后检索质量如何」——这是整张因果图存在的理由，后面会讲。</p>
+
+  <blockquote>一句话：<b>因果信息是压缩下最脆弱的记忆类型</b>，所以它最不该待在上下文里。这就是整个项目的第一性原理。</blockquote>
+
+  <!-- ================= §2 ================= -->
+  <h2><span class="num">02</span>原理：给 agent 装一颗海马体</h2>
+  <p>记忆科学的常识是：大脑不是一块硬盘。海马体至少分工成 DG（齿状回）、CA3、CA1 几个子区，再加上睡眠时的
+  尖波涟漪（SWR）做离线巩固。causal-memory 的引擎把这套分工逐个映射成了工程组件——类比归类比，
+  每一格都有具体的算法和参数：</p>
+
+  <table>
+    <tr><th>脑区 / 机制</th><th>工程实现</th><th>干什么</th></tr>
+    <tr><td><b>DG 齿状回</b>（模式分离）</td><td>SimHash 128-bit 稀疏编码</td><td>近似重复的决策不重复播种，防止「差不多的记忆」互相污染</td></tr>
+    <tr><td><b>CA3</b>（联想 recall）</td><td>CSR 稀疏图 + K-hop 扩散激活（前向 + 反向双矩阵，≤5 hop，每 hop 衰减 ×0.7，阈值 0.1）</td><td>从一个种子节点联想到相关的决策、结果、事实——「由彼及此」</td></tr>
+    <tr><td><b>CA1</b>（新颖性检测）</td><td>对 replay-count 分桶算 Shannon 熵，熵 &gt; 0.6 触发固化</td><td>经验足够多样时自动进入「睡眠」；千篇一律不触发</td></tr>
+    <tr><td><b>SWR 尖波涟漪</b>（睡眠巩固）</td><td><code>causal-memory sleep</code>：LTP ×1.05（封顶 2.0）强化被回放的边、LTD ×0.99 全局衰减、三判据 GC 遗忘</td><td>离线整理记忆：常用的变强、没用的忘掉，产出不可变 delta + clone，全程审计日志</td></tr>
+    <tr><td><b>Q-value</b>（效用动力学）</td><td>Bellman 式更新（MemRL 思路），种子激活按 (0.5 + 0.5×Q) 加权</td><td>被证明有用的记忆，下次检索时天然排得更靠前</td></tr>
+  </table>
+
+  <p>这套机制里最核心、也是和所有同类系统拉开差距的，是<b>兴奋 / 抑制二元性</b>。生物海马体里有两套神经递质：
+  谷氨酸管兴奋（LTP，共同激活的连接变强），GABA 管抑制（压住不该激活的回路）。2026 年的记忆系统里，
+  HeLa-Mem（ACL'26）把兴奋侧做得很完整——Hebbian 共激活、正向扩散；但抑制侧是空白。
+  causal-memory 补上了这一侧：<code>prevented</code> 边在扩散时传播 <b>−0.3 的负激活</b>，一个工程化的 GABA 类似物。</p>
+
+  <figure>
+    <div class="figbody">
+      <div class="dual">
+        <div class="cell exc"><div class="grp">人脑海马体</div><div class="t">兴奋：谷氨酸 · LTP</div><div class="d">共同激活 → 连接增强</div></div>
+        <div class="cell inh"><div class="grp">人脑海马体</div><div class="t">抑制：GABA · LTD</div><div class="d">压住不该激活的回路</div></div>
+        <div class="cell exc"><div class="grp">记忆系统</div><div class="t">兴奋侧：HeLa-Mem / mem0 / Zep</div><div class="d">wᵢⱼ ≥ 0，只增不减</div><span class="badge has">已被覆盖</span></div>
+        <div class="cell inh"><div class="grp">记忆系统</div><div class="t">抑制侧：causal-memory</div><div class="d">prevented 边传播 −0.3 负激活</div><span class="badge gap">本系统独有</span></div>
+      </div>
+      <div class="mapnote">为什么需要抑制？因为完整的记忆既要记住「<b>什么导致了它</b>」，也要记住「<b>什么能阻止它再发生</b>」。<br>
+      只有兴奋侧的系统回答得了前一个问题，回答不了后一个——它甚至会把「被阻止的坏结局」当成相关结果推荐出来。</div>
+    </div>
+    <figcaption><b>图 1</b> · 兴奋 / 抑制二元性：HeLa-Mem 做了左列，causal-memory 补齐右列</figcaption>
+  </figure>
+
+  <p>落到数据结构上，就是 7 种带类型的边，每种边有自己的扩散系数和生物学对应物：</p>
+
+  <table>
+    <tr><th>边类型</th><th>扩散系数</th><th>生物学类比</th><th>语义</th></tr>
+    <tr><td><code>caused</code></td><td class="hlcell">+1.0</td><td>谷氨酸（强兴奋）</td><td>「做了 X，导致了 Y」</td></tr>
+    <tr><td><code>fact</code></td><td>+0.8</td><td>语义关联</td><td>「用户是 / 有 Z」</td></tr>
+    <tr><td><code>meta</code></td><td>+0.6</td><td>皮层自上而下</td><td>跨任务的抽象模式链接</td></tr>
+    <tr><td><code>enabled</code></td><td>+0.5</td><td>弱兴奋</td><td>「做了 X，使 Y 成为可能」</td></tr>
+    <tr><td><code>co_occurrence</code></td><td>动态（Hebbian）</td><td>Hebbian LTP</td><td>「X 和 Y 频繁共现」，权重随共现增强</td></tr>
+    <tr><td><code>prevented</code></td><td class="hlcell">−0.3</td><td><b>GABA（抑制）</b></td><td>「做了 X，阻止了 Y」</td></tr>
+    <tr><td><code>no_effect</code></td><td>0.0</td><td>—</td><td>无因果关系</td></tr>
+  </table>
+
+  <p>值得多说一句的是合并规则：多路激活汇聚到同一节点时，取的是<b>绝对值最大</b>而非代数和最大——
+  这意味着一条 <code>prevented</code> 边可以把一个原本「中性」的节点压成负激活。这个设计让抑制信号真的能
+  「盖过」零激活，坏结局节点在最终排序里沉底，甚至以负值的形式作为风险提示出现。第 04 节的动画会直观演示这一幕。</p>
+
+  <!-- ================= §3 ================= -->
+  <h2><span class="num">03</span>14 个 MCP tools：按使用场景分组</h2>
+  <p>14 个工具看着多，其实只有四种使用时机：<b>写完、查前、出事、动手前</b>。逐个说清「什么时候调、干什么」。</p>
+
+  <div class="toolgroup">
+    <h4>① 写入组 —— 事情做完之后调</h4>
+    <div class="toolgrid">
+      <div class="tool"><div class="tn">record_decision</div><div class="tw">行动之后 · 核心写入</div>
+        <div class="td">把一次「决策 → 结果」记成一条带类型的因果边，附 relation（caused/enabled/prevented/no_effect）、task_tag、confidence_source。最重要的一个工具。</div></div>
+      <div class="tool"><div class="tn">remember</div><div class="tw">任何有意义的对话之后 · 零摩擦写入</div>
+        <div class="td">不想手工整理时，把对话原文直接粘贴进来，LLM 自动提取事实 / 教训 / 因果边（走第 05 节的 distill 管线）。</div></div>
+      <div class="tool"><div class="tn">record_fact</div><div class="tw">学到稳定事实时</div>
+        <div class="td">记录扁平事实（带 scope 和 confidence），幂等——重复记同一条不会产生重复数据。</div></div>
+      <div class="tool"><div class="tn">invalidate_decision</div><div class="tw">发现某条教训是错的</div>
+        <div class="td">软失效：从检索中隐藏，但保留在库里供审计。纠错不毁证据。</div></div>
+    </div>
+  </div>
+
+  <div class="toolgroup">
+    <h4>② 检索组 —— 需要「以前怎样」时调</h4>
+    <div class="toolgrid">
+      <div class="tool"><div class="tn">search_causal</div><div class="tw">做非平凡决策之前</div>
+        <div class="td">BM25 + 语义双路召回过去的因果片段（decision→outcome）。</div></div>
+      <div class="tool"><div class="tn">search_facts</div><div class="tw">需要「是什么」的信息</div>
+        <div class="td">只在事实层检索：用户偏好、技术栈、配置。</div></div>
+      <div class="tool"><div class="tn">search_memory</div><div class="tw">不确定该查哪层</div>
+        <div class="td">统一入口：事实 + 因果教训按 RRF 融合返回。不知道用哪个就用它。</div></div>
+      <div class="tool"><div class="tn">search_patterns</div><div class="tw">想召回跨任务的抽象教训</div>
+        <div class="td">查挖掘出的 meta 边：similar_to / repeated / contradicts / refines。</div></div>
+      <div class="tool"><div class="tn">causal_directory</div><div class="tw">钉在 system prompt 里</div>
+        <div class="td">L0 紧凑指针列表——让 agent 始终知道「我有哪些经验可查」，但不占上下文。</div></div>
+      <div class="tool"><div class="tn">reconstruct_lesson</div><div class="tw">想要一条完整教训而非碎片</div>
+        <div class="td">重建式检索：取 Markov 毯子图，让 LLM 重构成连贯叙事；支持 N 路独立重构交叉校准，重构不一致时警告「这段记忆不可靠」。</div></div>
+    </div>
+  </div>
+
+  <div class="toolgroup">
+    <h4>③ 诊断组 —— 出事之后调</h4>
+    <div class="toolgrid">
+      <div class="tool"><div class="tn">trace_cause</div><div class="tw">刚翻车，找直接原因</div>
+        <div class="td">单跳反向追溯：哪个决策导致了这个结果。</div></div>
+      <div class="tool"><div class="tn">trace_cause_chain</div><div class="tw">根因不止一跳</div>
+        <div class="td">多跳反向遍历整条因果链：服务挂了 ← OOM ← 缓存没设 TTL ← 当初配置时没加 expiry。</div></div>
+    </div>
+  </div>
+
+  <div class="toolgroup">
+    <h4>④ 决策前组 —— 动手之前调（最有记忆点的能力）</h4>
+    <div class="toolgrid">
+      <div class="tool star"><div class="tn">intervention_query</div><div class="tw">采取任何动作之前 · 前向模拟</div>
+        <div class="td">从「你打算做的事」出发沿图前向遍历，收集相似历史决策造成过的后果，按极性标成 <b>safe / warning / danger</b>。Pearl 因果阶梯的第二级（干预）：不是「观察过 X」，而是「如果我现在做 X」。</div></div>
+      <div class="tool"><div class="tn">counterfactual_query</div><div class="tw">两个方案二选一</div>
+        <div class="td">对比式反事实：调出相似历史情境下两个备选方案各自的真实结果做对比。经验主义反事实，不做结构因果模型假设。</div></div>
+    </div>
+  </div>
+
+  <p><code>intervention_query</code> 值得单独一个场景。README 里的 30 秒 demo：agent 即将执行
+  <code>git push --no-verify</code>，动手前调了一次 <code>intervention_query</code>，引擎沿图前向扩散，
+  命中一条 DANGER 链——上次同样的操作被记录在案：</p>
+
+  <blockquote class="danger"><b>DANGER</b> · 相似历史动作 <code>git push --no-verify</code> 曾导致：<b>生产登录挂了 40 分钟，紧急回滚</b>（recorded as caused edge, task: release）。</blockquote>
+
+  <p>注意这个能力的性质：它不是规则引擎里写死的「禁止 --no-verify」，而是<b>从 agent 自己的历史里长出来的预警</b>。
+  换个项目、换个坑，只要上次记录过，下次动手前就会被拦住。这是「记忆」和「配置」的本质区别。</p>
+
+  <!-- ================= §4 ================= -->
+  <h2><span class="num">04</span>重点图 1：一次查询在图中怎么走</h2>
+  <p>以 <code>search_causal("cache stampede protection")</code> 为例，完整链路是：
+  查询词 → BM25 + 语义<b>双路召回</b> → RRF 融合出种子节点 → 种子注入激活（按 Q 值加权）→
+  沿带类型的边 K-hop 扩散 → 按激活值排序返回。下面这张图是可交互的：点「▶」自动播放，或用 ◀ ▶ 单步。
+  重点看第 9 步——<code>prevented</code> 边（红色）把「死锁复发」节点压成 <b>−0.21 的负激活</b>。</p>
+
+  <figure>
+    <div class="figbody">
+      <div class="player">
+        <div class="stage">
+        <svg id="figQ" viewBox="0 0 800 620" role="img" aria-label="search_causal 查询链路动画">
+          <defs>
+            <marker id="qar-indigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4f46e5"/></marker>
+            <marker id="qar-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+            <marker id="qar-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#10b981"/></marker>
+            <marker id="qar-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#3b82f6"/></marker>
+            <marker id="qar-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ef4444"/></marker>
+            <marker id="qar-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/></marker>
+          </defs>
+
+          <!-- retrieval layer -->
+          <g class="gnode" id="qn-q"><rect x="30" y="50" width="150" height="54" rx="10" fill="#eef2ff" stroke="#4f46e5"/>
+            <text class="node-label" x="105" y="75" text-anchor="middle">查询词</text>
+            <text class="node-sub" x="105" y="91" text-anchor="middle">cache stampede protection</text></g>
+          <g class="gnode" id="qn-bm25"><rect x="250" y="16" width="150" height="46" rx="10" fill="#fff" stroke="#4f46e5"/>
+            <text class="node-label" x="325" y="37" text-anchor="middle">BM25 召回</text>
+            <text class="node-sub" x="325" y="52" text-anchor="middle">Okapi k1=1.2 · b=0.75</text></g>
+          <g class="gnode" id="qn-sem"><rect x="250" y="92" width="150" height="46" rx="10" fill="#fff" stroke="#7c3aed"/>
+            <text class="node-label" x="325" y="113" text-anchor="middle">语义召回</text>
+            <text class="node-sub" x="325" y="128" text-anchor="middle">cosine · embedding</text></g>
+          <g class="gnode" id="qn-rrf"><rect x="460" y="50" width="140" height="54" rx="10" fill="#f5f3ff" stroke="#7c3aed"/>
+            <text class="node-label" x="530" y="75" text-anchor="middle">RRF 融合</text>
+            <text class="node-sub" x="530" y="91" text-anchor="middle">k=60 · 双路排名互融</text></g>
+          <g class="gnode" id="qn-seed"><rect x="650" y="50" width="130" height="54" rx="10" fill="#eef2ff" stroke="#4f46e5"/>
+            <text class="node-label" x="715" y="75" text-anchor="middle">种子节点</text>
+            <text class="node-sub" x="715" y="91" text-anchor="middle">DG SimHash 去重</text></g>
+
+          <g class="gedge" id="qe-q-bm25"><path d="M 180 66 L 246 42" fill="none" stroke="#4f46e5" stroke-width="2" marker-end="url(#qar-indigo)"/></g>
+          <g class="gedge" id="qe-q-sem"><path d="M 180 92 L 246 110" fill="none" stroke="#7c3aed" stroke-width="2" marker-end="url(#qar-violet)"/></g>
+          <g class="gedge" id="qe-bm25-rrf"><path d="M 400 42 L 456 66" fill="none" stroke="#4f46e5" stroke-width="2" marker-end="url(#qar-indigo)"/></g>
+          <g class="gedge" id="qe-sem-rrf"><path d="M 400 110 L 456 90" fill="none" stroke="#7c3aed" stroke-width="2" marker-end="url(#qar-violet)"/></g>
+          <g class="gedge" id="qe-rrf-seed"><path d="M 600 77 L 646 77" fill="none" stroke="#4f46e5" stroke-width="2" marker-end="url(#qar-indigo)"/></g>
+
+          <!-- graph panel -->
+          <rect x="30" y="160" width="740" height="420" rx="14" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="7 4"/>
+          <text class="panel-title" x="46" y="184">CA3 · K-hop 扩散激活（前向 + 反向 · 每 hop ×0.7 · 阈值 0.1）</text>
+
+          <g class="gedge" id="qe-seed-s1"><path d="M 700 108 L 215 238" fill="none" stroke="#4f46e5" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#qar-indigo)"/>
+            <text class="edge-label" x="470" y="160" text-anchor="middle">注入 ×(0.5+0.5Q)</text></g>
+          <g class="gedge" id="qe-seed-s2"><path d="M 672 108 L 190 384" fill="none" stroke="#4f46e5" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#qar-indigo)"/></g>
+
+          <g class="gedge" id="qe-s1-o1"><path d="M 260 262 L 376 244" fill="none" stroke="#10b981" stroke-width="2" marker-end="url(#qar-green)"/>
+            <text class="edge-label" x="318" y="242" text-anchor="middle">caused +1.0</text></g>
+          <g class="gedge" id="qe-s1-o3"><path d="M 262 252 L 596 228" fill="none" stroke="#3b82f6" stroke-width="2" marker-end="url(#qar-blue)"/>
+            <text class="edge-label" x="430" y="230" text-anchor="middle">enabled +0.5</text></g>
+          <g class="gedge" id="qe-s1-d2"><path d="M 262 286 L 576 344" fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#qar-gray)"/>
+            <text class="edge-label" x="420" y="306" text-anchor="middle">cooc (Hebbian)</text></g>
+          <g class="gedge" id="qe-d2-o2"><path d="M 590 372 L 545 404" fill="none" stroke="#ef4444" stroke-width="2" marker-end="url(#qar-red)"/>
+            <text class="edge-label" x="590" y="398" text-anchor="middle">prevented −0.3</text></g>
+          <g class="gedge" id="qe-s2-s1"><path d="M 150 380 L 160 304" fill="none" stroke="#10b981" stroke-width="2" marker-end="url(#qar-green)"/>
+            <text class="edge-label" x="118" y="346" text-anchor="middle">fact +0.8 反向</text></g>
+
+          <g class="gnode" id="qn-s1"><rect x="70" y="240" width="190" height="60" rx="10" fill="#eef2ff" stroke="#4f46e5"/>
+            <text class="node-label" x="165" y="266" text-anchor="middle">D: Redis 互斥锁防击穿</text>
+            <text class="node-sub" x="165" y="283" text-anchor="middle">decision · 种子 · Q=0.9</text></g>
+          <g class="gnode" id="qn-s2"><rect x="70" y="380" width="170" height="54" rx="10" fill="#ecfdf5" stroke="#10b981"/>
+            <text class="node-label" x="155" y="405" text-anchor="middle">F: 缓存层用 Redis</text>
+            <text class="node-sub" x="155" y="421" text-anchor="middle">fact · 种子</text></g>
+          <g class="gnode" id="qn-o1"><rect x="380" y="210" width="180" height="56" rx="10" fill="#fff" stroke="#10b981"/>
+            <text class="node-label" x="470" y="236" text-anchor="middle">O: 高负载下死锁</text>
+            <text class="node-sub" x="470" y="252" text-anchor="middle">outcome</text></g>
+          <g class="gnode" id="qn-o3"><rect x="600" y="200" width="160" height="52" rx="10" fill="#fff" stroke="#3b82f6"/>
+            <text class="node-label" x="680" y="224" text-anchor="middle">O: 击穿被挡住</text>
+            <text class="node-sub" x="680" y="240" text-anchor="middle">outcome</text></g>
+          <g class="gnode" id="qn-d2"><rect x="580" y="330" width="190" height="56" rx="10" fill="#fff" stroke="#94a3b8"/>
+            <text class="node-label" x="675" y="356" text-anchor="middle">D: 锁超时 + 看门狗续期</text>
+            <text class="node-sub" x="675" y="372" text-anchor="middle">decision · 当年真正修好的方案</text></g>
+          <g class="gnode" id="qn-o2"><rect x="380" y="400" width="160" height="52" rx="10" fill="#fef2f2" stroke="#ef4444"/>
+            <text class="node-label" x="460" y="424" text-anchor="middle">O: 死锁复发</text>
+            <text class="node-sub" x="460" y="440" text-anchor="middle">被抑制的坏结局</text></g>
+
+          <text class="actv" id="qa-s1" x="165" y="318" text-anchor="middle">act 0.00</text>
+          <text class="actv" id="qa-s2" x="155" y="452" text-anchor="middle">act 0.00</text>
+          <text class="actv" id="qa-o1" x="470" y="284" text-anchor="middle">act 0.00</text>
+          <text class="actv" id="qa-o3" x="680" y="270" text-anchor="middle">act 0.00</text>
+          <text class="actv" id="qa-d2" x="675" y="404" text-anchor="middle">act 0.00</text>
+          <text class="actv" id="qa-o2" x="460" y="470" text-anchor="middle">act 0.00</text>
+        </svg>
+        </div>
+        <div class="capbar" id="figQ-cap"><span class="stepno">1 / 10</span>查询词 <code>cache stampede protection</code> 进入统一检索层——注意此刻图里所有节点激活值都是 0。</div>
+        <div class="pcontrols">
+          <button id="figQ-prev" title="上一步">◀</button>
+          <button id="figQ-play" class="play" title="播放/暂停">▶</button>
+          <button id="figQ-next" title="下一步">▶|</button>
+          <span class="pinfo" id="figQ-info">1 / 10</span>
+          <button id="figQ-reset" title="重置">↺</button>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i style="background:#10b981"></i>caused +1.0（强兴奋）</span>
+        <span><i style="background:#3b82f6"></i>enabled +0.5（弱兴奋）</span>
+        <span><i style="background:#ef4444"></i>prevented −0.3（抑制）</span>
+        <span><i style="background:#94a3b8"></i>co_occurrence（Hebbian）</span>
+        <span><i style="background:#4f46e5"></i>检索 / 播种</span>
+      </div>
+      <ol class="steps-doc">
+        <li><b>查询进入</b>：统一检索层接收查询词。</li>
+        <li><b>双路召回</b>：BM25 走关键词，语义走 embedding 余弦，互补漏召。</li>
+        <li><b>RRF 融合</b>：两路排名按 Reciprocal Rank Fusion（k=60）合并。</li>
+        <li><b>种子确定</b>：DG 的 SimHash 模式分离去掉近似重复，产出种子节点。</li>
+        <li><b>注入激活</b>：种子按 (0.5 + 0.5×Q) 加权——被证明有用的记忆起点更高。</li>
+        <li><b>hop 1 · caused</b>：+1.0 × 衰减 0.7 →「高负载下死锁」+0.70。</li>
+        <li><b>hop 1 · enabled</b>：+0.5 × 0.7 →「击穿被挡住」+0.35。</li>
+        <li><b>反向扩散</b>：fact 边沿反向 CSR 矩阵回流，双向支持种子。</li>
+        <li><b>hop 2 · 抑制</b>：cooc 边把「锁超时+看门狗」带到 +0.14；它的 prevented 边把「死锁复发」压成 −0.21。</li>
+        <li><b>排序返回</b>：按激活排序输出；负激活节点不作正面推荐，但作为风险提示出现。</li>
+      </ol>
+    </div>
+    <figcaption><b>图 2</b> · 一次 <code>search_causal</code> 的完整传播链路（可交互，无 JS 时静态结构 + 步骤列表同样可读）</figcaption>
+  </figure>
+
+  <p>第 9 步是整个系统最值钱的一幕。纯兴奋系统（比如只有 Hebbian 的 HeLa-Mem）里，「死锁复发」这个节点和查询高度相关，
+  会被正常激活、正常返回——agent 看到的建议是「这些做法都和缓存击穿有关」，其中混着一个被证明没用的。
+  而在这里，<code>prevented</code> 边把负激活打过去，合并规则取绝对值最大，<b>−0.21 直接盖过了它原本的 0</b>：
+  坏结局沉底，真正修好的方案（锁超时 + 看门狗续期）浮上来。这就是「记住什么能阻止它再发生」的工程含义。</p>
+
+  <blockquote>补充一个实现细节：图用 CSR（压缩稀疏行）格式存，前向、反向各一份矩阵，扩散就是稀疏矩阵乘向量（SpMV），cache 友好。反向矩阵让「从结果回溯决策」和「从决策推演结果」共用一套引擎。</blockquote>
+
+  <!-- ================= §5 ================= -->
+  <h2><span class="num">05</span>重点图 2：一条新记忆是怎么写进去的</h2>
+  <p>写入有两条路径。<b>路径 A</b> 是显式的：agent 做完一个决策，直接调 <code>record_decision</code>，
+  库里多出 decision 节点、outcome 节点和一条带类型的因果边，同时触发 Hebbian 共现检测——
+  如果这次写入时有别的节点刚被激活过，就在它们之间建 <code>co_occurrence</code> 边（权重随共现动态增强）。
+  <b>路径 B</b> 是自动的：<code>remember</code> 或 session 结束时走 distill 管线，LLM 从原始对话里提炼结构化记忆。
+  两条路径之间有一道<b>写时门控</b>——原始对话只进 <code>session_logs</code> 审计表，永远不进检索池。</p>
+
+  <figure>
+    <div class="figbody">
+      <div class="player">
+        <div class="stage">
+        <svg id="figW" viewBox="0 0 800 640" role="img" aria-label="写入链路动画">
+          <defs>
+            <marker id="war-indigo" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4f46e5"/></marker>
+            <marker id="war-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#10b981"/></marker>
+            <marker id="war-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ef4444"/></marker>
+            <marker id="war-violet" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/></marker>
+            <marker id="war-gray" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/></marker>
+          </defs>
+
+          <!-- lane A -->
+          <rect x="24" y="30" width="752" height="190" rx="14" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="7 4"/>
+          <text class="panel-title" x="40" y="52">路径 A · record_decision 直接写入（零 LLM，写完立即可检索）</text>
+
+          <g class="gnode" id="wn-rec"><rect x="50" y="90" width="170" height="56" rx="10" fill="#eef2ff" stroke="#4f46e5"/>
+            <text class="node-label" x="135" y="115" text-anchor="middle">record_decision</text>
+            <text class="node-sub" x="135" y="131" text-anchor="middle">行动后调用 · 4 个参数</text></g>
+          <g class="gnode" id="wn-dec"><rect x="290" y="60" width="170" height="50" rx="10" fill="#fff" stroke="#3b82f6"/>
+            <text class="node-label" x="375" y="82" text-anchor="middle">decision 节点</text>
+            <text class="node-sub" x="375" y="97" text-anchor="middle">做了什么</text></g>
+          <g class="gnode" id="wn-out"><rect x="290" y="140" width="170" height="50" rx="10" fill="#fff" stroke="#0ea5e9"/>
+            <text class="node-label" x="375" y="162" text-anchor="middle">outcome 节点</text>
+            <text class="node-sub" x="375" y="177" text-anchor="middle">结果如何</text></g>
+          <g class="gnode" id="wn-hebb"><rect x="520" y="90" width="150" height="56" rx="10" fill="#fffbeb" stroke="#f59e0b"/>
+            <text class="node-label" x="595" y="115" text-anchor="middle">Hebbian 共现检测</text>
+            <text class="node-sub" x="595" y="131" text-anchor="middle">与本次激活过的节点</text></g>
+          <g class="gnode" id="wn-adb"><rect x="700" y="90" width="76" height="56" rx="10" fill="#ecfdf5" stroke="#10b981"/>
+            <text class="node-label" x="738" y="115" text-anchor="middle">SQLite</text>
+            <text class="node-sub" x="738" y="131" text-anchor="middle">落库</text></g>
+
+          <g class="gedge" id="we-rec-dec"><path d="M 220 105 L 285 88" fill="none" stroke="#4f46e5" stroke-width="2" marker-end="url(#war-indigo)"/></g>
+          <g class="gedge" id="we-rec-out"><path d="M 220 132 L 285 152" fill="none" stroke="#4f46e5" stroke-width="2" marker-end="url(#war-indigo)"/></g>
+          <g class="gedge" id="we-dec-out"><path d="M 375 110 L 375 136" fill="none" stroke="#10b981" stroke-width="2" marker-end="url(#war-green)"/>
+            <text class="edge-label" x="385" y="126">relation · task_tag · confidence_src</text></g>
+          <g class="gedge" id="we-rec-hebb"><path d="M 220 118 L 516 118" fill="none" stroke="#f59e0b" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#war-gray)"/>
+            <text class="edge-label" x="368" y="112" text-anchor="middle">触发</text></g>
+          <g class="gedge" id="we-hebb-adb"><path d="M 670 118 L 696 118" fill="none" stroke="#10b981" stroke-width="2" marker-end="url(#war-green)"/>
+            <text class="edge-label" x="683" y="110" text-anchor="middle">cooc 边</text></g>
+
+          <!-- lane B -->
+          <rect x="24" y="250" width="752" height="340" rx="14" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="7 4"/>
+          <text class="panel-title" x="40" y="272">路径 B · remember / distill 管线（写时门控 → V3 提取 → 三路分流）</text>
+
+          <g class="gnode" id="wn-conv"><rect x="50" y="300" width="140" height="56" rx="10" fill="#fff" stroke="#94a3b8"/>
+            <text class="node-label" x="120" y="325" text-anchor="middle">原始对话</text>
+            <text class="node-sub" x="120" y="341" text-anchor="middle">remember 粘贴全文</text></g>
+          <g class="gnode" id="wn-gate"><rect x="240" y="300" width="140" height="56" rx="10" fill="#eef2ff" stroke="#4f46e5"/>
+            <text class="node-label" x="310" y="325" text-anchor="middle">写时门控</text>
+            <text class="node-sub" x="310" y="341" text-anchor="middle">write-time gatekeeping</text></g>
+          <g class="gnode" id="wn-sess"><rect x="240" y="440" width="160" height="54" rx="10" fill="#fef2f2" stroke="#ef4444"/>
+            <text class="node-label" x="320" y="464" text-anchor="middle">session_logs 表</text>
+            <text class="node-sub" x="320" y="480" text-anchor="middle">仅审计 / 回放 · 不进检索池</text></g>
+          <g class="gnode" id="wn-v3"><rect x="430" y="300" width="160" height="56" rx="10" fill="#f5f3ff" stroke="#7c3aed"/>
+            <text class="node-label" x="510" y="325" text-anchor="middle">V3 提取 prompt</text>
+            <text class="node-sub" x="510" y="341" text-anchor="middle">130 行 · 6 规则 · 5 few-shot</text></g>
+          <g class="gnode" id="wn-fact"><rect x="420" y="430" width="105" height="52" rx="10" fill="#ecfdf5" stroke="#10b981"/>
+            <text class="node-label" x="472" y="453" text-anchor="middle">agent_facts</text>
+            <text class="node-sub" x="472" y="469" text-anchor="middle">fact / preference</text></g>
+          <g class="gnode" id="wn-lesson"><rect x="535" y="430" width="105" height="52" rx="10" fill="#fff" stroke="#94a3b8"/>
+            <text class="node-label" x="587" y="453" text-anchor="middle">自指因果边</text>
+            <text class="node-sub" x="587" y="469" text-anchor="middle">lesson / event</text></g>
+          <g class="gnode" id="wn-causal"><rect x="650" y="430" width="120" height="52" rx="10" fill="#fff" stroke="#3b82f6"/>
+            <text class="node-label" x="710" y="453" text-anchor="middle">decision→outcome</text>
+            <text class="node-sub" x="710" y="469" text-anchor="middle">typed 有向边</text></g>
+          <g class="gnode" id="wn-bdb"><rect x="420" y="530" width="350" height="46" rx="10" fill="#ecfdf5" stroke="#10b981"/>
+            <text class="node-label" x="595" y="551" text-anchor="middle">SQLite · 检索池</text>
+            <text class="node-sub" x="595" y="566" text-anchor="middle">BM25 + embedding 立即可检索</text></g>
+
+          <g class="gedge" id="we-conv-gate"><path d="M 190 328 L 236 328" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#war-gray)"/></g>
+          <g class="gedge" id="we-gate-sess"><path d="M 310 356 L 315 436" fill="none" stroke="#ef4444" stroke-width="2" stroke-dasharray="6 4" marker-end="url(#war-red)"/>
+            <text class="edge-label" x="330" y="402">raw turns</text></g>
+          <g class="gedge" id="we-gate-v3"><path d="M 380 328 L 426 328" fill="none" stroke="#7c3aed" stroke-width="2" marker-end="url(#war-violet)"/>
+            <text class="edge-label" x="403" y="320" text-anchor="middle">distill</text></g>
+          <g class="gedge" id="we-v3-fact"><path d="M 500 356 L 478 426" fill="none" stroke="#10b981" stroke-width="2" marker-end="url(#war-green)"/></g>
+          <g class="gedge" id="we-v3-lesson"><path d="M 522 356 L 580 426" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#war-gray)"/></g>
+          <g class="gedge" id="we-v3-causal"><path d="M 552 356 L 700 426" fill="none" stroke="#3b82f6" stroke-width="2" marker-end="url(#war-violet)"/></g>
+          <g class="gedge" id="we-fact-bdb"><path d="M 472 482 L 472 526" fill="none" stroke="#10b981" stroke-width="2" marker-end="url(#war-green)"/></g>
+          <g class="gedge" id="we-lesson-bdb"><path d="M 587 482 L 587 526" fill="none" stroke="#94a3b8" stroke-width="2" marker-end="url(#war-gray)"/></g>
+          <g class="gedge" id="we-causal-bdb"><path d="M 710 482 L 710 526" fill="none" stroke="#3b82f6" stroke-width="2" marker-end="url(#war-violet)"/></g>
+        </svg>
+        </div>
+        <div class="capbar" id="figW-cap"><span class="stepno">1 / 8</span>路径 A：agent 行动之后直接调 <code>record_decision(decision, outcome, relation, task_tag)</code>。</div>
+        <div class="pcontrols">
+          <button id="figW-prev" title="上一步">◀</button>
+          <button id="figW-play" class="play" title="播放/暂停">▶</button>
+          <button id="figW-next" title="下一步">▶|</button>
+          <span class="pinfo" id="figW-info">1 / 8</span>
+          <button id="figW-reset" title="重置">↺</button>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i style="background:#4f46e5"></i>路径 A：直接写入</span>
+        <span><i style="background:#7c3aed"></i>路径 B：distill</span>
+        <span><i style="background:#ef4444"></i>raw turns（只进审计表）</span>
+        <span><i style="background:#10b981"></i>结构化记忆（进检索池）</span>
+      </div>
+      <ol class="steps-doc">
+        <li><b>路径 A 入口</b>：行动后调 <code>record_decision</code>，无 LLM 调用，零成本。</li>
+        <li><b>建节点建边</b>：decision 节点 + outcome 节点 + 带类型因果边（relation / task_tag / confidence_source）。</li>
+        <li><b>Hebbian 共现</b>：与本次激活过的节点建立 <code>co_occurrence</code> 边，权重随共现增强。</li>
+        <li><b>路径 B 入口</b>：<code>remember</code> 接收原始对话全文。</li>
+        <li><b>写时门控</b>：raw turns 只进 <code>session_logs</code> 审计表——不进检索池，BM25 精度不被噪声稀释。</li>
+        <li><b>V3 提取</b>：130 行提取 prompt（6 条规则、5 个 few-shot）做一次 LLM 调用。</li>
+        <li><b>三路分流</b>：fact → agent_facts 表；lesson → 自指因果边；causal → decision→outcome 有向边。</li>
+        <li><b>落库闭环</b>：全部进检索池，下一条 <code>search_causal</code> 立刻能查到——写入到检索是同一个事务闭环。</li>
+      </ol>
+    </div>
+    <figcaption><b>图 3</b> · 两条写入路径与写时门控（可交互；写时门控架构借鉴自 mem0）</figcaption>
+  </figure>
+
+  <p>写时门控这一点值得展开：为什么不让原始对话直接进检索池？因为对话里 90% 是噪声——客套、中间推理、
+  被推翻的草案。它们一旦进池，BM25 的倒排索引就被稀释，精准度肉眼可见地掉。mem0 最早验证了这个架构
+  （raw 进审计表、提炼后才进检索池），我们直接采纳了。Distill 管线的一次 LLM 调用产出三类结构化记忆，
+  各进各的表：<code>agent_facts</code>（事实）、自指因果边（教训）、<code>decision→outcome</code> 有向边（因果）。</p>
+
+  <h3>写入之后：SWR 睡眠固化</h3>
+  <p>记忆写进去不是终点。生物记忆在睡眠时被「回放」并巩固，causal-memory 的 <code>sleep</code> 做同样的事——
+  当 CA1 的新颖性熵（对 replay-count 分桶算 Shannon 熵）超过 0.6 时自动触发，也可以手动
+  <code>causal-memory sleep --dry-run</code> 预览：</p>
+
+  <figure>
+    <div class="figbody">
+      <div class="chain">
+        <div class="step s1"><div class="n">回放</div><div class="t">随机采样因果链</div><div class="d">forward + reverse replay</div></div>
+        <div class="conn">→</div>
+        <div class="step s4"><div class="n">LTP</div><div class="t">强化被回放的边</div><div class="d">w ×= 1.05，封顶 2.0</div></div>
+        <div class="conn">→</div>
+        <div class="step s2"><div class="n">LTD</div><div class="t">弱化没访问的</div><div class="d">全局 w ×= 0.99</div></div>
+        <div class="conn">→</div>
+        <div class="step s3"><div class="n">GC 遗忘</div><div class="t">三判据全中才删</div><div class="d">weak AND dormant AND 零访问</div></div>
+      </div>
+      <div class="chips"><span class="chip v">不可变：产出 delta + clone，原图不动</span><span class="chip b">每步操作写审计日志</span><span class="chip g">上层审查后原子切换</span></div>
+    </div>
+    <figcaption><b>图 4</b> · SWR 2.0 固化循环：巩固不是改库，是产出一份可审查的 delta</figcaption>
+  </figure>
+
+  <p>「不可变」是刻意对齐 Anthropic Dreams API 的原则：固化的产出是<b>一份 delta 日志 + 原图的 clone</b>，
+  原图一个字节不动。上层（人或 agent）审查 delta 后决定接受（原子切换）或丢弃（原图完好）。
+  记忆系统改自己的记忆，和代码改自己的源码一样危险——先出 diff，再谈合入。</p>
+
+  <!-- ================= §6 ================= -->
+  <h2><span class="num">06</span>公允对比：vs mem0，vs OpenViking</h2>
+
+  <h3>vs mem0：它的主场我们不赢，我们的主场它没数据结构</h3>
+  <p>mem0 是事实召回的标杆，这一点没有争议：LoCoMo（严格 judge）上 mem0 拿到 <b>91.6%</b>，我们是 79.1%——
+  事实抽取和混合检索是它的主场，差距真实存在，我们不打算掩饰。LongMemEval 和 Memora MPA 上同样是它领先。</p>
+  <p>但 mem0 的数据结构里只有「what」——原子事实。它不存「这个决策导致了那个结果」，所以一切需要因果的问题它都回答不了。
+  在专门测因果的 CausalEval 上：总分 <b>78% vs 65%</b>；C2 干预预测（「再做 X 会怎样」）<b>75% vs 40%</b>；
+  C4 抑制（区分「根治」和「限制爆炸半径」）<b>80% vs 50%</b>。compaction 存活 <b>100% vs 45%</b>；
+  trap-world 重复犯错率 <b>33% vs 67%</b>。另外坦承一句：我们的写时门控架构（session_logs 分离）就是从 mem0 学来的。
+  因果不取代事实，因果填的是事实够不到的那一层——两者是叠加关系，不是替代关系。</p>
+
+  <h3>vs OpenViking：检索工程的顶级玩家，但同样是 notebook 架构</h3>
+  <p>OpenViking（VLDB'26，27.7k★，Rust）把记忆组织成一棵可浏览的虚拟文件系统目录树，配 L0/L1/L2 分层加载：
+  LoCoMo 80–83%，token 节省 34–91%。在检索工程和 token 效率上它是顶级玩家，分层加载的思路我们也借鉴了
+  （L0 一行摘要 / L1 概览 / L2 全文，严格 token 预算）。</p>
+  <p>但范式的根本差异不变：目录树组织的是「知识在哪」，回答的还是 <b>what</b>；它回答不了
+  「<b>为什么</b>当时那么做」和「<b>如果</b>换个做法会怎样」——答案不在它的数据结构里，这不是工程差距，是建模差距。
+  有意思的是两者可以调和：我们的存储底层是可插拔的，事实层完全可以退化为对 OpenViking / LanceDB 存储的适配器，
+  因果层作为上层语义增强运行——目录树管「找得到」，因果图管「想得明白」。</p>
+
+  <table>
+    <tr><th style="width:16%">维度</th><th style="width:26%">mem0</th><th style="width:28%">OpenViking</th><th style="width:30%">causal-memory</th></tr>
+    <tr><td><b>范式</b></td><td>事实抽取 + 混合检索</td><td>虚拟文件系统 + L0/L1/L2 分层加载</td><td>类型化因果图 + 海马体引擎</td></tr>
+    <tr><td><b>主场</b></td><td>事实召回（LoCoMo 91.6%）</td><td>检索工程 / token 效率（LoCoMo 80–83%，token −34~91%）</td><td>因果 / 干预 / 抑制（CausalEval 78%）</td></tr>
+    <tr><td><b>因果建模</b></td><td>❌</td><td>❌</td><td>✅ 7 种带类型的边</td></tr>
+    <tr><td><b>抑制（inhibition）</b></td><td>❌</td><td>❌</td><td>✅ prevented −0.3 负扩散</td></tr>
+    <tr><td><b>前向模拟</b></td><td>❌</td><td>❌</td><td>✅ intervention_query（safe/warning/danger）</td></tr>
+    <tr><td><b>compaction 存活</b></td><td>45%（文本召回 @5 次压缩）</td><td>无实证</td><td>100%（外部因果表）</td></tr>
+    <tr><td><b>适用场景</b></td><td>偏好 / 事实型助手</td><td>大记忆库浏览、成本敏感型部署</td><td>长期运行的 agent、跨会话项目、复盘与预警</td></tr>
+  </table>
+
+  <h3>能力矩阵（数据来自项目 README）</h3>
+  <table>
+    <tr><th>能力</th><th>causal-memory</th><th>mem0</th><th>Zep</th><th>Letta</th><th>HeLa-Mem</th></tr>
+    <tr><td>类型化因果语义（caused/enabled/prevented）</td><td class="hlcell">✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>prevented 负扩散（抑制侧）</td><td class="hlcell">✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Hebbian 共现边（兴奋侧）</td><td class="hlcell">✅</td><td>❌</td><td>❌</td><td>❌</td><td>✅</td></tr>
+    <tr><td>不可变固化（delta + clone）</td><td class="hlcell">✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>Q-value 动态效用</td><td class="hlcell">✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>前向模拟（intervention_query）</td><td class="hlcell">✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>SWR 离线固化（LTP/LTD/GC）</td><td class="hlcell">✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>新颖性熵固化触发</td><td class="hlcell">✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>meta 边跨会话模式挖掘</td><td class="hlcell">✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>compaction 存活实证</td><td class="hlcell">✅ +20.8pp</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>一张图统一所有记忆类型</td><td class="hlcell">✅</td><td>❌</td><td>⚠️</td><td>❌</td><td>⚠️</td></tr>
+    <tr><td>写时门控（raw → session_logs）</td><td class="hlcell">✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+    <tr><td>本地 ONNX embedding（离线）</td><td class="hlcell">✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td></tr>
+  </table>
+  <p style="font-size:13px; color:var(--muted)">HeLa-Mem（ACL'26）是最接近的学术对手：它把兴奋侧（Hebbian 共激活、正向扩散）做完整了，抑制侧空白。
+  我们把它的 Hebbian 机制吸收为 7 种边之一（co_occurrence，动态权重），再加上它没有的抑制侧。</p>
+
+  <!-- ================= §7 ================= -->
+  <h2><span class="num">07</span>谁该用 &amp; 三分钟上手</h2>
+  <p><b>适合谁</b>：长期运行的 coding agent（同一项目跨几十上百个 session，重复踩坑代价最高）；
+  跨会话的个人项目（上次为什么选这个方案，下周的自己会感谢现在记录的你）；
+  多 agent 共享记忆（HTTP 模式起一个服务，多个 agent 读写同一份经验库，一个踩坑全队免疫）。
+  如果你的场景是一次性问答、或者只需要记住用户偏好，mem0 那类事实库更合适——别为用不上的能力付复杂度。</p>
+
+  <p><b>最小接入路径</b>（不需要 Rust 工具链）：</p>
+  <pre><code><span class="c"># 1. 安装（pip 包自带完整 CLI，裸启动即 stdio MCP server）</span>
+pip install causal-memory
+
+<span class="c"># 2. MCP 配置（Claude Code / Cursor / Kimi Code 等），3 行核心</span>
+{
+  <span class="k">"mcpServers"</span>: {
+    <span class="k">"causal-memory"</span>: {
+      <span class="k">"command"</span>: <span class="s">"causal-memory"</span>,
+      <span class="k">"env"</span>: { <span class="k">"CAUSAL_MEMORY_DB"</span>: <span class="s">"~/.local/share/causal-memory/causal.db"</span> }
+    }
+  }
+}
+
+<span class="c"># 3. 装 skill，教 agent「什么时候主动调」——不配这步它不会主动用</span>
+npx skills add JingxuanC/causal-memory@causal-memory</code></pre>
+
+  <p>多 agent 共享就用 HTTP 传输：<code>causal-memory http --port 9938</code>（MCP Streamable HTTP，
+  同端口带 /metrics、/healthz、/debug/recall 可观测端点——注意无鉴权，别暴露公网）。
+  embedding 可选：不配就退化为纯 BM25；配 HTTP API 或本地 ONNX（BAAI/bge-small-en-v1.5，384 维，下载一次后离线）都行。</p>
+
+  <h3>CausalEval v13 总表（140 题 · 20 张图 · 同模型同 judge）</h3>
+  <table>
+    <tr><th>能力</th><th>causal-memory</th><th>v12（70q）</th><th>mem0（70q）</th><th>测什么</th></tr>
+    <tr><td><b>C7 更新</b></td><td class="hlcell">100%</td><td>50%</td><td>80%</td><td>旧信念被证伪后软取代（superseded_by 标注）</td></tr>
+    <tr><td>C3 反事实</td><td class="hlcell">95%</td><td>90%</td><td>80%</td><td>已知结果的备选方案之间做选择</td></tr>
+    <tr><td>C2 干预</td><td class="hlcell">75%</td><td>70%</td><td>40%</td><td>前向预测：「再做 X 会怎样」</td></tr>
+    <tr><td>C4 抑制</td><td class="hlcell">80%</td><td>90%</td><td>50%</td><td>区分根治 vs 限制爆炸半径（prevented 边）</td></tr>
+    <tr><td>C1 归因</td><td>85%</td><td>90%</td><td>90%</td><td>反向因果链 → 根因</td></tr>
+    <tr><td>C5 时序因果</td><td>90%</td><td>100%</td><td>90%</td><td>因果链上的先后排序</td></tr>
+    <tr><td>C6 教训迁移</td><td>20%</td><td>20%</td><td>30%</td><td>跨任务类比（公开短板）</td></tr>
+    <tr><td><b>总分</b></td><td class="hlcell"><b>78%</b></td><td>81%</td><td>65%</td><td>v13 翻倍样本下 C7 的 100% 依然成立</td></tr>
+  </table>
+
+  <p>诚实的收尾：C6 跨任务迁移 20% 是不如 mem0 的公开短板；纯事实召回打不过 mem0；
+  前向模拟（intervention_query）已实现但还没有专门的预测准确率基准——这三条写在 README 和论文里，不藏着。
+  但有一件事目前只有这个系统能做：让 agent 在<b>动手之前</b>，想起上次这么做的代价。</p>
+
+  <div class="sep"></div>
+
+  <div class="refs">
+    <b>项目：</b><a href="https://github.com/JingxuanC/causal-memory">github.com/JingxuanC/causal-memory</a>（Rust · Apache-2.0 · v0.9.2-alpha · 368 测试）·
+    研究笔记：<a href="https://github.com/JingxuanC/agent-teardown/tree/main/insights">agent-teardown insights/01–17</a><br>
+    <b>引用：</b>HeLa-Mem（ACL 2026，Hebbian 兴奋侧）· Anthropic Dreams API（不可变固化）· mem0（写时门控架构）·
+    OpenViking（VLDB 2026，L0/L1/L2 分层加载）· MemRL（arXiv:2601.03192，Q-value 记忆动力学）· Pearl 2009 <i>Causality</i><br>
+    <b>数据来源：</b>CausalEval v13（140q/20 graphs）· LoCoMo（严格 judge）· LongMemEval-S · Memora MPA ·
+    grok-build 生产压缩 prompt 实测 · trap-world agent 消融。全部基准 harness 在仓库 <code>benches/</code> 下可复现。
+  </div>
+
+  <div class="foot">causal-memory · 技术深度分享 · 让 agent 不仅知道「世界什么样」，还知道「自己的每个决定，把项目推向了什么结果」</div>
+
+</article>
+
+<script>
+(function(){
+  "use strict";
+  var NS="http://www.w3.org/2000/svg";
+
+  function makePlayer(cfg){
+    var svg=document.getElementById(cfg.svgId);
+    var cap=document.getElementById(cfg.id+"-cap");
+    var info=document.getElementById(cfg.id+"-info");
+    var playBtn=document.getElementById(cfg.id+"-play");
+    var steps=cfg.steps, cur=0, playing=false, timer=null;
+    // remember base activation labels
+    var baseAct={};
+    (cfg.acts||[]).forEach(function(id){
+      var el=document.getElementById(id); if(el) baseAct[id]={t:el.textContent,c:el.getAttribute("class")};
+    });
+
+    function resetActs(){
+      Object.keys(baseAct).forEach(function(id){
+        var el=document.getElementById(id);
+        el.textContent=baseAct[id].t; el.setAttribute("class",baseAct[id].c);
+      });
+    }
+    function applyActs(upto){
+      resetActs();
+      for(var i=0;i<=upto;i++){
+        var a=steps[i].acts||{};
+        Object.keys(a).forEach(function(id){
+          var el=document.getElementById(id); if(!el) return;
+          el.textContent=a[id][0];
+          el.setAttribute("class","actv "+(a[id][1]||""));
+        });
+      }
+    }
+    function spawn(edgeId,label,color,delay){
+      setTimeout(function(){
+        var g=document.getElementById(edgeId); if(!g) return;
+        var path=g.querySelector("path"); if(!path||!path.getTotalLength) return;
+        var len=path.getTotalLength();
+        var dot=document.createElementNS(NS,"circle");
+        dot.setAttribute("r","5.5"); dot.setAttribute("fill",color||"#4f46e5");
+        svg.appendChild(dot);
+        var lab=null;
+        if(label){
+          lab=document.createElementNS(NS,"text");
+          lab.setAttribute("class","pkt-label"); lab.setAttribute("text-anchor","middle");
+          lab.setAttribute("fill",color||"#4f46e5"); lab.textContent=label;
+          svg.appendChild(lab);
+        }
+        var t0=performance.now(), dur=900;
+        (function frame(now){
+          var t=Math.min(1,(now-t0)/dur);
+          var pt=path.getPointAtLength(t*len);
+          dot.setAttribute("cx",pt.x); dot.setAttribute("cy",pt.y);
+          if(lab){ lab.setAttribute("x",pt.x+12); lab.setAttribute("y",pt.y-10); }
+          if(t<1){ requestAnimationFrame(frame); }
+          else { dot.remove(); if(lab) lab.remove(); }
+        })(t0);
+      },delay||0);
+    }
+    function show(n){
+      clearTimeout(timer);
+      cur=n;
+      var ons=svg.querySelectorAll(".on");
+      for(var k=0;k<ons.length;k++) ons[k].classList.remove("on");
+      var st=steps[n];
+      (st.hl||[]).forEach(function(id){ var el=document.getElementById(id); if(el) el.classList.add("on"); });
+      (st.hlE||[]).forEach(function(id){ var el=document.getElementById(id); if(el) el.classList.add("on"); });
+      applyActs(n);
+      cap.innerHTML="<span class=\"stepno\">"+(n+1)+" / "+steps.length+"</span>"+st.cap;
+      info.textContent=(n+1)+" / "+steps.length;
+      (st.pk||[]).forEach(function(p){ spawn(p.e,p.label||"",p.color,p.delay||0); });
+      if(playing){
+        timer=setTimeout(function(){
+          if(cur+1<steps.length){ show(cur+1); }
+          else { playing=false; playBtn.textContent="▶"; }
+        },3000);
+      }
+    }
+    document.getElementById(cfg.id+"-prev").addEventListener("click",function(){
+      playing=false; playBtn.textContent="▶"; show(cur>0?cur-1:steps.length-1);
+    });
+    document.getElementById(cfg.id+"-next").addEventListener("click",function(){
+      playing=false; playBtn.textContent="▶"; show(cur+1<steps.length?cur+1:0);
+    });
+    playBtn.addEventListener("click",function(){
+      playing=!playing;
+      playBtn.textContent=playing?"⏸":"▶";
+      if(playing){ if(cur===steps.length-1){show(0);} else {show(cur);} }
+      else { clearTimeout(timer); }
+    });
+    document.getElementById(cfg.id+"-reset").addEventListener("click",function(){
+      playing=false; playBtn.textContent="▶"; show(0);
+    });
+    show(0);
+  }
+
+  /* ---------- 图 2：查询链路 ---------- */
+  makePlayer({
+    id:"figQ", svgId:"figQ",
+    acts:["qa-s1","qa-s2","qa-o1","qa-o3","qa-d2","qa-o2"],
+    steps:[
+      {hl:["qn-q"], cap:"查询词 <code>cache stampede protection</code> 进入统一检索层——注意此刻图里所有节点激活值都是 0。"},
+      {hl:["qn-bm25","qn-sem"], hlE:["qe-q-bm25","qe-q-sem"],
+       pk:[{e:"qe-q-bm25",label:"tokens",color:"#4f46e5"},{e:"qe-q-sem",label:"vec",color:"#7c3aed",delay:200}],
+       cap:"<b>双路召回</b>：BM25 走关键词匹配，语义走 embedding 余弦相似度——两路互补，减少漏召。"},
+      {hl:["qn-rrf"], hlE:["qe-bm25-rrf","qe-sem-rrf"],
+       pk:[{e:"qe-bm25-rrf",label:"rank①",color:"#4f46e5"},{e:"qe-sem-rrf",label:"rank②",color:"#7c3aed",delay:200}],
+       cap:"<b>RRF 融合</b>（Reciprocal Rank Fusion，k=60）：两路排名互融，谁在两路都靠前谁胜出。"},
+      {hl:["qn-seed"], hlE:["qe-rrf-seed"],
+       pk:[{e:"qe-rrf-seed",label:"seeds",color:"#4f46e5"}],
+       cap:"<b>种子确定</b>：DG（齿状回）的 SimHash 128-bit 模式分离先去掉近似重复，避免「差不多的记忆」重复播种。"},
+      {hl:["qn-s1","qn-s2"], hlE:["qe-seed-s1","qe-seed-s2"],
+       pk:[{e:"qe-seed-s1",label:"×0.95",color:"#4f46e5"},{e:"qe-seed-s2",label:"×0.60",color:"#4f46e5",delay:250}],
+       acts:{"qa-s1":["act +0.95","seed"],"qa-s2":["act +0.60","seed"]},
+       cap:"<b>注入激活</b>：种子激活按 (0.5 + 0.5×Q) 加权——Q 值高的记忆（过去被证明有用的决策）起点更高。"},
+      {hl:["qn-o1"], hlE:["qe-s1-o1"],
+       pk:[{e:"qe-s1-o1",label:"+1.0×0.7",color:"#10b981"}],
+       acts:{"qa-s1":["act +0.95","seed"],"qa-s2":["act +0.60","seed"],"qa-o1":["act +0.70","pos"]},
+       cap:"<b>hop 1 · caused +1.0</b>（谷氨酸式强兴奋）：+0.95 × 1.0 × 衰减 0.7 ≈ <b>+0.70</b>，「高负载下死锁」被点亮——当年那个教训浮上来了。"},
+      {hl:["qn-o3"], hlE:["qe-s1-o3"],
+       pk:[{e:"qe-s1-o3",label:"+0.5×0.7",color:"#3b82f6"}],
+       acts:{"qa-s1":["act +0.95","seed"],"qa-s2":["act +0.60","seed"],"qa-o1":["act +0.70","pos"],"qa-o3":["act +0.35","pos"]},
+       cap:"<b>hop 1 · enabled +0.5</b>（弱兴奋）：+0.95 × 0.5 × 0.7 ≈ <b>+0.35</b>，「击穿被挡住」也被激活，但强度只有 caused 的一半。"},
+      {hl:["qn-s2","qn-s1"], hlE:["qe-s2-s1"],
+       pk:[{e:"qe-s2-s1",label:"fact +0.8",color:"#10b981"}],
+       acts:{"qa-s1":["act +0.95","seed"],"qa-s2":["act +0.60","seed"],"qa-o1":["act +0.70","pos"],"qa-o3":["act +0.35","pos"]},
+       cap:"<b>反向扩散</b>：fact 边沿反向 CSR 矩阵回流支持种子——前向（决策→结果）和反向（结果→决策）共用一套引擎。"},
+      {hl:["qn-d2","qn-o2"], hlE:["qe-s1-d2","qe-d2-o2"],
+       pk:[{e:"qe-s1-d2",label:"cooc",color:"#94a3b8"},{e:"qe-d2-o2",label:"−0.3",color:"#ef4444",delay:800}],
+       acts:{"qa-s1":["act +0.95","seed"],"qa-s2":["act +0.60","seed"],"qa-o1":["act +0.70","pos"],"qa-o3":["act +0.35","pos"],"qa-d2":["act +0.14","pos"],"qa-o2":["act −0.21","neg"]},
+       cap:"<b>关键一步</b>：cooc 边把「锁超时+看门狗续期」带到 +0.14；它的 <code>prevented</code> 边（红色，GABA 类似物）把「死锁复发」压成 <b>−0.21</b>——合并规则取绝对值最大，负激活直接盖过 0。"},
+      {hl:["qn-o1","qn-o3","qn-d2"],
+       acts:{"qa-s1":["act +0.95","seed"],"qa-s2":["act +0.60","seed"],"qa-o1":["act +0.70","pos"],"qa-o3":["act +0.35","pos"],"qa-d2":["act +0.14","pos"],"qa-o2":["act −0.21","neg"]},
+       cap:"<b>按激活排序返回</b>：死锁教训（+0.70）＞ 挡住击穿（+0.35）＞ 真正的修法（+0.14）；「死锁复发」（−0.21）不作正面推荐，但作为<b>风险提示</b>随结果一起给出。"}
+    ]
+  });
+
+  /* ---------- 图 3：写入链路 ---------- */
+  makePlayer({
+    id:"figW", svgId:"figW", acts:[],
+    steps:[
+      {hl:["wn-rec"], cap:"路径 A：agent 行动之后直接调 <code>record_decision(decision, outcome, relation, task_tag)</code>——没有 LLM 调用，写入成本为零。"},
+      {hl:["wn-dec","wn-out"], hlE:["we-rec-dec","we-rec-out","we-dec-out"],
+       pk:[{e:"we-rec-dec",label:"decision",color:"#4f46e5"},{e:"we-rec-out",label:"outcome",color:"#4f46e5",delay:200}],
+       cap:"<b>建节点建边</b>：一个 decision 节点、一个 outcome 节点，中间一条带类型的因果边——边上带 relation（caused/enabled/prevented）、task_tag、confidence_source。"},
+      {hl:["wn-hebb","wn-adb"], hlE:["we-rec-hebb","we-hebb-adb"],
+       pk:[{e:"we-rec-hebb",label:"触发",color:"#f59e0b"},{e:"we-hebb-adb",label:"cooc 边",color:"#10b981",delay:500}],
+       cap:"<b>Hebbian 共现检测</b>：这次写入时刚被激活过的节点，与新节点之间建立 <code>co_occurrence</code> 边——「一起亮过的连在一起」，权重随共现次数动态增强。"},
+      {hl:["wn-conv"], cap:"路径 B：<code>remember</code> 接收原始对话全文（或 session 结束时自动走 distill 管线）。"},
+      {hl:["wn-gate","wn-sess"], hlE:["we-conv-gate","we-gate-sess"],
+       pk:[{e:"we-conv-gate",label:"turns",color:"#94a3b8"},{e:"we-gate-sess",label:"raw turns",color:"#ef4444",delay:400}],
+       cap:"<b>写时门控</b>：raw turns 只进 <code>session_logs</code> 审计表（可回放、可审计），<b>永远不进检索池</b>——90% 的对话噪声不会稀释 BM25 的倒排索引。这个架构学自 mem0。"},
+      {hl:["wn-v3"], hlE:["we-gate-v3"],
+       pk:[{e:"we-gate-v3",label:"distill",color:"#7c3aed"}],
+       cap:"<b>V3 提取 prompt</b>：130 行、6 条规则、5 个 few-shot，一次 LLM 调用把对话提炼成结构化记忆。"},
+      {hl:["wn-fact","wn-lesson","wn-causal"], hlE:["we-v3-fact","we-v3-lesson","we-v3-causal"],
+       pk:[{e:"we-v3-fact",label:"fact",color:"#10b981"},{e:"we-v3-lesson",label:"lesson",color:"#94a3b8",delay:200},{e:"we-v3-causal",label:"causal",color:"#7c3aed",delay:400}],
+       cap:"<b>三路分流</b>：fact/preference → <code>agent_facts</code> 表；lesson/event → 自指因果边；causal → 真正的 <code>decision → outcome</code> 有向边（带 caused/enabled/prevented 类型）。"},
+      {hl:["wn-bdb","wn-adb"], hlE:["we-fact-bdb","we-lesson-bdb","we-causal-bdb"],
+       pk:[{e:"we-fact-bdb",color:"#10b981"},{e:"we-lesson-bdb",color:"#94a3b8",delay:150},{e:"we-causal-bdb",color:"#7c3aed",delay:300}],
+       cap:"<b>落库闭环</b>：全部写入同一个 SQLite（causal.db），下一条 <code>search_causal</code> 立刻能检索到——写入到检索是同一个闭环，这也是 demo 里「写完即可查」的原因。"}
+    ]
+  });
+})();
+</script>
+</body>
+</html>

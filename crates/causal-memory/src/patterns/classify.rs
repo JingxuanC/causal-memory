@@ -128,7 +128,11 @@ pub(crate) fn classify_pair<'a>(
 
     // repeated: different task tags, same outcome direction.
     if a.task_tag != b.task_tag && pol_a.is_some() && pol_a == pol_b {
-        let direction = if pol_a == Some(true) { "都成功" } else { "都失败" };
+        let direction = if pol_a == Some(true) {
+            "都成功"
+        } else {
+            "都失败"
+        };
         return Some(PatternHit {
             relation: "repeated",
             from_id: &a.decision_id,

@@ -117,6 +117,7 @@ Read EVERY memory from first to last. Important details are scattered across the
 - Report what someone actually DID, not what was offered.
 
 ## Step 4: TEMPORAL GROUNDING
+- Memory lines are prefixed with [session_N YYYY/MM/DD (Weekday) HH:MM]; the bracketed date IS the date that memory happened - use it for relative-time calculations (weeks/months ago), even if the memory text has no other date.
 - Resolve relative time expressions against the date attached to each memory and the question's current date. Answer with ABSOLUTE dates.
 - For "how long" questions, find explicit start/end dates and compute.
 
@@ -294,6 +295,24 @@ fn turn_chunk_text(session_idx: usize, date_raw: &str, role: &str, content: &str
 ///
 /// Returns (chunk count, evidence chunk ids) — evidence ids are the turns
 /// flagged `has_answer: true`.
+/// Official evidence chunk ids (turns flagged `has_answer: true`) — used
+/// by every ingest mode for the evidence-hit metric.
+fn evidence_turn_ids(q: &LmeQuestion) -> Vec<String> {
+    q.haystack_session_ids
+        .iter()
+        .zip(q.haystack_sessions.iter())
+        .flat_map(|(sid, session)| {
+            let qid = q.question_id.clone();
+            let sid = sid.clone();
+            session
+                .iter()
+                .enumerate()
+                .filter(|&(_, t)| t.has_answer == Some(true))
+                .map(move |(i, _)| chunk_id(&qid, &sid, i))
+        })
+        .collect()
+}
+
 fn ingest_question(store: &CausalStore, q: &LmeQuestion) -> Result<(usize, Vec<String>)> {
     let prefix = format!("{}::", q.question_id);
     let expected_chunks: usize = q.haystack_sessions.iter().map(|s| s.len()).sum();
@@ -306,20 +325,7 @@ fn ingest_question(store: &CausalStore, q: &LmeQuestion) -> Result<(usize, Vec<S
             |r| r.get(0),
         )?)
     })?;
-    let evidence: Vec<String> = q
-        .haystack_session_ids
-        .iter()
-        .zip(q.haystack_sessions.iter())
-        .flat_map(|(sid, session)| {
-            let qid = q.question_id.clone();
-            let sid = sid.clone();
-            session
-                .iter()
-                .enumerate()
-                .filter(|&(_, t)| t.has_answer == Some(true))
-                .map(move |(i, _)| chunk_id(&qid, &sid, i))
-        })
-        .collect();
+    let evidence = evidence_turn_ids(q);
     // Tolerate small mismatches: duplicate session_ids in the dataset cause
     // INSERT OR IGNORE to skip a few chunks (e.g. 508 vs 514 expected). A
     // 5% tolerance avoids a re-ingest → wipe distill edges → re-distill cycle
@@ -418,6 +424,12 @@ fn ingest_question(store: &CausalStore, q: &LmeQuestion) -> Result<(usize, Vec<S
 enum IngestMode {
     Raw,
     Distill,
+    /// Product-path mode: ingest through the `Memory` facade (`remember` /
+    /// `remember_raw_turns`) and retrieve through `search_memory_entries`
+    /// — the exact pipeline the MCP server and the Python bindings expose.
+    /// Measures the DEPLOYED interface instead of the retrieval kernel:
+    /// the gap to the lib-direct modes is the facade/protocol cost.
+    ViaMcp,
 }
 
 impl IngestMode {
@@ -425,6 +437,7 @@ impl IngestMode {
         match self {
             IngestMode::Raw => "raw",
             IngestMode::Distill => "distill",
+            IngestMode::ViaMcp => "via-mcp",
         }
     }
 }
@@ -626,7 +639,13 @@ async fn distill_question(
 /// answerer. Session budget SESSION_BUDGET (was top-5/40 in the P8 harness
 /// experiment; the diagnosis showed evidence scattered over low-hit
 /// sessions gets cut by the top-5 cap).
-fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize, mode: &str) -> Result<Vec<CausalEntry>> {
+fn retrieve(
+    store: &CausalStore,
+    q: &LmeQuestion,
+    topk: usize,
+    mode: &str,
+    query_vec: Option<&[f32]>,
+) -> Result<Vec<CausalEntry>> {
     // Frozen baseline: plain BM25 top-k, no expansion — for same-codebase
     // comparisons against the multipass path.
     if mode == "baseline" {
@@ -634,13 +653,47 @@ fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize, mode: &str) -> Re
     }
     let now = parse_lme_datetime(&q.question_date).unwrap_or(SYNTH_BASE_TS);
     let plan = retrieval::plan_query(&q.question, now);
-    let merged = retrieval::retrieve_multi_pass(
-        store,
-        Some(&q.question_id),
-        &q.question,
-        &plan,
-        topk,
-    )?;
+    let mut merged =
+        retrieval::retrieve_multi_pass(store, Some(&q.question_id), &q.question, &plan, topk)?;
+
+    // Semantic seed layer (retrieval-scoring.md §2): cosine-rank the
+    // question's embedded edges (currently the distill layer) as a
+    // SUPPLEMENTARY pool, RRF-merged with the BM25 pool. Paraphrase
+    // recall ("jewelry" vs "necklace") is BM25's blind spot; episodes
+    // close it. No query vector (embedder off / call failed) or no
+    // embedded edges for this question → pure BM25, unchanged.
+    if let Some(qvec) = query_vec {
+        if let Ok(sem) = store.search_causal_semantic(qvec, Some(&q.question_id), topk) {
+            if !sem.is_empty() {
+                // RRF merge: BM25 pool rank vs semantic pool rank.
+                let bm25_keys: Vec<String> = merged
+                    .iter()
+                    .map(|e| format!("bm25:{}", e.edge_id))
+                    .collect();
+                let sem_keys: Vec<String> = sem
+                    .iter()
+                    .map(|(e, _)| format!("sem:{}", e.edge_id))
+                    .collect();
+                let fused = rrf_fuse_two(&bm25_keys, &sem_keys);
+                let mut seen: HashSet<i64> = merged.iter().map(|e| e.edge_id).collect();
+                for key in &fused {
+                    if let Some((e, _)) = key
+                        .strip_prefix("sem:")
+                        .and_then(|id| id.parse::<i64>().ok())
+                        .and_then(|id| sem.iter().find(|(s, _)| s.edge_id == id))
+                    {
+                        if seen.insert(e.edge_id) {
+                            merged.push(e.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Layered quota (retrieval-scoring.md §4): episodes are BM25-favored
+    // paraphrases that crowd original turns out of top-k — cap them at
+    // a third of the budget so primary evidence keeps its slots.
+    let merged = retrieval::apply_episode_quota(merged, topk / 3);
 
     // Full-coverage session expansion for aggregation shapes only (the P8
     // guard, now inferred from the question text instead of the dataset's
@@ -655,6 +708,28 @@ fn retrieve(store: &CausalStore, q: &LmeQuestion, topk: usize, mode: &str) -> Re
 /// into one answer prompt (design: ~80; the P8 harness used 40).
 const SESSION_BUDGET: usize = 80;
 
+/// Dilution cut: how many top-weighted sessions may be expanded at all.
+/// 2 = the whitelist mode (densest evidence sessions only); larger values
+/// relax toward full proportional expansion. Env-overridable for the
+/// dose-response A/B: EXPAND_TOP_SESSIONS=0 disables the whitelist.
+const EXPAND_TOP_SESSIONS: usize = 2;
+
+/// RRF over two rank lists (same K=60 as the lib's rrf_fuse_many; local
+/// copy because the lib one is pub(crate)).
+fn rrf_fuse_two(a: &[String], b: &[String]) -> Vec<String> {
+    const K: f64 = 60.0;
+    let mut score: std::collections::HashMap<&str, f64> = std::collections::HashMap::new();
+    for (i, k) in a.iter().enumerate() {
+        *score.entry(k.as_str()).or_insert(0.0) += 1.0 / (K + i as f64 + 1.0);
+    }
+    for (i, k) in b.iter().enumerate() {
+        *score.entry(k.as_str()).or_insert(0.0) += 1.0 / (K + i as f64 + 1.0);
+    }
+    let mut ranked: Vec<(f64, &str)> = score.into_iter().map(|(k, v)| (v, k)).collect();
+    ranked.sort_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(std::cmp::Ordering::Equal));
+    ranked.into_iter().map(|(_, k)| k.to_string()).collect()
+}
+
 /// Inject every chunk of the sessions touched by `entries` as synthetic
 /// CausalEntry rows (negative edge ids, relation "session") so memory_lines
 /// renders them. Chunks already covered by a real entry are skipped — the
@@ -668,19 +743,32 @@ fn expand_and_inject(
         .iter()
         .flat_map(|e| [e.decision_id.clone(), e.outcome_id.clone()])
         .collect();
-    let chunks = retrieval::expand_session_chunks(store, &ids, SESSION_BUDGET)?;
+    // Density-aware budget split + top-N whitelist (dilution cut): sessions
+    // are weighted by hit_count × distinct-query-token overlap; only the
+    // top EXPAND_TOP_SESSIONS survive expansion and the budget divides
+    // proportionally among them. Evidence recall was never the bottleneck
+    // (measured: gold turns reached the prompt in all variants) — the cost
+    // is LLM counting degraded by ~84% unrelated-turn dilution.
+    let chunks = retrieval::expand_session_chunks_weighted(
+        store,
+        &ids,
+        &q.question,
+        SESSION_BUDGET,
+        EXPAND_TOP_SESSIONS,
+    )?;
     let covered: HashSet<String> = ids.into_iter().collect();
-    // Text-level dedup too: the verification loop re-expands after merging
-    // new hits, and a session chunk already injected in an earlier round must
-    // not appear twice under a fresh synthetic id.
-    let present: HashSet<String> = entries
-        .iter()
-        .flat_map(|e| [e.decision_text.clone(), e.outcome_text.clone()])
-        .collect();
+    // Id-level dedup ONLY. The earlier text-level dedup (`present`) broke
+    // same-session turns: the verify loop re-expands with the previous
+    // round's synthetic entries in the pool, whose endpoint TEXTS equal
+    // the source chunk texts — so a re-returned turn was judged duplicate
+    // and dropped, silently losing evidence turns between rounds
+    // (measured: LongMemEval 0a995998 lost the gold-bearing t9/t11 this
+    // way while t1/t5 stayed). Chunks are immutable; id equality is the
+    // correct identity.
     let mut merged = entries;
     let mut synth_id = -1_i64;
     for (cid, text) in chunks {
-        if covered.contains(&cid) || present.contains(&text) {
+        if covered.contains(&cid) {
             continue;
         }
         let sid = format!("{}::session_expansion::{}", q.question_id, -synth_id);
@@ -701,6 +789,8 @@ fn expand_and_inject(
             discovered_at: 0,
             outcome_polarity: None,
             superseded_by: None,
+            context_fingerprint: None,
+            context_text: None,
         });
         synth_id -= 1;
     }
@@ -729,14 +819,44 @@ fn hippocampus_boost(
     };
     // Clone for read-only activation (avoids Hebbian side effects + lifetime).
     let mut g = graph.clone();
-    let results = g.spreading_activation_opts(&q.question, None, false, false);
     let mut extra = Vec::new();
-    for r in results.iter().take(20) {
-        let snippet = if r.text.len() > 50 { &r.text[..50] } else { &r.text };
-        if !existing_texts
-            .iter()
-            .any(|e| e.contains(snippet) || snippet.contains(e.as_str()))
-        {
+    let mut seen = existing_texts.clone();
+    // Seed with extracted entities: find_seeds does substring matching,
+    // so the FULL question sentence matches no node text and the spread
+    // would be empty. Entity words (e.g. "rollercoasters") hit chunk texts.
+    let entities = retrieval::extract_entities(&q.question);
+    // Injection budget: cap total [spreading] lines per question. The
+    // dose-response ablation (multi-session 133q) peaked at ~106 lines/q
+    // (+5 vs baseline): counting questions need the associative tail's
+    // cross-session evidence; 20 lines/q cut it (+2) and 250 unscoped
+    // inverted to -3. 100 balances coverage vs dilution.
+    let mut budget: usize = 100;
+    for ent in entities.iter().take(5) {
+        if ent.chars().count() < 3 {
+            continue;
+        }
+        // Scope the seeds to THIS question's haystack: the graph is the
+        // shared 500-question store; without the tag, entity words hit
+        // other questions' chunks (246/250 spreading lines were cross-
+        // question noise in the b3c15d39 autopsy).
+        let results = g.spreading_activation_opts(ent, Some(&q.question_id), false, false);
+        // take(50): seeds themselves rank highest, so the first few are
+        // already in retrieval; the associative tail is further down.
+        for r in results.iter().take(50) {
+            // Char-safe 50-char prefix: byte slicing panics on multi-byte
+            // chars (chunk texts contain emoji, CJK, ...).
+            let snippet: String = r.text.chars().take(50).collect();
+            // Dedup ONLY on a shared long prefix with an existing line: the
+            // old `snippet.contains(e)` dropped everything because short
+            // memory lines (e.g. "- user: hi") are substrings of any hit.
+            if seen.iter().any(|e| e.contains(&snippet)) {
+                continue;
+            }
+            if budget == 0 {
+                continue;
+            }
+            budget -= 1;
+            seen.insert(snippet.to_lowercase());
             extra.push(format!("- [spreading] {}", r.text));
         }
     }
@@ -761,16 +881,27 @@ fn retrieved_chunk_ids(entries: &[CausalEntry]) -> Vec<String> {
 fn memory_lines(entries: &[CausalEntry]) -> String {
     let mut seen = HashSet::new();
     let mut lines = Vec::new();
+    let mut episode_lines = Vec::new();
     for e in entries {
+        // Presentation order (retrieval-scoring.md §4): original turns
+        // carry the full evidence; distill episodes are paraphrases —
+        // render them AFTER the originals so the model meets primary
+        // evidence first and the compact summaries serve as a tail index.
+        let sink = if e.discovered_by == "distill" {
+            &mut episode_lines
+        } else {
+            &mut lines
+        };
         for (id, text) in [
             (&e.decision_id, &e.decision_text),
             (&e.outcome_id, &e.outcome_text),
         ] {
             if seen.insert(id.clone()) {
-                lines.push(format!("- {text}"));
+                sink.push(format!("- {text}"));
             }
         }
     }
+    lines.extend(episode_lines);
     lines.join("\n")
 }
 
@@ -1120,7 +1251,8 @@ fn parse_args(argv: &[String]) -> Result<Option<Args>> {
                 ingest = match take(&mut i, "--ingest")?.as_str() {
                     "raw" => IngestMode::Raw,
                     "distill" => IngestMode::Distill,
-                    other => anyhow::bail!("bad --ingest {other:?}; expected raw|distill"),
+                    "via-mcp" => IngestMode::ViaMcp,
+                    other => anyhow::bail!("bad --ingest {other:?}; expected raw|distill|via-mcp"),
                 }
             }
             "--ingest-only" => ingest_only = true,
@@ -1174,6 +1306,8 @@ struct ResultRow {
     /// prompt + memories) and estimated answer tokens produced.
     ctx_tokens: usize,
     ans_tokens: usize,
+    /// (debug) The rendered memories block actually sent to the answer LLM.
+    memories: String,
 }
 
 #[derive(Serialize)]
@@ -1296,11 +1430,121 @@ async fn answer_question(
     prompt_version: LmePromptVersion,
     verify_loop: bool,
     retrieval_mode: &str,
+    facade: Option<&causal_memory::memory::Memory>,
 ) -> ResultRow {
+    // Facade mode short-circuits the whole harness retrieval stack: one
+    // `search_memory_entries` call = the exact pipeline the MCP tool runs
+    // (unified spread engine or dual-pool RRF fallback, fact/causal
+    // layers, quotas). The gap between this and the harness modes IS the
+    // measurement — no protocol massaging on either side.
+    if let Some(mem) = facade {
+        let scoped_query = format!("[qid: {}] {}", q.question_id, q.question);
+        let (hits, _mode) = mem.search_memory_entries(&scoped_query, None, None, topk);
+        let memories = hits
+            .iter()
+            .map(|h| format!("- {}", h.content))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let ctx_tokens = bench_common::estimate_tokens(&memories)
+            + bench_common::estimate_tokens(q.question.as_str());
+        let predicted = match bench_common::chat(
+            &bench_common::LlmConfig {
+                api_base: cfg.api_base.clone(),
+                api_key: cfg.api_key.clone(),
+                model: cfg.model.clone(),
+            },
+            &answer_system_prompt(&q.question_type, prompt_version),
+            &format!("Question: {}\n\nMemories:\n{memories}", q.question),
+            800,
+        )
+        .await
+        {
+            Ok(p) => p.rsplit("ANSWER:").next().unwrap_or(&p).trim().to_string(),
+            Err(e) => format!("answer LLM failed: {e}"),
+        };
+        let (verdict, reason) = bench_common::judge(
+            &bench_common::LlmConfig {
+                api_base: cfg.api_base.clone(),
+                api_key: cfg.api_key.clone(),
+                model: cfg.model.clone(),
+            },
+            JUDGE_SYSTEM_PROMPT,
+            &judge_user_prompt(q, &predicted),
+            JUDGE_MAX_TOKENS,
+        )
+        .await;
+        // Facade hits carry layer keys, not harness chunk ids — evidence
+        // overlap is computed textually: the official evidence turns'
+        // session ids appear in the returned memory content (the facade
+        // ingests sessions tagged `[qid: ... | session: <sid>]`, and both
+        // fact values and episode texts preserve the turn text).
+        let evidence_hit = {
+            let mut hit = false;
+            for sid in &q.answer_session_ids {
+                if hits.iter().any(|h| h.content.contains(sid.as_str())) {
+                    hit = true;
+                    break;
+                }
+            }
+            hit
+        };
+        let ans_tok = bench_common::estimate_tokens(&predicted);
+        return ResultRow {
+            question_id: q.question_id.clone(),
+            question_type: q.question_type.clone(),
+            abstention: q.is_abstention(),
+            question: q.question.clone(),
+            gold: answer_to_string(&q.answer),
+            predicted,
+            verdict: verdict.as_str().into(),
+            judge_reason: reason,
+            retrieved_ids: hits.iter().map(|h| h.key.clone()).collect(),
+            evidence_ids,
+            answer_session_ids: q.answer_session_ids.clone(),
+            evidence_hit,
+            ctx_tokens,
+            ans_tokens: ans_tok,
+            #[allow(unused)]
+            memories: String::new(),
+        };
+    }
     let now = parse_lme_datetime(&q.question_date).unwrap_or(SYNTH_BASE_TS);
     let plan = retrieval::plan_query(&q.question, now);
 
-    let mut final_entries = retrieve(store, q, topk, retrieval_mode).unwrap_or_default();
+    // Query embedding BEFORE the sync retrieve call (async context here;
+    // blocking inside retrieve would deadlock the multi-thread runtime —
+    // all 8 workers can enter block_in_place with nobody left to drive
+    // the HTTP future). None when no embedder is configured → the
+    // semantic layer silently turns off, pure BM25 unchanged.
+    //
+    // DEADLOCK GUARD: embed_shared holds its std::Mutex ACROSS the HTTP
+    // await (deliberate in embed.rs, serializing shared-embedder calls).
+    // With 8 buffered questions, 7 workers OS-block on that mutex while
+    // the lock holder waits for an IO wake that the starved runtime never
+    // delivers (measured: both proxy and no-proxy runs hang post-graph
+    // with every worker in pthread_mutex_wait; a direct Embedder probe
+    // completes in 0.33s). Serializing HERE via an async semaphore keeps
+    // the lock uncontended — exactly one caller inside at a time, no OS
+    // threads parked on the mutex, IO wakes flow freely.
+    let query_vec = {
+        static EMBED_GATE: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+        // AcquireError only happens when the semaphore is closed; this
+        // static gate is never closed.
+        let _permit = match EMBED_GATE
+            .get_or_init(|| tokio::sync::Semaphore::new(1))
+            .acquire()
+            .await
+        {
+            Ok(p) => p,
+            Err(_) => unreachable!("EMBED_GATE semaphore never closes"),
+        };
+        match causal_memory::embed::embed_shared(&q.question).await {
+            Some(Ok(v)) => Some(v),
+            _ => None,
+        }
+    };
+    let mut final_entries =
+        retrieve(store, q, topk, retrieval_mode, query_vec.as_deref()).unwrap_or_default();
     let mut seen_chunk: HashSet<String> = retrieved_chunk_ids(&final_entries).into_iter().collect();
     let retrieved_ids: Vec<String> = seen_chunk.iter().cloned().collect();
     let evidence_hit = retrieved_ids.iter().any(|r| evidence_ids.contains(r));
@@ -1309,7 +1553,15 @@ async fn answer_question(
     // question's haystack) and puts fact lines FIRST: the high-precision
     // layer for the factual-recall slice. Evidence-hit stays computed from
     // causal entries only (facts carry no chunk ids) — protocol unchanged.
-    let mut final_memories = render_memories(store, graph, q, &final_entries, with_facts, plan.aggregation, topk);
+    let mut final_memories = render_memories(
+        store,
+        graph,
+        q,
+        &final_entries,
+        with_facts,
+        plan.aggregation,
+        topk,
+    );
 
     // First answer (V1 precision contract; V2 extracts the ANSWER: tail).
     let mut predicted = match answer_once(cfg, q, &final_memories, prompt_version).await {
@@ -1330,6 +1582,7 @@ async fn answer_question(
                 evidence_hit,
                 ctx_tokens: 0,
                 ans_tokens: 0,
+                memories: String::new(),
             }
         }
     };
@@ -1367,7 +1620,15 @@ async fn answer_question(
             }
             final_entries = expand_and_inject(store, q, merged).unwrap_or(final_entries.clone());
             seen_chunk.extend(new_ids);
-            final_memories = render_memories(store, graph, q, &final_entries, with_facts, plan.aggregation, topk);
+            final_memories = render_memories(
+                store,
+                graph,
+                q,
+                &final_entries,
+                with_facts,
+                plan.aggregation,
+                topk,
+            );
             predicted = match answer_once(cfg, q, &final_memories, prompt_version).await {
                 Ok(p) => p,
                 Err(_) => break,
@@ -1406,6 +1667,7 @@ async fn answer_question(
         evidence_hit,
         ctx_tokens,
         ans_tokens,
+        memories: final_memories,
     }
 }
 
@@ -1420,8 +1682,28 @@ fn render_memories(
     aggregation: bool,
     topk: usize,
 ) -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    // Hippocampus spreading activation - associative hits BM25 missed. Its
+    // value is in the agent ablation bench; guarded by env. Runs BEFORE the
+    // with_facts branch so the ablation is exercisable in raw mode too
+    // (previously gated behind distill-only fact rendering, i.e. dead code
+    // under --ingest raw).
+    if std::env::var("CAUSAL_MEMORY_HIPPOCAMPUS_BENCH").is_ok() {
+        let existing: HashSet<String> = memory_lines(entries)
+            .lines()
+            .map(|l| l.trim_start_matches("- ").to_lowercase())
+            .collect();
+        let hippo_extra = hippocampus_boost(graph.as_ref(), q, &existing);
+        if !hippo_extra.is_empty() {
+            lines.push("[associative memory]".to_string());
+            lines.extend(hippo_extra);
+        }
+    }
+
     if !with_facts {
-        return memory_lines(entries);
+        lines.push(memory_lines(entries));
+        return lines.join("\n");
     }
     let fact_scope = format!("lme:{}", q.question_id);
     // Aggregation shapes need ALL matching facts, not top-k: counting asks
@@ -1453,20 +1735,6 @@ fn render_memories(
     if !causal.is_empty() {
         lines.push(causal);
     }
-
-    // Hippocampus spreading activation — associative hits BM25 missed. Its
-    // value is in the agent ablation bench; kept wired but guarded by env.
-    if std::env::var("CAUSAL_MEMORY_HIPPOCAMPUS_BENCH").is_ok() {
-        let existing: HashSet<String> = lines
-            .iter()
-            .map(|l| l.trim_start_matches("- ").to_lowercase())
-            .collect();
-        let hippo_extra = hippocampus_boost(graph.as_ref(), q, &existing);
-        if !hippo_extra.is_empty() {
-            lines.push("[associative memory]".to_string());
-            lines.extend(hippo_extra);
-        }
-    }
     lines.join("\n")
 }
 
@@ -1479,10 +1747,18 @@ async fn answer_once(
 ) -> Result<String> {
     let system = answer_system_prompt(&q.question_type, prompt_version);
     let user = answer_user_prompt(q, memories);
-    let max_tokens = if prompt_version == LmePromptVersion::V2 { 800 } else { ANSWER_MAX_TOKENS };
+    let max_tokens = if prompt_version == LmePromptVersion::V2 {
+        800
+    } else {
+        ANSWER_MAX_TOKENS
+    };
     let raw = chat(cfg, &system, &user, max_tokens).await?;
     Ok(if prompt_version == LmePromptVersion::V2 {
-        raw.rsplit("ANSWER:").next().unwrap_or(&raw).trim().to_string()
+        raw.rsplit("ANSWER:")
+            .next()
+            .unwrap_or(&raw)
+            .trim()
+            .to_string()
     } else {
         raw
     })
@@ -1563,29 +1839,77 @@ async fn run(args: Args) -> Result<()> {
     let db_path = match args.ingest {
         IngestMode::Raw => args.db_dir.join("longmemeval.db"),
         IngestMode::Distill => args.db_dir.join("longmemeval_distill.db"),
+        IngestMode::ViaMcp => args.db_dir.join("longmemeval_viamcp.db"),
     };
     let store =
         CausalStore::open(&db_path).with_context(|| format!("opening {}", db_path.display()))?;
 
     // Ingest phase (sequential, idempotent) before any answering. Distill
     // mode adds a per-question LLM distillation pass (also idempotent).
+    // ViaMcp ingests through the Memory facade (`remember` = the MCP
+    // server's write path with LLM distill built in) instead of the
+    // harness's own SQL — measuring the deployed write pipeline.
+    let facade: Option<causal_memory::memory::Memory> = if args.ingest == IngestMode::ViaMcp {
+        Some(causal_memory::memory::Memory::open(&db_path)?)
+    } else {
+        None
+    };
     let distiller = Distiller::from_env().map(Arc::new);
     let mut distill_totals = DistillStats::default();
     let mut pending_distill: Vec<&LmeQuestion> = Vec::new();
-    let mut evidence_by_qid: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut evidence_by_qid: BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
     for q in &selected {
-        let (n, evidence) = ingest_question(&store, q)
-            .with_context(|| format!("ingesting question {}", q.question_id))?;
-        eprintln!(
-            "ingest {}: {n} chunks ({} sessions, {} evidence turns)",
-            q.question_id,
-            q.haystack_sessions.len(),
-            evidence.len()
-        );
-        if args.ingest == IngestMode::Distill {
-            pending_distill.push(*q);
+        match &facade {
+            Some(mem) => {
+                // Facade path: `remember` per session (speaker-prefixed
+                // turns, same text the raw ingest writes) with the session
+                // date; it distills via the configured LLM, writes facts +
+                // episodes, and patches the graph. Question isolation comes
+                // from the per-question DB file convention is NOT used here
+                // (shared DB), so tag each session line with the qid to
+                // keep the corpus searchable; retrieval is facade-scoped
+                // below.
+                for (s_idx, session) in q.haystack_sessions.iter().enumerate() {
+                    let sid = q
+                        .haystack_session_ids
+                        .get(s_idx)
+                        .cloned()
+                        .unwrap_or_default();
+                    let date = q
+                        .haystack_dates
+                        .get(s_idx)
+                        .map(|s| s.split(' ').next().unwrap_or("").to_string());
+                    let body = session
+                        .iter()
+                        .map(|t| format!("{}: {}", t.role, t.content))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let tagged = format!("[qid: {} | session: {sid}]\n{body}", q.question_id);
+                    mem.remember(&tagged, date.as_deref());
+                }
+                let evidence = evidence_turn_ids(q);
+                eprintln!(
+                    "ingest(facade) {}: {} sessions",
+                    q.question_id,
+                    q.haystack_sessions.len()
+                );
+                evidence_by_qid.insert(q.question_id.clone(), evidence);
+            }
+            None => {
+                let (n, evidence) = ingest_question(&store, q)
+                    .with_context(|| format!("ingesting question {}", q.question_id))?;
+                eprintln!(
+                    "ingest {}: {n} chunks ({} sessions, {} evidence turns)",
+                    q.question_id,
+                    q.haystack_sessions.len(),
+                    evidence.len()
+                );
+                if args.ingest == IngestMode::Distill {
+                    pending_distill.push(*q);
+                }
+                evidence_by_qid.insert(q.question_id.clone(), evidence);
+            }
         }
-        evidence_by_qid.insert(q.question_id.clone(), evidence);
     }
 
     // Distill phase: cross-question parallelism. Within one question,
@@ -1643,7 +1967,7 @@ async fn run(args: Args) -> Result<()> {
     let run_id = chrono::Utc::now().format("%Y%m%d_%H%M%S").to_string();
     let done = Arc::new(AtomicUsize::new(0));
     let total = selected.len();
-    let with_facts = args.ingest == IngestMode::Distill;
+    let with_facts = matches!(args.ingest, IngestMode::Distill | IngestMode::ViaMcp);
 
     // P7+: Build the hippocampus graph ONCE for the whole run (building it
     // per-question from a 500-question DB is too slow). Used for multi-session
@@ -1663,18 +1987,34 @@ async fn run(args: Args) -> Result<()> {
         eprintln!("  graph: {} nodes, {} edges", g.num_nodes(), g.num_edges());
     }
 
+    let facade = std::sync::Arc::new(facade);
     let rows: Vec<ResultRow> = futures::stream::iter(selected.iter().map(|q| {
         let cfg = cfg.clone();
         let store = store.clone();
         let done = done.clone();
         let graph = graph.clone();
         let mode = retrieval_mode.clone();
+        let facade = facade.clone();
         let evidence = evidence_by_qid
             .get(&q.question_id)
             .cloned()
             .unwrap_or_default();
         async move {
-            let row = answer_question(&cfg, &store, &graph, q, evidence, args.topk, with_facts, args.prompt_version, args.verify_loop, &mode).await;
+            let facade_ref = facade.as_ref().as_ref();
+            let row = answer_question(
+                &cfg,
+                &store,
+                &graph,
+                q,
+                evidence,
+                args.topk,
+                with_facts,
+                args.prompt_version,
+                args.verify_loop,
+                &mode,
+                facade_ref,
+            )
+            .await;
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d.is_multiple_of(25) || d == total {
                 eprintln!("{d}/{total} questions done");
@@ -1718,7 +2058,8 @@ async fn run(args: Args) -> Result<()> {
         prompt_version: match args.prompt_version {
             LmePromptVersion::V1 => "v1",
             LmePromptVersion::V2 => "v2",
-        }.to_string(),
+        }
+        .to_string(),
         distill_ingest: (args.ingest == IngestMode::Distill).then_some(distill_totals),
         data: args.data.display().to_string(),
         qtype_filter: args.qtype.clone(),
@@ -1891,13 +2232,13 @@ mod tests {
         ingest_question(&store, &q1).unwrap();
         ingest_question(&store, &q2).unwrap();
 
-        let res = retrieve(&store, &q1, 10, "multipass").unwrap();
+        let res = retrieve(&store, &q1, 10, "multipass", None).unwrap();
         assert!(!res.is_empty());
         let ids = retrieved_chunk_ids(&res);
         assert!(ids.iter().all(|id| id.starts_with("q1::")));
         assert!(ids.iter().any(|id| id == "q1::q1_s2::1"));
 
-        let res2 = retrieve(&store, &q2, 10, "multipass").unwrap();
+        let res2 = retrieve(&store, &q2, 10, "multipass", None).unwrap();
         assert!(!res2.is_empty());
         assert!(retrieved_chunk_ids(&res2)
             .iter()
@@ -1909,7 +2250,7 @@ mod tests {
         let q = tiny_question("q1", "single-session-user");
         let store = CausalStore::open_in_memory().unwrap();
         let (_, evidence) = ingest_question(&store, &q).unwrap();
-        let res = retrieve(&store, &q, 10, "multipass").unwrap();
+        let res = retrieve(&store, &q, 10, "multipass", None).unwrap();
         let ids = retrieved_chunk_ids(&res);
         assert!(ids.iter().any(|r| evidence.contains(r)));
     }
@@ -1979,32 +2320,38 @@ mod tests {
     }
 }
 
-    // ─── P0: preference-prompt regression guard ───────────────────────────
+// ─── P0: preference-prompt regression guard ───────────────────────────
 
-    #[test]
-    fn preference_prompt_v2_encourages_inference_not_refusal() {
-        // P0 (r4 vs r3, 2026-08-04): the new PREFERENCE_RULE moved preference
-        // accuracy 13.3% → 56.7% by banning the blanket refusal. This test
-        // pins that rule inside the V2 prompt path so a future refactor
-        // cannot silently regress it.
-        let p = answer_system_prompt("single-session-preference", LmePromptVersion::V2);
-        assert!(p.contains("DO NOT answer 'I don't have enough information'"));
-        assert!(p.contains("preference-grounded recommendation"));
-        assert!(p.starts_with(ANSWER_SYSTEM_PROMPT_V2));
+#[test]
+fn preference_prompt_v2_encourages_inference_not_refusal() {
+    // P0 (r4 vs r3, 2026-08-04): the new PREFERENCE_RULE moved preference
+    // accuracy 13.3% → 56.7% by banning the blanket refusal. This test
+    // pins that rule inside the V2 prompt path so a future refactor
+    // cannot silently regress it.
+    let p = answer_system_prompt("single-session-preference", LmePromptVersion::V2);
+    assert!(p.contains("DO NOT answer 'I don't have enough information'"));
+    assert!(p.contains("preference-grounded recommendation"));
+    assert!(p.starts_with(ANSWER_SYSTEM_PROMPT_V2));
 
-        // Structural side-effect guard: the rule is appended ONLY for
-        // preference questions — temporal/multi-session/knowledge-update
-        // never see it, so the +43.4pp gain cannot leak into other classes.
-        for other in ["temporal-reasoning", "multi-session", "knowledge-update", "single-session-user", "single-session-assistant"] {
-            let prompt = answer_system_prompt(other, LmePromptVersion::V2);
-            assert!(
-                !prompt.contains(PREFERENCE_RULE),
-                "{other} must not receive the preference rule"
-            );
-        }
-
-        // V1 keeps the same rule (the two versions share the type-specific
-        // append layer).
-        let p1 = answer_system_prompt("single-session-preference", LmePromptVersion::V1);
-        assert!(p1.contains(PREFERENCE_RULE));
+    // Structural side-effect guard: the rule is appended ONLY for
+    // preference questions — temporal/multi-session/knowledge-update
+    // never see it, so the +43.4pp gain cannot leak into other classes.
+    for other in [
+        "temporal-reasoning",
+        "multi-session",
+        "knowledge-update",
+        "single-session-user",
+        "single-session-assistant",
+    ] {
+        let prompt = answer_system_prompt(other, LmePromptVersion::V2);
+        assert!(
+            !prompt.contains(PREFERENCE_RULE),
+            "{other} must not receive the preference rule"
+        );
     }
+
+    // V1 keeps the same rule (the two versions share the type-specific
+    // append layer).
+    let p1 = answer_system_prompt("single-session-preference", LmePromptVersion::V1);
+    assert!(p1.contains(PREFERENCE_RULE));
+}

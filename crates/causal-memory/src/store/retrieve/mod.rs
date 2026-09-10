@@ -17,7 +17,7 @@ pub use fusion::rrf_merge_many;
 use anyhow::{anyhow, Result};
 use rusqlite::{params, OptionalExtension};
 
-use super::{CausalStore, ENTRY_COLUMNS, entry_from_row, CausalEntry};
+use super::{entry_from_row, CausalEntry, CausalStore, ENTRY_COLUMNS};
 
 impl CausalStore {
     pub fn rejudge_decision(
@@ -397,6 +397,24 @@ impl CausalStore {
         Ok(n)
     }
 
+    /// Count valid facts (scrape-time store gauge for /metrics).
+    pub fn count_facts(&self) -> Result<i64> {
+        let conn = self.acquire()?;
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_facts WHERE valid_to IS NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(n)
+    }
+
+    /// Count chunks (scrape-time store gauge for /metrics).
+    pub fn count_chunks(&self) -> Result<i64> {
+        let conn = self.acquire()?;
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))?;
+        Ok(n)
+    }
+
     // ─── Internal helpers ──────────────────────────────────────────────────
 
     /// Bump access counters for edges returned by a read-path query.
@@ -458,6 +476,20 @@ impl CausalStore {
         Ok((dec_text, out_text))
     }
 
+    /// Text of one chunk by id; None when absent (density-weighted
+    /// session expansion tolerates missing ids — e.g. synthetic ones).
+    pub fn chunk_text(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.acquire()?;
+        let text = conn
+            .query_row(
+                "SELECT text FROM chunks WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(text)
+    }
+
     // ─── Cross-session causal tracing ──────────────────────────────────────
 
     /// Cross-session causal tracing: find causal explanations that span multiple
@@ -493,9 +525,23 @@ impl CausalStore {
     /// turns BM25 happened to hit.
     pub fn chunks_by_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
         let conn = self.acquire()?;
-        let mut stmt =
-            conn.prepare("SELECT id, text FROM chunks WHERE id LIKE ?1 ORDER BY id")?;
+        // Turn-numeric order, not lexicographic: '...::2' must precede
+        // '...::10' (lexicographic gives 1,10,11,12,2,...). Session
+        // expansion feeds prompts in this order — conversation chronology
+        // matters for multi-turn reasoning. The suffix after the prefix
+        // (a turn number in the harness convention) casts to an integer
+        // for ordering; rows whose suffix does not cast sort last, keeping
+        // lexicographic order among themselves.
+        // substr start = length(pattern-with-%) = prefix.len()+1 → skips
+        // exactly the prefix, landing on the suffix's first char.
         let pattern = format!("{prefix}%");
+        let suffix_expr = format!("substr(id, {})", prefix.chars().count() + 1);
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, text FROM chunks WHERE id LIKE ?1
+             ORDER BY CAST({suffix_expr} AS INTEGER) IS NOT CAST({suffix_expr} AS INTEGER),
+                      CAST({suffix_expr} AS INTEGER),
+                      id",
+        ))?;
         let rows = stmt.query_map(params![pattern], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;

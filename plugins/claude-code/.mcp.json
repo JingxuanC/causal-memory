@@ -1,0 +1,8 @@
+{
+  "causal-memory": {
+    "type": "stdio",
+    "command": "causal-memory",
+    "args": [],
+    "env": {}
+  }
+}
