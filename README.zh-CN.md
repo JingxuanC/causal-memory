@@ -224,6 +224,31 @@ cargo build --release
 }
 ```
 
+让 agent 知道**何时**调用记忆工具（agent 默认不会主动调用），需要安装随仓库
+内置的 skill [skills/causal-memory/SKILL.md](skills/causal-memory/SKILL.md)。
+
+**引导式安装器（推荐）**——一条命令装好 skill、`causal-memory` 服务端，并把
+MCP 注册到检测到的每个客户端（Claude Code / Cursor / Opencode / Claude
+Desktop / Kimi Code）：
+
+```bash
+./install.sh                     # 交互式引导，逐步确认
+./install.sh --yes               # 全自动，接受所有默认
+./install.sh --uninstall         # 卸载（skill + 可选 MCP）
+```
+
+也可用 Skills CLI，或手动安装：
+
+```bash
+# Skills CLI（skills.sh 生态）——支持 Claude Code、Cursor、Kimi Code CLI、
+# Codex、Copilot 等：
+npx skills add JingxuanC/causal-memory@causal-memory
+```
+
+……或把 `skills/causal-memory/` 复制进 agent 的 skills 目录（例如
+`~/.agents/skills/causal-memory/`），或把 [CLAUDE.md](CLAUDE.md) 贴进系统提示 /
+`AGENTS.md`。
+
 ### HTTP 传输（远程 agent、多 agent 共享记忆）
 
 ```bash

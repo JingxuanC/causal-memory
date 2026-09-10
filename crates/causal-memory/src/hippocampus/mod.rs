@@ -1597,13 +1597,7 @@ impl CausalGraph {
     ///
     /// Reference: DoVerifier `causal_equiv.py::is_d_separated` (same algorithm,
     /// ported from NetworkX moralization to CSR adjacency).
-    pub fn is_d_separated(
-        &self,
-        x: u32,
-        y: u32,
-        z: &[u32],
-        exclude_edge: Option<usize>,
-    ) -> bool {
+    pub fn is_d_separated(&self, x: u32, y: u32, z: &[u32], exclude_edge: Option<usize>) -> bool {
         if x == y {
             return false;
         }

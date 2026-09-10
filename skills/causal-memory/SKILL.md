@@ -1,7 +1,7 @@
 ---
 name: causal-memory
 description: Causal memory for agents — install/setup the causal-memory MCP server, then record decisions/outcomes and recall them before acting. Trigger when the user asks to install or set up causal-memory/agent memory, when causal-memory MCP tools are available and the agent faces a non-trivial decision (architecture, debugging approach, library/deployment choice), when something fails unexpectedly, or when the user asks to "remember" something.
-version: v1.2
+version: v1.3
 ---
 
 # Causal Memory
@@ -15,6 +15,18 @@ This skill has two parts:
 - **§2 Usage** — once the tools exist: the proactive recall/record loop.
 
 ## 1. Setup (do this yourself, then tell the user to restart the client)
+
+The bundled `install.sh` (next to this SKILL.md, shipped with the skill) does
+steps 1–2 below automatically — installs the server, symlinks the skill, and
+registers the MCP server in every detected client (Claude Code / Cursor /
+Opencode / Claude Desktop / Kimi Code). Prefer it over hand-editing:
+
+```bash
+bash <skill_dir>/install.sh        # 交互式引导; --yes 全自动; --uninstall 卸载
+```
+
+Then jump to step 3 (restart). The numbered steps below are the manual
+fallback.
 
 1. **Install the package** (ships the full CLI as `causal-memory` on PATH):
 

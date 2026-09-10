@@ -332,9 +332,7 @@ impl<'a> EdgeRefuter<'a> {
     /// If d-separated, the edge is structurally necessary → Robust.
     /// If d-connected, a backdoor path exists → Refuted.
     fn backdoor_test(&self, from: u32, to: u32, exclude_edge: usize) -> SingleTest {
-        let d_separated = self
-            .graph
-            .is_d_separated(from, to, &[], Some(exclude_edge));
+        let d_separated = self.graph.is_d_separated(from, to, &[], Some(exclude_edge));
 
         let (result, detail, score) = if d_separated {
             (
