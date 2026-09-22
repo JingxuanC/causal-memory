@@ -41,7 +41,9 @@ use crate::store::CausalStore;
 mod classify;
 mod tokenizer;
 
-pub use tokenizer::{boilerplate_tokens, content_tokens, entity_tokens, jaccard, tokenize};
+pub use tokenizer::{
+    boilerplate_tokens, content_tokens, entity_tokens, jaccard, tokenize, tokenize_expanded,
+};
 
 use classify::{classify_pair, pair_signature, PatternHit, StrataAcc, StrataVerdict};
 use tokenizer::normalize;

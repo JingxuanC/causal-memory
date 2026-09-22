@@ -208,7 +208,7 @@ impl CausalStore {
         scope: Option<&str>,
         limit: usize,
     ) -> Result<Vec<super::AgentFact>> {
-        let query_tokens = crate::patterns::tokenize(query);
+        let query_tokens = crate::patterns::tokenize_expanded(query);
         if query_tokens.is_empty() {
             return self.list_facts(scope, limit);
         }
@@ -266,7 +266,7 @@ impl CausalStore {
         let index = crate::bm25::Bm25Index::build(candidates.iter().map(|f| {
             (
                 f.id.to_string(),
-                crate::patterns::tokenize(&f.search_text()),
+                crate::patterns::tokenize_expanded(&f.search_text()),
             )
         }));
         let scored = index.search(&query_tokens, limit);

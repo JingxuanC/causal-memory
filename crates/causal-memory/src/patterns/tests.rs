@@ -53,6 +53,33 @@ fn test_tokenize_chinese_bigrams() {
 }
 
 #[test]
+fn test_tokenize_expanded_splits_camel_case() {
+    // The retrieval tokenizer splits camelCase so a space-separated query
+    // reaches the identifier; the whole token is kept for exact match.
+    let toks = tokenize_expanded("NullPointerException in RedisCluster");
+    for part in ["null", "pointer", "exception", "redis", "cluster"] {
+        assert!(toks.contains(&part.to_string()), "missing {part}: {toks:?}");
+    }
+    // Exact-match token preserved (stop-word-free, lowercased).
+    assert!(toks.contains(&"nullpointerexception".to_string()));
+    assert!(toks.contains(&"rediscluster".to_string()));
+}
+
+#[test]
+fn test_tokenize_does_not_split_camel_case() {
+    // The base tokenizer keeps one token per word: a single identifier stays
+    // a single token (precision-sensitive callers depend on this).
+    assert_eq!(
+        tokenize("NullPointerException"),
+        vec!["nullpointerexception"]
+    );
+    // No lower→UPPER boundary → single token, no spurious split.
+    assert_eq!(tokenize("redis deadlock"), vec!["redis", "deadlock"]);
+    // All-caps acronyms are not split (no lowercase→uppercase boundary).
+    assert_eq!(tokenize("HTTP API"), vec!["http", "api"]);
+}
+
+#[test]
 fn test_jaccard() {
     let a = tokenize("use redis for cache");
     let b = tokenize("use redis for session");

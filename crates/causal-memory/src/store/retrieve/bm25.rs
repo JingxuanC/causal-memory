@@ -138,7 +138,7 @@ impl CausalStore {
         query: &str,
         limit: usize,
     ) -> Result<Vec<(crate::store::CausalEntry, f64)>> {
-        let query_tokens = crate::patterns::tokenize(query);
+        let query_tokens = crate::patterns::tokenize_expanded(query);
         if query_tokens.is_empty() {
             let mut entries = self.search_causal(task_tag, None)?;
             entries.truncate(limit);
@@ -214,7 +214,10 @@ impl CausalStore {
         let index = crate::bm25::Bm25Index::build(candidates.iter().map(|e| {
             (
                 e.edge_id.to_string(),
-                crate::patterns::tokenize(&format!("{} {}", e.decision_text, e.outcome_text)),
+                crate::patterns::tokenize_expanded(&format!(
+                    "{} {}",
+                    e.decision_text, e.outcome_text
+                )),
             )
         }));
         let scored = index.search(&query_tokens, limit);
@@ -243,7 +246,7 @@ impl CausalStore {
         scope: Option<&str>,
         limit: usize,
     ) -> Result<Vec<String>> {
-        let query_tokens = crate::patterns::tokenize(query);
+        let query_tokens = crate::patterns::tokenize_expanded(query);
         if query_tokens.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }

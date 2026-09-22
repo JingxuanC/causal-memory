@@ -461,7 +461,7 @@ impl CausalStore {
     /// Public so bench harnesses that insert chunks directly (locomo's raw
     /// turn ingest) can keep the persistent BM25 index complete.
     pub fn index_chunk(conn: &Connection, chunk_id: &str, text: &str) -> Result<()> {
-        let tokens = crate::patterns::tokenize(text);
+        let tokens = crate::patterns::tokenize_expanded(text);
         if tokens.is_empty() {
             return Ok(());
         }

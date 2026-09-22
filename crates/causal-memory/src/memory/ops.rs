@@ -740,9 +740,34 @@ impl Memory {
     ///
     /// Returns the number of turns written.
     pub fn remember_raw_turns(&self, turns: &[(String, String)], session: &str) -> usize {
+        let with_ts: Vec<(String, String, Option<i64>)> = turns
+            .iter()
+            .map(|(speaker, text)| (speaker.clone(), text.clone(), None))
+            .collect();
+        self.remember_raw_turns_with_timestamps(&with_ts, session)
+    }
+
+    /// `remember_raw_turns` with per-turn timestamps. A turn carrying
+    /// `Some(ts)` stores its chunk under that `created_at` (temporal
+    /// ordering and time-window retrieval key off it); `None` falls back to
+    /// now(). The AMC contract's optional per-message `timestamp` must drive
+    /// temporal grounding, not the ingest time — a fix imported later would
+    /// otherwise look like it happened just now.
+    ///
+    /// Each turn is also added to the persistent BM25 index (`index_chunk`)
+    /// — the pre-gatekeeping pool is still BM25-searchable, matching what
+    /// the distill path does for its chunks. Without this, raw turns are
+    /// only reachable via the graph's whole-query substring matching, which
+    /// a space-separated query never satisfies against a camelCase symbol.
+    pub fn remember_raw_turns_with_timestamps(
+        &self,
+        turns: &[(String, String, Option<i64>)],
+        session: &str,
+    ) -> usize {
         let now = chrono::Utc::now().timestamp();
         let mut written = 0usize;
-        for (idx, (speaker, text)) in turns.iter().enumerate() {
+        for (idx, (speaker, text, ts)) in turns.iter().enumerate() {
+            let event_time = ts.unwrap_or(now);
             let chunk_id = format!("raw:{session}:{idx}");
             let payload = format!("[{session}] {speaker}: {text}");
             let ok = self
@@ -751,15 +776,16 @@ impl Memory {
                     use rusqlite::params;
                     c.execute(
                         "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
-                        params![&chunk_id, &payload, now],
+                        params![&chunk_id, &payload, event_time],
                     )?;
+                    crate::store::CausalStore::index_chunk(c, &chunk_id, &payload)?;
                     if idx > 0 {
                         let prev_id = format!("raw:{session}:{}", idx - 1);
                         c.execute(
                             "INSERT OR IGNORE INTO causal_edges
                              (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
                              VALUES (?1, ?2, 'no_effect', 0.4, 'temporal', ?3, ?3, NULL)",
-                            params![&prev_id, &chunk_id, now],
+                            params![&prev_id, &chunk_id, event_time],
                         )?;
                     }
                     Ok(())

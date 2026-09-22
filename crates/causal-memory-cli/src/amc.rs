@@ -136,6 +136,10 @@ fn fnv1a(bytes: &[u8]) -> u64 {
 struct AddMessage {
     role: String,
     content: String,
+    /// Optional per-message timestamp (contract field): the event time of
+    /// the turn, used to ground temporal ordering instead of ingest time.
+    #[serde(default)]
+    timestamp: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -244,12 +248,12 @@ async fn handle_add_inner(
             res.0
         }
         WriteMode::Raw => {
-            let turns: Vec<(String, String)> = req
+            let turns: Vec<(String, String, Option<i64>)> = req
                 .messages
                 .iter()
-                .map(|m| (m.role.clone(), m.content.clone()))
+                .map(|m| (m.role.clone(), m.content.clone(), m.timestamp))
                 .collect();
-            let n = memory.remember_raw_turns(&turns, &req.session_id);
+            let n = memory.remember_raw_turns_with_timestamps(&turns, &req.session_id);
             eprintln!("amc/add [{}] raw: {n} turn(s) stored", req.user_id);
             memory
         }
