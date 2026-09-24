@@ -466,6 +466,128 @@ mod tests {
     }
 
     #[test]
+    fn test_remember_raw_turns_respects_timestamps() {
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let turns = vec![
+            (
+                "alice".to_string(),
+                "added the null pointer guard".to_string(),
+                Some(1_700_000_000i64),
+            ),
+            (
+                "bob".to_string(),
+                "removed the null pointer guard".to_string(),
+                Some(1_700_000_100i64),
+            ),
+        ];
+        let written = memory.remember_raw_turns_with_timestamps(&turns, "s8");
+        assert_eq!(written, 2);
+        // created_at reflects the per-message timestamp, not the ingest time.
+        let times: Vec<i64> = memory
+            .store()
+            .with_conn(|c| {
+                let mut stmt = c.prepare(
+                    "SELECT created_at FROM chunks WHERE id LIKE 'raw:s8:%' ORDER BY id",
+                )?;
+                let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+                Ok(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
+            })
+            .unwrap();
+        assert_eq!(times, vec![1_700_000_000, 1_700_000_100]);
+    }
+
+    #[test]
+    fn test_search_finds_camel_case_symbol() {
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let turns = vec![
+            (
+                "alice".to_string(),
+                "we hit a crash in the auth service".to_string(),
+            ),
+            (
+                "bob".to_string(),
+                "fixed the NullPointerException by adding a null guard".to_string(),
+            ),
+        ];
+        memory.remember_raw_turns(&turns, "s9");
+        // The query uses space-separated words; the memory stores a camelCase
+        // symbol. camelCase tokenization + raw-turn BM25 indexing meet them.
+        let (hits, _mode) = memory.search_memory_entries("null pointer", None, None, 5);
+        let all: String = hits.iter().map(|h| h.content.as_str()).collect();
+        assert!(
+            all.contains("NullPointerException"),
+            "camelCase symbol must be retrievable: {all}"
+        );
+    }
+
+    #[test]
+    fn test_camel_case_code_memory_recall_regression() {
+        // Regression guard for the two retrieval fixes that made this work:
+        // (1) raw turns are BM25-indexed, (2) camelCase symbols split into
+        // sub-tokens. A space-separated query must reach a stored camelCase
+        // code symbol. Baseline before these fixes: 0/30 recall@5.
+        let cases: &[(&str, &str)] = &[
+            ("NullPointerException", "null pointer"),
+            ("CacheStampede", "cache stampede"),
+            ("RaceCondition", "race condition"),
+            ("DeadlockTimeout", "deadlock timeout"),
+            ("StackOverflowError", "stack overflow"),
+            ("RedisCluster", "redis cluster"),
+            ("ThreadPool", "thread pool"),
+            ("SocketTimeout", "socket timeout"),
+            ("MemoryLeak", "memory leak"),
+            ("AuthService", "auth service"),
+            ("DatabaseConnection", "database connection"),
+            ("FileNotFound", "file not found"),
+            ("BufferOverflow", "buffer overflow"),
+            ("ApiGateway", "api gateway"),
+            ("ConfigParser", "config parser"),
+            ("HttpClient", "http client"),
+            ("JsonSerialization", "json serialization"),
+            ("QueryOptimizer", "query optimizer"),
+            ("SessionManager", "session manager"),
+            ("RateLimiter", "rate limiter"),
+            ("CircuitBreaker", "circuit breaker"),
+            ("LoadBalancer", "load balancer"),
+            ("MessageQueue", "message queue"),
+            ("TransactionRollback", "transaction rollback"),
+            ("TypeInference", "type inference"),
+            ("GarbageCollector", "garbage collector"),
+            ("EventDispatcher", "event dispatcher"),
+            ("CacheInvalidation", "cache invalidation"),
+            ("DependencyInjection", "dependency injection"),
+            ("ObservabilityTracing", "observability tracing"),
+        ];
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        for (idx, (symbol, _)) in cases.iter().enumerate() {
+            let session = format!("s{idx}");
+            let turns = vec![
+                (
+                    "assistant".to_string(),
+                    format!("deploy {idx} crashed in production"),
+                ),
+                (
+                    "assistant".to_string(),
+                    format!("fixed the {symbol} by patching the handler"),
+                ),
+            ];
+            memory.remember_raw_turns(&turns, &session);
+        }
+        let mut hit5 = 0usize;
+        for (symbol, query) in cases {
+            let (hits, _mode) = memory.search_memory_entries(query, None, None, 5);
+            if hits.iter().any(|h| h.content.contains(symbol)) {
+                hit5 += 1;
+            }
+        }
+        assert_eq!(
+            hit5,
+            cases.len(),
+            "every camelCase code symbol must be recallable at @5"
+        );
+    }
+
+    #[test]
     fn test_search_memory_entries_matches_text_tool_layers() {
         let memory = counterfactual_memory();
         // Same query through both presentations: the structured core must

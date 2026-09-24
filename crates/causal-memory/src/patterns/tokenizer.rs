@@ -17,17 +17,54 @@ const STOP_WORDS: &[&str] = &[
 /// - Non-ASCII alphanumeric chars (e.g. Chinese) are grouped into runs and
 ///   emitted as bigrams (a lone char is emitted as-is).
 /// - Everything else (punctuation, whitespace) is a separator.
+///
+/// One token per word — no camelCase splitting here. Precision-sensitive
+/// callers (supersession hint matching, pattern mining) rely on this so a
+/// single identifier ("PostgreSQL") stays a single token. Retrieval uses
+/// [`tokenize_expanded`] for the camelCase recall variant.
 pub fn tokenize(text: &str) -> Vec<String> {
+    tokenize_impl(text, false)
+}
+
+/// Retrieval-oriented tokenization: [`tokenize`] plus camelCase sub-tokens,
+/// so a space-separated query ("null pointer") reaches a stored camelCase
+/// symbol ("NullPointerException"). The whole lowercased token is kept too,
+/// so exact-match queries still hit. Used only by the BM25 index/search path
+/// — not by the precision-sensitive matchers.
+pub fn tokenize_expanded(text: &str) -> Vec<String> {
+    tokenize_impl(text, true)
+}
+
+fn tokenize_impl(text: &str, split_camel: bool) -> Vec<String> {
     let mut tokens = Vec::new();
+    // Case-preserving ASCII buffer: camelCase boundaries are detected at
+    // flush time, so the raw case must survive until then.
     let mut ascii = String::new();
     let mut cjk: Vec<char> = Vec::new();
 
-    fn flush_ascii(tokens: &mut Vec<String>, buf: &mut String) {
-        if !buf.is_empty() {
-            if !STOP_WORDS.contains(&buf.as_str()) {
-                tokens.push(std::mem::take(buf));
-            } else {
-                buf.clear();
+    fn flush_ascii(tokens: &mut Vec<String>, buf: &mut String, split_camel: bool) {
+        if buf.is_empty() {
+            return;
+        }
+        let raw = std::mem::take(buf);
+        // Exact-match token: the whole run, lowercased (stop-word filtered).
+        let lower = raw.to_lowercase();
+        if !STOP_WORDS.contains(&lower.as_str()) {
+            tokens.push(lower);
+        }
+        // camelCase recall tokens: split on lower→UPPER boundaries. Emitted
+        // only when requested and a split actually happens (a single part is
+        // the exact token already pushed above); single-char and stop-word
+        // parts are dropped as noise.
+        if split_camel {
+            let parts = split_camel_case(&raw);
+            if parts.len() > 1 {
+                for p in parts {
+                    let pl = p.to_lowercase();
+                    if pl.len() > 1 && !STOP_WORDS.contains(&pl.as_str()) {
+                        tokens.push(pl);
+                    }
+                }
             }
         }
     }
@@ -45,18 +82,39 @@ pub fn tokenize(text: &str) -> Vec<String> {
     for c in text.chars() {
         if c.is_ascii_alphanumeric() {
             flush_cjk(&mut tokens, &mut cjk);
-            ascii.push(c.to_ascii_lowercase());
+            ascii.push(c);
         } else if c.is_alphanumeric() {
-            flush_ascii(&mut tokens, &mut ascii);
+            flush_ascii(&mut tokens, &mut ascii, split_camel);
             cjk.push(c);
         } else {
-            flush_ascii(&mut tokens, &mut ascii);
+            flush_ascii(&mut tokens, &mut ascii, split_camel);
             flush_cjk(&mut tokens, &mut cjk);
         }
     }
-    flush_ascii(&mut tokens, &mut ascii);
+    flush_ascii(&mut tokens, &mut ascii, split_camel);
     flush_cjk(&mut tokens, &mut cjk);
     tokens
+}
+
+/// Split a case-preserving ASCII run on lower→UPPER boundaries.
+///
+/// "NullPointerException" → ["Null", "Pointer", "Exception"]; a word with no
+/// such boundary ("redis", "HTTP", "deadlock") returns a single part. The
+/// caller keeps the whole lowercased token for exact match and emits these
+/// parts for partial-match recall. Input is ASCII-only (the `tokenize`
+/// buffer is gated on `is_ascii_alphanumeric`), so byte slicing is safe.
+fn split_camel_case(run: &str) -> Vec<&str> {
+    let bytes = run.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for i in 1..bytes.len() {
+        if bytes[i - 1].is_ascii_lowercase() && bytes[i].is_ascii_uppercase() {
+            parts.push(&run[start..i]);
+            start = i;
+        }
+    }
+    parts.push(&run[start..]);
+    parts
 }
 
 /// Jaccard similarity |A ∩ B| / |A ∪ B| over token multisets (as sets).

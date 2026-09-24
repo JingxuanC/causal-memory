@@ -172,11 +172,11 @@ impl CausalStore {
         if seed_edge_ids.is_empty() || limit == 0 {
             return Ok(Vec::new());
         }
-        let q_tokens = crate::patterns::tokenize(query);
+        let q_tokens = crate::patterns::tokenize_expanded(query);
         let conn = self.acquire()?;
 
         let overlap = |entry: &crate::store::CausalEntry| -> usize {
-            let toks = crate::patterns::tokenize(&format!(
+            let toks = crate::patterns::tokenize_expanded(&format!(
                 "{} {}",
                 entry.decision_text, entry.outcome_text
             ));
