@@ -1,5 +1,6 @@
 //! CLI subcommand implementations, split from main.rs (pure move).
 
+pub mod chat;
 pub mod distill;
 pub mod git;
 pub mod io;
