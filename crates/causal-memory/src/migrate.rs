@@ -31,7 +31,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 17;
+pub const SCHEMA_VERSION: u32 = 18;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -94,6 +94,9 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 17 {
         migrate_to_v17(&tx)?;
+    }
+    if version < 18 {
+        migrate_to_v18(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -1154,5 +1157,21 @@ fn migrate_to_v17(conn: &Connection) -> Result<()> {
         return Ok(()); // already migrated (idempotent re-run)
     }
     conn.execute_batch("ALTER TABLE causal_edges ADD COLUMN bias_flag TEXT")?;
+    Ok(())
+}
+
+/// v18: add the influence-chain column (hardening §2.3). Nullable,
+/// unconstrained TEXT holding a JSON array of edge ids (`[12, 45]`) —
+/// which existing memories influenced this decision. JSON1's `json_each`
+/// (bundled SQLite ≥ 3.38) powers the reverse lookup. One ALTER, no table
+/// rebuild; column-exists guard for idempotent re-runs.
+fn migrate_to_v18(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "causal_edges")? {
+        return Ok(()); // fresh DB: CAUSAL_SCHEMA_SQL creates the v18 shape
+    }
+    if table_columns(conn, "causal_edges")?.contains("influenced_by") {
+        return Ok(()); // already migrated (idempotent re-run)
+    }
+    conn.execute_batch("ALTER TABLE causal_edges ADD COLUMN influenced_by TEXT")?;
     Ok(())
 }

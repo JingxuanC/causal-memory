@@ -34,6 +34,7 @@ mod tests {
             superseded_by: None,
             context_fingerprint: None,
             context_text: None,
+            influenced_by: None,
         };
         let (l0, t0) = format_entry_layered(&entry, 1, "l0");
         let (l2, t2) = format_entry_layered(&entry, 1, "l2");
@@ -326,6 +327,7 @@ mod tests {
                     1000 + i as i64,
                     Some(pol),
                     None,
+                    None,
                 )
                 .unwrap();
         }
@@ -381,6 +383,7 @@ mod tests {
                 "rule",
                 1000,
                 Some("mixed"),
+                None,
                 None,
             )
             .unwrap();
@@ -621,7 +624,15 @@ mod tests {
         let memory = Memory::open_in_memory().expect("memory");
         // 1 causal write + 5 fact writes ≥ GRAPH_REBUILD_WRITES (5): the
         // next hippocampus query must rebuild and see the fresh facts.
-        memory.record_decision("cfg", "zsh plugins load", "caused", "shell", None, None);
+        memory.record_decision(
+            "cfg",
+            "zsh plugins load",
+            "caused",
+            "shell",
+            None,
+            None,
+            None,
+        );
         for i in 0..5 {
             memory.record_fact(
                 &format!("pref_{i}"),
@@ -663,12 +674,14 @@ mod tests {
             "locking",
             None,
             None,
+            None,
         );
         memory.record_decision(
             "ran backup migration",
             "backup completed",
             "caused",
             "backup",
+            None,
             None,
             None,
         );
@@ -700,6 +713,7 @@ mod tests {
             "compile errors dropped",
             "caused",
             "rust",
+            None,
             None,
             None,
         );
@@ -763,6 +777,7 @@ mod tests {
             "compile errors dropped",
             "caused",
             "rust",
+            None,
             None,
             None,
         );
@@ -833,6 +848,7 @@ fn multi_pass_sinks_bench_optimizations() {
             "garden",
             None,
             None,
+            None,
         );
     }
     let out = memory.search_memory_multi_pass("how many plants did I buy", None, None, Some(10));
@@ -862,6 +878,7 @@ fn search_memory_detail_levels_and_default_compat() {
         "deadlock under concurrent load",
         "caused",
         "concurrency",
+        None,
         None,
         None,
     );
@@ -913,6 +930,7 @@ fn search_memory_max_tokens_truncates() {
             "deploy",
             None,
             None,
+            None,
         );
     }
     let full = memory.search_memory(
@@ -953,6 +971,7 @@ fn invalidate_pattern_soft_deletes_meta_edge() {
         "alpine build stabilized",
         "caused",
         "docker",
+        None,
         None,
         None,
     );
@@ -1023,12 +1042,14 @@ fn search_explain_tags_and_default_invariance() {
         "release",
         None,
         None,
+        None,
     );
     memory.record_decision(
         "deployed without env check",
         "crash loop in production",
         "caused",
         "release",
+        None,
         None,
         None,
     );
@@ -1104,12 +1125,14 @@ fn search_explain_surfaces_contradicting_history() {
         "shop",
         None,
         None,
+        None,
     );
     memory.record_decision(
         "kept Redis as the session cache for the anniversary sale",
         "redis cache stampede crashed checkout for ten minutes",
         "caused",
         "shop",
+        None,
         None,
         None,
     );
@@ -1181,6 +1204,7 @@ fn test_counterfactual_fork_section_and_paired_verdict() {
                 1000,
                 Some(pol),
                 ctx,
+                None,
             )
             .unwrap();
     }
@@ -1211,6 +1235,7 @@ fn test_counterfactual_fork_section_and_paired_verdict() {
         "rollout succeeded, no regressions",
         "caused",
         "concurrency",
+        None,
         None,
         None,
     );
@@ -1257,6 +1282,7 @@ fn test_counterfactual_no_forks_output_unchanged() {
                 1000 + i as i64,
                 Some(pol),
                 None,
+                None,
             )
             .unwrap();
     }
@@ -1288,7 +1314,7 @@ fn test_prediction_ledger_e2e_log_resolve_report() {
             "positive",
         ),
     ] {
-        memory.record_decision(dec, out, "caused", "concurrency", None, None);
+        memory.record_decision(dec, out, "caused", "concurrency", None, None, None);
     }
     let out = memory.counterfactual_inner(
         "used redis mutex for cache",
@@ -1306,6 +1332,7 @@ fn test_prediction_ledger_e2e_log_resolve_report() {
         "cutover succeeded, no deadlocks",
         "caused",
         "concurrency",
+        None,
         None,
         None,
     );
@@ -1352,12 +1379,14 @@ fn test_counterfactual_closed_world_replay_routing() {
         "build",
         None,
         None,
+        None,
     );
     memory.record_decision(
         "kept default release profile",
         "build time unchanged",
         "caused",
         "build",
+        None,
         None,
         None,
     );
@@ -1400,12 +1429,14 @@ fn test_counterfactual_competitive_separation_shared_vocab() {
         "database",
         None,
         None,
+        None,
     );
     memory.record_decision(
         "switched the store to postgres",
         "cutover passed, zero downtime",
         "caused",
         "database",
+        None,
         None,
         None,
     );
@@ -1428,5 +1459,90 @@ fn test_counterfactual_competitive_separation_shared_vocab() {
     assert!(
         out.contains("recorded evidence favors B"),
         "separated pools must produce a verdict instead of a tie: {out}"
+    );
+}
+
+// ─── v18: memory influence chain (record_decision + invalidate_decision) ──
+
+#[test]
+fn record_decision_response_shows_influence_chain() {
+    let memory = Memory::open_in_memory().expect("memory");
+    let r1 = memory.record_decision(
+        "used redis mutex",
+        "deadlock under load",
+        "caused",
+        "cache",
+        None,
+        None,
+        None,
+    );
+    assert!(
+        !r1.contains("🔗 Influenced by"),
+        "no chain section without the param: {r1}"
+    );
+    let e1 = memory.store().all_valid_edges().unwrap()[0].edge_id;
+
+    let r2 = memory.record_decision(
+        "sharded the cache",
+        "p99 latency dropped",
+        "caused",
+        "cache",
+        None,
+        None,
+        Some(&[e1, 999_999]),
+    );
+    assert!(
+        r2.contains(&format!("🔗 Influenced by: #{e1}")),
+        "stored influence reported: {r2}"
+    );
+    assert!(
+        r2.contains("skipped unknown id(s): #999999"),
+        "filtered id noted: {r2}"
+    );
+}
+
+#[test]
+fn invalidate_decision_warns_about_influenced_followers() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "always retry on timeout",
+        "masked a deeper bug",
+        "caused",
+        "ops",
+        None,
+        None,
+        None,
+    );
+    let src = memory.store().all_valid_edges().unwrap()[0].edge_id;
+    memory.record_decision(
+        "added retry to the billing job",
+        "double charge incident",
+        "caused",
+        "ops",
+        None,
+        None,
+        Some(&[src]),
+    );
+
+    let out = memory.invalidate_decision(src, Some("retry storm was the root cause"));
+    assert!(
+        out.contains(&format!("Invalidated edge #{src}")),
+        "invalidation itself still works: {out}"
+    );
+    assert!(
+        out.contains("⚠️ This edge influenced 1 later decision(s)"),
+        "propagation warning present: {out}"
+    );
+    assert!(
+        out.contains("added retry to the billing job"),
+        "follower named in the warning: {out}"
+    );
+
+    // An edge with no followers invalidates without the warning.
+    let follower = memory.store().all_valid_edges().unwrap()[0].edge_id;
+    let clean = memory.invalidate_decision(follower, None);
+    assert!(
+        !clean.contains("⚠️ This edge influenced"),
+        "no warning when nothing downstream: {clean}"
     );
 }

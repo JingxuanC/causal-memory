@@ -5,11 +5,14 @@ use crate::store::{AgentFact, CausalEntry};
 
 /// Format one entry at L0/L1/L2 detail, with an approximate token cost.
 /// Pub: the CLI's bench_tokens binary re-uses it for token measurements.
+/// Every level carries the edge id `(#N)` right after the rank — agents
+/// need it to fill `influenced_by` on record_decision (v18).
 pub fn format_entry_layered(entry: &CausalEntry, rank: usize, level: &str) -> (String, usize) {
     let dt = entry.decision_text.as_str();
     let ot = entry.outcome_text.as_str();
     let tag = entry.task_tag.as_deref().unwrap_or("untagged");
     let conf = (entry.confidence * 100.0).round() as u32;
+    let id = entry.edge_id;
     let superseded_note = if entry.superseded_by.is_some() {
         "   ⚠ superseded later by a newer memory — check it before relying on this\n"
     } else {
@@ -18,7 +21,7 @@ pub fn format_entry_layered(entry: &CausalEntry, rank: usize, level: &str) -> (S
     match level {
         "l0" => {
             let line = format!(
-                "{rank}. [{}] {} →({})→ {}\n",
+                "{rank}. (#{id}) [{}] {} →({})→ {}\n",
                 tag,
                 truncate_chars(dt, 40),
                 entry.relation,
@@ -28,14 +31,14 @@ pub fn format_entry_layered(entry: &CausalEntry, rank: usize, level: &str) -> (S
         }
         "l1" => {
             let line = format!(
-                "{rank}. [{}] \"{}\"\n   →({})→ \"{}\" (confidence: {conf}%)\n{superseded_note}",
+                "{rank}. (#{id}) [{}] \"{}\"\n   →({})→ \"{}\" (confidence: {conf}%)\n{superseded_note}",
                 tag, dt, entry.relation, ot,
             );
             (line, 60)
         }
         _ => {
             let line = format!(
-                "{rank}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {conf}%\n{superseded_note}\n",
+                "{rank}. (#{id}) [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {conf}%\n{superseded_note}\n",
                 tag, dt, entry.relation, ot,
             );
             (line, 100)
@@ -113,17 +116,19 @@ pub fn format_fact_layered(fact: &AgentFact, rank: usize, level: &str) -> (Strin
 }
 
 /// Format one causal lesson (unified-display style) at L0/L1/L2 detail,
-/// with an approximate token cost. L2 is byte-identical to the historical
-/// `render_unified` causal line — the 50-char display caps stay (the
+/// with an approximate token cost. The 50/60-char display caps stay (the
 /// search_causal deep-dive renders full text via
-/// [`format_entry_layered`]). L0/L1 are the cheaper tiers.
+/// [`format_entry_layered`]). L0/L1 are the cheaper tiers. Every level
+/// carries the edge id `(#N)` after the rank (v18) so agents can fill
+/// `influenced_by` on record_decision.
 pub fn format_lesson_layered(entry: &CausalEntry, rank: usize, level: &str) -> (String, usize) {
     let tag = entry.task_tag.as_deref().unwrap_or("untagged");
     let conf = (entry.confidence * 100.0).round() as u32;
+    let id = entry.edge_id;
     match level {
         "l0" => (
             format!(
-                "  #{rank} [{tag}] {} →({})→ {}\n",
+                "  #{rank} (#{id}) [{tag}] {} →({})→ {}\n",
                 truncate_chars(&entry.decision_text, 40),
                 entry.relation,
                 truncate_chars(&entry.outcome_text, 40),
@@ -132,7 +137,7 @@ pub fn format_lesson_layered(entry: &CausalEntry, rank: usize, level: &str) -> (
         ),
         "l1" => (
             format!(
-                "  #{rank} [{tag}] \"{}\" →({})→ \"{}\"\n",
+                "  #{rank} (#{id}) [{tag}] \"{}\" →({})→ \"{}\"\n",
                 truncate_chars(&entry.decision_text, 50),
                 entry.relation,
                 truncate_chars(&entry.outcome_text, 50),
@@ -141,7 +146,7 @@ pub fn format_lesson_layered(entry: &CausalEntry, rank: usize, level: &str) -> (
         ),
         _ => (
             format!(
-                "  #{rank} [{tag}] \"{}\" →({})→ \"{}\" (confidence: {conf}%)\n",
+                "  #{rank} (#{id}) [{tag}] \"{}\" →({})→ \"{}\" (confidence: {conf}%)\n",
                 truncate_chars(&entry.decision_text, 50),
                 entry.relation,
                 truncate_chars(&entry.outcome_text, 50),

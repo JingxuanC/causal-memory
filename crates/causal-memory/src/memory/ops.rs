@@ -84,6 +84,9 @@ impl Memory {
     /// `context` (v14, optional): short description of the situation the
     /// decision was made in — same task_tag+context becomes a comparable
     /// branch (fork) for counterfactual queries.
+    /// `influenced_by` (v18, optional): ids of past memories (the `#N` shown
+    /// in search results / record responses) that influenced this decision —
+    /// builds the influence chain used to trace error propagation.
     pub fn record_decision(
         &self,
         decision: &str,
@@ -92,6 +95,7 @@ impl Memory {
         task_tag: &str,
         confidence_source: Option<&str>,
         context: Option<&str>,
+        influenced_by: Option<&[i64]>,
     ) -> String {
         let confidence = match confidence_source {
             Some("temporal") => 0.4,
@@ -117,11 +121,16 @@ impl Memory {
             chrono::Utc::now().timestamp(),
             Some(&polarity),
             context,
+            influenced_by,
         ) {
             Ok((_dec_id, edge_id)) => {
                 // Phase C: patch the live graph so the new lesson is
-                // visible to the very next query (no rebuild wait).
+                // visible to the very next query (no rebuild wait). The
+                // entry's stored influenced_by (post-filter) also drives
+                // the 🔗 section of the response below.
+                let mut stored_influenced: Option<Vec<i64>> = None;
                 if let Ok(Some(entry)) = self.store.get_edge(edge_id) {
+                    stored_influenced = entry.influenced_by.clone();
                     self.patch_graph_new_edge(&entry);
                 }
                 // v14 prediction ledger: a recorded outcome for a decision
@@ -158,8 +167,44 @@ impl Memory {
                         SEMANTIC_CONTRADICTION_MIN_SIMILARITY,
                     );
                 }
+                // v18: report the influence chain as actually stored —
+                // ids that named a nonexistent edge are noted as skipped.
+                let influence_note = match influenced_by.filter(|ids| !ids.is_empty()) {
+                    None => String::new(),
+                    Some(requested) => {
+                        let kept = stored_influenced.unwrap_or_default();
+                        let dropped: Vec<i64> = {
+                            let kept_set: std::collections::HashSet<i64> =
+                                kept.iter().copied().collect();
+                            let mut seen = std::collections::HashSet::new();
+                            requested
+                                .iter()
+                                .copied()
+                                .filter(|i| !kept_set.contains(i) && seen.insert(*i))
+                                .collect()
+                        };
+                        let fmt_ids = |ids: &[i64]| {
+                            ids.iter()
+                                .map(|i| format!("#{i}"))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        };
+                        let mut note = if kept.is_empty() {
+                            "\n🔗 Influenced by: none recorded".to_string()
+                        } else {
+                            format!("\n🔗 Influenced by: {}", fmt_ids(&kept))
+                        };
+                        if !dropped.is_empty() {
+                            note.push_str(&format!(
+                                " (skipped unknown id(s): {})",
+                                fmt_ids(&dropped)
+                            ));
+                        }
+                        note
+                    }
+                };
                 format!(
-                    "✅ Recorded: [{}] {} →({})→ {} (confidence: {:.2}, id: {}){ledger_note}",
+                    "✅ Recorded: [{}] {} →({})→ {} (confidence: {:.2}, id: {}){ledger_note}{influence_note}",
                     task_tag,
                     truncate_chars(decision, 60),
                     relation,
@@ -557,8 +602,9 @@ impl Memory {
         );
         for (i, entry) in results.iter().take(limit).enumerate() {
             out.push_str(&format!(
-                "{}. [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n",
+                "{}. (#{}) [{}] \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n",
                 i + 1,
+                entry.edge_id,
                 entry.task_tag.as_deref().unwrap_or("untagged"),
                 entry.decision_text,
                 entry.relation,
@@ -1211,8 +1257,9 @@ impl Memory {
         );
         for (i, e) in entries.iter().enumerate() {
             out.push_str(&format!(
-                "  {}. \"{}\" →({})→ \"{}\" (confidence: {:.0}%)\n",
+                "  {}. (#{}) \"{}\" →({})→ \"{}\" (confidence: {:.0}%)\n",
                 i + 1,
+                e.edge_id,
                 truncate_chars(&e.decision_text, 50),
                 e.relation,
                 truncate_chars(&e.outcome_text, 50),
@@ -1279,8 +1326,9 @@ impl Memory {
                 let mut out = format!("Traced {} possible cause(s):\n\n", results.len());
                 for (i, entry) in results.iter().enumerate() {
                     out.push_str(&format!(
-                        "{}. \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n\n",
+                        "{}. (#{}) \"{}\"\n   →({})→ \"{}\"\n   confidence: {:.0}%\n\n",
                         i + 1,
+                        entry.edge_id,
                         entry.decision_text,
                         entry.relation,
                         entry.outcome_text,
@@ -1447,8 +1495,39 @@ impl Memory {
                 let reason = reason
                     .map(|r| format!(" (reason: {r})"))
                     .unwrap_or_default();
+                // v18: if later decisions recorded this edge as an influence,
+                // its invalidation may propagate — surface them for review.
+                // Best-effort: a lookup failure must not block invalidation.
+                let influenced = self.store.influenced_decisions(edge_id).unwrap_or_default();
+                let propagation_note = if influenced.is_empty() {
+                    String::new()
+                } else {
+                    let shown: Vec<String> = influenced
+                        .iter()
+                        .take(5)
+                        .map(|(id, dec, out)| {
+                            format!(
+                                "#{} \"{}\" → \"{}\"",
+                                id,
+                                truncate_chars(dec, 50),
+                                truncate_chars(out, 50)
+                            )
+                        })
+                        .collect();
+                    let more = if influenced.len() > 5 {
+                        format!(" (+{} more)", influenced.len() - 5)
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "\n⚠️ This edge influenced {} later decision(s): {}{} — consider reviewing them.",
+                        influenced.len(),
+                        shown.join(", "),
+                        more
+                    )
+                };
                 format!(
-                    "✅ Invalidated edge #{}: \"{}\" →({})→ \"{}\"{reason}. It will no longer appear in search/trace results, but is kept for audit.",
+                    "✅ Invalidated edge #{}: \"{}\" →({})→ \"{}\"{reason}. It will no longer appear in search/trace results, but is kept for audit.{propagation_note}",
                     edge_id, edge.decision_text, edge.relation, edge.outcome_text,
                 )
             }

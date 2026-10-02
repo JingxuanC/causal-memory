@@ -301,6 +301,7 @@ mod tests {
                 1000,
                 Some("negative"),
                 None,
+                None,
             )
             .unwrap();
         store
@@ -313,6 +314,7 @@ mod tests {
                 "user_feedback",
                 2000,
                 Some("positive"),
+                None,
                 None,
             )
             .unwrap();
@@ -444,6 +446,7 @@ mod tests {
                 1000,
                 Some("positive"),
                 None,
+                None,
             )
             .unwrap();
         store
@@ -456,6 +459,7 @@ mod tests {
                 "rule",
                 1000,
                 Some("neutral"),
+                None,
                 None,
             )
             .unwrap();

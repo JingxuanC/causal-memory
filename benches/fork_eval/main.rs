@@ -167,6 +167,7 @@ fn run_mode(with_context: bool) -> Score {
             task,
             None,
             if with_context { Some(ctx) } else { None },
+            None,
         );
         mem.record_decision(
             good,
@@ -175,6 +176,7 @@ fn run_mode(with_context: bool) -> Score {
             task,
             None,
             if with_context { Some(ctx) } else { None },
+            None,
         );
         let out = mem.counterfactual_query(bad, good, None, Some(5));
         score.total += 1;

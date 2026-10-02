@@ -129,6 +129,7 @@ fn rec(store: &CausalStore, decision: &str, outcome: &str, relation: &str, polar
             1000,
             Some(polarity),
             None,
+            None,
         )
         .unwrap();
 }

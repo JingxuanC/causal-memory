@@ -1,11 +1,12 @@
-//! v16 migration e2e: a v15 database (causal_edges CHECK without
-//! 'co_occurrence') migrates cleanly — data preserved, the widened CHECK
-//! accepts co_occurrence writes, and the chain walk excludes them.
+//! v18 migration e2e: a v17 database (causal_edges without the
+//! influenced_by column) gains the column on open — data preserved,
+//! influence chains work, and re-opening is a no-op (idempotent).
 
 use causal_memory::store::CausalStore;
 
-/// v15 causal_edges: same columns as v16 but the OLD 4-value relation CHECK.
-const V15_SCHEMA_AND_DATA: &str = r#"
+/// v17 causal_edges: the full shape after the v16 rebuild + v17 bias_flag,
+/// no influenced_by column.
+const V17_SCHEMA_AND_DATA: &str = r#"
 CREATE TABLE chunks (
     id TEXT PRIMARY KEY,
     text TEXT NOT NULL,
@@ -17,7 +18,7 @@ CREATE TABLE causal_edges (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     from_id TEXT NOT NULL,
     to_id TEXT NOT NULL,
-    relation TEXT NOT NULL CHECK(relation IN ('caused','enabled','prevented','no_effect')),
+    relation TEXT NOT NULL CHECK(relation IN ('caused','enabled','prevented','no_effect','co_occurrence')),
     confidence REAL NOT NULL DEFAULT 0.5,
     discovered_by TEXT NOT NULL DEFAULT 'llm_inferred',
     event_time INTEGER NOT NULL,
@@ -30,6 +31,7 @@ CREATE TABLE causal_edges (
     superseded_by INTEGER,
     context_fingerprint TEXT,
     context_text TEXT,
+    bias_flag TEXT,
     FOREIGN KEY (from_id) REFERENCES chunks(id),
     FOREIGN KEY (to_id) REFERENCES chunks(id)
 );
@@ -37,18 +39,20 @@ INSERT INTO chunks (id, text, created_at) VALUES
     ('d1', 'restart broker during deploy window', 1000),
     ('o1', 'webhook delivery failures observed', 1000);
 INSERT INTO causal_edges (from_id, to_id, relation, confidence, discovered_by,
-                          event_time, discovered_at, task_tag, outcome_polarity)
-VALUES ('d1', 'o1', 'caused', 0.7, 'llm_inferred', 1000, 1000, 'legacy', 'negative');
-PRAGMA user_version = 15;
+                          event_time, discovered_at, task_tag, outcome_polarity,
+                          bias_flag)
+VALUES ('d1', 'o1', 'caused', 0.7, 'llm_inferred', 1000, 1000, 'legacy',
+        'negative', 'polarity_skew:legacy');
+PRAGMA user_version = 17;
 "#;
 
 #[test]
-fn migration_from_v15_widens_relation_check() {
+fn migration_from_v17_adds_influenced_by_column() {
     let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("v15.db");
+    let db_path = dir.path().join("v17.db");
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
-        conn.execute_batch(V15_SCHEMA_AND_DATA).unwrap();
+        conn.execute_batch(V17_SCHEMA_AND_DATA).unwrap();
     }
 
     let store = CausalStore::open(&db_path).unwrap();
@@ -56,55 +60,51 @@ fn migration_from_v15_widens_relation_check() {
         .with_conn(|conn| {
             let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
             assert_eq!(version, i64::from(causal_memory::migrate::SCHEMA_VERSION));
-            // Legacy row survived the table rebuild.
+            // Legacy row survived, bias_flag (v17) intact.
             let kept: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM causal_edges WHERE relation = 'caused'",
+                "SELECT COUNT(*) FROM causal_edges WHERE bias_flag = 'polarity_skew:legacy'",
                 [],
                 |r| r.get(0),
             )?;
             assert_eq!(kept, 1);
-            // Indexes rebuilt.
-            let idx: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index'
-                 AND name LIKE 'idx_causal_%'",
+            // The new column exists and starts empty.
+            let chains: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM causal_edges WHERE influenced_by IS NOT NULL",
                 [],
                 |r| r.get(0),
             )?;
-            assert!(idx >= 5, "causal_edges indexes rebuilt, got {idx}");
+            assert_eq!(chains, 0);
             Ok(())
         })
         .unwrap();
 
-    // The widened CHECK accepts co_occurrence writes…
-    store
+    // Influence chains work end-to-end…
+    let legacy = store.all_valid_edges().unwrap().pop().unwrap();
+    let (_, new_edge) = store
         .record_decision_full(
-            "purge edge cache nightly",
-            "elevated origin error rate on Tuesdays",
-            "co_occurrence",
+            "added retry to the webhook worker",
+            "flap rate fell",
+            "caused",
             Some("legacy"),
-            0.5,
+            0.8,
             "rule",
             2000,
-            Some("negative"),
+            Some("positive"),
             None,
-            None,
+            Some(&[legacy.edge_id]),
         )
         .unwrap();
-    assert_eq!(store.count_edges().unwrap(), 2);
-
-    // …and the forward chain walk excludes the associational edge.
-    let chains = store
-        .trace_effect_chain("purge edge cache", 3, 0.3)
-        .unwrap();
-    assert!(
-        chains.is_empty(),
-        "co_occurrence edges must not appear in do()-style chains"
+    assert_eq!(
+        store.get_edge(new_edge).unwrap().unwrap().influenced_by,
+        Some(vec![legacy.edge_id])
     );
-    let causal_chains = store.trace_effect_chain("restart broker", 3, 0.3).unwrap();
-    assert!(!causal_chains.is_empty(), "causal chains unaffected");
+    assert_eq!(store.influenced_decisions(legacy.edge_id).unwrap().len(), 1);
 
-    // Idempotent re-open.
+    // …and re-opening is a clean no-op (column-exists guard).
     drop(store);
     let reopened = CausalStore::open(&db_path).unwrap();
-    assert_eq!(reopened.count_edges().unwrap(), 2);
+    assert_eq!(
+        reopened.get_edge(new_edge).unwrap().unwrap().influenced_by,
+        Some(vec![legacy.edge_id])
+    );
 }

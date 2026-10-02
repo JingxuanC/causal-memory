@@ -66,17 +66,22 @@ impl CausalStore {
             event_time,
             None,
             None,
+            None,
         )
     }
 
     /// Record with an explicit event_time, a pre-judged outcome polarity
     /// (v4: positive/negative/mixed/neutral, judged by the LLM or the
-    /// heuristic at the caller), and an optional decision context
+    /// heuristic at the caller), an optional decision context
     /// (v14: the world state the decision was made in — the abduction
-    /// substrate; same task_tag+context ⇒ comparable branch).
+    /// substrate; same task_tag+context ⇒ comparable branch), and an
+    /// optional influence chain (v18: ids of existing edges that influenced
+    /// this decision; unknown ids are filtered out before storing, so a
+    /// stale or mistyped id never blocks recording).
     /// `None` polarity stores NULL — read paths then fall back to the
     /// signal-word heuristic. `None` context stores NULL — legacy
-    /// behavior, excluded from fork detection.
+    /// behavior, excluded from fork detection. `None`/empty-after-filter
+    /// influenced_by stores NULL.
     #[allow(clippy::too_many_arguments)]
     pub fn record_decision_full(
         &self,
@@ -89,6 +94,7 @@ impl CausalStore {
         event_time: i64,
         outcome_polarity: Option<&str>,
         context: Option<&str>,
+        influenced_by: Option<&[i64]>,
     ) -> Result<(String, i64)> {
         let conn = self.acquire()?;
         let db_time = chrono::Utc::now().timestamp();
@@ -111,9 +117,17 @@ impl CausalStore {
         // Must run BEFORE inserting the new edge so the new edge is never matched.
         Self::invalidate_contradicted_edges(&conn, decision, outcome, outcome_polarity, db_time)?;
         let fingerprint = context.map(|c| super::context_fingerprint(task_tag, c));
+        // v18: keep only ids that actually exist (order/dedup preserved), so
+        // a stale id can never poison the influence chain. Best-effort: a
+        // lookup failure records without influences rather than failing.
+        let influenced_json: Option<String> = influenced_by
+            .filter(|ids| !ids.is_empty())
+            .and_then(|ids| Self::filter_existing_edge_ids(&conn, ids).ok())
+            .filter(|ids| !ids.is_empty())
+            .and_then(|ids| serde_json::to_string(&ids).ok());
         conn.execute(
-            "INSERT INTO causal_edges (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag, outcome_polarity, context_fingerprint, context_text)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO causal_edges (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag, outcome_polarity, context_fingerprint, context_text, influenced_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 &dec_id,
                 &out_id,
@@ -125,7 +139,8 @@ impl CausalStore {
                 task_tag,
                 outcome_polarity,
                 fingerprint,
-                context
+                context,
+                influenced_json
             ],
         )?;
         // C3: return the edge id too — callers no longer need a follow-up
@@ -143,6 +158,27 @@ impl CausalStore {
             let _ = Self::link_forks(&conn, edge_id, &dec_id, fp, db_time);
         }
         Ok((dec_id, edge_id))
+    }
+
+    /// v18: intersect the requested influence ids with existing edges,
+    /// keeping first-seen order and dropping duplicates. The source edge's
+    /// own validity is irrelevant — a memory stays citable as an influence
+    /// even after it is invalidated (that's exactly what error-propagation
+    /// analysis needs).
+    fn filter_existing_edge_ids(conn: &Connection, ids: &[i64]) -> Result<Vec<i64>> {
+        let ph = vec!["?"; ids.len()].join(",");
+        let mut stmt = conn.prepare(&format!("SELECT id FROM causal_edges WHERE id IN ({ph})"))?;
+        let existing: HashSet<i64> = stmt
+            .query_map(rusqlite::params_from_iter(ids.iter()), |r| r.get(0))?
+            .collect::<rusqlite::Result<HashSet<_>>>()?;
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+        for id in ids {
+            if existing.contains(id) && seen.insert(*id) {
+                out.push(*id);
+            }
+        }
+        Ok(out)
     }
 
     /// v14: find same-fingerprint siblings with a different decision chunk

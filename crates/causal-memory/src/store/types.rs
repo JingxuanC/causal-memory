@@ -44,13 +44,16 @@ pub struct CausalEntry {
     pub context_fingerprint: Option<String>,
     /// v14: the raw context description as given (display/audit).
     pub context_text: Option<String>,
+    /// v18 (hardening §2.3): ids of edges that influenced this decision,
+    /// parsed from the stored JSON array. None = none recorded (or legacy).
+    pub influenced_by: Option<Vec<i64>>,
 }
 
 /// Columns selected when materializing a `CausalEntry` (order matters, see `entry_from_row`).
 pub const ENTRY_COLUMNS: &str = "ce.id, cf.id, cf.text, ct.id, ct.text, ce.relation, ce.confidence,
          ce.task_tag, ce.event_time, ce.valid_to, ce.access_count, ce.last_accessed_at,
          ce.discovered_by, ce.discovered_at, ce.outcome_polarity, ce.superseded_by,
-         ce.context_fingerprint, ce.context_text";
+         ce.context_fingerprint, ce.context_text, ce.influenced_by";
 
 /// Map a row selected with `ENTRY_COLUMNS` (plus the standard chunk joins) to a `CausalEntry`.
 pub fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<CausalEntry> {
@@ -73,6 +76,11 @@ pub fn entry_from_row(row: &rusqlite::Row) -> rusqlite::Result<CausalEntry> {
         superseded_by: row.get(15)?,
         context_fingerprint: row.get(16)?,
         context_text: row.get(17)?,
+        // Stored as a JSON array string; a malformed value (hand-edited DB)
+        // degrades to None rather than failing the whole query.
+        influenced_by: row
+            .get::<_, Option<String>>(18)?
+            .and_then(|s| serde_json::from_str::<Vec<i64>>(&s).ok()),
     })
 }
 

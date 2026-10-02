@@ -791,6 +791,7 @@ fn expand_and_inject(
             superseded_by: None,
             context_fingerprint: None,
             context_text: None,
+            influenced_by: None,
         });
         synth_id -= 1;
     }

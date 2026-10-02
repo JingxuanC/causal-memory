@@ -141,6 +141,14 @@ search_contradicting 返回: "Redis 缓存雪崩了" (negative, same task_tag)
 
 **方案**：`record_decision` 时可选记录 `influenced_by`（哪条记忆影响了这个决策），形成"记忆影响链"。长期可用于检测：错误记忆是否导致了更多错误决策（错误传播路径）。
 
+**已落地（2026-10-02）**：
+- **schema v18**：`causal_edges` 加可空 `influenced_by TEXT`（JSON 数组 `[12, 45]`）。`migrate_to_v18()` 一次 ALTER + 列存在守卫幂等；`CAUSAL_SCHEMA_SQL` 同步。反向查询用 JSON1 `json_each`（rusqlite bundled SQLite ≥ 3.38 自带）。
+- **store 层**：`record_decision_full` 新增 `influenced_by: Option<&[i64]>`——落盘前 SELECT 校验过滤不存在的 id（保序去重），校验失败 best-effort 不阻塞记录；`CausalEntry` 加 `influenced_by: Option<Vec<i64>>`（JSON 解析失败降级为 None）；新增反向查询 `influenced_decisions(edge_id)`（只返回 valid 边，按 id 排序）。
+- **ops 层**：`record_decision` 响应追加 `🔗 Influenced by: #12, #45`（被过滤的无效 id 以 `skipped unknown id(s)` 注明）；`invalidate_decision` 作废一条边时追加 `⚠️ This edge influenced N later decision(s): …` 警示（最多列 5 条）——错误传播路径的落地检测点。
+- **可用性前置修复**：search_causal/search_memory/trace 的命中渲染统一带 `(#edge_id)` 后缀（`format_entry_layered`/`format_lesson_layered`/tag-only/multi-pass/trace 各路径），否则 agent 拿不到 id 无法填 influenced_by。explain=false 相对 explain=true 的字节不变量保持（PR #29 测试绿）。
+- **MCP/Python**：`RecordDecisionParams` 加 `influenced_by: Option<Vec<i64>>`（工具总数仍 17）；py 绑定同名可选参数透传；SKILL.md 与 `scripts/causal_memory_client.py` 同步。
+- **测试**：store 层 2 个（roundtrip+过滤 / 反向查询+invalidated 排除）+ ops 层 2 个（🔗 响应段 / ⚠️ 传播警示）+ `tests/migration_v18.rs`（v17 数据保留 + 重开幂等）。330 lib + 48 cli 全绿。
+
 ---
 
 ## 方向三：Harness Agent

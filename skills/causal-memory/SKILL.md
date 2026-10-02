@@ -96,7 +96,10 @@ The core loop (five tools cover 90% of usage):
   situation (environment, constraints, key parameters). Same task_tag +
   context ⇒ comparable branch: this is the abduction substrate that makes
   counterfactuals same-world. If you weighed multiple options at this
-  decision point, ALWAYS record the context. **Record surprising outcomes
+  decision point, ALWAYS record the context. If earlier memories influenced
+  this decision, pass their ids (the `(#N)` in search results / record
+  responses) as **`influenced_by`** — it builds the influence chain used to
+  trace error propagation. **Record surprising outcomes
   especially — those are the most valuable lessons.**
 - **Stable facts** (preferences, tech stack, config): `record_fact` with
   `key` / `value` / `scope`; `replace_same_key: true` when superseding.

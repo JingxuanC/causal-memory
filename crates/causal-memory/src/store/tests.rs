@@ -811,6 +811,7 @@ fn test_record_with_polarity_and_cte_propagation() {
             1000,
             Some("mixed"),
             None,
+            None,
         )
         .unwrap();
     store
@@ -835,6 +836,7 @@ fn test_contradiction_stored_polarity() {
                 "rule",
                 1000,
                 polarity,
+                None,
                 None,
             )
             .unwrap();
@@ -882,6 +884,7 @@ fn test_semantic_contradiction_stored_polarity() {
             1000,
             Some("mixed"),
             None,
+            None,
         )
         .unwrap();
     // Edge 2: stored 'negative' with a neutral-looking text — stored wins,
@@ -896,6 +899,7 @@ fn test_semantic_contradiction_stored_polarity() {
             "rule",
             1001,
             Some("negative"),
+            None,
             None,
         )
         .unwrap();
@@ -1088,6 +1092,7 @@ fn test_bm25_contradicting_surfaces_opposite_polarity() {
                 1_700_000_000,
                 polarity,
                 None,
+                None,
             )
             .unwrap();
     }
@@ -1137,6 +1142,7 @@ fn test_bm25_contradicting_respects_task_tag_scope() {
                 1_700_000_000,
                 polarity,
                 None,
+                None,
             )
             .unwrap();
     }
@@ -1184,6 +1190,7 @@ fn test_bm25_contradicting_empty_without_polarized_belief() {
                 "test",
                 1_700_000_000,
                 polarity,
+                None,
                 None,
             )
             .unwrap();
@@ -3404,6 +3411,7 @@ fn test_record_with_context_persists_fingerprint() {
             1000,
             Some("negative"),
             Some("rust agent, sqlite store, single node"),
+            None,
         )
         .unwrap();
     store
@@ -3499,6 +3507,7 @@ fn test_fork_pairs_created_for_same_context_different_decisions() {
                 1000,
                 Some("positive"),
                 ctx,
+                None,
             )
             .unwrap();
     }
@@ -3537,6 +3546,7 @@ fn test_no_fork_for_same_decision_rerecord_or_missing_context() {
                 1000,
                 Some("negative"),
                 Some("same context"),
+                None,
             )
             .unwrap();
     }
@@ -3577,6 +3587,7 @@ fn test_fork_lookup_skips_invalidated_edges() {
             1000,
             Some("positive"),
             ctx,
+            None,
         )
         .unwrap();
     let b = store
@@ -3590,6 +3601,7 @@ fn test_fork_lookup_skips_invalidated_edges() {
             2000,
             Some("negative"),
             ctx,
+            None,
         )
         .unwrap()
         .1;
@@ -3667,6 +3679,7 @@ fn test_prediction_resolution_matrix() {
                 "rule",
                 2000,
                 Some("negative"),
+                None,
                 None,
             )
             .unwrap();
@@ -3756,4 +3769,142 @@ fn test_entity_cache_is_bounded() {
     );
     let len = store.entity_cache.lock().unwrap().len();
     assert!(len <= 4, "bound must hold after eviction churn, got {len}");
+}
+
+// ─── v18: memory influence chain (influenced_by) ─────────────────────────
+
+#[test]
+fn influenced_by_roundtrip_and_unknown_ids_filtered() {
+    let store = CausalStore::open_in_memory().unwrap();
+    let (_, e1) = store
+        .record_decision_at(
+            "used redis mutex",
+            "deadlock under load",
+            "caused",
+            Some("cache"),
+            0.8,
+            "rule",
+            1000,
+        )
+        .unwrap();
+    let (_, e2) = store
+        .record_decision_at(
+            "switched to channels",
+            "race fixed",
+            "caused",
+            Some("cache"),
+            0.9,
+            "rule",
+            2000,
+        )
+        .unwrap();
+
+    // Existing ids persist (order preserved); the unknown id is dropped.
+    let (_, e3) = store
+        .record_decision_full(
+            "sharded the cache",
+            "p99 latency dropped",
+            "caused",
+            Some("cache"),
+            0.9,
+            "rule",
+            3000,
+            Some("positive"),
+            None,
+            Some(&[e1, 999_999, e2]),
+        )
+        .unwrap();
+    let entry = store.get_edge(e3).unwrap().unwrap();
+    assert_eq!(entry.influenced_by, Some(vec![e1, e2]));
+
+    // All-unknown ids (and None) store NULL — no phantom chain links.
+    let (_, e4) = store
+        .record_decision_full(
+            "restarted the broker",
+            "queue drained",
+            "caused",
+            None,
+            0.5,
+            "rule",
+            4000,
+            None,
+            None,
+            Some(&[424_242]),
+        )
+        .unwrap();
+    assert_eq!(store.get_edge(e4).unwrap().unwrap().influenced_by, None);
+}
+
+#[test]
+fn influenced_decisions_reverse_lookup_skips_invalidated() {
+    let store = CausalStore::open_in_memory().unwrap();
+    let (_, src) = store
+        .record_decision_at(
+            "always retry on timeout",
+            "masked a deeper bug",
+            "caused",
+            Some("ops"),
+            0.7,
+            "rule",
+            1000,
+        )
+        .unwrap();
+    let (_, follower_a) = store
+        .record_decision_full(
+            "added retry to the webhook worker",
+            "flap rate fell",
+            "caused",
+            Some("ops"),
+            0.8,
+            "rule",
+            2000,
+            Some("positive"),
+            None,
+            Some(&[src]),
+        )
+        .unwrap();
+    let (_, follower_b) = store
+        .record_decision_full(
+            "added retry to the billing job",
+            "double charge incident",
+            "caused",
+            Some("ops"),
+            0.8,
+            "rule",
+            3000,
+            Some("negative"),
+            None,
+            Some(&[src]),
+        )
+        .unwrap();
+    // An edge that never cites `src` must not appear.
+    store
+        .record_decision_at(
+            "unrelated change",
+            "nothing",
+            "caused",
+            Some("ops"),
+            0.5,
+            "rule",
+            4000,
+        )
+        .unwrap();
+
+    let influenced = store.influenced_decisions(src).unwrap();
+    assert_eq!(
+        influenced.iter().map(|(id, _, _)| *id).collect::<Vec<_>>(),
+        vec![follower_a, follower_b],
+        "both followers, id-ordered"
+    );
+    assert_eq!(influenced[0].1, "added retry to the webhook worker");
+    assert_eq!(influenced[1].2, "double charge incident");
+
+    // Error propagation analysis only flags still-valid followers.
+    store.invalidate_edge(follower_a).unwrap();
+    let influenced = store.influenced_decisions(src).unwrap();
+    assert_eq!(influenced.len(), 1);
+    assert_eq!(influenced[0].0, follower_b);
+
+    // An edge nobody cited has no downstream.
+    assert!(store.influenced_decisions(999_999).unwrap().is_empty());
 }

@@ -37,6 +37,13 @@ pub struct RecordDecisionParams {
         description = "Short description of the situation the decision was made in (environment, constraints, key parameters). Same task_tag + context ⇒ comparable branch (fork)"
     )]
     pub context: Option<String>,
+    /// Ids of past memories that influenced this decision (v18) — the `#N`
+    /// shown in search results and record responses. Unknown ids are
+    /// filtered out at write time.
+    #[schemars(
+        description = "Edge IDs from search results / record responses (the #N values) that influenced this decision — builds the influence chain for error-propagation tracing"
+    )]
+    pub influenced_by: Option<Vec<i64>>,
 }
 
 /// Parameters for the `remember` tool — mem0-style auto-extraction.
@@ -284,6 +291,7 @@ impl CausalMemoryServer {
                 &params.task_tag,
                 params.confidence_source.as_deref(),
                 params.context.as_deref(),
+                params.influenced_by.as_deref(),
             )
         })
     }

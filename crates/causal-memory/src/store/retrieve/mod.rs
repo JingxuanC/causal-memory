@@ -73,6 +73,26 @@ impl CausalStore {
             .map_err(|e| anyhow!("Query failed: {e}"))
     }
 
+    /// v18 (hardening §2.3) reverse influence lookup: which still-valid
+    /// decisions recorded `edge_id` in their `influenced_by` chain. Returns
+    /// (edge_id, decision_text, outcome_text) ordered by id. Used by
+    /// invalidate_decision to flag error-propagation candidates.
+    pub fn influenced_decisions(&self, edge_id: i64) -> Result<Vec<(i64, String, String)>> {
+        let conn = self.acquire()?;
+        let mut stmt = conn.prepare(
+            "SELECT ce.id, cf.text, ct.text
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             JOIN chunks ct ON ct.id = ce.to_id
+             JOIN json_each(ce.influenced_by) je ON je.value = ?1
+             WHERE ce.valid_to IS NULL
+             ORDER BY ce.id",
+        )?;
+        let rows = stmt.query_map(params![edge_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))
+    }
+
     /// Markov blanket subgraph around seed edges: the seeds themselves plus
     /// every valid edge sharing a `from_id` or `to_id` chunk with a seed
     /// (parents, children, and co-parents). Seeds come first (in input

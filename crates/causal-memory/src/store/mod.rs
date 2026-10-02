@@ -93,6 +93,11 @@ CREATE TABLE IF NOT EXISTS causal_edges (
     -- (polarity-skewed task_tag, zero-variance repeated decision). Purely
     -- an annotation for human review — retrieval, decay, and GC ignore it.
     bias_flag TEXT,
+    -- v18 (hardening §2.3): memory influence chain. JSON array of edge ids
+    -- (`[12, 45]`) — which existing memories the agent says influenced this
+    -- decision. Write path filters unknown ids; reverse lookup uses JSON1
+    -- `json_each` (`influenced_decisions`). NULL = no influences recorded.
+    influenced_by TEXT,
     FOREIGN KEY (from_id) REFERENCES chunks(id),
     FOREIGN KEY (to_id) REFERENCES chunks(id)
 );
