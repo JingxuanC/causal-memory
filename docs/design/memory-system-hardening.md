@@ -180,6 +180,15 @@ search_contradicting 返回: "Redis 缓存雪崩了" (negative, same task_tag)
 
 真实 agent 使用场景 + 方向二的偏差审计 → 定期产出漂移报告。回答："系统会自我强化偏差吗？"
 
+**已落地（2026-10-02）——报表机器就绪，真实漂移数据待 dogfooding 积累**：
+- **`causal-memory drift` 子命令**（`--db` / `--json` / `--days N` + 四个阈值旋钮），纯读、best-effort（分节失败进 `section_errors`，永不 panic）。分析逻辑在库层 `causal_memory::drift`（`DriftReport` 可 serde），CLI 只渲染。四节：
+  1. **偏差审计快照**：§2.2 三检测器只读跑（不落 bias_flag，写路径仍归 consolidate 阶段）；
+  2. **趋势漂移**：per-task_tag 周桶（默认 7 天 × 4 周，锚定最新 event_time 而非 wall clock——合成库可复现）的正向占比 / 均置信度 / 新增边速率，环比超阈值告警（极性 0.15、置信度 0.10、量增速 2×，默认与 §2.2 旋钮同量级）；
+  3. **错误传播路径**：invalidated 边中仍有 valid influenced_by follower 的清单（§2.3 影响链的长期用途落地），按 follower 数 top 10；
+  4. **自我强化信号**：零方差重复决策 + user_feedback 占比 ≥50% 的 tag（自证循环嫌疑）。
+- **sleep 报告接线**：`print_consolidation_report` 末尾追加 ⑥ drift tail（②③④ 节；① 与 ⑤.1 重复故略）。成本低（一次只读分析），无明显理由不接。
+- **合成验证**（`tests/drift_report.rs`，零 LLM，3 测试）：健康库四节全静默；漂移库四节各自命中注入（极性渐变 50%→100% 被趋势节捕获且均衡对照 tag 不告警 / 失效边 + 3 valid follower / 5× 零方差 / user_feedback 主导 tag）；空库不 panic + JSON 可序列化。
+
 ---
 
 ## 与现有 roadmap 的关系

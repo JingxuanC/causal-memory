@@ -16,6 +16,7 @@ pub mod server;
 pub mod tenant;
 
 use commands::distill::{run_distill, run_novelty};
+use commands::drift::run_drift;
 use commands::git::{
     run_checkout, run_clone, run_cloud, run_commit, run_log, run_pull, run_push, run_remote,
     run_session_commit,
@@ -201,6 +202,10 @@ fn dispatch(args: &[String]) -> anyhow::Result<()> {
             // Subcommand: refute — run graph-structural refutation on all
             // edges
             "refute" => return run_refute(&args[1..]),
+            // Subcommand: drift [--db P] [--json] [--days N] — long-horizon
+            // drift report (hardening §3.3): bias snapshot, trend drift,
+            // error propagation, self-reinforcement
+            "drift" => return run_drift(&args[1..]),
             // Subcommand: stats [--db <PATH>] — store overview (size,
             // layers, recency)
             "stats" => return run_stats(&args[1..]),
@@ -246,6 +251,7 @@ fn print_help() {
          \x20 polarity [--db P] [--limit N]  backfill outcome polarity\n\
          \x20 resolve-updates        LLM update-resolver for falsified lessons\n\
          \x20 refute                 graph-structural refutation on all edges\n\
+         \x20 drift [--json] [--days N]  long-horizon drift report (bias/trend/propagation)\n\
          \x20 stats [--db P]         store overview (size, layers, recency)\n\
          \n\
          Share & export:\n\

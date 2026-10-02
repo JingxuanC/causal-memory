@@ -581,6 +581,22 @@ fn print_consolidation_report(
     if report.dry_run {
         println!("\n(dry run — no changes were written)");
     }
+
+    // ── ⑥ Drift tail (hardening §3.3): trend / propagation / reinforcement
+    // sections of the drift report. ⑤.1 already covers the bias snapshot,
+    // so only the tail is appended. Best-effort: a failure here must never
+    // fail the sleep report.
+    let drift_path = extra_store.unwrap_or(db_path);
+    if let Ok(store) = CausalStore::open(drift_path) {
+        let drift = causal_memory::drift::drift_report(
+            &store,
+            &causal_memory::drift::DriftOptions::default(),
+        );
+        println!(
+            "\n⑥ Drift tail (§3.3, read-only; full report: `causal-memory drift`):\n{}",
+            crate::commands::drift::render_tail_sections(&drift)
+        );
+    }
     Ok(())
 }
 

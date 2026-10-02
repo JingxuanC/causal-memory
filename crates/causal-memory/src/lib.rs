@@ -3,6 +3,7 @@ pub mod chain_linker;
 pub mod config;
 pub mod consolidate;
 pub mod distill;
+pub mod drift;
 pub mod embed;
 pub mod extractor;
 pub mod hippocampus;
