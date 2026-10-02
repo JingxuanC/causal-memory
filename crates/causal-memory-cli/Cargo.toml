@@ -96,3 +96,7 @@ path = "../../benches/ablation/main.rs"
 [[bin]]
 name = "causal-memory-extraction-eval"
 path = "../../benches/extraction_eval/main.rs"
+
+[[bin]]
+name = "causal-memory-adversarial-eval"
+path = "../../benches/adversarial_eval/main.rs"

@@ -170,6 +170,12 @@ search_contradicting 返回: "Redis 缓存雪崩了" (negative, same task_tag)
 
 故意注入 10% 伪因果边 → 跑 `refute.rs` + 新 d-separation refuter → 测量检测率/误杀率/纠正延迟。回答："系统能自我纠错吗？"
 
+**已落地（2026-10-02）**：`benches/adversarial_eval/`（cli `[[bin]]` `causal-memory-adversarial-eval`，零 LLM 全链路）。planted-community DAG（移植 refuter_calibration）写入真实 store，10 轮演进中每轮跑 refuter 全量扫 + consolidate + 反证到达（驱动 write-path 矛盾短路）；伪边状态机 hidden→flagged→invalidated 全程跟踪。实测（seed 42，120 真边 + 12 伪边）：
+- **检测**：refuter 首轮标 92% 伪边（easy 100% / hard 87.5%），但 71% 真边也被标 D/F（backdoor 在稠密图上过敏）——且 refute 从不写库，advisory only。
+- **纠正**：唯一零 LLM 失效机制是矛盾短路，完全由反证驱动——30%/轮反证 10 轮纠正 92%（中位 3 轮），50% 档中位 2 轮 < 10% 档 5 轮，**零反证时纠正率 0**（结构性伪边永不纠正）。
+- **误伤**：consolidate 零误杀；矛盾 collateral 3.3%（同 decision 文本的负向真边连带，C7 灰色地带）；BiasAudit 误标 19–36 条真边（合成重复结构触发 low_variance），0 伪边。
+- **结论**：自我纠错 = 矛盾短路 × 反证；refuter/BiasAudit 只是审查队列生产者，缺口在「F 级/flag → 自动处置」的路径。详见 `docs/evaluations/adversarial-injection.md`。selftest 4 场景断言电池全绿。
+
 ### 3.3 长期漂移 harness（P2）
 
 真实 agent 使用场景 + 方向二的偏差审计 → 定期产出漂移报告。回答："系统会自我强化偏差吗？"
