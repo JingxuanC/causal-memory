@@ -159,6 +159,13 @@ search_contradicting 返回: "Redis 缓存雪崩了" (negative, same task_tag)
 
 复用方向一的全部产出。回答："提取的因果关系准确吗？"
 
+**已落地（2026-10-02）**：`benches/extraction_eval/`（cli crate 的 `[[bin]]` `causal-memory-extraction-eval`，复用 benches/common 的 LLM 约定）。
+- **增量定位**：refuter/intervention 两个 calibration 都绕过抽取直接灌边；本 harness 测的是「自然语言对话 → remember/Distiller 抽取 → 因果边」这一段。
+- **生成**：seeded SplitMix64，五类 episode（caused 30 / prevented 15 / enabled 15 / no_effect 20 / confounded 20），模板+槽位池（5 领域 × 双语），2-6 轮含 filler 噪声；决策文本跨 episode 唯一（否则 v9 chunk 复用 + 矛盾短路会毁掉 ground truth）。可选 `--narrate-llm` 改写 + 回验。
+- **评分**：归一化包含 / char-bigram Dice 模糊匹配 + 全局贪心指派（防兄弟 episode 偷边）；产出抽取召回率、relation 混淆矩阵、confounded→caused 过声称率（§1.3 基线 100% 的端到端回归表）、no_effect 伪边率、polarity 准确率。
+- **selftest（零 LLM）**：mock 抽取器注入已知错误率（miss 15% / rel_err 10% / overclaim 40% / spurious 20%）走真实 store 写入，评分器逐 episode 精确恢复注入判定（300/300），聚合率落在采样噪声内——无 key 环境全链路绿。
+- **live run**：待 LLM key（当前环境无 DEEPSEEK_API_KEY）。方法论与验证细节见 `docs/evaluations/extraction-calibration.md`。
+
 ### 3.2 对抗注入 harness（P1）
 
 故意注入 10% 伪因果边 → 跑 `refute.rs` + 新 d-separation refuter → 测量检测率/误杀率/纠正延迟。回答："系统能自我纠错吗？"

@@ -92,3 +92,7 @@ path = "../../benches/fork_eval/main.rs"
 [[bin]]
 name = "causal-memory-ablation"
 path = "../../benches/ablation/main.rs"
+
+[[bin]]
+name = "causal-memory-extraction-eval"
+path = "../../benches/extraction_eval/main.rs"

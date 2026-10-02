@@ -562,7 +562,7 @@ What works (16/16 layers with end-to-end validation):
 - ✅ Novelty-entropy consolidation trigger + sleep-wake cycle
 - ✅ Meta-edge cross-session pattern mining
 - ✅ Forward simulation (intervention_query) with prevented-edge warnings
-- ✅ Benchmark harnesses: LoCoMo, LongMemEval, Memora, CausalEval, compaction, agent ablation, capability, longitudinal, advanced
+- ✅ Benchmark harnesses: LoCoMo, LongMemEval, Memora, CausalEval, compaction, agent ablation, capability, longitudinal, advanced, extraction calibration
 - ✅ C7 LLM update-resolver (resolve-updates CLI + sleep stage 1.7 supersession)
 - ✅ Vela-style half-life decay tiers (90d / 7d / legacy 0.99-per-day)
 - ✅ Multi-session multi-pass retrieval (LongMemEval multi-session 42.9% → 57.9%, same-codebase)
