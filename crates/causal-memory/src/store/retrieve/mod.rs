@@ -457,9 +457,16 @@ impl CausalStore {
         Ok(())
     }
 
-    /// Flush buffered access counts to the DB (one UPDATE per edge).
-    /// Idempotent; a no-op when the buffer is empty. Failures are
-    /// swallowed — access tracking must never block a memory operation.
+    /// Flush buffered access counts to the DB.
+    ///
+    /// F4: the whole batch runs in ONE transaction instead of one implicit
+    /// transaction per edge — that per-edge commit overhead is the cost, not
+    /// fsync (synchronous=NORMAL WAL commits do not fsync).
+    ///
+    /// Idempotent; a no-op when the buffer is empty. Failures are swallowed —
+    /// access tracking must never block a memory operation. A failed batch is
+    /// dropped whole, exactly as a failed per-edge UPDATE was: best-effort
+    /// tracking must not leave a poisoned batch stuck in the buffer forever.
     pub(crate) fn flush_access_buffer(&self, conn: &rusqlite::Connection) {
         let mut buf = match self.access_buffer.lock() {
             Ok(g) => g,
@@ -468,14 +475,29 @@ impl CausalStore {
         if buf.is_empty() {
             return;
         }
-        let now = chrono::Utc::now().timestamp();
-        for &id in buf.iter() {
-            let _ = conn.execute(
-                "UPDATE causal_edges SET access_count = access_count + 1, last_accessed_at = ?1 WHERE id = ?2",
-                rusqlite::params![now, id],
-            );
-        }
+        let _ = Self::flush_access_batch(conn, buf.iter().copied());
         buf.clear();
+    }
+
+    /// One transaction covering N access bumps, with the UPDATE prepared once
+    /// for the whole batch. Errors propagate to the caller, which swallows
+    /// them; an abandoned transaction rolls back on drop.
+    fn flush_access_batch(
+        conn: &rusqlite::Connection,
+        ids: impl Iterator<Item = i64>,
+    ) -> rusqlite::Result<()> {
+        let now = chrono::Utc::now().timestamp();
+        let tx = conn.unchecked_transaction()?;
+        {
+            // Scoped so the statement's borrow of `tx` ends before commit.
+            let mut stmt = tx.prepare(
+                "UPDATE causal_edges SET access_count = access_count + 1, last_accessed_at = ?1 WHERE id = ?2",
+            )?;
+            for id in ids {
+                stmt.execute(params![now, id])?;
+            }
+        }
+        tx.commit()
     }
 
     fn resolve_chunk_pair(
