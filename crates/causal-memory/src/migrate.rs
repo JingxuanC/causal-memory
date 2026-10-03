@@ -5,6 +5,15 @@
 //! Every step checks actual column existence before altering, so migrations
 //! are idempotent and safe to re-run.
 //!
+//! Convention: `migrate()` runs with `PRAGMA foreign_keys=OFF` (restored on
+//! every exit, success or failure) because table-rebuild steps DROP parent
+//! tables that child tables still reference (v16 causal_edges ←
+//! decision_forks / edge_embeddings; v7/v9 agent_facts ←
+//! agent_facts_embeddings). Bundled SQLite enforces FK by default, so
+//! without this those rebuilds fail with code 787 on any store that has
+//! child rows. After migrating, `PRAGMA foreign_key_check` runs once —
+//! violations in legacy data are logged, never fatal.
+//!
 //! Version history:
 //! - v0/v1: pre-v0.6 schema — `causal_edges` lacks `event_time` /
 //!   `discovered_at` / `valid_to` (may have `created_at` instead), and a
@@ -38,7 +47,51 @@ pub const SCHEMA_VERSION: u32 = 18;
 ///
 /// Order matters: column migrations run before `CAUSAL_SCHEMA_SQL` because
 /// the v3 indexes reference columns that older DBs don't have yet.
+///
+/// Foreign keys are DISABLED for the whole migration: bundled SQLite
+/// enforces them by default, and the table-rebuild migrations (v7/v9
+/// agent_facts, v16 causal_edges) DROP a parent table while child tables
+/// (decision_forks, edge_embeddings) still hold rows referencing it —
+/// with enforcement on, that DROP fails with code 787 and the store can
+/// never open (production: athena tenant, v15→v16). The pragma only takes
+/// effect outside a transaction, so it wraps the inner transaction and is
+/// re-enabled on every exit path, error included.
 pub fn migrate(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA foreign_keys=OFF")?;
+    let result = migrate_inner(conn);
+    // Restore enforcement even on failure — a later open of this connection
+    // must not inherit a silently FK-off state.
+    conn.execute_batch("PRAGMA foreign_keys=ON")?;
+    result?;
+
+    // Post-migration sanity: legacy dirty data (dangling references) must
+    // NOT block migration — warn loudly instead of failing, so a store with
+    // historical orphans stays migratable.
+    let violations: Result<Vec<String>> = (|| {
+        let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(format!(
+                "{} rowid={} → parent {}",
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })();
+    match violations {
+        Ok(v) if !v.is_empty() => eprintln!(
+            "[migrate] foreign_key_check: {} violation(s) in legacy data (kept as-is): {}",
+            v.len(),
+            v.join("; ")
+        ),
+        Err(e) => eprintln!("[migrate] foreign_key_check failed to run: {e}"),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn migrate_inner(conn: &Connection) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
 
     let version = detect_version(&tx)?;
