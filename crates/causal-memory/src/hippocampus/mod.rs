@@ -1713,7 +1713,28 @@ impl CausalGraph {
     /// Bug fix #2: uses node_id_to_idx for O(1) lookups during tag/q_value
     /// propagation, instead of O(N) inner loop per edge.
     pub fn from_store(store: &crate::store::CausalStore) -> anyhow::Result<Self> {
+        Ok(Self::from_store_snapshot(store)?.0)
+    }
+
+    /// [`from_store`] plus the unix time of its read transaction — the
+    /// snapshot's freshness horizon. Callers that compare it against write
+    /// times must use this, not their own `now()` after the load: the load
+    /// takes time, and anything stamped afterwards postdates writes that
+    /// landed inside it.
+    ///
+    /// The whole load runs in ONE deferred read transaction (WAL: a stable
+    /// snapshot). Run as separate autocommit SELECTs, the chunks and edges
+    /// reads are two different snapshots, so a concurrent write can be torn
+    /// in half — an edge whose endpoint chunk is missing, silently dropped
+    /// by the `id_to_idx` lookups below.
+    pub fn from_store_snapshot(store: &crate::store::CausalStore) -> anyhow::Result<(Self, i64)> {
         store.with_conn(|conn| {
+            // Rolled back on the error paths below (the transaction is
+            // dropped un-committed, and ConnPool::release rolls back any
+            // connection returned mid-transaction).
+            let conn = conn.unchecked_transaction()?;
+            let snapshot_ts = chrono::Utc::now().timestamp();
+
             // Load chunks
             let mut node_stmt =
                 conn.prepare("SELECT id, text, created_at, q_value FROM chunks ORDER BY created_at ASC")?;
@@ -1922,7 +1943,11 @@ impl CausalGraph {
             // graph — pure function over node data (unit-testable).
             edges.extend(entity_link_facts(&nodes, &fact_indices));
 
-            Ok(Self::build(&nodes, &edges))
+            let graph = Self::build(&nodes, &edges);
+            // The three prepared statements above borrow the transaction.
+            drop((node_stmt, edge_stmt, fact_stmt));
+            conn.commit()?;
+            Ok((graph, snapshot_ts))
         })
     }
 }

@@ -167,17 +167,29 @@ impl Memory {
     /// graph with resolvable seeds is the same staleness (the store grew
     /// after startup), not a reason to skip.
     fn ensure_fresh_for(&self, seed_ids: &[String]) {
-        let stale = {
-            let Ok(guard) = self.graph.lock() else {
-                return;
-            };
-            match guard.as_ref() {
-                Some(graph) => seed_ids.iter().any(|id| !graph.has_node(id)),
-                None => false,
-            }
+        if !self.is_stale_for(seed_ids) {
+            return;
+        }
+        // Single-flight: a stampede of queries all proving staleness at once
+        // must produce one rebuild, not one per query. Losers keep serving
+        // the current graph — the store-direct fallback below still answers.
+        let Ok(_flight) = self.rebuild_flight.try_lock() else {
+            return;
         };
-        if stale {
+        // The winner of the flight lock may have just rebuilt.
+        if self.is_stale_for(seed_ids) {
             self.rebuild_graph_now();
+        }
+    }
+
+    /// Do any of the store-resolved seeds have no node in the live graph?
+    fn is_stale_for(&self, seed_ids: &[String]) -> bool {
+        let Ok(guard) = self.graph.lock() else {
+            return false;
+        };
+        match guard.as_ref() {
+            Some(graph) => seed_ids.iter().any(|id| !graph.has_node(id)),
+            None => false,
         }
     }
 

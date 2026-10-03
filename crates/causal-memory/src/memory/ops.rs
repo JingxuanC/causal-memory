@@ -1487,11 +1487,10 @@ impl Memory {
             Ok(true) => {
                 // Phase C: the falsified lesson stops spreading immediately
                 // (O(deg) flip) instead of at the next lazy rebuild.
-                if let Ok(mut guard) = self.graph.lock() {
-                    if let Some(graph) = guard.as_mut() {
-                        graph.invalidate_edges_between(&edge.decision_id, &edge.outcome_id);
-                    }
-                }
+                let (from, to) = (edge.decision_id.clone(), edge.outcome_id.clone());
+                self.patch_graph_optimistic(|graph| {
+                    graph.invalidate_edges_between(&from, &to);
+                });
                 let reason = reason
                     .map(|r| format!(" (reason: {r})"))
                     .unwrap_or_default();
@@ -1588,11 +1587,10 @@ impl Memory {
                 // The revoked pattern stops spreading immediately (O(deg)
                 // flip) instead of at the next lazy rebuild — same
                 // contract as invalidate_decision.
-                if let Ok(mut guard) = self.graph.lock() {
-                    if let Some(graph) = guard.as_mut() {
-                        graph.invalidate_edges_between(&meta.from_id, &meta.to_id);
-                    }
-                }
+                let (from, to) = (meta.from_id.clone(), meta.to_id.clone());
+                self.patch_graph_optimistic(|graph| {
+                    graph.invalidate_edges_between(&from, &to);
+                });
                 let reason = reason
                     .map(|r| format!(" (reason: {r})"))
                     .unwrap_or_default();

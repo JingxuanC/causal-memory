@@ -1546,3 +1546,124 @@ fn invalidate_decision_warns_about_influenced_followers() {
         "no warning when nothing downstream: {clean}"
     );
 }
+
+// ─── P5: rebuild/write-path race ──────────────────────────────────────
+
+/// A write that lands inside a rebuild's build window must survive the
+/// install. The snapshot below predates the write, so installing it would
+/// drop the just-recorded edge — and the old code cleared the dirty counter
+/// on install, leaving no later rebuild to repair it.
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: memory and snapshot construction must succeed"
+)]
+fn test_stale_snapshot_install_is_refused() {
+    use std::sync::atomic::Ordering;
+
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "sharded the ledger by account",
+        "one hot shard skewed the p99",
+        "caused",
+        "storage",
+        None,
+        None,
+        None,
+    );
+
+    // A rebuild's lock-free half: snapshot the store as it stands.
+    let (snapshot, snapshot_ts, epoch) = memory.build_graph_snapshot().expect("snapshot");
+    let version_before = memory.graph_version.load(Ordering::Acquire);
+
+    // The next write lands while that snapshot is in flight; only the
+    // write-path patch reaches the live graph.
+    memory.record_decision(
+        "cached the index in Redis",
+        "stale reads after the writer moved",
+        "caused",
+        "caching",
+        None,
+        None,
+        None,
+    );
+
+    assert!(
+        !memory.install_graph(snapshot, snapshot_ts, epoch),
+        "a snapshot that predates a patch must not be installed"
+    );
+    assert_eq!(
+        memory.graph_version.load(Ordering::Acquire),
+        version_before,
+        "a refused install must not swap the graph"
+    );
+    assert!(
+        memory.graph_writes.load(Ordering::Relaxed) > 0,
+        "the write stays pending, so a later rebuild retries"
+    );
+
+    // The newer lesson is still reachable — through the patched graph, not
+    // through a repair rebuild (a lost patch would make the seed miss and
+    // bump the generation here).
+    let (hits, mode) = memory.search_memory_entries("cached the index in Redis", None, None, 10);
+    assert_eq!(mode, "spread");
+    assert!(
+        hits.iter().any(|h| h.key.starts_with("causal:")),
+        "the edge must not be lost: {hits:?}"
+    );
+    assert_eq!(
+        memory.graph_version.load(Ordering::Acquire),
+        version_before,
+        "the answer came from the patched graph, not from a repair rebuild"
+    );
+}
+
+/// Concurrent queries that all prove staleness at the same instant must
+/// produce ONE rebuild: a rebuild is O(store), so without single-flight a
+/// burst of N queries serializes N of them on the query threads (the
+/// pool-amplified version of this is F1's stampede).
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: temp file and memory construction must succeed"
+)]
+fn test_concurrent_stale_queries_rebuild_once() {
+    use std::sync::atomic::Ordering;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("stampede.db");
+    let memory = std::sync::Arc::new(Memory::open(&db).expect("memory"));
+
+    // Written straight to the store: the graph (built at open) never learns
+    // about it, so every query below resolves a seed the graph cannot
+    // honor — provable staleness.
+    memory
+        .store()
+        .record_decision_full(
+            "moved the queue into SQLite",
+            "lost the in-flight jobs on restart",
+            "caused",
+            Some("queue"),
+            0.7,
+            "rule",
+            chrono::Utc::now().timestamp(),
+            None,
+            None,
+            None,
+        )
+        .expect("store write");
+
+    let version_before = memory.graph_version.load(Ordering::Acquire);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                let _ = memory.search_memory_entries("moved the queue into SQLite", None, None, 10);
+            });
+        }
+    });
+    assert_eq!(
+        memory.graph_version.load(Ordering::Acquire) - version_before,
+        1,
+        "8 concurrent stale queries must trigger exactly one rebuild"
+    );
+}

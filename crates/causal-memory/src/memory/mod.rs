@@ -13,7 +13,7 @@ use crate::hippocampus::{CausalGraph, NodeData, Relation};
 use crate::store::CausalStore;
 use anyhow::Result;
 use std::path::Path;
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use format::{format_activation_layered, provenance_tag, TokenBudget};
@@ -32,6 +32,12 @@ use format::{format_activation_layered, provenance_tag, TokenBudget};
 /// patch missed.
 const GRAPH_REBUILD_WRITES: usize = 512;
 const GRAPH_REBUILD_SECS: i64 = 900;
+
+/// Bounded retries for a write-path patch whose graph generation changed
+/// underneath it (see `patch_graph_optimistic`). One retry is the normal
+/// case; the cap only stops a pathological rebuild storm from spinning the
+/// recorder.
+const PATCH_REPLAY_ATTEMPTS: usize = 4;
 
 /// Cosine floor for semantic seeding in intervention_query (recall-oriented).
 pub(crate) const INTERVENTION_MIN_SIMILARITY: f64 = 0.5;
@@ -65,10 +71,27 @@ mod tests;
 pub struct Memory {
     pub(crate) store: CausalStore,
     graph: Mutex<Option<CausalGraph>>,
-    /// Pending writes since the last rebuild (monotonic counter).
+    /// Graph generation: +1 on every swap. A write-path patch records it
+    /// before patching and re-reads it after, so a patch that a concurrent
+    /// rebuild swapped out from under it can be replayed onto the new graph
+    /// (see `patch_graph_optimistic`).
+    graph_version: AtomicU64,
+    /// Patch counter, bumped under the `graph` lock by every write-path
+    /// patch. A rebuilder samples it before reading the store and refuses
+    /// to install a graph whose build window overlapped a patch — that
+    /// patch's write may postdate the snapshot (see `install_graph`).
+    patch_epoch: AtomicU64,
+    /// Pending writes since the last installed snapshot (monotonic).
     graph_writes: AtomicUsize,
-    /// Unix ts of the last rebuild.
+    /// Unix ts of the read transaction backing the live graph — the
+    /// snapshot's horizon, not the install time (a write can land while the
+    /// snapshot is being built; stamping that as "rebuilt" would hide it).
     graph_last_rebuild: AtomicI64,
+    /// Single-flight for graph rebuilds: whoever gets this lock rebuilds,
+    /// everyone else serves the current graph. A rebuild is O(store), so
+    /// queueing N concurrent queries behind N of them is strictly worse
+    /// than answering one of them from a slightly stale graph.
+    rebuild_flight: Mutex<()>,
     /// D1: co-activated chunk pairs buffered by retrieval, flushed to the
     /// cooccurrence_edges table when the graph rebuilds. Keeps Hebbian
     /// learning off the read path (batched, low-frequency writes).
@@ -88,12 +111,20 @@ impl Memory {
     /// Wrap an existing store with a server label (observability).
     pub fn new_with_label(store: CausalStore, server_label: &'static str) -> Self {
         // Load the hippocampus graph from the store on startup.
-        let graph = CausalGraph::from_store(&store).ok();
+        let loaded = CausalGraph::from_store_snapshot(&store).ok();
+        let snapshot_ts = loaded
+            .as_ref()
+            .map(|(_, ts)| *ts)
+            .unwrap_or_else(|| chrono::Utc::now().timestamp());
+        let version = u64::from(loaded.is_some());
         Self {
             store,
-            graph: Mutex::new(graph),
+            graph: Mutex::new(loaded.map(|(graph, _)| graph)),
+            graph_version: AtomicU64::new(version),
+            patch_epoch: AtomicU64::new(0),
             graph_writes: AtomicUsize::new(0),
-            graph_last_rebuild: AtomicI64::new(chrono::Utc::now().timestamp()),
+            graph_last_rebuild: AtomicI64::new(snapshot_ts),
+            rebuild_flight: Mutex::new(()),
             cooc_buffer: Mutex::new(Vec::new()),
             server_label,
         }
@@ -149,32 +180,30 @@ impl Memory {
     /// rebuild; `mark_graph_dirty` still runs so the periodic full rebuild
     /// bounds drift.
     fn patch_graph_new_edge(&self, entry: &crate::store::CausalEntry) {
-        if let Ok(mut guard) = self.graph.lock() {
-            if let Some(graph) = guard.as_mut() {
-                let node = |id: &str, text: &str, task_tag: Option<String>| NodeData {
-                    id: id.to_string(),
-                    text: text.to_string(),
-                    event_time: entry.event_time,
-                    q_value: 0.5,
-                    replay_count: 0,
-                    last_activated: 0,
-                    task_tag,
-                    scope: None,
-                };
-                let from = graph.append_node(node(
-                    &entry.decision_id,
-                    &entry.decision_text,
-                    entry.task_tag.clone(),
-                ));
-                let to = graph.append_node(node(&entry.outcome_id, &entry.outcome_text, None));
-                graph.add_patch_edge(
-                    from,
-                    to,
-                    Relation::from_str_lossy(&entry.relation),
-                    entry.confidence as f32,
-                );
-            }
-        }
+        self.patch_graph_optimistic(|graph| {
+            let node = |id: &str, text: &str, task_tag: Option<String>| NodeData {
+                id: id.to_string(),
+                text: text.to_string(),
+                event_time: entry.event_time,
+                q_value: 0.5,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag,
+                scope: None,
+            };
+            let from = graph.append_node(node(
+                &entry.decision_id,
+                &entry.decision_text,
+                entry.task_tag.clone(),
+            ));
+            let to = graph.append_node(node(&entry.outcome_id, &entry.outcome_text, None));
+            graph.add_patch_edge(
+                from,
+                to,
+                Relation::from_str_lossy(&entry.relation),
+                entry.confidence as f32,
+            );
+        });
     }
 
     /// Phase C: patch a freshly recorded fact into the live graph —
@@ -189,34 +218,32 @@ impl Memory {
         scope: &str,
         confidence: f64,
     ) {
-        if let Ok(mut guard) = self.graph.lock() {
-            if let Some(graph) = guard.as_mut() {
-                let scope_idx = graph.append_node(NodeData {
-                    id: format!("scope:{scope}"),
-                    text: format!("[{scope} scope]"),
-                    event_time: 0,
-                    q_value: 0.5,
-                    replay_count: 0,
-                    last_activated: 0,
-                    task_tag: None,
-                    scope: Some(scope.to_string()),
-                });
-                let fact_idx = graph.append_node(NodeData {
-                    id: format!("fact:{fact_id}"),
-                    text: format!("{key}: {value}"),
-                    event_time: 0,
-                    q_value: confidence as f32,
-                    replay_count: 0,
-                    last_activated: 0,
-                    task_tag: Some(key.to_string()),
-                    scope: Some(scope.to_string()),
-                });
-                // Organizational edge (NoEffect): the scope hub must not
-                // propagate activation — see from_store's counterpart.
-                graph.add_patch_edge(scope_idx, fact_idx, Relation::NoEffect, confidence as f32);
-                graph.link_fact_node(fact_idx);
-            }
-        }
+        self.patch_graph_optimistic(|graph| {
+            let scope_idx = graph.append_node(NodeData {
+                id: format!("scope:{scope}"),
+                text: format!("[{scope} scope]"),
+                event_time: 0,
+                q_value: 0.5,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: None,
+                scope: Some(scope.to_string()),
+            });
+            let fact_idx = graph.append_node(NodeData {
+                id: format!("fact:{fact_id}"),
+                text: format!("{key}: {value}"),
+                event_time: 0,
+                q_value: confidence as f32,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: Some(key.to_string()),
+                scope: Some(scope.to_string()),
+            });
+            // Organizational edge (NoEffect): the scope hub must not
+            // propagate activation — see from_store's counterpart.
+            graph.add_patch_edge(scope_idx, fact_idx, Relation::NoEffect, confidence as f32);
+            graph.link_fact_node(fact_idx);
+        });
     }
 
     /// Phase C: retire graph nodes for facts superseded by `new_fact_id`
@@ -233,11 +260,43 @@ impl Memory {
                 Ok(ids?)
             })
             .unwrap_or_default();
-        if let Ok(mut guard) = self.graph.lock() {
-            if let Some(graph) = guard.as_mut() {
-                for id in superseded {
-                    graph.retire_node(&format!("fact:{id}"));
-                }
+        if superseded.is_empty() {
+            return;
+        }
+        self.patch_graph_optimistic(|graph| {
+            for id in &superseded {
+                graph.retire_node(&format!("fact:{id}"));
+            }
+        });
+    }
+
+    /// Apply a write-path patch to the live graph under a generation
+    /// double-check: sample the graph generation, patch under the lock,
+    /// re-read the generation — a swap in between means the patch landed on
+    /// a graph that is already gone, so replay it onto the new one. Without
+    /// this the patch (and the write it reports) disappears with the old
+    /// graph. Patches must be idempotent for replay — `append_node` dedups
+    /// by id, `add_patch_edge` upserts, retire/invalidate are set flips.
+    ///
+    /// A missing graph is not an error: the write is already in the store,
+    /// so whatever builds the graph next picks it up.
+    fn patch_graph_optimistic(&self, patch: impl Fn(&mut CausalGraph)) {
+        for _ in 0..PATCH_REPLAY_ATTEMPTS {
+            let version = self.graph_version.load(Ordering::Acquire);
+            let Ok(mut guard) = self.graph.lock() else {
+                return;
+            };
+            // No graph to patch (F2's lazy slot): the write is already in
+            // the store, so whatever builds the graph next picks it up.
+            let graph = match guard.as_mut() {
+                Some(graph) => graph,
+                None => return,
+            };
+            patch(graph);
+            self.patch_epoch.fetch_add(1, Ordering::Release);
+            drop(guard);
+            if self.graph_version.load(Ordering::Acquire) == version {
+                return;
             }
         }
     }
@@ -245,31 +304,84 @@ impl Memory {
     /// Rebuild the graph when enough writes have accumulated or enough time
     /// passed. Called at the top of every hippocampus search.
     fn maybe_rebuild_graph(&self) {
-        let writes = self.graph_writes.load(Ordering::Relaxed);
-        if writes == 0 {
+        if !self.should_rebuild() {
             return;
         }
-        let now = chrono::Utc::now().timestamp();
-        let last = self.graph_last_rebuild.load(Ordering::Relaxed);
-        if writes >= GRAPH_REBUILD_WRITES || now - last >= GRAPH_REBUILD_SECS {
+        // Single-flight: rebuild now, or serve the current graph if someone
+        // else already is.
+        let Ok(_flight) = self.rebuild_flight.try_lock() else {
+            return;
+        };
+        // Re-check under the flight lock: the winner may have just rebuilt,
+        // and the check above ran outside it.
+        if self.should_rebuild() {
             self.rebuild_graph_now();
         }
     }
 
-    /// Phase B: rebuild the graph from the store unconditionally and reset
-    /// the lazy-rebuild bookkeeping. Same cost as the lazy trigger; called
-    /// when a query proves the graph is stale (a store-resolved seed maps
-    /// to no node) so the unified engine is never weaker than the store
-    /// paths it replaced.
+    /// Is the live graph behind the store? `graph_writes` counts writes
+    /// recorded since the snapshot currently installed.
+    fn should_rebuild(&self) -> bool {
+        let writes = self.graph_writes.load(Ordering::Relaxed);
+        if writes == 0 {
+            return false;
+        }
+        let age = chrono::Utc::now().timestamp() - self.graph_last_rebuild.load(Ordering::Relaxed);
+        writes >= GRAPH_REBUILD_WRITES || age >= GRAPH_REBUILD_SECS
+    }
+
+    /// Build a graph snapshot from the store — the long, lock-free part of a
+    /// rebuild. Also returns the snapshot's read-transaction time and the
+    /// patch epoch sampled *before* the store read; both are handed back to
+    /// [`Self::install_graph`].
+    fn build_graph_snapshot(&self) -> Result<(CausalGraph, i64, u64)> {
+        let epoch = self.patch_epoch.load(Ordering::Acquire);
+        let (graph, snapshot_ts) = CausalGraph::from_store_snapshot(&self.store)?;
+        Ok((graph, snapshot_ts, epoch))
+    }
+
+    /// Install a snapshot built by [`Self::build_graph_snapshot`] — unless a
+    /// write-path patch landed while it was building. Such a patch's write
+    /// may postdate the snapshot (the writer commits, then patches), and
+    /// installing would drop it from the graph with nothing left to repair
+    /// it. Refusing keeps the current, patched graph and leaves those writes
+    /// pending, so a later rebuild retries. Returns whether it installed.
+    fn install_graph(&self, graph: CausalGraph, snapshot_ts: i64, built_at_epoch: u64) -> bool {
+        let Ok(mut guard) = self.graph.lock() else {
+            return false;
+        };
+        if self.patch_epoch.load(Ordering::Acquire) != built_at_epoch {
+            return false;
+        }
+        *guard = Some(graph);
+        self.graph_version.fetch_add(1, Ordering::Release);
+        drop(guard);
+        self.graph_last_rebuild
+            .store(snapshot_ts, Ordering::Relaxed);
+        true
+    }
+
+    /// Phase B: rebuild the graph from the store and install it. Same cost
+    /// as the lazy trigger; called when a query proves the graph is stale (a
+    /// store-resolved seed maps to no node) so the unified engine is never
+    /// weaker than the store paths it replaced. Callers hold
+    /// `rebuild_flight`.
     fn rebuild_graph_now(&self) {
-        if let Ok(g) = CausalGraph::from_store(&self.store) {
-            if let Ok(mut guard) = self.graph.lock() {
-                *guard = Some(g);
+        // Writes this rebuild intends to absorb.
+        let pending = self.graph_writes.load(Ordering::Relaxed);
+        if let Ok((graph, snapshot_ts, epoch)) = self.build_graph_snapshot() {
+            if self.install_graph(graph, snapshot_ts, epoch) {
+                // Saturating: writes are counted *after* their patch, so a
+                // write that landed during the build can push the counter
+                // past `pending` — and an unconditional store(0) (the old
+                // behavior) would wipe exactly those.
+                let _ = self
+                    .graph_writes
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |w| {
+                        Some(w.saturating_sub(pending))
+                    });
             }
         }
-        self.graph_writes.store(0, Ordering::Relaxed);
-        self.graph_last_rebuild
-            .store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
         // D1: flush buffered co-activation pairs alongside the rebuild.
         self.flush_cooccurrences();
     }
