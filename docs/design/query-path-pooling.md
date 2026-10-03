@@ -15,7 +15,7 @@
 
 ## 实施方案（按合入顺序）
 
-### 第 1 批：P5+P6 正确性套装（memory/ 内部，对外零行为变化）
+### 第 1 批：P5+P6 正确性套装（memory/ 内部，对外零行为变化）✅ 已合入 0650b78
 
 1. **代际双检（P5 真修法）**：`graph_version: AtomicU64`，换图 fetch_add；`patch_graph_new_edge/Fact` 乐观重放——记 v → 锁内 append → 复查 version，不等则对新图重放（有界循环）。防丢边，并覆盖 F2 的 graph=None 分支
 2. **single-flight**：`try_lock` 抢重建权，抢不到用当前图继续服务（宁陈旧不排队）。防 F1 后的重建惊群。**注意：single-flight 是性能机制不是正确性机制，与 1 正交，缺一不可**
@@ -23,11 +23,11 @@
 4. **一致快照（P6）**：`from_store` 包 BEGIN DEFERRED（WAL 下稳定快照）
 5. 回归测试：build 窗口注入写（丢边）+ 8 并发请求只重建一次（惊群）
 
-### 第 2 批：F4 access buffer 批量 flush（最小最安全）
+### 第 2 批：F4 access buffer 批量 flush（最小最安全）✅ 已合入 8d256dd
 
 - 单事务包住全部 UPDATE。理由修正：治的是 N 个隐式事务，不是 fsync
 
-### 第 3 批：F2 图懒加载（按评审修正）
+### 第 3 批：F2 图懒加载（按评审修正）✅ 已合入本提交
 
 - **三态图槽**：`Unbuilt / Ready / Failed`——v0.1 的 Option 重载会静默失效（`ensure_fresh_for` 对 None 不重建、unified `guard.as_mut()?` 直接退双池，图永远建不起来且不报错）
 - 或每个图入口显式 `ensure_graph_built()`：`hippocampus_search`、`unified_spread_hits`、`trace_cause`、`disable_spread`，配断言测试

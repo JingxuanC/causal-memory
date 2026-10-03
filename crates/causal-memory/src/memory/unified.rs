@@ -63,6 +63,7 @@ impl Memory {
         scope: Option<&str>,
         limit: usize,
     ) -> Option<UnifiedSpreadHits> {
+        self.ensure_graph_built();
         self.maybe_rebuild_graph();
         let (seed_ids, seeds) = self.unified_seed_ids(query, task_tag, scope);
         self.ensure_fresh_for(&seed_ids);
@@ -71,7 +72,7 @@ impl Memory {
         // materialization below runs lock-free.
         let (fact_prov, chunk_activation, active_ids, activated_nodes, max_hop) = {
             let mut guard = self.graph.lock().ok()?;
-            let graph = guard.as_mut()?;
+            let graph = guard.as_graph_mut()?;
             if graph.num_nodes() == 0 {
                 return None;
             }
@@ -183,11 +184,15 @@ impl Memory {
     }
 
     /// Do any of the store-resolved seeds have no node in the live graph?
+    ///
+    /// F2: an unbuilt or failed slot is never "stale" — `ensure_graph_built`
+    /// already gave it its one build attempt this call, and rebuilding here
+    /// would retry a failed O(store) load once per query.
     fn is_stale_for(&self, seed_ids: &[String]) -> bool {
         let Ok(guard) = self.graph.lock() else {
             return false;
         };
-        match guard.as_ref() {
+        match guard.as_graph() {
             Some(graph) => seed_ids.iter().any(|id| !graph.has_node(id)),
             None => false,
         }

@@ -14,7 +14,7 @@ use crate::store::CausalStore;
 use anyhow::Result;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use format::{format_activation_layered, provenance_tag, TokenBudget};
 
@@ -62,6 +62,46 @@ mod unified;
 #[cfg(test)]
 mod tests;
 
+/// State of the hippocampus graph accelerator (F2: lazy construction).
+///
+/// The graph is built on the first *graph-consuming* query, not at
+/// construction, so a frontend that only writes (record_decision /
+/// record_fact / remember) never pays the O(store) build. A plain `Option`
+/// cannot carry this: `None` would have to mean both "not built yet, so
+/// build it" and "the build failed, serve from the store" — and every
+/// consumer that reads `None` as "no graph available" (the unified engine's
+/// `guard.as_mut()?`, `ensure_fresh_for`) would silently leave the graph
+/// unbuilt forever.
+enum GraphSlot {
+    /// Never built. Every graph entry point builds it via
+    /// [`Memory::ensure_graph_built`]; a write-path patch only marks the
+    /// slot dirty (the write is already in the store, so the build that
+    /// does happen picks it up).
+    Unbuilt,
+    /// A live graph. May be stale — staleness is tracked separately
+    /// (`graph_writes` / `patch_epoch`), not by this state.
+    Ready(CausalGraph),
+    /// The build errored. Queries degrade to the store-only paths (dual-pool
+    /// RRF / SQL) instead of retrying an O(store) load per query.
+    Failed,
+}
+
+impl GraphSlot {
+    fn as_graph(&self) -> Option<&CausalGraph> {
+        match self {
+            GraphSlot::Ready(graph) => Some(graph),
+            GraphSlot::Unbuilt | GraphSlot::Failed => None,
+        }
+    }
+
+    fn as_graph_mut(&mut self) -> Option<&mut CausalGraph> {
+        match self {
+            GraphSlot::Ready(graph) => Some(graph),
+            GraphSlot::Unbuilt | GraphSlot::Failed => None,
+        }
+    }
+}
+
 /// The unified agent memory: one `CausalStore` plus a lazily-rebuilt
 /// hippocampus graph accelerator and the Hebbian co-occurrence buffer.
 ///
@@ -70,7 +110,10 @@ mod tests;
 /// (`causal-memory-py`).
 pub struct Memory {
     pub(crate) store: CausalStore,
-    graph: Mutex<Option<CausalGraph>>,
+    /// The lazy graph slot (F2). Readers must go through
+    /// [`Memory::ensure_graph_built`] first — a graph entry point that
+    /// forgets it silently serves the store-only fallback forever.
+    graph: Mutex<GraphSlot>,
     /// Graph generation: +1 on every swap. A write-path patch records it
     /// before patching and re-reads it after, so a patch that a concurrent
     /// rebuild swapped out from under it can be replayed onto the new graph
@@ -110,20 +153,22 @@ impl Memory {
 
     /// Wrap an existing store with a server label (observability).
     pub fn new_with_label(store: CausalStore, server_label: &'static str) -> Self {
-        // Load the hippocampus graph from the store on startup.
-        let loaded = CausalGraph::from_store_snapshot(&store).ok();
-        let snapshot_ts = loaded
-            .as_ref()
-            .map(|(_, ts)| *ts)
-            .unwrap_or_else(|| chrono::Utc::now().timestamp());
-        let version = u64::from(loaded.is_some());
+        // F2: the hippocampus graph is NOT loaded here. The first
+        // graph-consuming query builds it (`ensure_graph_built`), so an
+        // instance that only writes never pays the O(store) load — the
+        // per-request instances the HTTP frontends construct only pay for
+        // reads. Single-instance frontends (stdio, Python) prewarm in the
+        // background instead, to keep their first query warm: see
+        // `spawn_prewarm`.
         Self {
             store,
-            graph: Mutex::new(loaded.map(|(graph, _)| graph)),
-            graph_version: AtomicU64::new(version),
+            graph: Mutex::new(GraphSlot::Unbuilt),
+            graph_version: AtomicU64::new(0),
             patch_epoch: AtomicU64::new(0),
             graph_writes: AtomicUsize::new(0),
-            graph_last_rebuild: AtomicI64::new(snapshot_ts),
+            // No snapshot installed yet; the first install stamps the real
+            // horizon. Never consulted while the slot is not `Ready`.
+            graph_last_rebuild: AtomicI64::new(0),
             rebuild_flight: Mutex::new(()),
             cooc_buffer: Mutex::new(Vec::new()),
             server_label,
@@ -146,6 +191,45 @@ impl Memory {
         Ok(Self::new(CausalStore::open_in_memory()?))
     }
 
+    /// F2: build the graph on a background thread, without blocking startup.
+    ///
+    /// A single-instance frontend (the stdio MCP server, the Python
+    /// bindings) keeps one `Memory` alive for the whole process, so without
+    /// this its first query would pay the full build that construction used
+    /// to pay. Per-request instances (HTTP) must NOT call this: their query
+    /// builds on demand anyway, and prewarming would rebuild the graph once
+    /// per request — the exact cost F2 removed.
+    ///
+    /// Takes `&Arc<Self>` because it outlives the caller. Failure is not
+    /// fatal and never blocks: the slot lands `Failed`, the thread exits,
+    /// and queries serve the store-only paths.
+    pub fn spawn_prewarm(self: &Arc<Self>) {
+        let this = Arc::clone(self);
+        if let Err(e) = std::thread::Builder::new()
+            .name("memory-prewarm".into())
+            .spawn(move || {
+                this.ensure_graph_built();
+                tracing::debug!(
+                    server = this.server_label,
+                    nodes = this.graph_node_count(),
+                    "graph prewarm finished"
+                );
+            })
+        {
+            // Losing the prewarm only costs a cold first query.
+            tracing::warn!(error = %e, server = self.server_label, "graph prewarm thread failed");
+        }
+    }
+
+    /// Nodes in the live graph (0 when unbuilt or failed) — observability
+    /// for the prewarm log line.
+    fn graph_node_count(&self) -> usize {
+        self.graph
+            .lock()
+            .map(|guard| guard.as_graph().map_or(0, CausalGraph::num_nodes))
+            .unwrap_or(0)
+    }
+
     /// Access the underlying store (escape hatch for frontends that need
     /// raw queries; prefer the high-level ops).
     pub fn store(&self) -> &CausalStore {
@@ -155,12 +239,17 @@ impl Memory {
     /// Ablation switch: disable spreading activation on the live graph —
     /// retrieval keeps the seeding layer (BM25/semantic direct hits) but
     /// no activation propagates along edges. No-op if the graph failed to
-    /// load (retrieval already runs the dual-pool RRF fallback in that
+    /// build (retrieval already runs the dual-pool RRF fallback in that
     /// case). Irreversible for this `Memory` instance; reopen to undo.
     /// Used by the no-spread ablation arm (benches/ablation).
+    ///
+    /// Builds the graph if it is not built yet: flipping a slot that does
+    /// not exist would be silently forgotten by the build that follows, and
+    /// the ablation arm would run with spreading activation still on.
     pub fn disable_spread(&self) {
+        self.ensure_graph_built();
         if let Ok(mut guard) = self.graph.lock() {
-            if let Some(graph) = guard.as_mut() {
+            if let Some(graph) = guard.as_graph_mut() {
                 graph.disable_spread();
             }
         }
@@ -286,9 +375,17 @@ impl Memory {
             let Ok(mut guard) = self.graph.lock() else {
                 return;
             };
-            // No graph to patch (F2's lazy slot): the write is already in
-            // the store, so whatever builds the graph next picks it up.
-            let graph = match guard.as_mut() {
+            // F2: nothing to patch yet (or the build failed) — the write is
+            // already committed, and building the graph here would make
+            // every write-only request pay the O(store) load this batch
+            // removes, so leave the slot as it is and let the build a query
+            // triggers pick the write up. Not bumping `patch_epoch` on this
+            // path is deliberate: the epoch is what refuses a snapshot that
+            // predates a patch, and a first build must not be refused (a
+            // recording writer would then keep it unbuilt forever). The
+            // write stays counted in `graph_writes`, and `ensure_fresh_for`
+            // re-checks any seed the landed snapshot misses.
+            let graph = match guard.as_graph_mut() {
                 Some(graph) => graph,
                 None => return,
             };
@@ -301,8 +398,48 @@ impl Memory {
         }
     }
 
+    /// F2 entry gate: build the graph if it has never been built.
+    ///
+    /// Every graph entry point calls this before touching the slot —
+    /// `hippocampus_search` (which `search_causal` and `trace_cause` route
+    /// through), `unified_spread_hits`, `disable_spread`. A consumer that
+    /// skips it reads `GraphSlot::Unbuilt` as "no graph" and silently serves
+    /// the store-only fallback forever, which is the failure mode the old
+    /// `Option` slot made undetectable.
+    ///
+    /// Single-flight, exactly like the periodic rebuild: whoever wins
+    /// builds, everyone else serves the store-only path until it lands.
+    fn ensure_graph_built(&self) {
+        if !self.graph_is_unbuilt() {
+            return;
+        }
+        let Ok(_flight) = self.rebuild_flight.try_lock() else {
+            return;
+        };
+        // Re-check under the flight lock: the winner may have just built.
+        if self.graph_is_unbuilt() {
+            self.rebuild_graph_now();
+        }
+    }
+
+    /// Is the slot still waiting for its first build?
+    fn graph_is_unbuilt(&self) -> bool {
+        let Ok(guard) = self.graph.lock() else {
+            return false;
+        };
+        matches!(*guard, GraphSlot::Unbuilt)
+    }
+
+    /// Is a live graph installed?
+    fn graph_is_ready(&self) -> bool {
+        let Ok(guard) = self.graph.lock() else {
+            return false;
+        };
+        matches!(*guard, GraphSlot::Ready(_))
+    }
+
     /// Rebuild the graph when enough writes have accumulated or enough time
-    /// passed. Called at the top of every hippocampus search.
+    /// passed. Called at the top of every graph query.
     fn maybe_rebuild_graph(&self) {
         if !self.should_rebuild() {
             return;
@@ -322,6 +459,12 @@ impl Memory {
     /// Is the live graph behind the store? `graph_writes` counts writes
     /// recorded since the snapshot currently installed.
     fn should_rebuild(&self) -> bool {
+        // F2: an unbuilt slot is built by `ensure_graph_built`, and a failed
+        // one must not be retried per query (an O(store) load that just
+        // failed again). Neither has a snapshot this policy could age out.
+        if !self.graph_is_ready() {
+            return false;
+        }
         let writes = self.graph_writes.load(Ordering::Relaxed);
         if writes == 0 {
             return false;
@@ -346,6 +489,14 @@ impl Memory {
     /// installing would drop it from the graph with nothing left to repair
     /// it. Refusing keeps the current, patched graph and leaves those writes
     /// pending, so a later rebuild retries. Returns whether it installed.
+    ///
+    /// F2: this needs no special case for an unbuilt slot. `patch_epoch` is
+    /// only bumped after a patch lands on a *live* graph (see
+    /// `patch_graph_optimistic`), and the slot never returns to Unbuilt — so
+    /// while the slot is unbuilt the epoch cannot move, and a first build
+    /// always installs. A write landing during that build is not dropped
+    /// silently: it stays counted in `graph_writes` for the next rebuild,
+    /// and `ensure_fresh_for` rebuilds on the first query that seeds on it.
     fn install_graph(&self, graph: CausalGraph, snapshot_ts: i64, built_at_epoch: u64) -> bool {
         let Ok(mut guard) = self.graph.lock() else {
             return false;
@@ -353,7 +504,7 @@ impl Memory {
         if self.patch_epoch.load(Ordering::Acquire) != built_at_epoch {
             return false;
         }
-        *guard = Some(graph);
+        *guard = GraphSlot::Ready(graph);
         self.graph_version.fetch_add(1, Ordering::Release);
         drop(guard);
         self.graph_last_rebuild
@@ -369,21 +520,41 @@ impl Memory {
     fn rebuild_graph_now(&self) {
         // Writes this rebuild intends to absorb.
         let pending = self.graph_writes.load(Ordering::Relaxed);
-        if let Ok((graph, snapshot_ts, epoch)) = self.build_graph_snapshot() {
-            if self.install_graph(graph, snapshot_ts, epoch) {
-                // Saturating: writes are counted *after* their patch, so a
-                // write that landed during the build can push the counter
-                // past `pending` — and an unconditional store(0) (the old
-                // behavior) would wipe exactly those.
-                let _ = self
-                    .graph_writes
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |w| {
-                        Some(w.saturating_sub(pending))
-                    });
+        match self.build_graph_snapshot() {
+            Ok((graph, snapshot_ts, epoch)) => {
+                if self.install_graph(graph, snapshot_ts, epoch) {
+                    // Saturating: writes are counted *after* their patch, so
+                    // a write that landed during the build can push the
+                    // counter past `pending` — and an unconditional store(0)
+                    // (the old behavior) would wipe exactly those.
+                    let _ =
+                        self.graph_writes
+                            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |w| {
+                                Some(w.saturating_sub(pending))
+                            });
+                }
+            }
+            Err(e) => {
+                // F2: a first build that cannot read the store leaves the
+                // slot Failed, so queries keep serving the store-only paths
+                // instead of retrying an O(store) load each time. A failed
+                // *refresh* of a live graph keeps the stale-but-usable one.
+                tracing::warn!(error = %e, server = self.server_label, "graph build failed");
+                self.mark_graph_failed();
             }
         }
         // D1: flush buffered co-activation pairs alongside the rebuild.
         self.flush_cooccurrences();
+    }
+
+    /// Move an unbuilt slot to `Failed`. A live graph is never downgraded —
+    /// a failed refresh keeps the stale-but-usable graph.
+    fn mark_graph_failed(&self) {
+        if let Ok(mut guard) = self.graph.lock() {
+            if matches!(*guard, GraphSlot::Unbuilt) {
+                *guard = GraphSlot::Failed;
+            }
+        }
     }
 
     /// Record every unordered pair of co-activated chunks (D1). Retrieval
@@ -436,9 +607,10 @@ impl Memory {
         max_tokens: usize,
         explain: bool,
     ) -> Option<String> {
+        self.ensure_graph_built();
         self.maybe_rebuild_graph();
         let mut guard = self.graph.lock().ok()?;
-        let graph = guard.as_mut()?;
+        let graph = guard.as_graph_mut()?;
         if graph.num_nodes() == 0 {
             return None;
         }

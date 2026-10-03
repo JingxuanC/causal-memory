@@ -771,7 +771,12 @@ mod tests {
         // Instance 1: write, then query IMMEDIATELY (2 writes < the lazy
         // threshold of 5, well inside the 30s window → no rebuild may have
         // run; the visibility must come from the write-path patch).
+        //
+        // F2: a fresh instance's first query builds the graph, so that build
+        // — not the patch — would supply the visibility. Build up front to
+        // pin the write-path patch this test is about.
         let m1 = Memory::open(&db).expect("memory 1");
+        m1.ensure_graph_built();
         m1.record_decision(
             "rewrote module in TypeScript",
             "compile errors dropped",
@@ -810,7 +815,8 @@ mod tests {
         );
 
         // Differential: a SECOND instance on the same file does a full
-        // from_store at startup — its results must match the patched view.
+        // from_store on its first query (F2) — its results must match the
+        // patched view.
         let m2 = Memory::open(&db).expect("memory 2");
         let (hits2, _) = m2.search_memory_entries("TypeScript module", None, None, 10);
         let keys1: std::collections::HashSet<String> =
@@ -1572,6 +1578,11 @@ fn test_stale_snapshot_install_is_refused() {
         None,
     );
 
+    // F2: the graph is built lazily, so this instance has no live graph to
+    // protect yet — build it now, so the scenario below is the one this test
+    // is about (a patch landing in a rebuild's window over a live graph).
+    memory.ensure_graph_built();
+
     // A rebuild's lock-free half: snapshot the store as it stands.
     let (snapshot, snapshot_ts, epoch) = memory.build_graph_snapshot().expect("snapshot");
     let version_before = memory.graph_version.load(Ordering::Acquire);
@@ -1633,10 +1644,13 @@ fn test_concurrent_stale_queries_rebuild_once() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db = dir.path().join("stampede.db");
     let memory = std::sync::Arc::new(Memory::open(&db).expect("memory"));
+    // F2: the graph is built lazily, so build it here — the write below must
+    // land *after* the build for the queries to prove staleness.
+    memory.ensure_graph_built();
 
-    // Written straight to the store: the graph (built at open) never learns
-    // about it, so every query below resolves a seed the graph cannot
-    // honor — provable staleness.
+    // Written straight to the store: the graph never learns about it, so
+    // every query below resolves a seed the graph cannot honor — provable
+    // staleness.
     memory
         .store()
         .record_decision_full(
@@ -1665,5 +1679,149 @@ fn test_concurrent_stale_queries_rebuild_once() {
         memory.graph_version.load(Ordering::Acquire) - version_before,
         1,
         "8 concurrent stale queries must trigger exactly one rebuild"
+    );
+}
+
+// ─── F2: lazy graph construction ──────────────────────────────────────
+
+/// The graph is built by the first *graph-consuming* query, not by opening
+/// the store — and that query gets the real engine, not the store-only
+/// fallback it would fall back to if the slot stayed unbuilt.
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: memory construction and the query must succeed"
+)]
+fn test_graph_builds_on_first_query_not_at_open() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "moved the retry loop into the queue worker",
+        "duplicate jobs on every deploy",
+        "caused",
+        "queue",
+        None,
+        None,
+        None,
+    );
+    assert!(
+        matches!(
+            *memory.graph.lock().expect("graph lock"),
+            super::GraphSlot::Unbuilt
+        ),
+        "opening a store and writing must not build the graph (F2)"
+    );
+
+    let (hits, mode) = memory.search_memory_entries("retry loop queue worker", None, None, 10);
+    assert_eq!(
+        mode, "spread",
+        "the first query must build the graph, not serve the fallback: {hits:?}"
+    );
+    assert!(
+        matches!(
+            *memory.graph.lock().expect("graph lock"),
+            super::GraphSlot::Ready(_)
+        ),
+        "the first graph query must leave the slot Ready"
+    );
+}
+
+/// The batch's core win: write-only traffic never pays the O(store) build.
+/// A write-path patch on an unbuilt slot must not build one either — it only
+/// leaves the write pending for the build a query triggers.
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: memory construction must succeed"
+)]
+fn test_record_decisions_do_not_build_graph() {
+    use std::sync::atomic::Ordering;
+
+    let memory = Memory::open_in_memory().expect("memory");
+    for turn in 0..5 {
+        memory.record_decision(
+            &format!("pinned the toolchain at revision {turn}"),
+            &format!("reproducible builds after bump {turn}"),
+            "enabled",
+            "build",
+            None,
+            None,
+            None,
+        );
+    }
+    assert_eq!(
+        memory.graph_version.load(Ordering::Acquire),
+        0,
+        "five writes must not swap in a graph"
+    );
+    assert!(
+        matches!(
+            *memory.graph.lock().expect("graph lock"),
+            super::GraphSlot::Unbuilt
+        ),
+        "five writes must leave the slot unbuilt"
+    );
+    assert!(
+        memory.graph_writes.load(Ordering::Relaxed) >= 5,
+        "the writes stay pending for the build that does happen"
+    );
+}
+
+/// A build that cannot read the store lands in `Failed`: queries keep
+/// serving the store-only pool instead of panicking, and the failed load is
+/// not retried per query.
+///
+/// Terminal on purpose — the alternative (a retry on every retrieval)
+/// spends an O(store) load per query on a store that just failed. Recovery
+/// is a process restart (same as the eager load this replaces).
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: memory, rename and queries must not panic"
+)]
+fn test_failed_graph_build_degrades_to_store_paths() {
+    let memory = Memory::open_in_memory().expect("memory");
+    let rename = |from: &str, to: &str| {
+        let sql = format!("ALTER TABLE {from} RENAME TO {to}");
+        memory
+            .store()
+            .with_conn(|conn| {
+                conn.execute_batch(&sql)?;
+                Ok(())
+            })
+            .expect("rename");
+    };
+
+    // Break a table the builder reads unconditionally. The store's retrieval
+    // paths tolerate their own failures (`dual_pool_fused` unwraps to empty),
+    // which is exactly the degradation under test.
+    rename("causal_edges", "causal_edges_hidden");
+
+    let (hits, mode) = memory.search_memory_entries("anything at all", None, None, 10);
+    assert!(
+        matches!(
+            *memory.graph.lock().expect("graph lock"),
+            super::GraphSlot::Failed
+        ),
+        "a failed build must land in Failed, not stay Unbuilt"
+    );
+    assert_eq!(
+        mode, "bm25",
+        "a failed graph must degrade to the store-only pool: {hits:?}"
+    );
+    assert!(
+        !memory.should_rebuild(),
+        "a Failed slot must not be retried by the periodic rebuild policy"
+    );
+
+    // Terminal: with the store readable again, a query must still not retry
+    // the load (a retry would have succeeded and produced Ready).
+    rename("causal_edges_hidden", "causal_edges");
+    let _ = memory.search_memory_entries("anything at all", None, None, 10);
+    assert!(
+        matches!(
+            *memory.graph.lock().expect("graph lock"),
+            super::GraphSlot::Failed
+        ),
+        "Failed is terminal for this instance"
     );
 }

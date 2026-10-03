@@ -23,7 +23,10 @@ use pyo3::prelude::*;
 /// memory degrades gracefully to BM25-only retrieval.
 #[pyclass(name = "CausalMemory")]
 struct PyCausalMemory {
-    inner: Memory,
+    /// Shared with the prewarm thread (F2) that builds the retrieval graph
+    /// off the constructor path; a `CausalMemory` lives for the whole
+    /// process, so its first query should not pay the load.
+    inner: std::sync::Arc<Memory>,
 }
 
 /// Expand a leading `~` (Python users expect it; Rust does not).
@@ -46,8 +49,13 @@ impl PyCausalMemory {
             std::fs::create_dir_all(parent)
                 .map_err(|e| PyRuntimeError::new_err(format!("failed to create db dir: {e}")))?;
         }
-        let inner = Memory::open(&path)
-            .map_err(|e| PyRuntimeError::new_err(format!("failed to open memory db: {e}")))?;
+        let inner = std::sync::Arc::new(
+            Memory::open(&path)
+                .map_err(|e| PyRuntimeError::new_err(format!("failed to open memory db: {e}")))?,
+        );
+        // F2: the retrieval graph builds on first use; warm it in the
+        // background so the first query is not the one that pays for it.
+        inner.spawn_prewarm();
         Ok(Self { inner })
     }
 
@@ -56,7 +64,9 @@ impl PyCausalMemory {
     fn in_memory() -> PyResult<Self> {
         let inner = Memory::open_in_memory()
             .map_err(|e| PyRuntimeError::new_err(format!("failed to open memory db: {e}")))?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner: std::sync::Arc::new(inner),
+        })
     }
 
     /// Record a decision and its observed outcome as a causal memory.

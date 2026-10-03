@@ -16,6 +16,10 @@ pub(crate) fn run_mcp_server() -> anyhow::Result<()> {
     tracing::info!("Causal memory ready: {} existing edges", edge_count);
 
     let server = CausalMemoryServer::new(store);
+    // F2: the graph is built lazily now, so warm it in the background while
+    // the transport comes up — the first query would otherwise pay the whole
+    // load (this process serves one long-lived client).
+    server.spawn_prewarm();
 
     use rmcp::ServiceExt;
     let rt = tokio::runtime::Runtime::new()?;

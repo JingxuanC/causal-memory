@@ -10,13 +10,17 @@
 //! search_patterns, causal_directory, intervention_query,
 //! counterfactual_query, reconstruct_lesson, remember.
 
+use std::sync::Arc;
+
 use causal_memory::memory::Memory;
 use causal_memory::store::CausalStore;
 
 /// MCP-facing wrapper around the shared memory facade. Keeps the historical
 /// name used by the CLI wiring (misc.rs) and the rmcp macros.
 pub struct CausalMemoryServer {
-    pub(crate) memory: Memory,
+    /// Shared with the optional prewarm thread (F2), which builds the graph
+    /// off the startup path without blocking the first query.
+    pub(crate) memory: Arc<Memory>,
     /// Observability label: "mcp-stdio" (default) or "mcp-http".
     pub(crate) label: &'static str,
 }
@@ -30,9 +34,17 @@ impl CausalMemoryServer {
     /// audit rows carry the label).
     pub fn new_with_label(store: CausalStore, label: &'static str) -> Self {
         Self {
-            memory: Memory::new_with_label(store, label),
+            memory: Arc::new(Memory::new_with_label(store, label)),
             label,
         }
+    }
+
+    /// F2: build the graph on a background thread so the first query is warm
+    /// — for single-instance frontends only (the stdio server). Per-request
+    /// instances (HTTP) must not: their query builds on demand anyway, and
+    /// prewarming would rebuild the graph once per request.
+    pub fn spawn_prewarm(&self) {
+        self.memory.spawn_prewarm();
     }
 
     /// RED metrics + one tracing span per tool call. Status is derived from
