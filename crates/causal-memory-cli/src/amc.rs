@@ -8,7 +8,8 @@
 //!   POST /add     — write a memory batch   → `Memory::remember` (distill
 //!                   mode) or `Memory::remember_raw_turns_with_request_id`
 //!                   (raw mode)
-//!   POST /search  — fused retrieval        → `Memory::search_memory_entries`
+//!   POST /search  — fused retrieval        → the path `AMC_RETRIEVAL` picks
+//!                   (see `RetrievalMode`)
 //!   GET  /health  — liveness + the live embedding model (`null` = the
 //!                   semantic leg is down for this process; the startup log
 //!                   carries a matching WARN)
@@ -32,10 +33,21 @@
 //!   Both modes share the same retrieval stack, so A/B isolates the value
 //!   of write-time distillation.
 //!
+//! Retrieval paths (`AMC_RETRIEVAL`, default `spread`):
+//! - `spread`: the unified spreading-activation engine the MCP tools run —
+//!   facts + causal lessons, graph-ranked.
+//! - `fused`: `Memory::search_chunks_fused` — BM25 ⊕ chunk-vector RRF over
+//!   raw chunk text, no graph. Returns the ingested passage itself.
+//! - `merge`: both, fused by RRF (keys deduped).
+//! Compare the arms with `bench-amc-ab`.
+//!
 //! Usage:
 //!   cargo build --release --bin causal-memory-amc
 //!   ./target/release/causal-memory-amc --db-dir amc_data --port 8787 \
 //!       --write-mode distill
+//!   AMC_RETRIEVAL=fused ./target/release/causal-memory-amc ...
+//!
+//! A/B harness: `cargo run --release --bin causal-memory-amc-ab`
 //!
 //! Self-test: `cargo test -p causal-memory-cli --bin causal-memory-amc`
 //! spins the server on an ephemeral port and runs Add → Search round-trips.
@@ -49,6 +61,7 @@ use anyhow::Result;
 use axum::extract::State;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use causal_memory::memory::ops::MemoryHit;
 use causal_memory::memory::Memory;
 use serde::{Deserialize, Serialize};
 
@@ -62,9 +75,50 @@ enum WriteMode {
     Raw,
 }
 
+/// Which retrieval path `/search` runs. A/B switch (`AMC_RETRIEVAL`), with
+/// the conservative default kept until the harness has data:
+/// - `spread` (default): the unified spreading-activation engine the MCP
+///   tools use — the production system, unchanged.
+/// - `fused`: `Memory::search_chunks_fused` — BM25 ⊕ chunk-vector RRF over
+///   raw chunk text, no graph.
+/// - `merge`: both, fused again by RRF (keys deduped) — the "why not both"
+///   arm, at ~2× the retrieval cost.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RetrievalMode {
+    Spread,
+    Fused,
+    Merge,
+}
+
+impl RetrievalMode {
+    /// Parse `AMC_RETRIEVAL`. Unset or unrecognized ⇒ `spread` (never fail
+    /// the server over a typo; say so on stderr and serve the default).
+    fn from_env() -> Self {
+        match std::env::var("AMC_RETRIEVAL").as_deref() {
+            Ok("fused") => Self::Fused,
+            Ok("merge") => Self::Merge,
+            Ok("spread") | Err(_) => Self::Spread,
+            Ok(other) => {
+                eprintln!("⚠ AMC_RETRIEVAL={other} is not spread|fused|merge — using spread");
+                Self::Spread
+            }
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Spread => "spread",
+            Self::Fused => "fused",
+            Self::Merge => "merge",
+        }
+    }
+}
+
 struct UserMemories {
     dir: PathBuf,
     mode: WriteMode,
+    /// Parsed once at startup (`main`), never re-read per request.
+    retrieval: RetrievalMode,
     users: RwLock<HashMap<String, Arc<Memory>>>,
 }
 
@@ -80,10 +134,14 @@ fn poison_write<'a, T>(lock: &'a RwLock<T>) -> std::sync::RwLockWriteGuard<'a, T
 }
 
 impl UserMemories {
-    fn new(dir: PathBuf, mode: WriteMode) -> Self {
+    /// The retrieval arm is passed in, never read from the environment here:
+    /// `main` parses `AMC_RETRIEVAL` once and logs it, and tests pin their
+    /// arm explicitly so a stray env var cannot move them onto another path.
+    fn with_retrieval(dir: PathBuf, mode: WriteMode, retrieval: RetrievalMode) -> Self {
         Self {
             dir,
             mode,
+            retrieval,
             users: RwLock::new(HashMap::new()),
         }
     }
@@ -303,6 +361,28 @@ async fn handle_search(
     out
 }
 
+/// One `/search` through the configured retrieval path.
+fn run_retrieval(
+    memory: &Memory,
+    retrieval: RetrievalMode,
+    query: &str,
+    top_k: usize,
+) -> (Vec<MemoryHit>, &'static str) {
+    match retrieval {
+        RetrievalMode::Spread => memory.search_memory_entries(query, None, None, top_k),
+        RetrievalMode::Fused => memory.search_chunks_fused(query, top_k),
+        RetrievalMode::Merge => {
+            // Both arms run on their own; the two hit lists are fused again
+            // by RRF (key-deduped), so a memory both paths agree on floats
+            // above one only a single path found.
+            let (spread, _) = memory.search_memory_entries(query, None, None, top_k);
+            let (fused, _) = memory.search_chunks_fused(query, top_k);
+            let merged = Memory::rrf_merge_hits(&[spread.as_slice(), fused.as_slice()], top_k);
+            (merged, "merge")
+        }
+    }
+}
+
 async fn handle_search_inner(users: Arc<UserMemories>, req: SearchRequest) -> Json<SearchResponse> {
     // `options` is contract-fidelity input (choice questions): the platform's
     // answer model receives the memories; options do not change retrieval.
@@ -312,25 +392,25 @@ async fn handle_search_inner(users: Arc<UserMemories>, req: SearchRequest) -> Js
     };
     let top_k = req.top_k.max(1);
     let query = req.query.clone();
-    let hits = match tokio::task::spawn_blocking(move || {
-        memory.search_memory_entries(&query, None, None, top_k)
-    })
-    .await
-    {
-        Ok((hits, mode)) => {
-            eprintln!(
-                "amc/search [{}] {} hit(s) [{} mode]",
-                req.user_id,
-                hits.len(),
-                mode
-            );
-            hits
-        }
-        Err(e) => {
-            eprintln!("amc/search task panicked: {e}");
-            Vec::new()
-        }
-    };
+    let retrieval = users.retrieval;
+    let hits =
+        match tokio::task::spawn_blocking(move || run_retrieval(&memory, retrieval, &query, top_k))
+            .await
+        {
+            Ok((hits, mode)) => {
+                eprintln!(
+                    "amc/search [{}] {} hit(s) [{} mode]",
+                    req.user_id,
+                    hits.len(),
+                    mode
+                );
+                hits
+            }
+            Err(e) => {
+                eprintln!("amc/search task panicked: {e}");
+                Vec::new()
+            }
+        };
     Json(SearchResponse {
         // The fused result is per-layer capped at `limit`, i.e. up to
         // 2*top_k rows for a two-layer answer. The contract's `top_k` is a
@@ -512,15 +592,19 @@ fn main() -> Result<()> {
             println!("causal-memory-amc embedding: none (BM25-only retrieval)");
         }
     }
-    let users = Arc::new(UserMemories::new(db_dir, mode));
+    // A/B switch, parsed once (see RetrievalMode). `spread` stays the
+    // default until the harness has data.
+    let retrieval = RetrievalMode::from_env();
+    let users = Arc::new(UserMemories::with_retrieval(db_dir, mode, retrieval));
     let auth_token = causal_memory_cli::http_auth::token_from_config();
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse()?;
     println!(
-        "causal-memory-amc listening on http://{addr} (write-mode: {}, one store per user_id)",
+        "causal-memory-amc listening on http://{addr} (write-mode: {}, retrieval: {}, one store per user_id)",
         match mode {
             WriteMode::Distill => "distill",
             WriteMode::Raw => "raw",
-        }
+        },
+        retrieval.label()
     );
     match &auth_token {
         Some(_) => println!("Auth: /metrics requires 'Authorization: Bearer <token>' (CAUSAL_MEMORY_HTTP_AUTH_TOKEN); /add /search /health* stay open"),
@@ -571,9 +655,22 @@ mod tests {
         panic!("server did not become ready");
     }
 
+    /// Server pinned to the production retrieval path (`spread`) — the arm
+    /// an unconfigured deployment runs.
     async fn spawn_server(
         mode: WriteMode,
         auth_token: Option<String>,
+    ) -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
+        spawn_server_with_retrieval(mode, auth_token, RetrievalMode::Spread).await
+    }
+
+    /// Same, with an explicit retrieval arm. Tests never let the arm come
+    /// from `AMC_RETRIEVAL`: a stray env var in the developer's shell would
+    /// otherwise silently move every test onto another path.
+    async fn spawn_server_with_retrieval(
+        mode: WriteMode,
+        auth_token: Option<String>,
+        retrieval: RetrievalMode,
     ) -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
         // tempfile::tempdir() gives an O_EXCL-unique dir; the old
         // pid+Instant::now() name could collide when the harness starts
@@ -582,7 +679,10 @@ mod tests {
         // "open store: unable to open database file").
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
-        let app = build_app(Arc::new(UserMemories::new(dir, mode)), auth_token);
+        let app = build_app(
+            Arc::new(UserMemories::with_retrieval(dir, mode, retrieval)),
+            auth_token,
+        );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -887,5 +987,113 @@ mod tests {
             .await
             .unwrap();
         assert!(resp.status().is_success());
+    }
+
+    #[tokio::test]
+    async fn fused_retrieval_returns_raw_chunk_evidence() {
+        // AMC_RETRIEVAL=fused: the answer is the ingested passage itself, so
+        // every hit id is a raw chunk id — a shape the spread engine never
+        // produces (it returns fact:/causal: keys).
+        let (base, _server, _tmp) =
+            spawn_server_with_retrieval(WriteMode::Raw, None, RetrievalMode::Fused).await;
+        let client = test_client();
+        wait_ready(&client, &base).await;
+
+        let resp = client
+            .post(format!("{base}/add"))
+            .json(&add_body(
+                "henry",
+                "s1",
+                &[
+                    ("user", "what does the billing job use?"),
+                    ("assistant", "the billing job uses the mongoose ORM"),
+                ],
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "add failed");
+
+        let resp = client
+            .post(format!("{base}/search"))
+            .json(&serde_json::json!({
+                "query": "mongoose ORM billing",
+                "user_id": "henry",
+                "top_k": 5,
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        let data = resp["data"].as_array().unwrap();
+        assert!(!data.is_empty(), "fused search must hit the evidence turn");
+        assert!(
+            data.iter()
+                .all(|h| h["id"].as_str().unwrap_or_default().starts_with("raw:")),
+            "fused hits are chunk ids: {data:?}"
+        );
+        assert!(
+            data[0]["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("the billing job uses the mongoose ORM"),
+            "the evidence turn must be first: {data:?}"
+        );
+        assert!(data[0]["created_at"].is_string());
+        assert!(data[0]["score"].as_f64().unwrap_or(0.0) > 0.0);
+    }
+
+    #[tokio::test]
+    async fn merge_retrieval_serves_both_paths_capped_at_top_k() {
+        // AMC_RETRIEVAL=merge: the spread engine AND the chunk path run,
+        // then fuse. Keys do not collide across the two (fact:/causal: vs
+        // raw:), so the evidence usually appears twice — that is the arm's
+        // known cost, and `top_k` still caps the response.
+        let (base, _server, _tmp) =
+            spawn_server_with_retrieval(WriteMode::Raw, None, RetrievalMode::Merge).await;
+        let client = test_client();
+        wait_ready(&client, &base).await;
+
+        let resp = client
+            .post(format!("{base}/add"))
+            .json(&add_body(
+                "iris",
+                "s1",
+                &[
+                    ("assistant", "the billing job uses the mongoose ORM"),
+                    ("assistant", "the ingest lag dropped to zero"),
+                    ("assistant", "the retry test was fixed with jitter"),
+                ],
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "add failed");
+
+        let resp = client
+            .post(format!("{base}/search"))
+            .json(&serde_json::json!({
+                "query": "mongoose ORM billing",
+                "user_id": "iris",
+                "top_k": 2,
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        let data = resp["data"].as_array().unwrap();
+        assert!(!data.is_empty(), "merge must return the evidence");
+        assert!(data.len() <= 2, "top_k must cap the merged response");
+        assert!(
+            data.iter().any(|h| h["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("mongoose ORM")),
+            "the fused arm's chunk text must survive the merge: {data:?}"
+        );
     }
 }

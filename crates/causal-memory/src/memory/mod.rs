@@ -55,6 +55,7 @@ pub(crate) const SEMANTIC_CONTRADICTION_MIN_SIMILARITY: f64 = 0.85;
 pub(crate) const RRF_K: f64 = 60.0;
 
 pub mod format;
+mod fused;
 pub mod ops;
 pub mod output;
 mod unified;

@@ -719,6 +719,235 @@ mod tests {
         assert_eq!(vectors, 0, "no embedder ⇒ no chunk vectors");
     }
 
+    // ─── Batch 3: chunk-level fused retrieval ─────────────────────────────
+
+    /// The fusion itself, over hand-written legs. `init_embedder` is forced
+    /// to `None` under cfg(test), so the semantic leg can never be reached
+    /// through the embedder here — the pure helper is what makes the RRF
+    /// arithmetic testable at all.
+    #[test]
+    fn test_fuse_ranked_ids_sums_both_legs() {
+        use super::super::fused::fuse_ranked_ids;
+        let bm25 = vec!["c0".to_string(), "c1".to_string(), "c2".to_string()];
+        // c2 is BM25 rank 3 but the vector leg's top hit; c0 agrees on both.
+        let semantic = vec!["c2".to_string(), "c0".to_string()];
+        let fused = fuse_ranked_ids(&bm25, &semantic);
+
+        let scores: std::collections::HashMap<&str, f64> =
+            fused.iter().map(|(k, s)| (k.as_str(), *s)).collect();
+        assert!((scores["c0"] - (1.0 / (RRF_K + 1.0) + 1.0 / (RRF_K + 2.0))).abs() < 1e-12);
+        assert!((scores["c2"] - (1.0 / (RRF_K + 3.0) + 1.0 / (RRF_K + 1.0))).abs() < 1e-12);
+        assert!((scores["c1"] - 1.0 / (RRF_K + 2.0)).abs() < 1e-12);
+        // Agreement (c0) beats a single top rank (c2); the two-leg hit that
+        // BM25 alone ranked last still beats the single-leg c1.
+        let order: Vec<&str> = fused.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(order, vec!["c0", "c2", "c1"], "fused order: {fused:?}");
+    }
+
+    #[test]
+    fn test_fuse_ranked_ids_degrades_to_bm25_without_semantic_leg() {
+        use super::super::fused::fuse_ranked_ids;
+        let bm25 = vec!["a".to_string(), "b".to_string()];
+        let fused = fuse_ranked_ids(&bm25, &[]);
+        assert_eq!(
+            fused,
+            vec![
+                ("a".to_string(), 1.0 / (RRF_K + 1.0)),
+                ("b".to_string(), 1.0 / (RRF_K + 2.0)),
+            ],
+            "an empty semantic leg must leave the BM25 ranking untouched"
+        );
+        assert!(fuse_ranked_ids(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn test_fuse_ranked_ids_surfaces_semantic_only_hit() {
+        use super::super::fused::fuse_ranked_ids;
+        // Zero keyword overlap: only the vector leg can see c1.
+        let fused = fuse_ranked_ids(&[], &["c1".to_string()]);
+        assert_eq!(fused[0].0, "c1");
+        assert!((fused[0].1 - 1.0 / (RRF_K + 1.0)).abs() < 1e-12);
+    }
+
+    /// End-to-end materialization with no embedder (the hermetic test
+    /// environment): the BM25 leg alone must still return the raw turn text.
+    #[test]
+    fn test_search_chunks_fused_materializes_raw_text() {
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        memory.remember_raw_turns(
+            &[
+                (
+                    "assistant".to_string(),
+                    "the billing job uses the mongoose ORM".to_string(),
+                ),
+                ("user".to_string(), "which ORM does billing use".to_string()),
+            ],
+            "s20",
+        );
+        let ids = raw_chunk_ids(&memory, "s20");
+        assert_eq!(ids.len(), 2);
+
+        let (hits, mode) = memory.search_chunks_fused("mongoose ORM billing", 5);
+        assert_eq!(mode, "fused");
+        assert_eq!(hits.len(), 2, "both turns share the query tokens: {hits:?}");
+        assert_eq!(hits[0].key, ids[0], "the evidence turn ranks first");
+        assert_eq!(
+            hits[0].content, "[s20] assistant: the billing job uses the mongoose ORM",
+            "content is the chunk text verbatim, session/role prefix included"
+        );
+        assert_eq!(hits[0].rank, 1);
+        assert!((hits[0].score - 1.0 / (RRF_K + 1.0)).abs() < 1e-12);
+        assert!(hits[0].created_at.is_some());
+        assert_eq!(hits[1].rank, 2);
+
+        // `limit` binds on the materialized list, and 0 short-circuits.
+        assert_eq!(
+            memory
+                .search_chunks_fused("mongoose ORM billing", 1)
+                .0
+                .len(),
+            1
+        );
+        assert!(memory
+            .search_chunks_fused("mongoose ORM billing", 0)
+            .0
+            .is_empty());
+    }
+
+    /// The semantic leg's contract, exercised without the embedder: a vector
+    /// written straight into `chunk_embeddings` is the only way a turn with
+    /// zero keyword overlap can surface at all.
+    ///
+    /// The leg is exercised through the store call + the pure fusion, NOT
+    /// through `search_chunks_fused`: `init_embedder` is forced to `None`
+    /// under cfg(test), so the fused path's own semantic leg is dead here by
+    /// design (embedding the query would need a real embedder).
+    #[test]
+    fn test_search_chunks_fused_semantic_leg_without_embedder() {
+        use super::super::fused::fuse_ranked_ids;
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        memory.remember_raw_turns(
+            &[
+                (
+                    "assistant".to_string(),
+                    "we settled on a 384-dimensional sentence encoder".to_string(),
+                ),
+                (
+                    "assistant".to_string(),
+                    "the ingest lag dropped to zero".to_string(),
+                ),
+            ],
+            "s21",
+        );
+        let ids = raw_chunk_ids(&memory, "s21");
+
+        // Premise: the probe query shares no token with either turn.
+        assert!(
+            memory
+                .store()
+                .bm25_seed_ids("which embedding model is used", None, 10)
+                .unwrap()
+                .is_empty(),
+            "the semantic-only probe must have an empty BM25 leg"
+        );
+
+        memory
+            .store()
+            .put_chunk_embedding(&ids[0], "test", &[0.0, 1.0, 0.0])
+            .unwrap();
+        memory
+            .store()
+            .put_chunk_embedding(&ids[1], "test", &[1.0, 0.0, 0.0])
+            .unwrap();
+        let semantic: Vec<String> = memory
+            .store()
+            .search_chunks_semantic(&[0.05, 0.95, 0.0], 10)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(semantic[0], ids[0], "closest vector ranks first");
+        // Fused against an empty BM25 leg (the zero-keyword-overlap case),
+        // the vector-only hit is the answer — at full rank-1 score.
+        let fused = fuse_ranked_ids(&[], &semantic);
+        assert_eq!(
+            fused[0].0, ids[0],
+            "the semantic hit must surface: {fused:?}"
+        );
+        assert!((fused[0].1 - 1.0 / (RRF_K + 1.0)).abs() < 1e-12);
+        assert_eq!(fused[1].0, ids[1]);
+    }
+
+    /// Namespace rule: a `fact:{id}` row lives in the BM25 index but has no
+    /// `chunks` row, so it is kept in the ranking and dropped at
+    /// materialization — its rank stays SPENT, not shifted.
+    #[test]
+    fn test_search_chunks_fused_drops_fact_namespace_ids() {
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        memory.remember_raw_turns(
+            &[(
+                "assistant".to_string(),
+                "the billing job uses the mongoose ORM".to_string(),
+            )],
+            "s22",
+        );
+        let ids = raw_chunk_ids(&memory, "s22");
+        memory
+            .store()
+            .with_conn(|c| {
+                crate::store::CausalStore::index_chunk(
+                    c,
+                    "fact:999",
+                    "the billing job uses the mongoose ORM",
+                )
+            })
+            .unwrap();
+
+        let (hits, _) = memory.search_chunks_fused("mongoose ORM billing job", 5);
+        assert!(
+            hits.iter().all(|h| !h.key.starts_with("fact:")),
+            "a fact index row must never come back as raw evidence: {hits:?}"
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].key, ids[0]);
+        // Equal overlap ⇒ `fact:999` sorts first by chunk id, so the real
+        // turn keeps fused rank 2.
+        assert!(
+            (hits[0].score - 1.0 / (RRF_K + 2.0)).abs() < 1e-12,
+            "the dropped row must still consume rank 1: {hits:?}"
+        );
+    }
+
+    /// `merge` mode's combinator: two hit lists, keyed dedup, RRF sum.
+    #[test]
+    fn test_rrf_merge_hits_dedups_and_sums() {
+        let hit = |key: &str| crate::memory::ops::MemoryHit {
+            key: key.to_string(),
+            content: format!("text-of-{key}"),
+            score: 0.0,
+            rank: 0,
+            created_at: Some(7),
+        };
+        let spread = vec![hit("causal:1"), hit("fact:2")];
+        let fused = vec![hit("fact:2"), hit("raw:s:r:0")];
+        let merged = Memory::rrf_merge_hits(&[spread.as_slice(), fused.as_slice()], 10);
+
+        assert_eq!(merged.len(), 3, "keys dedup across lists: {merged:?}");
+        assert_eq!(merged[0].key, "fact:2", "a key in both lists floats up");
+        assert!((merged[0].score - (1.0 / (RRF_K + 2.0) + 1.0 / (RRF_K + 1.0))).abs() < 1e-12);
+        assert_eq!(
+            merged[0].content, "text-of-fact:2",
+            "first list's content wins"
+        );
+        assert_eq!(merged[0].rank, 1);
+        assert_eq!(merged[2].key, "raw:s:r:0");
+        assert_eq!(merged[2].rank, 3);
+
+        assert_eq!(Memory::rrf_merge_hits(&[spread.as_slice()], 1).len(), 1);
+        assert!(Memory::rrf_merge_hits(&[spread.as_slice()], 0).is_empty());
+        assert!(Memory::rrf_merge_hits(&[], 5).is_empty());
+    }
+
     #[test]
     fn test_search_finds_camel_case_symbol() {
         let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());

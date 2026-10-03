@@ -22,7 +22,9 @@ use crate::store::{AgentFact, CausalEntry, ChainHop};
 /// is the 1-based fused position.
 #[derive(Debug, Clone)]
 pub struct MemoryHit {
-    /// Layer-namespaced key: `fact:{id}` or `causal:{edge_id}`.
+    /// Layer-namespaced key: `fact:{id}` or `causal:{edge_id}` from the
+    /// spread/dual-pool paths, `raw:{session}:{request}:{idx}` (a chunk id)
+    /// from the chunk-level fused path.
     pub key: String,
     /// Human-readable content of the underlying memory.
     pub content: String,

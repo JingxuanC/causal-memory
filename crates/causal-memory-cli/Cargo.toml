@@ -37,6 +37,10 @@ name = "causal-memory-bench-memory"
 path = "../../benches/memory/main.rs"
 
 [[bin]]
+name = "causal-memory-amc-ab"
+path = "../../benches/amc_ab/main.rs"
+
+[[bin]]
 name = "causal-memory-amc"
 path = "src/amc.rs"
 
