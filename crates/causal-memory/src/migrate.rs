@@ -40,7 +40,7 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 18;
+pub const SCHEMA_VERSION: u32 = 19;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
@@ -150,6 +150,9 @@ fn migrate_inner(conn: &Connection) -> Result<()> {
     }
     if version < 18 {
         migrate_to_v18(&tx)?;
+    }
+    if version < 19 {
+        migrate_to_v19(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -523,6 +526,41 @@ mod tests {
         assert_eq!(null_polarity, 2);
 
         assert!(table_exists(&conn, "edge_embeddings").unwrap());
+        assert!(table_exists(&conn, "chunk_embeddings").unwrap());
+    }
+
+    #[test]
+    fn test_migrate_v19_chunk_embeddings() {
+        // A store marked v18 takes the v19 step: the chunk-vector table
+        // appears (additive CREATE TABLE, no rebuild of `chunks` or of the
+        // edges it is deliberately kept away from), holds one vector per
+        // chunk, and survives a re-run. The fixture is a current-shape DB
+        // (a v1 skeleton stamped v18 would skip the column migrations that
+        // CAUSAL_SCHEMA_SQL's indexes rely on) with the v19 table dropped.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(CAUSAL_SCHEMA_SQL).unwrap();
+        conn.execute_batch("DROP TABLE chunk_embeddings; PRAGMA user_version = 18").unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
+        assert!(table_exists(&conn, "chunk_embeddings").unwrap());
+
+        conn.execute(
+            "INSERT INTO chunks (id, text, created_at) VALUES ('d1', 'x', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, model, vector, created_at)
+             VALUES ('d1', 'test', X'0000803F', 1)
+             ON CONFLICT(chunk_id) DO UPDATE SET model = excluded.model",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chunk_embeddings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "a re-run must not disturb stored vectors");
     }
 
     /// Reproduces a real-world pre-v0.6 DB shape (found in the wild):
@@ -1226,5 +1264,31 @@ fn migrate_to_v18(conn: &Connection) -> Result<()> {
         return Ok(()); // already migrated (idempotent re-run)
     }
     conn.execute_batch("ALTER TABLE causal_edges ADD COLUMN influenced_by TEXT")?;
+    Ok(())
+}
+
+/// v19: chunk-level embeddings — a vector per `chunks` row, so raw turns
+/// (the AMC raw write path) can seed retrieval semantically instead of
+/// leaning on BM25 alone (see `Memory::embed_raw_chunk`).
+///
+/// Separate table on purpose: `edge_embeddings` holds the causal layer's
+/// vectors and is ranked as decision→outcome similarity — folding turn
+/// chunks into it would pollute that geometry. Purely additive, so no table
+/// rebuild is involved; in particular the v16 rebuild of `causal_edges`
+/// cannot orphan rows here, because nothing ever rebuilds `chunks`.
+/// Existence-guarded for idempotent re-runs; CAUSAL_SCHEMA_SQL creates the
+/// same table on a fresh DB.
+fn migrate_to_v19(conn: &Connection) -> Result<()> {
+    if table_exists(conn, "chunk_embeddings")? {
+        return Ok(()); // already migrated (idempotent re-run)
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS chunk_embeddings (
+            chunk_id TEXT PRIMARY KEY REFERENCES chunks(id),
+            model TEXT NOT NULL,
+            vector BLOB NOT NULL,
+            created_at INTEGER NOT NULL
+        );",
+    )?;
     Ok(())
 }

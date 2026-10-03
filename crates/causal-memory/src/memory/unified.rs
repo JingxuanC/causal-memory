@@ -153,8 +153,21 @@ impl Memory {
                 n += sem.len();
                 seeds.extend(sem.into_iter().map(|(e, _)| (e.decision_id, "semantic")));
             }
+            // Third leg (schema v19): chunk vectors. A raw turn is a graph
+            // node whose id IS the chunk id, so these seeds need no mapping
+            // — and they are the only way a raw-mode store reaches a match
+            // that BM25's vocabulary misses.
+            if let Ok(sem) = self.store.search_chunks_semantic(&vec, UNIFIED_SEED_LIMIT) {
+                n += sem.len();
+                seeds.extend(sem.into_iter().map(|(id, _)| (id, "semantic-chunk")));
+            }
             crate::observability::metrics().record_recall_seeds("semantic", n);
         }
+        // Three legs, each capped at UNIFIED_SEED_LIMIT, merged and deduped
+        // first-wins (the spread cost scales with the seed set, and a chunk
+        // reached by both BM25 and a vector leg is one seed, not two).
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        seeds.retain(|(id, _)| seen.insert(id.clone()));
         let seed_ids: Vec<String> = seeds.iter().map(|(id, _)| id.clone()).collect();
         (seed_ids, seeds)
     }

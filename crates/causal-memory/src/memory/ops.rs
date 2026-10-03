@@ -805,16 +805,52 @@ impl Memory {
     /// the distill path does for its chunks. Without this, raw turns are
     /// only reachable via the graph's whole-query substring matching, which
     /// a space-separated query never satisfies against a camelCase symbol.
+    ///
+    /// Delegates to [`Memory::remember_raw_turns_with_request_id`] with the
+    /// fixed request segment `"0"`: callers that batch a session in one call
+    /// (the benchmark ingest paths) keep deterministic, retry-idempotent ids
+    /// — `raw:{session}:0:{idx}`.
     pub fn remember_raw_turns_with_timestamps(
         &self,
         turns: &[(String, String, Option<i64>)],
         session: &str,
     ) -> usize {
+        self.remember_raw_turns_with_request_id(turns, session, "0")
+    }
+
+    /// `remember_raw_turns_with_timestamps` with the request id folded into
+    /// the chunk id: `raw:{session}:{request}:{idx}`.
+    ///
+    /// The session-only id made a second `/add` for the same session collide
+    /// with the first one turn-for-turn — `INSERT OR IGNORE` then dropped
+    /// EVERY turn of the later batch, silently (the AMC contract allows
+    /// several requests per session; only the first one survived). Folding
+    /// the request id in keeps each batch addressable, while a retry of the
+    /// SAME request still hits the ignore and stays idempotent.
+    ///
+    /// An empty `request_id` is not addressable, so it degrades to the
+    /// number of raw turns already stored for this session — unique ids
+    /// (no batch can silently overwrite another) at the cost of a retried
+    /// empty-id request being written twice instead of ignored. That trade
+    /// is deliberate: a duplicate is recoverable, a dropped batch is not.
+    pub fn remember_raw_turns_with_request_id(
+        &self,
+        turns: &[(String, String, Option<i64>)],
+        session: &str,
+        request_id: &str,
+    ) -> usize {
         let now = chrono::Utc::now().timestamp();
+        let request = if request_id.is_empty() {
+            self.session_raw_turn_count(session)
+                .map(|n| n.to_string())
+                .unwrap_or_else(|_| "0".to_string())
+        } else {
+            request_id.to_string()
+        };
         let mut written = 0usize;
         for (idx, (speaker, text, ts)) in turns.iter().enumerate() {
             let event_time = ts.unwrap_or(now);
-            let chunk_id = format!("raw:{session}:{idx}");
+            let chunk_id = format!("raw:{session}:{request}:{idx}");
             let payload = format!("[{session}] {speaker}: {text}");
             let ok = self
                 .store
@@ -826,22 +862,85 @@ impl Memory {
                     )?;
                     crate::store::CausalStore::index_chunk(c, &chunk_id, &payload)?;
                     if idx > 0 {
-                        let prev_id = format!("raw:{session}:{}", idx - 1);
-                        c.execute(
-                            "INSERT OR IGNORE INTO causal_edges
-                             (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
-                             VALUES (?1, ?2, 'no_effect', 0.4, 'temporal', ?3, ?3, NULL)",
-                            params![&prev_id, &chunk_id, event_time],
+                        let prev_id = format!("raw:{session}:{request}:{}", idx - 1);
+                        // The temporal chain is a plain adjacency link and
+                        // `causal_edges` has no unique constraint, so a
+                        // re-ingest would stack a second copy of every edge
+                        // (the chunk insert above is protected by OR IGNORE,
+                        // this one is a bare INSERT). Check the triple first
+                        // — a UNIQUE index is not an option here: it would
+                        // change semantics for every other write path and
+                        // reject legacy duplicate rows.
+                        let exists: bool = c.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM causal_edges
+                             WHERE from_id = ?1 AND to_id = ?2 AND relation = 'no_effect')",
+                            params![&prev_id, &chunk_id],
+                            |r| r.get(0),
                         )?;
+                        if !exists {
+                            c.execute(
+                                "INSERT INTO causal_edges
+                                 (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
+                                 VALUES (?1, ?2, 'no_effect', 0.4, 'temporal', ?3, ?3, NULL)",
+                                params![&prev_id, &chunk_id, event_time],
+                            )?;
+                        }
                     }
                     Ok(())
                 })
                 .is_ok();
             if ok {
                 written += 1;
+                // Batch 2: chunk-level vector for the semantic seed leg —
+                // same text the BM25 index saw, so the two legs agree on
+                // what a chunk "is".
+                self.embed_raw_chunk(&chunk_id, &payload);
             }
         }
+        // Phase A: these turns are new graph nodes — without the dirty mark
+        // the lazy rebuild is never triggered and the spread engine keeps
+        // serving a graph that predates them (the write is otherwise visible
+        // through BM25 only).
+        self.mark_graph_dirty();
         written
+    }
+
+    /// Raw turns already stored for `session` — the offset standing in for a
+    /// missing request id. The LIKE pattern is escaped: session ids are
+    /// external input and `_`/`%` are wildcards, which would over-count.
+    /// Over-counting is harmless (offsets only have to be unique and
+    /// monotonic), under-counting is not — hence the escape.
+    fn session_raw_turn_count(&self, session: &str) -> anyhow::Result<usize> {
+        let escaped = format!("raw:{session}:")
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        self.store.with_conn(|c| {
+            let n: i64 = c.query_row(
+                "SELECT COUNT(*) FROM chunks WHERE id LIKE ?1 ESCAPE '\\'",
+                rusqlite::params![format!("{escaped}%")],
+                |r| r.get(0),
+            )?;
+            Ok(n.max(0) as usize)
+        })
+    }
+
+    /// Opportunistic chunk embedding for the raw write path (Batch 2).
+    ///
+    /// Off unless `CAUSAL_MEMORY_EMBED_WRITE` is set — the bulk ingest paths
+    /// replay hundreds of thousands of turns through this writer and must
+    /// not pay one ONNX/HTTP call per turn by default — and skipped outright
+    /// when no embedder is live, before entering `block_on` (that would park
+    /// the caller per turn for a guaranteed `None`).
+    /// Silent on failure, like every other write-time embedding: a missing
+    /// vector costs one semantic seed, a failed write would cost the turn.
+    fn embed_raw_chunk(&self, chunk_id: &str, payload: &str) {
+        if !crate::embed::embed_write_enabled() || !crate::embed::embedder_available() {
+            return;
+        }
+        if let Some(Ok(vec)) = block_on(crate::embed::embed_shared(payload)) {
+            let _ = self.store.put_chunk_embedding(chunk_id, "shared", &vec);
+        }
     }
 
     /// Structured core of `search_memory`: both layers (facts + causal),

@@ -499,6 +499,226 @@ mod tests {
         assert_eq!(times, vec![1_700_000_000, 1_700_000_100]);
     }
 
+    /// Chunk ids stored for `session`, ordered — the raw write path's output.
+    fn raw_chunk_ids(memory: &Memory, session: &str) -> Vec<String> {
+        let pattern = format!("raw:{session}:%");
+        memory
+            .store()
+            .with_conn(|c| {
+                let mut stmt = c.prepare("SELECT id FROM chunks WHERE id LIKE ?1 ORDER BY id")?;
+                let rows = stmt.query_map(rusqlite::params![pattern], |r| r.get::<_, String>(0))?;
+                Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn test_raw_requests_in_one_session_all_survive() {
+        // N1: a second /add for the same session used to reuse the ids
+        // `raw:{session}:{idx}` turn-for-turn and be dropped whole by
+        // INSERT OR IGNORE. The request id is part of the id now.
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let batch = |line: &str| -> Vec<(String, String, Option<i64>)> {
+            vec![
+                (
+                    "user".to_string(),
+                    "what changed in the billing job?".to_string(),
+                    None,
+                ),
+                ("assistant".to_string(), line.to_string(), None),
+            ]
+        };
+        assert_eq!(
+            memory.remember_raw_turns_with_request_id(
+                &batch("frank adopted the mongoose ORM"),
+                "s10",
+                "req-1"
+            ),
+            2
+        );
+        assert_eq!(
+            memory.remember_raw_turns_with_request_id(
+                &batch("frank retired the mongoose ORM"),
+                "s10",
+                "req-2"
+            ),
+            2
+        );
+        let stored = raw_chunk_ids(&memory, "s10");
+        assert_eq!(
+            stored.len(),
+            4,
+            "both requests' turns must persist: {stored:?}"
+        );
+        assert!(stored.iter().any(|id| id.contains(":req-1:")));
+        assert!(stored.iter().any(|id| id.contains(":req-2:")));
+
+        // A retry of the SAME request hits the same ids and stays idempotent.
+        assert_eq!(
+            memory.remember_raw_turns_with_request_id(
+                &batch("frank retired the mongoose ORM"),
+                "s10",
+                "req-2"
+            ),
+            2
+        );
+        assert_eq!(
+            raw_chunk_ids(&memory, "s10").len(),
+            4,
+            "a retried request must not duplicate turns"
+        );
+    }
+
+    #[test]
+    fn test_raw_empty_request_id_does_not_drop_a_batch() {
+        // An empty request id is not addressable, so the facade falls back
+        // to a session-scoped offset: dropping a batch silently is worse
+        // than duplicating a retried one.
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let turns = |line: &str| -> Vec<(String, String, Option<i64>)> {
+            vec![("assistant".to_string(), line.to_string(), None)]
+        };
+        memory.remember_raw_turns_with_request_id(&turns("step one shipped"), "s13", "");
+        memory.remember_raw_turns_with_request_id(&turns("step two shipped"), "s13", "");
+        let stored = raw_chunk_ids(&memory, "s13");
+        assert_eq!(
+            stored.len(),
+            2,
+            "both batches must persist without a request id: {stored:?}"
+        );
+    }
+
+    #[test]
+    fn test_raw_reingest_does_not_duplicate_temporal_edges() {
+        // `causal_edges` has no unique constraint, so the bare temporal
+        // INSERT used to stack a second copy of every adjacency link on any
+        // re-ingest (the chunk insert is guarded by OR IGNORE, the edge was
+        // not).
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let turns = vec![
+            ("assistant".to_string(), "first turn".to_string(), None),
+            ("assistant".to_string(), "second turn".to_string(), None),
+        ];
+        memory.remember_raw_turns_with_timestamps(&turns, "s14");
+        memory.remember_raw_turns_with_timestamps(&turns, "s14");
+        let edges: i64 = memory
+            .store()
+            .with_conn(|c| {
+                let n: i64 = c.query_row(
+                    "SELECT COUNT(*) FROM causal_edges WHERE discovered_by = 'temporal'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                Ok(n)
+            })
+            .unwrap();
+        assert_eq!(edges, 1, "the same temporal link must exist once");
+    }
+
+    #[test]
+    fn test_chunk_embeddings_backfill_and_semantic_search() {
+        // The Batch 2 store leg without an embedder: vectors are written by
+        // hand (the write path's job), the semantic lookup is what a synonym
+        // rewrite rides on.
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        memory.remember_raw_turns(
+            &[
+                (
+                    "assistant".to_string(),
+                    "the deploy failed on a missing env var".to_string(),
+                ),
+                (
+                    "assistant".to_string(),
+                    "we rolled the release back".to_string(),
+                ),
+            ],
+            "s11",
+        );
+        let ids = raw_chunk_ids(&memory, "s11");
+        assert_eq!(ids.len(), 2);
+
+        // Write-time embedding is opt-in: a fresh raw write leaves both
+        // chunks queued for a backfill, not embedded.
+        assert_eq!(
+            memory.store().chunks_without_embedding(0).unwrap().len(),
+            2,
+            "the write switch defaults off — bulk ingest must not embed"
+        );
+
+        memory
+            .store()
+            .put_chunk_embedding(&ids[0], "test", &[1.0, 0.0, 0.0])
+            .unwrap();
+        memory
+            .store()
+            .put_chunk_embedding(&ids[1], "test", &[0.0, 1.0, 0.0])
+            .unwrap();
+        assert!(memory
+            .store()
+            .chunks_without_embedding(0)
+            .unwrap()
+            .is_empty());
+
+        // The nearest vector ranks first, and the returned id is the chunk
+        // id — i.e. already a graph node id.
+        let hits = memory
+            .store()
+            .search_chunks_semantic(&[0.95, 0.05, 0.0], 10)
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            hits[0].0, ids[0],
+            "closest vector must rank first: {hits:?}"
+        );
+        assert!(hits[0].1 > hits[1].1, "cosine ranking: {hits:?}");
+
+        // Re-putting replaces (chunk_id is the primary key) instead of
+        // adding a second vector for the same chunk.
+        memory
+            .store()
+            .put_chunk_embedding(&ids[0], "test", &[0.0, 0.0, 1.0])
+            .unwrap();
+        let hits = memory
+            .store()
+            .search_chunks_semantic(&[0.0, 0.05, 0.95], 10)
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0, ids[0]);
+    }
+
+    #[test]
+    fn test_raw_write_stores_no_vectors_without_embedder() {
+        // Switch on + no embedder (init_embedder is disabled under
+        // cfg(test)) must be a no-op: the write path stays a pure local
+        // write — no vectors, no failure, no embedding detour per turn.
+        std::env::set_var("CAUSAL_MEMORY_EMBED_WRITE", "1");
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let written = memory.remember_raw_turns(
+            &[
+                (
+                    "assistant".to_string(),
+                    "shipped the ingest fix".to_string(),
+                ),
+                (
+                    "assistant".to_string(),
+                    "the ingest lag dropped to zero".to_string(),
+                ),
+            ],
+            "s12",
+        );
+        let vectors: i64 = memory
+            .store()
+            .with_conn(|c| {
+                let n: i64 =
+                    c.query_row("SELECT COUNT(*) FROM chunk_embeddings", [], |r| r.get(0))?;
+                Ok(n)
+            })
+            .unwrap();
+        std::env::remove_var("CAUSAL_MEMORY_EMBED_WRITE");
+        assert_eq!(written, 2);
+        assert_eq!(vectors, 0, "no embedder ⇒ no chunk vectors");
+    }
+
     #[test]
     fn test_search_finds_camel_case_symbol() {
         let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());

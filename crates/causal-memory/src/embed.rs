@@ -292,6 +292,36 @@ pub fn shared_embedder() -> Option<&'static std::sync::Mutex<Option<UnifiedEmbed
     }
 }
 
+/// Is a shared embedder live right now? The write paths use this to skip the
+/// embedding detour entirely when the semantic layer is off: `embed_shared`
+/// would return the same `None`, but only after the caller entered
+/// `block_on` — which parks the calling thread (or spins up a throwaway
+/// runtime) once per turn for a guaranteed no-op.
+pub fn embedder_available() -> bool {
+    shared_embedder().is_some()
+}
+
+/// Model name of the live shared embedder — `None` when semantic retrieval
+/// is off (the AMC server's `/health` `embedding` field).
+pub fn shared_embedder_model() -> Option<String> {
+    let slot = shared_embedder()?;
+    let guard = slot.lock().ok()?;
+    guard.as_ref().map(|e| e.model().to_string())
+}
+
+/// Write-time chunk-embedding switch (`CAUSAL_MEMORY_EMBED_WRITE`).
+///
+/// Off by default and read per call (never cached in a `OnceLock`): the
+/// bulk ingest paths — the longmemeval bench ingests 32万 turns through the
+/// raw writer — must not pay one ONNX/HTTP call per turn unless explicitly
+/// asked, while the AMC server turns it on for the query path.
+pub fn embed_write_enabled() -> bool {
+    matches!(
+        std::env::var("CAUSAL_MEMORY_EMBED_WRITE").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes") | Ok("on")
+    )
+}
+
 /// Run one embed through the shared embedder and the LRU cache. This is
 /// the single entry point tool handlers should use: it takes the shared
 /// mutex for the duration of one call, so callers never manage the

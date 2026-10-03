@@ -139,6 +139,18 @@ CREATE TABLE IF NOT EXISTS edge_embeddings (
     created_at INTEGER NOT NULL
 );
 
+-- Chunk embeddings (schema v19): one vector per `chunks` row, so a raw turn
+-- (the AMC raw write path) can seed retrieval semantically. Deliberately NOT
+-- edge_embeddings: that table is the causal layer's vector store and its
+-- geometry is ranked as decision→outcome similarity — turn text mixed into
+-- it would pollute the causal leg. Keep in sync with migrate_to_v19.
+CREATE TABLE IF NOT EXISTS chunk_embeddings (
+    chunk_id TEXT PRIMARY KEY REFERENCES chunks(id),
+    model TEXT NOT NULL,
+    vector BLOB NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
 -- Agent facts (v6, unified-memory-design Phase 1): flat facts such as
 -- "user prefers TypeScript" or "project uses Redis 7.2". Same soft-
 -- invalidation semantics as causal edges (valid_to NULL = still valid).

@@ -6,9 +6,12 @@
 //! private scoring: the AMC leaderboard exercises the production system.
 //!
 //!   POST /add     — write a memory batch   → `Memory::remember` (distill
-//!                   mode) or `Memory::remember_raw_turns` (raw mode)
+//!                   mode) or `Memory::remember_raw_turns_with_request_id`
+//!                   (raw mode)
 //!   POST /search  — fused retrieval        → `Memory::search_memory_entries`
-//!   GET  /health  — liveness probe
+//!   GET  /health  — liveness + the live embedding model (`null` = the
+//!                   semantic leg is down for this process; the startup log
+//!                   carries a matching WARN)
 //!
 //! Contract rules this server honors:
 //! - `user_id` is the retrieval isolation boundary: one `Memory` (one
@@ -187,6 +190,10 @@ struct SearchResponse {
 #[derive(Serialize)]
 struct HealthResponse {
     status: &'static str,
+    /// Live embedder model name, `null` when semantic retrieval is off.
+    /// A dead semantic layer used to be invisible from outside the process
+    /// (one startup println); the probe now reports it.
+    embedding: Option<String>,
 }
 
 // ─── Handlers ──────────────────────────────────────────────────────────────
@@ -253,8 +260,21 @@ async fn handle_add_inner(
                 .iter()
                 .map(|m| (m.role.clone(), m.content.clone(), m.timestamp))
                 .collect();
-            let n = memory.remember_raw_turns_with_timestamps(&turns, &req.session_id);
-            eprintln!("amc/add [{}] raw: {n} turn(s) stored", req.user_id);
+            // The request id is part of the chunk id: a session's second
+            // /add used to collide turn-for-turn with the first and be
+            // dropped by INSERT OR IGNORE. An empty id is not addressable —
+            // the facade then falls back to a session-scoped offset.
+            let n =
+                memory.remember_raw_turns_with_request_id(&turns, &req.session_id, &req.request_id);
+            eprintln!(
+                "amc/add [{}] raw: {n} turn(s) stored (request_id: {})",
+                req.user_id,
+                if req.request_id.is_empty() {
+                    "<none>"
+                } else {
+                    req.request_id.as_str()
+                }
+            );
             memory
         }
     };
@@ -312,8 +332,12 @@ async fn handle_search_inner(users: Arc<UserMemories>, req: SearchRequest) -> Js
         }
     };
     Json(SearchResponse {
+        // The fused result is per-layer capped at `limit`, i.e. up to
+        // 2*top_k rows for a two-layer answer. The contract's `top_k` is a
+        // ceiling on the RESPONSE, so truncate at the exit.
         data: hits
             .into_iter()
+            .take(top_k)
             .map(|h| SearchHit {
                 id: h.key,
                 content: h.content,
@@ -329,7 +353,10 @@ async fn handle_search_inner(users: Arc<UserMemories>, req: SearchRequest) -> Js
 }
 
 async fn handle_health() -> Json<HealthResponse> {
-    Json(HealthResponse { status: "ok" })
+    Json(HealthResponse {
+        status: "ok",
+        embedding: causal_memory::embed::shared_embedder_model(),
+    })
 }
 
 // ─── Entry point ───────────────────────────────────────────────────────────
@@ -376,6 +403,7 @@ fn main() -> Result<()> {
     let mut db_dir = PathBuf::from("amc_data");
     let mut port = 8787u16;
     let mut mode = WriteMode::Distill;
+    let mut warm_embed = false;
     let mut i = 0;
     let args: Vec<String> = std::env::args().skip(1).collect();
     while i < args.len() {
@@ -405,11 +433,55 @@ fn main() -> Result<()> {
                     other => anyhow::bail!("--write-mode must be distill|raw (got {other})"),
                 };
             }
+            // Image-build warm-up (see Dockerfile): initialize the embedder
+            // so the model lands in FASTEMBED_CACHE_DIR, then exit. Reusing
+            // the server binary means the warm-up exercises the exact init
+            // path the runtime uses — no second entry point to drift.
+            "--warm-embed" => warm_embed = true,
             other => anyhow::bail!("unknown flag: {other}"),
         }
         i += 1;
     }
+
+    // The fastembed cache lives on the mounted volume (`/data/fastembed-cache`
+    // in the image). A fresh volume has no such directory, and
+    // `LocalEmbedder::new()` bails when it is missing — which silently kills
+    // the semantic layer for the whole process, because `shared_embedder()`
+    // initializes a OnceLock and never retries a failed init. Create it up
+    // front so a missing directory can't be the reason.
+    if let Ok(cache_dir) = std::env::var("FASTEMBED_CACHE_DIR") {
+        if !cache_dir.is_empty() {
+            if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+                eprintln!(
+                    "⚠ FASTEMBED_CACHE_DIR={cache_dir} could not be created: {e} \
+                     (semantic layer will not initialize)"
+                );
+            }
+        }
+    }
+
+    if warm_embed {
+        return match causal_memory::embed::init_embedder() {
+            Some(e) => {
+                println!("warm-embed: {} ready", e.model());
+                Ok(())
+            }
+            None => Err(anyhow::anyhow!(
+                "warm-embed: no embedder could be initialized \
+                 (build with --features local-embed, or set CAUSAL_MEMORY_EMBED_API/KEY)"
+            )),
+        };
+    }
+
     std::fs::create_dir_all(&db_dir)?;
+
+    // The AMC query path wants chunk vectors: the search reader embeds the
+    // query anyway, and without stored chunk vectors that leg can never
+    // match. An explicit env value wins (benchmarks replaying 32万 turns
+    // through the same writer keep it off).
+    if std::env::var_os("CAUSAL_MEMORY_EMBED_WRITE").is_none() {
+        std::env::set_var("CAUSAL_MEMORY_EMBED_WRITE", "1");
+    }
 
     // Honest degradation: distill without an LLM config would store raw
     // stubs through `remember`'s fallback — surface it and switch to raw.
@@ -426,7 +498,19 @@ fn main() -> Result<()> {
             "causal-memory-amc embedding: {} (semantic layer live)",
             e.model()
         ),
-        None => println!("causal-memory-amc embedding: none (BM25-only retrieval)"),
+        None => {
+            // Loud on purpose: the line below is easy to skim past, and a
+            // silent BM25-only server loses every semantic-only match for
+            // the rest of its life (the OnceLock never retries).
+            eprintln!(
+                "⚠⚠ WARNING: embedding layer is DOWN — retrieval is BM25-only \
+                 for this entire process.\n\
+                 ⚠⚠   check FASTEMBED_CACHE_DIR (model cached there?), \
+                 CAUSAL_MEMORY_EMBED_API/KEY, and that the binary was built \
+                 with --features local-embed."
+            );
+            println!("causal-memory-amc embedding: none (BM25-only retrieval)");
+        }
     }
     let users = Arc::new(UserMemories::new(db_dir, mode));
     let auth_token = causal_memory_cli::http_auth::token_from_config();
@@ -507,13 +591,22 @@ mod tests {
         (format!("http://{addr}"), server, tmp)
     }
 
-    fn add_body(user: &str, session: &str, msgs: &[(&str, &str)]) -> serde_json::Value {
+    fn add_body_with_request(
+        user: &str,
+        session: &str,
+        request_id: &str,
+        msgs: &[(&str, &str)],
+    ) -> serde_json::Value {
         serde_json::json!({
-            "request_id": format!("req-{user}-{session}"),
+            "request_id": request_id,
             "user_id": user,
             "session_id": session,
             "messages": msgs.iter().map(|(r, c)| serde_json::json!({"role": r, "content": c})).collect::<Vec<_>>(),
         })
+    }
+
+    fn add_body(user: &str, session: &str, msgs: &[(&str, &str)]) -> serde_json::Value {
+        add_body_with_request(user, session, &format!("req-{user}-{session}"), msgs)
     }
 
     #[tokio::test]
@@ -607,6 +700,119 @@ mod tests {
             2,
             "top_k=2 must bind"
         );
+    }
+
+    #[tokio::test]
+    async fn raw_batches_per_session_keep_every_request() {
+        // N1: several /add requests inside one session. With a session-only
+        // chunk id (`raw:{session}:{idx}`) the second batch collided
+        // turn-for-turn with the first and INSERT OR IGNORE dropped it
+        // silently — the platform's whole second request vanished.
+        let (base, _server, _tmp) = spawn_server(WriteMode::Raw, None).await;
+        let client = test_client();
+        wait_ready(&client, &base).await;
+
+        let batches = [
+            (
+                "req-1",
+                "frank adopted the mongoose ORM for the billing job",
+            ),
+            (
+                "req-2",
+                "frank retired the mongoose ORM after the lock incident",
+            ),
+        ];
+        for (req, line) in batches {
+            let resp = client
+                .post(format!("{base}/add"))
+                .json(&add_body_with_request(
+                    "frank",
+                    "s1",
+                    req,
+                    &[
+                        ("user", "what changed in the billing job?"),
+                        ("assistant", line),
+                    ],
+                ))
+                .send()
+                .await
+                .unwrap();
+            assert!(
+                resp.status().is_success(),
+                "add {req} failed: {}",
+                resp.text().await.unwrap()
+            );
+        }
+
+        let resp = client
+            .post(format!("{base}/search"))
+            .json(&serde_json::json!({
+                "query": "mongoose ORM billing job",
+                "user_id": "frank",
+                "top_k": 10,
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        let all: String = resp["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["content"].as_str().unwrap_or_default())
+            .collect();
+        assert!(
+            all.contains("adopted the mongoose ORM"),
+            "first request's turn is missing: {all}"
+        );
+        assert!(
+            all.contains("retired the mongoose ORM"),
+            "second request's turn was dropped: {all}"
+        );
+    }
+
+    #[tokio::test]
+    async fn raw_search_response_is_capped_at_top_k() {
+        // S2: the per-layer cap is `limit`, so a fused answer could carry up
+        // to 2*top_k rows. The contract's top_k caps the RESPONSE.
+        let (base, _server, _tmp) = spawn_server(WriteMode::Raw, None).await;
+        let client = test_client();
+        wait_ready(&client, &base).await;
+
+        let msgs: Vec<(String, String)> = (0..6)
+            .map(|i| {
+                (
+                    "assistant".to_string(),
+                    format!("grace tuned the ingest pipeline, step {i}"),
+                )
+            })
+            .collect();
+        let refs: Vec<(&str, &str)> = msgs.iter().map(|(r, c)| (r.as_str(), c.as_str())).collect();
+        let resp = client
+            .post(format!("{base}/add"))
+            .json(&add_body("grace", "s1", &refs))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success());
+
+        let resp = client
+            .post(format!("{base}/search"))
+            .json(&serde_json::json!({
+                "query": "ingest pipeline",
+                "user_id": "grace",
+                "top_k": 3,
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        let n = resp["data"].as_array().unwrap().len();
+        assert!(n <= 3, "top_k=3 must cap the response, got {n}");
     }
 
     #[tokio::test]
