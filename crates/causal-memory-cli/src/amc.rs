@@ -33,11 +33,12 @@
 //!   Both modes share the same retrieval stack, so A/B isolates the value
 //!   of write-time distillation.
 //!
-//! Retrieval paths (`AMC_RETRIEVAL`, default `spread`):
+//! Retrieval paths (`AMC_RETRIEVAL`, default `fused` — the bench-amc-ab
+//! A/B put it ahead of spread on recall@10, MRR and latency, three seeds):
 //! - `spread`: the unified spreading-activation engine the MCP tools run —
 //!   facts + causal lessons, graph-ranked.
-//! - `fused`: `Memory::search_chunks_fused` — BM25 ⊕ chunk-vector RRF over
-//!   raw chunk text, no graph. Returns the ingested passage itself.
+//! - `fused` (default): `Memory::search_chunks_fused` — BM25 ⊕ chunk-vector
+//!   RRF over raw chunk text, no graph. Returns the ingested passage itself.
 //! - `merge`: both, fused by RRF (keys deduped).
 //! Compare the arms with `bench-amc-ab`.
 //!
@@ -45,7 +46,7 @@
 //!   cargo build --release --bin causal-memory-amc
 //!   ./target/release/causal-memory-amc --db-dir amc_data --port 8787 \
 //!       --write-mode distill
-//!   AMC_RETRIEVAL=fused ./target/release/causal-memory-amc ...
+//!   AMC_RETRIEVAL=spread ./target/release/causal-memory-amc ...
 //!
 //! A/B harness: `cargo run --release --bin causal-memory-amc-ab`
 //!
@@ -75,14 +76,17 @@ enum WriteMode {
     Raw,
 }
 
-/// Which retrieval path `/search` runs. A/B switch (`AMC_RETRIEVAL`), with
-/// the conservative default kept until the harness has data:
-/// - `spread` (default): the unified spreading-activation engine the MCP
-///   tools use — the production system, unchanged.
-/// - `fused`: `Memory::search_chunks_fused` — BM25 ⊕ chunk-vector RRF over
-///   raw chunk text, no graph.
-/// - `merge`: both, fused again by RRF (keys deduped) — the "why not both"
-///   arm, at ~2× the retrieval cost.
+/// Which retrieval path `/search` runs. A/B switch (`AMC_RETRIEVAL`).
+/// Default is `fused` — the bench-amc-ab A/B (three seeds, raw mode,
+/// bge-small-en-v1.5) put it ahead on every metric: recall@10 0.75-0.83 vs
+/// spread's 0.50-0.75, MRR 0.75 vs 0.09-0.18, at ~10× lower latency:
+/// - `spread`: the unified spreading-activation engine the MCP
+///   tools use — built for typed fact/causal recall, but it buries raw
+///   evidence under edge-shaped hits.
+/// - `fused` (default): `Memory::search_chunks_fused` — BM25 ⊕ chunk-vector
+///   RRF over raw chunk text, no graph.
+/// - `merge`: both, fused again by RRF (keys deduped) — matched fused on
+///   recall in the A/B but halved MRR and doubled latency; kept as an arm.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum RetrievalMode {
     Spread,
@@ -91,16 +95,16 @@ enum RetrievalMode {
 }
 
 impl RetrievalMode {
-    /// Parse `AMC_RETRIEVAL`. Unset or unrecognized ⇒ `spread` (never fail
+    /// Parse `AMC_RETRIEVAL`. Unset or unrecognized ⇒ `fused` (never fail
     /// the server over a typo; say so on stderr and serve the default).
     fn from_env() -> Self {
         match std::env::var("AMC_RETRIEVAL").as_deref() {
-            Ok("fused") => Self::Fused,
+            Ok("spread") => Self::Spread,
             Ok("merge") => Self::Merge,
-            Ok("spread") | Err(_) => Self::Spread,
+            Ok("fused") | Err(_) => Self::Fused,
             Ok(other) => {
-                eprintln!("⚠ AMC_RETRIEVAL={other} is not spread|fused|merge — using spread");
-                Self::Spread
+                eprintln!("⚠ AMC_RETRIEVAL={other} is not spread|fused|merge — using fused");
+                Self::Fused
             }
         }
     }
@@ -592,8 +596,8 @@ fn main() -> Result<()> {
             println!("causal-memory-amc embedding: none (BM25-only retrieval)");
         }
     }
-    // A/B switch, parsed once (see RetrievalMode). `spread` stays the
-    // default until the harness has data.
+    // A/B switch, parsed once (see RetrievalMode). Default `fused` — the
+    // bench-amc-ab data backs it (see the RetrievalMode doc comment).
     let retrieval = RetrievalMode::from_env();
     let users = Arc::new(UserMemories::with_retrieval(db_dir, mode, retrieval));
     let auth_token = causal_memory_cli::http_auth::token_from_config();
