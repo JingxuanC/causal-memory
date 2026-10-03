@@ -39,19 +39,27 @@ RUN cargo build --release --bin causal-memory-amc --features local-embed
 #    Debian trixie's own package (libonnxruntime1.21) is older than the line
 #    this build targets, so take the official prebuilt release — the same
 #    1.26 the macOS dev setup runs. TARGETARCH (BuildKit) picks the archive;
-#    it defaults to amd64 for the legacy builder.
+#    it must be re-declared with ARG to be visible in this stage — without
+#    the declaration the fallback silently picks x64 on every arch.
+ARG TARGETARCH
 ARG ORT_VERSION=1.26.0
+# Build-time fetches (this ORT download, the model seed below) may need a
+# proxy on restricted networks — GitHub releases included. Scoped to these
+# RUN steps only: the standard proxy build-args leak into every RUN and
+# break apt (its HTTP repos get 403 from filtering proxies).
+ARG FETCH_PROXY=
 RUN set -eux; \
+    if [ -n "$FETCH_PROXY" ]; then export https_proxy="$FETCH_PROXY" http_proxy="$FETCH_PROXY"; fi; \
     case "${TARGETARCH:-amd64}" in \
       amd64) ort_arch=x64 ;; \
       arm64) ort_arch=aarch64 ;; \
       *) echo "no ONNX Runtime prebuilt for TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /tmp/ort.tgz \
+    curl -fsSL --retry 3 -o /tmp/ort.tgz \
       "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ort_arch}-${ORT_VERSION}.tgz"; \
     mkdir -p /opt/onnxruntime; \
     tar -xzf /tmp/ort.tgz -C /opt/onnxruntime --strip-components=1; \
-    rm /tmp/ort.tgz
+    rm -f /tmp/ort.tgz
 # OpenMP runtime the prebuilt library links against.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libgomp1 \
@@ -65,18 +73,45 @@ ENV ORT_DYLIB_PATH=/opt/onnxruntime/lib/libonnxruntime.so
 #    the server BM25-only for its whole lifetime (shared_embedder() is a
 #    OnceLock: a failed init is never retried). Warming here makes runtime
 #    downloads zero.
-#    HF_ENDPOINT defaults to the mirror: huggingface.co is unreachable from
-#    the environments this image is built in (the repo already records a
-#    150s stall on the direct host), and a build-time download is exactly
-#    where that would bite.
+#    HF_ENDPOINT defaults to DIRECT huggingface.co: the hf-mirror.com mirror
+#    omits the Content-Range header that fastembed's chunked downloader
+#    requires ("Header Content-Range is missing"), so the mirror cannot
+#    warm the cache at all. Build networks that block HF should pass a proxy
+#    scoped to THIS step only — the standard proxy build-args leak into
+#    every RUN and break apt (HTTP repos get 403 from filtering proxies):
+#      docker build --build-arg FETCH_PROXY=http://<proxy> ...
+#    Set HF_ENDPOINT only for a mirror that serves range requests.
 #    WARM_EMBED=1 (default) FAILS the build when the embedder cannot come
 #    up — an image without the semantic layer is otherwise indistinguishable
 #    from a working one until the leaderboard says so. Pass
 #    `--build-arg WARM_EMBED=0` to accept a BM25-only image instead.
-ARG HF_ENDPOINT=https://hf-mirror.com
-ENV HF_ENDPOINT=$HF_ENDPOINT
+ARG HF_ENDPOINT=
+# Pre-seed the hf-hub cache layout with curl: hf-hub's chunked range
+# downloader breaks behind filtering proxies (and mirrors that omit
+# Content-Range), while plain GET works everywhere. hf-hub's `get()`
+# short-circuits on a cache hit, so a fully seeded layout makes the
+# --warm-embed step below effectively offline. Layout contract (hf-hub
+# 0.5): models--<org>--<name>/refs/main holds the commit hash WITHOUT a
+# trailing newline (the ref content is used verbatim as the snapshots dir
+# name), snapshots/<commit>/<file> holds the payload.
+ARG MODEL_REPO=Xenova/bge-small-en-v1.5
+RUN set -eux; \
+    if [ -n "$HF_ENDPOINT" ]; then export HF_ENDPOINT="$HF_ENDPOINT"; fi; \
+    if [ -n "$FETCH_PROXY" ]; then export https_proxy="$FETCH_PROXY" http_proxy="$FETCH_PROXY"; fi; \
+    base="${HF_ENDPOINT:-https://huggingface.co}"; \
+    org="${MODEL_REPO%/*}"; name="${MODEL_REPO#*/}"; \
+    dir="/fastembed-cache/models--${org}--${name}"; \
+    commit=$(curl -fsSL "$base/api/models/$MODEL_REPO" | grep -o '"sha":"[a-f0-9]*"' | head -1 | cut -d'"' -f4); \
+    [ -n "$commit" ]; \
+    mkdir -p "$dir/refs" "$dir/snapshots/$commit/onnx"; \
+    printf %s "$commit" > "$dir/refs/main"; \
+    for f in config.json tokenizer.json tokenizer_config.json special_tokens_map.json onnx/model.onnx; do \
+      curl -fsSL "$base/$MODEL_REPO/resolve/main/$f" -o "$dir/snapshots/$commit/$f"; \
+    done
 ARG WARM_EMBED=1
 ENV FASTEMBED_CACHE_DIR=/fastembed-cache
+# --warm-embed stays as the proof gate: it must initialize the embedder
+# from the seeded cache (zero network), failing the build otherwise.
 RUN ./target/release/causal-memory-amc --warm-embed \
     || { [ "$WARM_EMBED" = "0" ] \
          && echo "warn: building a BM25-only image (WARM_EMBED=0)"; }
