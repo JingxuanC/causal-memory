@@ -539,7 +539,8 @@ mod tests {
         // CAUSAL_SCHEMA_SQL's indexes rely on) with the v19 table dropped.
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(CAUSAL_SCHEMA_SQL).unwrap();
-        conn.execute_batch("DROP TABLE chunk_embeddings; PRAGMA user_version = 18").unwrap();
+        conn.execute_batch("DROP TABLE chunk_embeddings; PRAGMA user_version = 18")
+            .unwrap();
         migrate(&conn).unwrap();
         assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
         assert!(table_exists(&conn, "chunk_embeddings").unwrap());

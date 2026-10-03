@@ -72,7 +72,9 @@ impl Memory {
             .unwrap_or_default();
         // `scope = None`: chunk evidence is scope-free (same rule as the
         // unified seed layer).
-        let semantic: Vec<String> = match block_on(crate::embed::embed_shared(query)) {
+        // QUERY SIDE: `embed_shared_query` adds the model's query instruction
+        // (BGE-en needs it; the stored passage vectors are bare).
+        let semantic: Vec<String> = match block_on(crate::embed::embed_shared_query(query)) {
             Some(Ok(vec)) => self
                 .store
                 .search_chunks_semantic(&vec, depth)
@@ -108,6 +110,51 @@ impl Memory {
             }
         }
         (hits, "fused")
+    }
+
+    /// Options-expanded fused retrieval: the main query PLUS one retrieval
+    /// per option, merged by EQUAL-weight RRF.
+    ///
+    /// Why this exists: the AMC contract's `/search` carries a choice
+    /// question's `options` alongside the query. The query alone is often
+    /// oblique ("what do I normally have in the morning") while the correct
+    /// option names the evidence's own vocabulary ("oat milk") — so the
+    /// options are extra probes that can reach a passage the query cannot.
+    ///
+    /// Equal weights are the whole trick: an evidence chunk that only ONE of
+    /// the options (usually a distractor, whose wording also matches the
+    /// conversation's topic) drags in collects a single `1/(K+rank)`
+    /// contribution, while the chunk the main query AND the correct option
+    /// both rank collects two and floats above it. Weighting by any guess at
+    /// option quality would need an oracle this layer does not have.
+    ///
+    /// COMPLIANCE: option text is never returned as evidence. Every list
+    /// merged here comes from [`Memory::search_chunks_fused`], whose hits are
+    /// materialized from `chunks.text` rows — so `content` can only ever be
+    /// ingested conversation text, never a caller-supplied option string.
+    ///
+    /// Sequential on purpose: `embed_shared` holds the process-global
+    /// embedder mutex across its await (deliberate serialization), so
+    /// "parallel" option probes would just queue on that mutex — with the
+    /// extra cost of N parked threads.
+    pub fn search_chunks_fused_with_options(
+        &self,
+        query: &str,
+        options: &[String],
+        limit: usize,
+    ) -> (Vec<MemoryHit>, &'static str) {
+        let options = sanitize_query_options(options);
+        if limit == 0 || options.is_empty() {
+            // Nothing to expand: byte-identical to the plain fused path.
+            return self.search_chunks_fused(query, limit);
+        }
+        let mut lists: Vec<Vec<MemoryHit>> = Vec::with_capacity(options.len() + 1);
+        lists.push(self.search_chunks_fused(query, limit).0);
+        for option in &options {
+            lists.push(self.search_chunks_fused(option, limit).0);
+        }
+        let refs: Vec<&[MemoryHit]> = lists.iter().map(Vec::as_slice).collect();
+        (Self::rrf_merge_hits(&refs, limit), "fused+options")
     }
 
     /// Fuse N already-ranked hit lists into one, by key, with the same RRF
@@ -187,4 +234,95 @@ impl Memory {
 /// vector store).
 pub(super) fn fuse_ranked_ids(bm25: &[String], semantic: &[String]) -> Vec<(String, f64)> {
     rrf_fuse_many(&[bm25, semantic])
+}
+
+/// Hard ceiling on options honored per request. Each option costs a full
+/// retrieval (two indexed legs plus one brute-force vector scan), so the
+/// list length is a latency amplifier controlled by an external caller. The
+/// contract's choice questions carry 3-5 options; 8 leaves headroom without
+/// inviting abuse.
+pub const MAX_QUERY_OPTIONS: usize = 8;
+
+/// Normalize a request's `options` before they drive retrieval: trim each,
+/// drop the blanks, drop exact duplicates (first occurrence wins, order
+/// preserved), and truncate at [`MAX_QUERY_OPTIONS`] with one stderr note.
+/// Pure, so it is unit-testable with no store and no embedder.
+fn sanitize_query_options(options: &[String]) -> Vec<String> {
+    let mut cleaned: Vec<String> = Vec::with_capacity(options.len().min(MAX_QUERY_OPTIONS));
+    for raw in options {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if cleaned.iter().any(|seen| seen.as_str() == trimmed) {
+            continue;
+        }
+        if cleaned.len() == MAX_QUERY_OPTIONS {
+            eprintln!(
+                "amc/search: {MAX_QUERY_OPTIONS}+ options — truncating the rest of the {} supplied",
+                options.len()
+            );
+            break;
+        }
+        cleaned.push(trimmed.to_string());
+    }
+    cleaned
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn owned(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn test_sanitize_options_trims_drops_blanks_and_dedups() {
+        let cleaned = sanitize_query_options(&owned(&[
+            "  oat milk  ",
+            "",
+            "   ",
+            "oat milk",
+            "green tea",
+            "green tea",
+        ]));
+        assert_eq!(cleaned, owned(&["oat milk", "green tea"]));
+    }
+
+    #[test]
+    fn test_sanitize_options_caps_at_eight() {
+        let twelve: Vec<String> = (0..12).map(|i| format!("option {i}")).collect();
+        let cleaned = sanitize_query_options(&twelve);
+        assert_eq!(cleaned.len(), MAX_QUERY_OPTIONS);
+        assert_eq!(cleaned[0], "option 0", "order preserved from the front");
+        assert_eq!(cleaned[MAX_QUERY_OPTIONS - 1], "option 7");
+    }
+
+    #[test]
+    fn test_sanitize_options_empty_input() {
+        assert!(sanitize_query_options(&[]).is_empty());
+        assert!(sanitize_query_options(&owned(&["", "  "])).is_empty());
+    }
+
+    /// Equal-weight fusion is the mechanism that suppresses distractor
+    /// noise: a chunk only one option pulls in keeps a single contribution,
+    /// while a chunk the query and a second list both rank sums two.
+    #[test]
+    fn test_rrf_merge_equal_weight_consensus_wins() {
+        let hit = |key: &str| MemoryHit {
+            key: key.to_string(),
+            content: format!("text of {key}"),
+            score: 0.0,
+            rank: 1,
+            created_at: Some(0),
+        };
+        // `both` is rank 1 in two lists; `lone` is rank 1 in one list only.
+        let a = vec![hit("both"), hit("lone")];
+        let b = vec![hit("both")];
+        let merged = Memory::rrf_merge_hits(&[a.as_slice(), b.as_slice()], 10);
+        assert_eq!(merged[0].key, "both", "2 contributions beat 1");
+        assert!(merged[0].score > merged[1].score);
+        assert_eq!(merged[1].key, "lone");
+    }
 }

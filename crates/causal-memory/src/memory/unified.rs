@@ -132,7 +132,9 @@ impl Memory {
             crate::observability::metrics().record_recall_seeds("bm25", bm25.len());
             seeds.extend(bm25.into_iter().map(|id| (id, "bm25")));
         }
-        if let Some(Ok(vec)) = block_on(crate::embed::embed_shared(query)) {
+        // QUERY SIDE: instruction-prefixed embedding (the stored fact/causal
+        // vectors are bare passages).
+        if let Some(Ok(vec)) = block_on(crate::embed::embed_shared_query(query)) {
             let mut n = 0usize;
             if let Ok(sem) = self
                 .store

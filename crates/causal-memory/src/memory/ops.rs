@@ -154,6 +154,8 @@ impl Memory {
                 // block recording; the `causal-memory embed` CLI backfills
                 // anything missed. C3: record_decision_full now returns the
                 // edge id directly (the old code re-queried it by from_id).
+                // WRITE SIDE — bare `embed_shared`, never the `_query`
+                // sibling: this text is a stored passage.
                 let text = format!("{decision} {outcome}");
                 if let Some(Ok(vec)) = block_on(crate::embed::embed_shared(&text)) {
                     let _ = self.store.put_embedding(edge_id, "shared", &vec);
@@ -501,7 +503,8 @@ impl Memory {
             // ── Semantic path: embed + cosine ──
             // Requires a configured embedding endpoint; any failure falls back to
             // the BM25 path below.
-            if let Some(Ok(vec)) = block_on(crate::embed::embed_shared(query)) {
+            // QUERY SIDE (instruction-prefixed); stored vectors stay bare.
+            if let Some(Ok(vec)) = block_on(crate::embed::embed_shared_query(query)) {
                 let semantic = self
                     .store
                     .search_causal_semantic_entity_boosted(&vec, query, task_tag, limit)
@@ -668,6 +671,7 @@ impl Memory {
 
         // Opportunistic embedding (silent on any failure — must never block
         // recording; a CLI backfill path can catch up later).
+        // WRITE SIDE — bare `embed_shared`: a stored passage.
         let text = format!("{} {}", key.replace('_', " "), value);
         if let Some(Ok(vec)) = block_on(crate::embed::embed_shared(&text)) {
             let _ = self.store.put_fact_embedding(fact_id, "shared", &vec);
@@ -710,7 +714,8 @@ impl Memory {
 
         if let Some(query) = query.filter(|q| !q.trim().is_empty()) {
             // Semantic path: embed + cosine (requires a configured endpoint).
-            if let Some(Ok(vec)) = block_on(crate::embed::embed_shared(query)) {
+            // QUERY SIDE (instruction-prefixed); stored fact vectors stay bare.
+            if let Some(Ok(vec)) = block_on(crate::embed::embed_shared_query(query)) {
                 let semantic = self.store.search_facts_semantic(&vec, scope, limit).ok();
                 // Only short-circuit on actual hits — an empty semantic
                 // result (e.g. facts written without embeddings) falls
@@ -940,6 +945,8 @@ impl Memory {
         if !crate::embed::embed_write_enabled() || !crate::embed::embedder_available() {
             return;
         }
+        // WRITE SIDE — bare `embed_shared`: the raw turn IS the passage every
+        // prefixed query is matched against.
         if let Some(Ok(vec)) = block_on(crate::embed::embed_shared(payload)) {
             let _ = self.store.put_chunk_embedding(chunk_id, "shared", &vec);
         }
@@ -1205,7 +1212,8 @@ impl Memory {
         // serves both layers. Per-layer fallthrough: an empty/failed
         // semantic result (e.g. records stored without embeddings) degrades
         // that layer to BM25 instead of silently missing hits.
-        let query_vec = block_on(crate::embed::embed_shared(query)).and_then(|r| r.ok());
+        // QUERY SIDE: one instruction-prefixed embedding serves both layers.
+        let query_vec = block_on(crate::embed::embed_shared_query(query)).and_then(|r| r.ok());
 
         let mut used_semantic = false;
         let facts: Vec<AgentFact> = match &query_vec {
@@ -1941,7 +1949,8 @@ impl Memory {
         min_confidence: f64,
         limit: usize,
     ) -> Option<Vec<Vec<ChainHop>>> {
-        let Some(Ok(vec)) = block_on(crate::embed::embed_shared(action)) else {
+        // QUERY SIDE: the action text is a probe, not a stored passage.
+        let Some(Ok(vec)) = block_on(crate::embed::embed_shared_query(action)) else {
             return None;
         };
         let seeds = self
@@ -2211,7 +2220,8 @@ impl Memory {
         task_tag: Option<&str>,
         limit: usize,
     ) -> (Vec<crate::store::CausalEntry>, &'static str) {
-        let semantic = crate::embed::embed_shared(query).await.and_then(|r| {
+        // QUERY SIDE: counterfactual probe text, never a stored passage.
+        let semantic = crate::embed::embed_shared_query(query).await.and_then(|r| {
             let vec = r.ok()?;
             let hits = self
                 .store
@@ -2326,7 +2336,8 @@ impl Memory {
         //    Markov blanket around the seeds, serialized as compact stubs.
         let mut tag = "[bm25]";
         let mut seeds: Vec<CausalEntry> = Vec::new();
-        if let Some(Ok(vec)) = block_on(crate::embed::embed_shared(query)) {
+        // QUERY SIDE: reconstruction topic, not a stored passage.
+        if let Some(Ok(vec)) = block_on(crate::embed::embed_shared_query(query)) {
             if let Ok(hits) =
                 self.store
                     .similar_decision_edges(&vec, 3, INTERVENTION_MIN_SIMILARITY)

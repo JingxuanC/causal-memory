@@ -203,6 +203,85 @@ impl LocalEmbedder {
     }
 }
 
+// ─── Query-side instruction prefixes ──────────────────────────────────
+
+/// BGE English models are trained ASYMMETRICALLY: the query carries this
+/// instruction sentence, the passage carries nothing. fastembed 5.17.4
+/// applies no prefix of its own (no prefix logic anywhere in the crate;
+/// `embed()` is tokenizer + forward), so every query this process embedded
+/// up to now was off-distribution for the model that scored it.
+const BGE_EN_QUERY_PREFIX: &str = "Represent this sentence for searching relevant passages: ";
+
+/// E5 models express the same asymmetry as a two-token tag instead of a
+/// sentence ("passage: " is the write-side counterpart).
+const E5_QUERY_PREFIX: &str = "query: ";
+
+/// The query-side instruction for a local model name — `""` for models
+/// trained symmetrically (or names we do not know), so callers can append
+/// the result unconditionally.
+///
+/// Only the LOCAL (fastembed) backend has a prefix concept at all; the HTTP
+/// backend case is decided in [`prefix_for_embedder`], never here.
+fn query_prefix_for_model(model: &str) -> &'static str {
+    let m = model.to_ascii_lowercase();
+    // The `-en` infix separates the English BGE v1.5 line (which wants the
+    // instruction) from `bge-*-zh-v1.5` (which does NOT — its instruction is
+    // Chinese and its passages were trained against bare queries) and from
+    // `bge-m3` (no instruction at all). Keeping the `bge-` guard makes the
+    // intent explicit and keeps the e5 arm below from ever shadowing it.
+    if m.contains("bge-") && m.contains("-en") {
+        return BGE_EN_QUERY_PREFIX;
+    }
+    if m.contains("e5") {
+        return E5_QUERY_PREFIX;
+    }
+    // all-MiniLM-*, and anything unrecognized: symmetric training, no prefix.
+    ""
+}
+
+/// The query prefix for a given embedder instance. HTTP is always `""`:
+/// an OpenAI-compatible `/embeddings` endpoint takes one text per request
+/// and defines no query/passage instruction channel, so there is nothing to
+/// append (the model behind it was not trained with one either).
+fn prefix_for_embedder(embedder: Option<&UnifiedEmbedder>) -> &'static str {
+    match embedder {
+        Some(UnifiedEmbedder::Http(_)) | None => "",
+        #[cfg(feature = "local-embed")]
+        Some(UnifiedEmbedder::Local(local)) => query_prefix_for_model(local.model()),
+    }
+}
+
+/// [`prefix_for_embedder`] for the process-global shared embedder. The
+/// `OnceLock` means this answer never changes for the life of the process,
+/// so the brief lock here costs one uncontended acquire per query.
+fn shared_query_prefix() -> &'static str {
+    let Some(slot) = shared_embedder() else {
+        return prefix_for_embedder(None);
+    };
+    // A poisoned guard must not take the query path down; no prefix.
+    match slot.lock() {
+        Ok(guard) => prefix_for_embedder(guard.as_ref()),
+        Err(_) => "",
+    }
+}
+
+/// Is the query-side prefix applied? Pure resolver, split from env access so
+/// tests never mutate process env (env writes race under `cargo test`).
+/// Anything but an explicit off value means `auto` — a typo must not
+/// silently degrade retrieval to the pre-fix behaviour.
+fn query_prefix_enabled_with(raw: Option<&str>) -> bool {
+    !matches!(
+        raw.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("off" | "false" | "0" | "no")
+    )
+}
+
+/// `CAUSAL_MEMORY_QUERY_PREFIX=auto` (default) | `off`. Read per call,
+/// never cached: the A/B arms toggle it inside one process.
+fn query_prefix_enabled() -> bool {
+    query_prefix_enabled_with(std::env::var("CAUSAL_MEMORY_QUERY_PREFIX").ok().as_deref())
+}
+
 // ─── Unified embedder ─────────────────────────────────────────────────
 
 /// Unified embedder that abstracts over HTTP and Local backends.
@@ -340,6 +419,40 @@ pub async fn embed_shared(text: &str) -> Option<Result<Vec<f32>>> {
     let mut guard = slot.lock().ok()?;
     let embedder = guard.as_mut()?;
     Some(embed_cached(embedder, text).await)
+}
+
+/// Query-side sibling of [`embed_shared`]: prepends the ACTIVE model's query
+/// instruction (see [`query_prefix_for_model`]) and then embeds.
+///
+/// This is what every RETRIEVAL path must call. The WRITE paths
+/// (`record_decision` / `record_fact` / `embed_raw_chunk`) must keep calling
+/// bare [`embed_shared`]: a passage carrying the query instruction is pulled
+/// away from every real query, which is the exact asymmetry this fixes.
+///
+/// Prefixing the TEXT (rather than post-processing the vector) keeps the LRU
+/// key honest — `embed_cached` keys on the string handed to the endpoint, so
+/// a prefixed query and a bare passage of the same words are two distinct
+/// entries and can never poison each other. That is also why nothing has to
+/// be rebuilt: the write side is untouched, so no stored vector is stale.
+pub async fn embed_shared_query(text: &str) -> Option<Result<Vec<f32>>> {
+    let prefix = query_prefix_label();
+    if prefix.is_empty() {
+        return embed_shared(text).await;
+    }
+    embed_shared(&format!("{prefix}{text}")).await
+}
+
+/// The instruction [`embed_shared_query`] would prepend right now — `""`
+/// when the switch is off, when the backend is HTTP, or when the model was
+/// trained symmetrically. Exposed so the AMC server can print it at startup:
+/// a missing prefix on a model that needs one degrades the semantic leg
+/// silently (the vectors still come back, they are just less useful), which
+/// is exactly the kind of failure a one-line startup log prevents.
+pub fn query_prefix_label() -> &'static str {
+    if !query_prefix_enabled() {
+        return "";
+    }
+    shared_query_prefix()
 }
 
 // ─── Embedding result cache (B4) ───────────────────────────────────────
@@ -526,6 +639,80 @@ mod tests {
         assert_eq!(c.api_base, "http://e/v1");
         assert_eq!(c.api_key, "ek");
         assert_eq!(c.model, "bge-m3");
+    }
+
+    // ─── Query-side instruction prefix ──────────────────────────────────
+
+    #[test]
+    fn test_query_prefix_english_bge_gets_the_sentence() {
+        for m in [
+            "BAAI/bge-small-en-v1.5",
+            "BAAI/bge-base-en-v1.5",
+            "BAAI/bge-large-en-v1.5",
+            "bge-small-en-v1.5",
+        ] {
+            assert_eq!(
+                query_prefix_for_model(m),
+                BGE_EN_QUERY_PREFIX,
+                "{m} is an English BGE — it wants the instruction"
+            );
+        }
+    }
+
+    #[test]
+    fn test_query_prefix_chinese_bge_and_m3_get_none() {
+        // The Chinese line's instruction is a different (Chinese) sentence and
+        // its passages were trained against bare queries: appending the
+        // English one would be a *worse* mismatch than appending nothing.
+        for m in [
+            "BAAI/bge-small-zh-v1.5",
+            "BAAI/bge-large-zh-v1.5",
+            "BAAI/bge-m3",
+        ] {
+            assert_eq!(query_prefix_for_model(m), "", "{m} must stay bare");
+        }
+    }
+
+    #[test]
+    fn test_query_prefix_e5_and_minilm() {
+        assert_eq!(
+            query_prefix_for_model("intfloat/multilingual-e5-small"),
+            E5_QUERY_PREFIX
+        );
+        assert_eq!(
+            query_prefix_for_model("intfloat/e5-large-v2"),
+            E5_QUERY_PREFIX
+        );
+        // Symmetric models, and unknown names (never guess a prefix).
+        assert_eq!(query_prefix_for_model("all-MiniLM-L6-v2"), "");
+        assert_eq!(query_prefix_for_model("all-MiniLM-L12-v2"), "");
+        assert_eq!(query_prefix_for_model("some/future-model"), "");
+    }
+
+    #[test]
+    fn test_query_prefix_http_backend_has_none() {
+        // An OpenAI-compatible endpoint has no query/passage channel: no
+        // prefix, whatever model name the config carries.
+        let http = UnifiedEmbedder::Http(Embedder::new(EmbedConfig {
+            api_base: "http://127.0.0.1:1/v1".into(),
+            api_key: "k".into(),
+            model: "bge-small-en-v1.5".into(),
+        }));
+        assert_eq!(prefix_for_embedder(Some(&http)), "");
+        // No embedder at all → nothing to prefix.
+        assert_eq!(prefix_for_embedder(None), "");
+    }
+
+    #[test]
+    fn test_query_prefix_switch_off_disables() {
+        assert!(query_prefix_enabled_with(None), "unset = auto = on");
+        assert!(query_prefix_enabled_with(Some("auto")));
+        // A typo must fall back to auto, not silently to off.
+        assert!(query_prefix_enabled_with(Some("AUTO")));
+        assert!(query_prefix_enabled_with(Some("nonsense")));
+        for off in ["off", "OFF", " off ", "false", "0", "no"] {
+            assert!(!query_prefix_enabled_with(Some(off)), "{off} must disable");
+        }
     }
 
     // ─── B4: embedding LRU cache ────────────────────────────────────────

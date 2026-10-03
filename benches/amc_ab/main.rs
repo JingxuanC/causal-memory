@@ -15,17 +15,30 @@
 //!    sessions of `--turns` dialogue turns, ingested through the REAL raw
 //!    write path (`remember_raw_turns_with_request_id`) with increasing
 //!    timestamps. No LLM, no network beyond the configured embedder.
-//! 2. **Planted gold facts**, each with a differently-worded query. Half are
-//!    the *keyword* slice (query and evidence share content tokens — a BM25
-//!    leg can find them), half are the *semantic-only* slice (zero token
-//!    overlap — only a vector leg can). The split is verified at startup.
+//! 2. **Planted gold facts**, each with a differently-worded query and a
+//!    choice-question `options` list (one correct answer, 2-3 same-topic
+//!    distractors). Three slices, each verified at startup:
+//!    - *keyword*: the query and the evidence share content tokens, so a
+//!      BM25 leg can find it;
+//!    - *semantic-only*: zero token overlap — only a vector leg can;
+//!    - *option-reachable*: zero token overlap with the query, but the
+//!      CORRECT OPTION's wording does overlap. These are the probes whose
+//!      only lexical bridge to the evidence is the option text, i.e. the
+//!      slice options-expanded retrieval is supposed to win.
+//!    Whether such a probe is ALSO semantically reachable is what the run
+//!    measures, not what the label asserts — only the lexical half of every
+//!    label is machine-checked.
 //! 3. **Marker scoring**: a hit counts when its `content` contains the gold's
 //!    distinctive marker string. Arm-agnostic on purpose — for the same raw
 //!    turns the spread engine returns `"{decision}" →(no_effect)→ "{outcome}"`
 //!    lessons, so key- or shape-based matching would score it zero for a
 //!    formatting difference the platform's answer model never sees.
-//! 4. Three arms, one measured pass each: recall@5, recall@10, MRR,
-//!    p50/p95 query latency, plus recall@10 split by slice.
+//! 4. Four arms, one measured pass each — `spread`, `fused`, `merge`, and
+//!    `fused+options` (the same fused path driven with the gold's options,
+//!    which is what `AMC_OPTIONS_RETRIEVAL=on` turns on). Every arm sees the
+//!    same stores and the same golds, so the table's recall columns are
+//!    **counts over a fixed denominator** (`33/42`, not `0.786`) and the
+//!    paired table reports the same gold flipping between two arms.
 //!
 //! Usage:
 //!   cargo run --release --bin causal-memory-amc-ab [--seed 42] [--users 3]
@@ -36,6 +49,11 @@
 //! `--features local-embed` (plus a populated FASTEMBED_CACHE_DIR), or set
 //! CAUSAL_MEMORY_EMBED_API + CAUSAL_MEMORY_EMBED_KEY.
 //! `CAUSAL_MEMORY_EMBED_WRITE` is forced on: chunk vectors are the point.
+//!
+//! `CAUSAL_MEMORY_QUERY_PREFIX=off` turns off the model's query-side
+//! instruction, so the query-prefix fix can be A/B'd by running this harness
+//! twice on the same seed (the arms are not affected — the prefix is a
+//! property of the query embedding, not of the retrieval path).
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -64,8 +82,34 @@ impl SplitMix64 {
 
 // ─── Ground truth ─────────────────────────────────────────────────────────
 
+/// Which probe shape a gold exercises. Verified against the actual token
+/// overlap at startup — never taken on trust.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Slice {
+    /// The query shares a content token with the evidence: BM25-reachable.
+    Keyword,
+    /// Zero overlap: only a semantic leg can reach it.
+    Semantic,
+    /// Zero overlap with the QUERY, but the correct option's wording does
+    /// overlap — the option text is the only lexical bridge.
+    OptionReachable,
+}
+
+impl Slice {
+    const ALL: [Slice; 3] = [Slice::Keyword, Slice::Semantic, Slice::OptionReachable];
+
+    fn label(self) -> &'static str {
+        match self {
+            Slice::Keyword => "keyword",
+            Slice::Semantic => "semantic-only",
+            Slice::OptionReachable => "option-reachable",
+        }
+    }
+}
+
 /// One planted fact: an evidence turn in the corpus, a probe phrasing the
-/// same fact differently, and the marker that identifies the evidence.
+/// same fact differently, the choice-question options that accompany it, and
+/// the marker that identifies the evidence.
 struct GoldSpec {
     /// Distinctive substring of the evidence turn — present verbatim in
     /// whatever a correct retrieval returns.
@@ -74,10 +118,12 @@ struct GoldSpec {
     evidence: &'static str,
     /// The probe: same fact, different wording.
     query: &'static str,
-    /// `true` = the query shares at least one content token with the
-    /// evidence (the BM25-reachable slice); `false` = zero overlap (only a
-    /// semantic leg can reach it). Verified at startup, never assumed.
-    keyword: bool,
+    /// The choice-question candidates, as the platform sends them:
+    /// `options[0]` is the CORRECT answer and must contain the marker; the
+    /// rest are same-topic distractors that must not. Both are enforced at
+    /// startup, so "the correct option" is a checked claim, not a comment.
+    options: &'static [&'static str],
+    slice: Slice,
 }
 
 const GOLDS: &[GoldSpec] = &[
@@ -86,74 +132,435 @@ const GOLDS: &[GoldSpec] = &[
         marker: "mongoose",
         evidence: "the billing job uses the mongoose ORM",
         query: "which ORM does the billing job use",
-        keyword: true,
+        options: &["the mongoose ORM", "sequelize models", "a prisma client", "typeorm entities"],
+        slice: Slice::Keyword,
     },
     GoldSpec {
         marker: "PostgreSQL 16",
         evidence: "the analytics warehouse was upgraded to PostgreSQL 16 in march",
         query: "when was the analytics warehouse upgraded to PostgreSQL",
-        keyword: true,
+        options: &["PostgreSQL 16", "MySQL 8", "SQLite 3", "Oracle 19c"],
+        slice: Slice::Keyword,
     },
     GoldSpec {
         marker: "kubernetes cluster",
-        evidence: "the ingest workers now run on a kubernetes cluster in frankfurt",
+        evidence: "the ingest workers now run on a kubernetes cluster in amsterdam",
         query: "where do the ingest workers run their kubernetes jobs",
-        keyword: true,
+        options: &[
+            "the kubernetes cluster in Amsterdam",
+            "a bare metal fleet",
+            "ECS tasks",
+            "Nomad jobs",
+        ],
+        slice: Slice::Keyword,
     },
     GoldSpec {
         marker: "oat milk",
         evidence: "my usual coffee order is a flat white with oat milk",
         query: "what milk goes in my coffee order",
-        keyword: true,
+        options: &["oat milk", "whole milk", "soy milk", "almond milk"],
+        slice: Slice::Keyword,
     },
     GoldSpec {
         marker: "redis cluster",
         evidence: "the session cache was moved to a redis cluster with three shards",
         query: "which cache did we move to a redis cluster",
-        keyword: true,
+        options: &[
+            "a redis cluster with three shards",
+            "a memcached pool",
+            "a postgres table",
+            "a local file cache",
+        ],
+        slice: Slice::Keyword,
     },
     GoldSpec {
         marker: "jitter",
         evidence: "the flaky retry test was fixed by adding jitter to the backoff",
         query: "how was the flaky retry test fixed",
-        keyword: true,
+        options: &[
+            "adding jitter to the backoff",
+            "raising the retry limit",
+            "pinning the system clock",
+            "disabling the test",
+        ],
+        slice: Slice::Keyword,
+    },
+    GoldSpec {
+        marker: "gRPC",
+        evidence: "the internal service mesh moved from REST to gRPC last quarter",
+        query: "which protocol does the internal service mesh speak now",
+        options: &["gRPC", "GraphQL", "SOAP", "Thrift"],
+        slice: Slice::Keyword,
+    },
+    GoldSpec {
+        marker: "terraform",
+        evidence: "all the staging infrastructure is described in terraform modules",
+        query: "how is the staging infrastructure described",
+        options: &[
+            "terraform modules",
+            "ansible playbooks",
+            "cloudformation templates",
+            "pulumi stacks",
+        ],
+        slice: Slice::Keyword,
+    },
+    GoldSpec {
+        marker: "sourdough",
+        evidence: "I bake sourdough every sunday morning",
+        query: "what do I bake every sunday",
+        options: &["sourdough", "focaccia", "brioche", "a banana loaf"],
+        slice: Slice::Keyword,
+    },
+    GoldSpec {
+        marker: "Grafana",
+        evidence: "the latency dashboards live in Grafana on the ops host",
+        query: "where do the latency dashboards live",
+        options: &["in Grafana", "in Kibana", "in Datadog", "in a spreadsheet"],
+        slice: Slice::Keyword,
+    },
+    GoldSpec {
+        marker: "ClickHouse",
+        evidence: "the event rollups are stored in ClickHouse for the analytics team",
+        query: "what stores the event rollups",
+        options: &["ClickHouse", "BigQuery", "DuckDB", "Redshift"],
+        slice: Slice::Keyword,
+    },
+    GoldSpec {
+        marker: "pytest",
+        evidence: "the python services run their tests with pytest in CI",
+        query: "how do the python services run their tests",
+        options: &["with pytest", "with unittest", "with behave", "with nose"],
+        slice: Slice::Keyword,
+    },
+    GoldSpec {
+        marker: "Frankfurt",
+        evidence: "the primary region for the new cluster is Frankfurt",
+        query: "which region hosts the new primary cluster",
+        options: &["Frankfurt", "Dublin", "Singapore", "Sydney"],
+        slice: Slice::Keyword,
+    },
+    GoldSpec {
+        marker: "two weeks",
+        evidence: "the incident review is due two weeks after the outage",
+        query: "how long after the outage is the incident review due",
+        options: &["two weeks", "one week", "one month", "the next sprint"],
+        slice: Slice::Keyword,
+    },
+    GoldSpec {
+        marker: "Rust",
+        evidence: "the edge proxy was rewritten in Rust to cut the memory footprint",
+        query: "what language was the edge proxy rewritten in",
+        options: &["Rust", "Go", "Zig", "C++"],
+        slice: Slice::Keyword,
+    },
+    GoldSpec {
+        marker: "blue-green",
+        evidence: "deploys use a blue-green swap so rollback is instant",
+        query: "how do deploys make rollback instant",
+        options: &[
+            "a blue-green swap",
+            "a canary release",
+            "a recreate rollout",
+            "a rolling update",
+        ],
+        slice: Slice::Keyword,
     },
     // ── Semantic-only slice: zero token overlap with the query ──────────
     GoldSpec {
         marker: "neovim",
         evidence: "all my coding happens in neovim with a custom lua config",
         query: "which editor do I use",
-        keyword: false,
+        options: &["neovim", "VS Code", "IntelliJ", "Sublime Text"],
+        slice: Slice::Semantic,
     },
     GoldSpec {
         marker: "dim palette",
         evidence: "I switch every interface to a dim palette after sunset",
         query: "do I prefer light or dark themes",
-        keyword: false,
+        options: &[
+            "a dim palette",
+            "a bright palette",
+            "the system default",
+            "high contrast mode",
+        ],
+        slice: Slice::Semantic,
     },
     GoldSpec {
         marker: "six engineers",
         evidence: "the on-call rotation covers six engineers across two time zones",
         query: "how big is the pager group",
-        keyword: false,
+        options: &[
+            "six engineers",
+            "three engineers",
+            "a dozen engineers",
+            "two engineers",
+        ],
+        slice: Slice::Semantic,
     },
     GoldSpec {
         marker: "384-dimensional",
         evidence: "we settled on a 384-dimensional sentence encoder for the recall pipeline",
         query: "which embedding model does the memory service use",
-        keyword: false,
+        options: &[
+            "a 384-dimensional encoder",
+            "a 768-dimensional encoder",
+            "a 1536-dimensional encoder",
+            "a sparse BM25 index",
+        ],
+        slice: Slice::Semantic,
     },
     GoldSpec {
         marker: "non-cryptographic",
         evidence: "account names are hashed with a tiny non-cryptographic hash before they hit the filesystem",
         query: "how does the server turn user ids into file paths",
-        keyword: false,
+        options: &[
+            "a non-cryptographic hash",
+            "a SHA-256 digest",
+            "an encrypted mapping",
+            "a sequential counter",
+        ],
+        slice: Slice::Semantic,
     },
     GoldSpec {
         marker: "conflict-free",
         evidence: "simultaneous edits are merged with a conflict-free replicated data type",
         query: "how do two devices reconcile their changes",
-        keyword: false,
+        options: &[
+            "a conflict-free replicated data type",
+            "a last-write-wins timestamp",
+            "a central lock",
+            "a manual merge",
+        ],
+        slice: Slice::Semantic,
+    },
+    GoldSpec {
+        marker: "standing desk",
+        evidence: "my desk at home is a standing desk I crank up after lunch",
+        query: "do I prefer to sit or stay upright while typing",
+        options: &[
+            "a standing desk",
+            "a kneeling chair",
+            "a treadmill desk",
+            "a yoga ball",
+        ],
+        slice: Slice::Semantic,
+    },
+    GoldSpec {
+        marker: "twice a year",
+        evidence: "the whole team flies out for an offsite twice a year",
+        query: "how often does everyone meet in person",
+        options: &[
+            "twice a year",
+            "once a quarter",
+            "every month",
+            "every other year",
+        ],
+        slice: Slice::Semantic,
+    },
+    GoldSpec {
+        marker: "sleep tracker",
+        evidence: "I wear a sleep tracker ring to bed every night",
+        query: "how do I keep an eye on my rest",
+        options: &[
+            "a sleep tracker ring",
+            "a fitness watch",
+            "a chest strap",
+            "a phone alarm",
+        ],
+        slice: Slice::Semantic,
+    },
+    GoldSpec {
+        marker: "fifty percent",
+        evidence: "we cut the cold start time by fifty percent after the rewrite",
+        query: "how much faster is the service now",
+        options: &[
+            "fifty percent faster",
+            "twice as fast",
+            "ten percent faster",
+            "no faster at all",
+        ],
+        slice: Slice::Semantic,
+    },
+    GoldSpec {
+        marker: "one on one",
+        evidence: "my manager and I sync one on one every friday",
+        query: "how regularly does the user talk to the boss",
+        options: &[
+            "a weekly one on one",
+            "a monthly team review",
+            "an email thread",
+            "a quarterly survey",
+        ],
+        slice: Slice::Semantic,
+    },
+    GoldSpec {
+        marker: "cast iron",
+        evidence: "I cook almost everything in a cast iron skillet",
+        query: "what cookware do I reach for most",
+        options: &[
+            "a cast iron skillet",
+            "a nonstick pan",
+            "a stainless steel pot",
+            "a wok",
+        ],
+        slice: Slice::Semantic,
+    },
+    GoldSpec {
+        marker: "three days",
+        evidence: "the team is remote and meets in the office three days a week",
+        query: "how often does everyone come in",
+        options: &[
+            "three days a week",
+            "every day",
+            "once a month",
+            "twice a week",
+        ],
+        slice: Slice::Semantic,
+    },
+    GoldSpec {
+        marker: "cassette",
+        evidence: "my first album was a cassette I bought at a flea market",
+        query: "what started the record collection",
+        options: &["a cassette", "a CD", "a minidisc", "a streaming playlist"],
+        slice: Slice::Semantic,
+    },
+    // ── Option-reachable slice: the OPTION is the only lexical bridge ───
+    // Every query here is oblique on purpose (it shares no content token
+    // with the evidence), while options[0] names the evidence's own
+    // vocabulary. This is the shape the AMC choice questions arrive in.
+    GoldSpec {
+        marker: "espresso",
+        evidence: "I start the day with a double espresso from the corner shop",
+        query: "what gets me going in the morning",
+        options: &[
+            "a double espresso",
+            "a pot of green tea",
+            "an orange juice",
+            "a glass of water",
+        ],
+        slice: Slice::OptionReachable,
+    },
+    GoldSpec {
+        marker: "budget spreadsheet",
+        evidence: "every purchase over a hundred dollars goes into a budget spreadsheet first",
+        query: "how do I keep track of spending",
+        options: &[
+            "a budget spreadsheet",
+            "a banking app",
+            "a paper ledger",
+            "a shoebox of receipts",
+        ],
+        slice: Slice::OptionReachable,
+    },
+    GoldSpec {
+        marker: "window seat",
+        evidence: "I always book a window seat when I fly for work",
+        query: "what small thing makes a trip better",
+        options: &["a window seat", "an aisle seat", "extra legroom", "a lounge pass"],
+        slice: Slice::OptionReachable,
+    },
+    GoldSpec {
+        marker: "noise cancelling headphones",
+        evidence: "I put on noise cancelling headphones the moment the room fills up",
+        query: "what helps me concentrate when it is busy around me",
+        options: &[
+            "noise cancelling headphones",
+            "a white noise machine",
+            "lo-fi playlists",
+            "a desk by the window",
+        ],
+        slice: Slice::OptionReachable,
+    },
+    GoldSpec {
+        marker: "sqlite",
+        evidence: "the side project keeps everything in a single sqlite file",
+        query: "how is that hobby app storing its data",
+        options: &[
+            "one sqlite file",
+            "a postgres server",
+            "a json file on disk",
+            "a hosted database",
+        ],
+        slice: Slice::OptionReachable,
+    },
+    GoldSpec {
+        marker: "hand written",
+        evidence: "the changelog is hand written by the on-call engineer",
+        query: "how does the team document what ships",
+        options: &[
+            "hand written by the on-call engineer",
+            "generated from the commit log",
+            "pasted from the ticket tracker",
+            "summarised by a tool",
+        ],
+        slice: Slice::OptionReachable,
+    },
+    GoldSpec {
+        marker: "night shift",
+        evidence: "the batch jobs all run on a night shift schedule",
+        query: "when does the heavy processing happen",
+        options: &[
+            "a night shift schedule",
+            "during the morning lull",
+            "continuously through the day",
+            "at the end of the quarter",
+        ],
+        slice: Slice::OptionReachable,
+    },
+    GoldSpec {
+        marker: "bamboo",
+        evidence: "my desk chair has a bamboo frame",
+        query: "which natural material shows up in the workspace",
+        options: &["a bamboo frame", "recycled plastic", "brushed aluminium", "solid oak"],
+        slice: Slice::OptionReachable,
+    },
+    GoldSpec {
+        marker: "compost",
+        evidence: "the kitchen scraps all go into a compost bin",
+        query: "how does the house deal with food waste",
+        options: &[
+            "into a compost bin",
+            "into the regular trash",
+            "to a neighbour's chickens",
+            "down the sink",
+        ],
+        slice: Slice::OptionReachable,
+    },
+    GoldSpec {
+        marker: "paper map",
+        evidence: "on trips I still navigate with a paper map",
+        query: "what do I rely on when I am somewhere new",
+        options: &[
+            "a paper map",
+            "the maps app on my phone",
+            "asking a local",
+            "street signs",
+        ],
+        slice: Slice::OptionReachable,
+    },
+    GoldSpec {
+        marker: "vinyl",
+        evidence: "I still buy vinyl records from the shop on the corner",
+        query: "how do I support the local music scene",
+        options: &[
+            "buying vinyl records",
+            "a streaming subscription",
+            "gig tickets",
+            "band merch",
+        ],
+        slice: Slice::OptionReachable,
+    },
+    GoldSpec {
+        marker: "kayak",
+        evidence: "most weekends I take the kayak out on the river",
+        query: "what do I do to unwind outdoors",
+        options: &[
+            "take the kayak out",
+            "go for a long run",
+            "work in the garden",
+            "read on the balcony",
+        ],
+        slice: Slice::OptionReachable,
     },
 ];
 
@@ -286,9 +693,19 @@ fn generate(
 /// produces a table nobody can act on, so this runs before the expensive
 /// ingest and aborts on any violation: every marker is verbatim in its
 /// evidence turn, every gold sits inside the corpus, the slice labels match
-/// the actual token overlap, and no distractor leaks a marker.
+/// the actual token overlap, the correct option is really the one carrying
+/// the answer, and no distractor leaks a marker — not its own gold's, not
+/// another gold's, not from the option list, not from the filler turns.
 fn verify_corpus(corpora: &[UserCorpus], placed: &[PlacedGold]) -> Result<()> {
     use causal_memory::patterns::tokenize_expanded;
+
+    // Two golds sharing a marker would cross-score: a hit on either turn
+    // would count for both.
+    for (i, a) in GOLDS.iter().enumerate() {
+        if GOLDS.iter().skip(i + 1).any(|b| b.marker == a.marker) {
+            return Err(anyhow!("two golds share the marker '{}'", a.marker));
+        }
+    }
 
     for gold in placed {
         let spec = gold.spec;
@@ -301,18 +718,78 @@ fn verify_corpus(corpora: &[UserCorpus], placed: &[PlacedGold]) -> Result<()> {
         let query_tokens = tokenize_expanded(spec.query);
         let evidence_tokens = tokenize_expanded(spec.evidence);
         let shared = query_tokens.iter().any(|t| evidence_tokens.contains(t));
-        if spec.keyword && !shared {
+        match spec.slice {
+            Slice::Keyword if !shared => {
+                return Err(anyhow!(
+                    "gold '{}' is labeled keyword but shares no token with its query",
+                    spec.marker
+                ));
+            }
+            // Both non-keyword slices need ZERO query/evidence overlap: the
+            // point of each is that the query wording carries no lexical
+            // handle on the evidence.
+            Slice::Semantic | Slice::OptionReachable if shared => {
+                return Err(anyhow!(
+                    "gold '{}' is labeled {} but shares a token with its query",
+                    spec.marker,
+                    spec.slice.label()
+                ));
+            }
+            _ => {}
+        }
+
+        // ── options invariants ──
+        let (correct, distractors) = spec
+            .options
+            .split_first()
+            .ok_or_else(|| anyhow!("gold '{}' carries no options", spec.marker))?;
+        if distractors.is_empty() {
             return Err(anyhow!(
-                "gold '{}' is labeled keyword but shares no token with its query",
+                "gold '{}' has no distractor option (a choice question needs one)",
                 spec.marker
             ));
         }
-        if !spec.keyword && shared {
+        if !correct.contains(spec.marker) {
             return Err(anyhow!(
-                "gold '{}' is labeled semantic-only but shares a token with its query",
+                "gold '{}': the correct option '{correct}' does not carry the marker",
                 spec.marker
             ));
         }
+        if spec.options.iter().filter(|o| *o == correct).count() > 1 {
+            return Err(anyhow!("gold '{}' repeats its correct option", spec.marker));
+        }
+        for distractor in distractors {
+            if distractor.contains(spec.marker) {
+                return Err(anyhow!(
+                    "gold '{}': distractor '{distractor}' carries the marker — it would \
+                     be a second correct answer",
+                    spec.marker
+                ));
+            }
+            if let Some(other) = GOLDS.iter().find(|g| distractor.contains(g.marker)) {
+                return Err(anyhow!(
+                    "gold '{}': distractor '{distractor}' carries the marker '{}' of \
+                     another gold — it would leak that gold's answer",
+                    spec.marker,
+                    other.marker
+                ));
+            }
+        }
+        if let Slice::OptionReachable = spec.slice {
+            // The defining property of this slice: the option is the ONLY
+            // lexical bridge to the evidence. Without it the gold would be
+            // indistinguishable from semantic-only, and the slice would
+            // measure nothing about options.
+            let option_tokens = tokenize_expanded(correct);
+            if !option_tokens.iter().any(|t| evidence_tokens.contains(t)) {
+                return Err(anyhow!(
+                    "gold '{}' is labeled option-reachable but its correct option shares \
+                     no token with the evidence",
+                    spec.marker
+                ));
+            }
+        }
+
         let placed_ok = corpora
             .get(gold.user)
             .and_then(|c| c.sessions.get(gold.session))
@@ -332,18 +809,24 @@ fn verify_corpus(corpora: &[UserCorpus], placed: &[PlacedGold]) -> Result<()> {
     for (user, corpus) in corpora.iter().enumerate() {
         for (session, (_, turns)) in corpus.sessions.iter().enumerate() {
             for (turn, (_, text, _)) in turns.iter().enumerate() {
-                // The gold's own evidence turn is *supposed* to carry its
-                // marker; every other turn must not.
-                if placed
+                let own = placed
                     .iter()
-                    .any(|g| g.user == user && g.session == session && g.turn == turn)
-                {
-                    continue;
-                }
+                    .find(|g| g.user == user && g.session == session && g.turn == turn);
                 for spec in GOLDS {
+                    // A gold's own evidence turn is *supposed* to carry its
+                    // marker — but only its own. A second marker on it would
+                    // make that gold score a hit on someone else's fact.
+                    if own.is_some_and(|g| g.spec.marker == spec.marker) {
+                        continue;
+                    }
                     if text.contains(spec.marker) {
                         return Err(anyhow!(
-                            "distractor turn leaks the marker '{}': {text}",
+                            "{} leaks the marker '{}': {text}",
+                            if own.is_some() {
+                                "a gold's evidence turn"
+                            } else {
+                                "a distractor turn"
+                            },
                             spec.marker
                         ));
                     }
@@ -356,36 +839,78 @@ fn verify_corpus(corpora: &[UserCorpus], placed: &[PlacedGold]) -> Result<()> {
 
 // ─── Arms ─────────────────────────────────────────────────────────────────
 
+/// Which retrieval path `/search` runs (`AMC_RETRIEVAL`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Arm {
+enum Path {
     Spread,
     Fused,
     Merge,
 }
 
+/// One measured configuration: a retrieval path, plus whether the query is
+/// expanded with the gold's options (`AMC_OPTIONS_RETRIEVAL=on`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Arm {
+    path: Path,
+    /// Only ever `true` for [`Path::Fused`]: the server expands options
+    /// nowhere else, so a `spread+options` arm would measure a configuration
+    /// that cannot be deployed — a row nobody could act on.
+    options: bool,
+}
+
 impl Arm {
-    const ALL: [Arm; 3] = [Arm::Spread, Arm::Fused, Arm::Merge];
+    const SPREAD: Arm = Arm {
+        path: Path::Spread,
+        options: false,
+    };
+    const FUSED: Arm = Arm {
+        path: Path::Fused,
+        options: false,
+    };
+    const FUSED_OPTIONS: Arm = Arm {
+        path: Path::Fused,
+        options: true,
+    };
+    const MERGE: Arm = Arm {
+        path: Path::Merge,
+        options: false,
+    };
+    const ALL: [Arm; 4] = [Arm::SPREAD, Arm::FUSED, Arm::FUSED_OPTIONS, Arm::MERGE];
 
     fn label(self) -> &'static str {
-        match self {
-            Arm::Spread => "spread",
-            Arm::Fused => "fused",
-            Arm::Merge => "merge",
+        match (self.path, self.options) {
+            (Path::Spread, _) => "spread",
+            (Path::Fused, false) => "fused",
+            (Path::Fused, true) => "fused+options",
+            (Path::Merge, _) => "merge",
         }
     }
 
     /// One retrieval, capped exactly like the AMC server caps a response
-    /// (the `.take(top_k)` at its exit).
-    fn search(self, memory: &Memory, query: &str, top_k: usize) -> Vec<MemoryHit> {
-        match self {
-            Arm::Spread => memory
+    /// (the `.take(top_k)` at its exit) — and, for the options arm, through
+    /// the very same library call the server makes, so this table cannot
+    /// drift from what `AMC_OPTIONS_RETRIEVAL=on` actually serves.
+    fn search(
+        self,
+        memory: &Memory,
+        query: &str,
+        options: &[String],
+        top_k: usize,
+    ) -> Vec<MemoryHit> {
+        match self.path {
+            Path::Spread => memory
                 .search_memory_entries(query, None, None, top_k)
                 .0
                 .into_iter()
                 .take(top_k)
                 .collect(),
-            Arm::Fused => memory.search_chunks_fused(query, top_k).0,
-            Arm::Merge => {
+            Path::Fused if self.options => {
+                memory
+                    .search_chunks_fused_with_options(query, options, top_k)
+                    .0
+            }
+            Path::Fused => memory.search_chunks_fused(query, top_k).0,
+            Path::Merge => {
                 let spread = memory.search_memory_entries(query, None, None, top_k).0;
                 let fused = memory.search_chunks_fused(query, top_k).0;
                 Memory::rrf_merge_hits(&[spread.as_slice(), fused.as_slice()], top_k)
@@ -404,35 +929,35 @@ fn marker_rank(hits: &[MemoryHit], marker: &str) -> Option<usize> {
 // ─── Metrics ──────────────────────────────────────────────────────────────
 
 struct ArmRun {
-    /// `(is_keyword_slice, rank_of_first_marker_hit)`, one entry per gold.
-    per_gold: Vec<(bool, Option<usize>)>,
+    /// `(slice, rank_of_first_marker_hit)`, one entry per gold — the SAME
+    /// gold order in every arm, which is what makes the paired table legal.
+    per_gold: Vec<(Slice, Option<usize>)>,
     latencies_ms: Vec<f64>,
 }
 
 impl ArmRun {
-    fn recall_at(&self, k: usize) -> f64 {
-        Self::recall_for(&self.per_gold, k)
+    /// `(hits, denominator)` within `k`. The pair, not the ratio: "0.750"
+    /// says nothing about whether it was measured on 4 golds or 40.
+    fn hits_at(&self, k: usize) -> (usize, usize) {
+        Self::hits_for(&self.per_gold, k)
     }
 
-    fn recall_at_slice(&self, k: usize, keyword: bool) -> f64 {
-        let slice: Vec<(bool, Option<usize>)> = self
+    fn hits_at_slice(&self, k: usize, slice: Slice) -> (usize, usize) {
+        let rows: Vec<(Slice, Option<usize>)> = self
             .per_gold
             .iter()
             .copied()
-            .filter(|(kw, _)| *kw == keyword)
+            .filter(|(s, _)| *s == slice)
             .collect();
-        Self::recall_for(&slice, k)
+        Self::hits_for(&rows, k)
     }
 
-    fn recall_for(rows: &[(bool, Option<usize>)], k: usize) -> f64 {
-        if rows.is_empty() {
-            return 0.0;
-        }
+    fn hits_for(rows: &[(Slice, Option<usize>)], k: usize) -> (usize, usize) {
         let hits = rows
             .iter()
             .filter(|(_, rank)| rank.is_some_and(|r| r <= k))
             .count();
-        hits as f64 / rows.len() as f64
+        (hits, rows.len())
     }
 
     fn mrr(&self) -> f64 {
@@ -456,6 +981,74 @@ impl ArmRun {
         let idx = ((sorted.len() - 1) as f64 * p).round() as usize;
         sorted[idx]
     }
+}
+
+/// `hits/total`, or `-` for an empty slice (never a fake `0/0`).
+fn frac((hits, total): (usize, usize)) -> String {
+    if total == 0 {
+        "-".to_string()
+    } else {
+        format!("{hits}/{total}")
+    }
+}
+
+/// Paired recall@k difference over the SAME gold list: `b` counts golds the
+/// first arm hits and the second misses, `c` the reverse. Two arms sharing a
+/// denominator makes this the only fair comparison — the unpaired columns
+/// can move together with the corpus and hide a real flip.
+struct Paired {
+    b: usize,
+    c: usize,
+    n: usize,
+}
+
+impl Paired {
+    /// `(b - c) / n`, positive when the FIRST arm won.
+    fn delta(&self) -> f64 {
+        if self.n == 0 {
+            return 0.0;
+        }
+        (self.b as f64 - self.c as f64) / self.n as f64
+    }
+
+    /// McNemar's exact test, two-sided, on the discordant pairs. Under the
+    /// null (both arms equally good) each discordant gold is a fair coin, so
+    /// `p = 2 · P(X ≤ min(b, c))` for `X ~ Binomial(b + c, 0.5)`, capped at
+    /// 1. With ~40 golds this is the difference between "Δ = 0.14" and "Δ =
+    /// 0.14, p = 0.004" — i.e. between a story and a number. Computed with
+    /// an iterative pmf so nothing overflows at any n.
+    fn mcnemar_p(&self) -> f64 {
+        let n = self.b + self.c;
+        if n == 0 {
+            return 1.0;
+        }
+        let (nf, k) = (n as f64, self.b.min(self.c));
+        let mut pmf = 0.5f64.powf(nf); // P(X = 0)
+        let mut tail = pmf;
+        for i in 1..=k {
+            pmf *= (nf - i as f64 + 1.0) / i as f64;
+            tail += pmf;
+        }
+        (2.0 * tail).min(1.0)
+    }
+}
+
+fn paired(first: &ArmRun, second: &ArmRun, k: usize) -> Paired {
+    let mut out = Paired {
+        b: 0,
+        c: 0,
+        n: first.per_gold.len(),
+    };
+    for ((_, a), (_, b)) in first.per_gold.iter().zip(second.per_gold.iter()) {
+        let hit_a = a.is_some_and(|r| r <= k);
+        let hit_b = b.is_some_and(|r| r <= k);
+        match (hit_a, hit_b) {
+            (true, false) => out.b += 1,
+            (false, true) => out.c += 1,
+            _ => {}
+        }
+    }
+    out
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────
@@ -532,11 +1125,18 @@ fn run(args: &[String]) -> Result<()> {
     println!("=== bench-amc-ab ===");
     println!(
         "embedder: {} · seed={seed} · {users} users × {sessions} sessions × {turns} turns \
-         · {} golds ({} keyword / {} semantic-only)",
+         · {} golds ({})",
         causal_memory::embed::shared_embedder_model().unwrap_or_else(|| "?".into()),
         GOLDS.len(),
-        GOLDS.iter().filter(|g| g.keyword).count(),
-        GOLDS.len() - GOLDS.iter().filter(|g| g.keyword).count(),
+        Slice::ALL
+            .iter()
+            .map(|s| format!(
+                "{} {}",
+                GOLDS.iter().filter(|g| g.slice == *s).count(),
+                s.label()
+            ))
+            .collect::<Vec<_>>()
+            .join(" / "),
     );
 
     // 1. Ingest through the real raw write path.
@@ -602,27 +1202,44 @@ fn run(args: &[String]) -> Result<()> {
     // 2. Warm-up, before any measurement: the embed LRU (every probe text
     // embeds once) and each user's graph (the spread arm pays an O(store)
     // build on its first query — a startup cost, not a retrieval cost).
+    // The options arm gets its turns here too: each option text is its own
+    // probe and must not pay a cold embed inside a measured query.
+    let gold_options: Vec<Vec<String>> = placed
+        .iter()
+        .map(|g| g.spec.options.iter().map(|o| (*o).to_string()).collect())
+        .collect();
     for memory in &memories {
-        let _ = Arm::Fused.search(memory, "warm the retrieval paths", 10);
-        let _ = Arm::Spread.search(memory, "warm the activation graph", 10);
+        let _ = Arm::FUSED.search(memory, "warm the retrieval paths", &[], 10);
+        let _ = Arm::FUSED_OPTIONS.search(
+            memory,
+            "warm the option probes",
+            &["warm the option probes".to_string()],
+            10,
+        );
+        let _ = Arm::SPREAD.search(memory, "warm the activation graph", &[], 10);
     }
-    for gold in &placed {
-        let _ = Arm::Fused.search(&memories[gold.user], gold.spec.query, 10);
+    for (gold, options) in placed.iter().zip(&gold_options) {
+        // The plain fused arm ignores `options` (it takes the slice only to
+        // share the call shape), so it warms the query alone; the options arm
+        // warms the query AND every option text.
+        let _ = Arm::FUSED.search(&memories[gold.user], gold.spec.query, &[], 10);
+        let _ = Arm::FUSED_OPTIONS.search(&memories[gold.user], gold.spec.query, options, 10);
     }
 
     // 3. Measure, one arm at a time. Every arm sees the same probe set on the
-    // same stores; only the retrieval path differs.
+    // same stores, in the same gold order; only the retrieval configuration
+    // differs.
     const TOP_K: usize = 10;
     let mut runs: Vec<(Arm, ArmRun)> = Vec::new();
     for arm in Arm::ALL {
         let mut per_gold = Vec::with_capacity(placed.len());
         let mut latencies_ms = Vec::with_capacity(placed.len());
-        for gold in &placed {
+        for (gold, options) in placed.iter().zip(&gold_options) {
             let memory = &memories[gold.user];
             let t0 = Instant::now();
-            let hits = arm.search(memory, gold.spec.query, TOP_K);
+            let hits = arm.search(memory, gold.spec.query, options, TOP_K);
             latencies_ms.push(t0.elapsed().as_secs_f64() * 1000.0);
-            per_gold.push((gold.spec.keyword, marker_rank(&hits, gold.spec.marker)));
+            per_gold.push((gold.spec.slice, marker_rank(&hits, gold.spec.marker)));
         }
         runs.push((
             arm,
@@ -660,33 +1277,83 @@ fn render_report(
     let mut out = String::new();
     out.push_str(&format!(
         "\ncorpus: seed={seed} · {users} users × {sessions} sessions × {turns} turns \
-         ({turns_written} turns ingested, {vectors} chunk vectors) · {} gold queries\n\n",
+         ({turns_written} turns ingested, {vectors} chunk vectors) · {} gold queries\n",
         runs.first().map_or(0, |(_, r)| r.per_gold.len())
     ));
+    out.push_str("slices:");
+    for slice in Slice::ALL {
+        let n = GOLDS.iter().filter(|g| g.slice == slice).count();
+        out.push_str(&format!(" {} {n} ·", slice.label()));
+    }
+    out.push_str("\n\n");
+
+    // Recall is printed as a count over its own denominator: the same gold
+    // list backs every arm, so `33/42` is comparable across rows and cannot
+    // be misread as a share of a different probe set.
     out.push_str("| retrieval path | recall@5 | recall@10 | MRR | p50 (ms) | p95 (ms) |\n");
     out.push_str("|---|---|---|---|---|---|\n");
     for (arm, run) in runs {
         out.push_str(&format!(
-            "| {} | {:.3} | {:.3} | {:.3} | {:.1} | {:.1} |\n",
+            "| {} | {} | {} | {:.3} | {:.1} | {:.1} |\n",
             arm.label(),
-            run.recall_at(5),
-            run.recall_at(10),
+            frac(run.hits_at(5)),
+            frac(run.hits_at(10)),
             run.mrr(),
             run.percentile(0.50),
             run.percentile(0.95),
         ));
     }
+
     out.push_str(
-        "\nrecall@10 by slice — `keyword` = the query and the evidence share a content token:\n\n",
+        "\nrecall@10 by slice — `keyword` = the query and the evidence share a content \
+         token; `semantic-only` = zero overlap; `option-reachable` = no query overlap, \
+         but the CORRECT option's wording does overlap (so the option text is the only \
+         lexical bridge):\n\n",
     );
-    out.push_str("| retrieval path | keyword | semantic-only |\n|---|---|---|\n");
+    out.push_str("| retrieval path |");
+    for slice in Slice::ALL {
+        let n = GOLDS.iter().filter(|g| g.slice == slice).count();
+        out.push_str(&format!(" {} (n={n}) |", slice.label()));
+    }
+    out.push_str("\n|---|");
+    for _ in Slice::ALL {
+        out.push_str("---|");
+    }
+    out.push('\n');
     for (arm, run) in runs {
-        out.push_str(&format!(
-            "| {} | {:.3} | {:.3} |\n",
-            arm.label(),
-            run.recall_at_slice(10, true),
-            run.recall_at_slice(10, false),
-        ));
+        out.push_str(&format!("| {} |", arm.label()));
+        for slice in Slice::ALL {
+            out.push_str(&format!(" {} |", frac(run.hits_at_slice(10, slice))));
+        }
+        out.push('\n');
+    }
+
+    // Paired comparison of every arm against the default (`fused`, options
+    // off) and of the options arm against its own baseline — the two
+    // questions this run exists to answer.
+    out.push_str(
+        "\npaired recall@10 — same golds, two arms: b = first arm hits & second misses, \
+         c = the reverse; Δ = (b−c)/n is positive when the FIRST arm won; p = McNemar \
+         exact two-sided over the discordant pairs (with ~40 golds a bare Δ is a story, \
+         a Δ with p is a number):\n\n",
+    );
+    out.push_str("| first → second | b | c | Δ | p |\n|---|---|---|---|---|\n");
+    for (first, run_a) in runs {
+        for (second, run_b) in runs {
+            if first == second {
+                continue;
+            }
+            let p = paired(run_a, run_b, 10);
+            out.push_str(&format!(
+                "| {} → {} | {} | {} | {:+.3} | {:.3} |\n",
+                first.label(),
+                second.label(),
+                p.b,
+                p.c,
+                p.delta(),
+                p.mcnemar_p(),
+            ));
+        }
     }
     out
 }

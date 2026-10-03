@@ -42,6 +42,20 @@
 //! - `merge`: both, fused by RRF (keys deduped).
 //! Compare the arms with `bench-amc-ab`.
 //!
+//! Options expansion (`AMC_OPTIONS_RETRIEVAL`, default `on`): a `/search`
+//! request's choice-question `options` become extra retrieval probes — the
+//! main query plus one fused retrieval per option, merged by equal-weight
+//! RRF (`Memory::search_chunks_fused_with_options`), fused path only. The
+//! option TEXT is never returned: hits are always ingested chunk text.
+//! Default `on`: bench-amc-ab priced it — recall@10 up +4/+6/+5 golds of
+//! 42 across three seeds, small MRR dip, ~5× latency on choice questions.
+//!
+//! Query-side embedding prefix (`CAUSAL_MEMORY_QUERY_PREFIX`, default
+//! `auto`): the BGE-English and E5 families were trained with an asymmetric
+//! query instruction, so retrieval queries carry it while stored passages
+//! stay bare. `off` disables it (the A/B arm); the startup log prints what
+//! the live model actually gets. See `embed::query_prefix_for_model`.
+//!
 //! Usage:
 //!   cargo build --release --bin causal-memory-amc
 //!   ./target/release/causal-memory-amc --db-dir amc_data --port 8787 \
@@ -118,11 +132,49 @@ impl RetrievalMode {
     }
 }
 
+/// Does `/search` expand the query with the request's `options`?
+/// A/B switch (`AMC_OPTIONS_RETRIEVAL`), parsed exactly like
+/// [`RetrievalMode`]. Default `on` — the bench-amc-ab measurement landed
+/// (three seeds, 42 golds): fused+options beats fused on recall@10 every
+/// time (+4/+6/+5 golds of 42; option-reachable slice 10/12 → 12/12), and
+/// recall@top_k is the binding constraint for the platform's answer model.
+/// The cost is N extra retrievals per query and a small MRR dip (distractor
+/// options pull in their own evidence); `off` keeps the single-query path.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OptionsRetrieval {
+    On,
+    Off,
+}
+
+impl OptionsRetrieval {
+    /// Parse `AMC_OPTIONS_RETRIEVAL`. Unset or unrecognized ⇒ `on` (never
+    /// fail the server over a typo; say so on stderr and serve the default).
+    fn from_env() -> Self {
+        match std::env::var("AMC_OPTIONS_RETRIEVAL").as_deref() {
+            Ok("off") => Self::Off,
+            Ok("on") | Err(_) => Self::On,
+            Ok(other) => {
+                eprintln!("⚠ AMC_OPTIONS_RETRIEVAL={other} is not on|off — using on");
+                Self::On
+            }
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::On => "on",
+            Self::Off => "off",
+        }
+    }
+}
+
 struct UserMemories {
     dir: PathBuf,
     mode: WriteMode,
     /// Parsed once at startup (`main`), never re-read per request.
     retrieval: RetrievalMode,
+    /// Same: parsed once at startup.
+    options_retrieval: OptionsRetrieval,
     users: RwLock<HashMap<String, Arc<Memory>>>,
 }
 
@@ -141,11 +193,18 @@ impl UserMemories {
     /// The retrieval arm is passed in, never read from the environment here:
     /// `main` parses `AMC_RETRIEVAL` once and logs it, and tests pin their
     /// arm explicitly so a stray env var cannot move them onto another path.
-    fn with_retrieval(dir: PathBuf, mode: WriteMode, retrieval: RetrievalMode) -> Self {
+    /// Same for `AMC_OPTIONS_RETRIEVAL` (`off` unless a caller says on).
+    fn with_retrieval(
+        dir: PathBuf,
+        mode: WriteMode,
+        retrieval: RetrievalMode,
+        options_retrieval: OptionsRetrieval,
+    ) -> Self {
         Self {
             dir,
             mode,
             retrieval,
+            options_retrieval,
             users: RwLock::new(HashMap::new()),
         }
     }
@@ -369,12 +428,24 @@ async fn handle_search(
 fn run_retrieval(
     memory: &Memory,
     retrieval: RetrievalMode,
+    options_retrieval: OptionsRetrieval,
     query: &str,
+    options: &[String],
     top_k: usize,
 ) -> (Vec<MemoryHit>, &'static str) {
     match retrieval {
         RetrievalMode::Spread => memory.search_memory_entries(query, None, None, top_k),
-        RetrievalMode::Fused => memory.search_chunks_fused(query, top_k),
+        RetrievalMode::Fused => {
+            // Options expansion is wired to the FUSED path only. `spread` is
+            // no longer the default and `merge` re-fuses two whole paths —
+            // widening either blast radius buys nothing the A/B can attribute
+            // to options. Their behaviour stays byte-identical to Batch 3.
+            if options_retrieval == OptionsRetrieval::On && !options.is_empty() {
+                memory.search_chunks_fused_with_options(query, options, top_k)
+            } else {
+                memory.search_chunks_fused(query, top_k)
+            }
+        }
         RetrievalMode::Merge => {
             // Both arms run on their own; the two hit lists are fused again
             // by RRF (key-deduped), so a memory both paths agree on floats
@@ -388,33 +459,46 @@ fn run_retrieval(
 }
 
 async fn handle_search_inner(users: Arc<UserMemories>, req: SearchRequest) -> Json<SearchResponse> {
-    // `options` is contract-fidelity input (choice questions): the platform's
-    // answer model receives the memories; options do not change retrieval.
-    let _ = &req.options;
     let Ok(memory) = users.get(&req.user_id) else {
         return Json(SearchResponse { data: Vec::new() });
     };
     let top_k = req.top_k.max(1);
     let query = req.query.clone();
     let retrieval = users.retrieval;
-    let hits =
-        match tokio::task::spawn_blocking(move || run_retrieval(&memory, retrieval, &query, top_k))
-            .await
-        {
-            Ok((hits, mode)) => {
-                eprintln!(
-                    "amc/search [{}] {} hit(s) [{} mode]",
-                    req.user_id,
-                    hits.len(),
-                    mode
-                );
-                hits
-            }
-            Err(e) => {
-                eprintln!("amc/search task panicked: {e}");
-                Vec::new()
-            }
-        };
+    let options_retrieval = users.options_retrieval;
+    // `options` are choice-question candidates. They are extra RETRIEVAL
+    // probes when `AMC_OPTIONS_RETRIEVAL=on` — never evidence: whatever they
+    // match is returned as the ingested chunk text they matched, so a
+    // caller-supplied string cannot reach the response (see
+    // `search_chunks_fused_with_options`). Off (the default) they are inert
+    // contract-fidelity input, exactly as in Batch 3.
+    let options = req.options.clone().unwrap_or_default();
+    let hits = match tokio::task::spawn_blocking(move || {
+        run_retrieval(
+            &memory,
+            retrieval,
+            options_retrieval,
+            &query,
+            &options,
+            top_k,
+        )
+    })
+    .await
+    {
+        Ok((hits, mode)) => {
+            eprintln!(
+                "amc/search [{}] {} hit(s) [{} mode]",
+                req.user_id,
+                hits.len(),
+                mode
+            );
+            hits
+        }
+        Err(e) => {
+            eprintln!("amc/search task panicked: {e}");
+            Vec::new()
+        }
+    };
     Json(SearchResponse {
         // The fused result is per-layer capped at `limit`, i.e. up to
         // 2*top_k rows for a two-layer answer. The contract's `top_k` is a
@@ -599,16 +683,36 @@ fn main() -> Result<()> {
     // A/B switch, parsed once (see RetrievalMode). Default `fused` — the
     // bench-amc-ab data backs it (see the RetrievalMode doc comment).
     let retrieval = RetrievalMode::from_env();
-    let users = Arc::new(UserMemories::with_retrieval(db_dir, mode, retrieval));
+    // Second A/B switch, parsed once (see OptionsRetrieval). Default `off`
+    // until bench-amc-ab prices the extra retrievals against the gain.
+    let options_retrieval = OptionsRetrieval::from_env();
+    // The query-side instruction is only meaningful for a local model that
+    // was trained with one. Report it here because a wrong (or missing)
+    // prefix degrades the semantic leg silently — the vectors still come
+    // back, they are just less useful.
+    println!(
+        "causal-memory-amc query prefix: {} (CAUSAL_MEMORY_QUERY_PREFIX=auto|off)",
+        match causal_memory::embed::query_prefix_label() {
+            "" => "none (HTTP endpoint or symmetric model)".to_string(),
+            p => format!("{p:?}"),
+        }
+    );
+    let users = Arc::new(UserMemories::with_retrieval(
+        db_dir,
+        mode,
+        retrieval,
+        options_retrieval,
+    ));
     let auth_token = causal_memory_cli::http_auth::token_from_config();
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse()?;
     println!(
-        "causal-memory-amc listening on http://{addr} (write-mode: {}, retrieval: {}, one store per user_id)",
+        "causal-memory-amc listening on http://{addr} (write-mode: {}, retrieval: {}, options: {}, one store per user_id)",
         match mode {
             WriteMode::Distill => "distill",
             WriteMode::Raw => "raw",
         },
-        retrieval.label()
+        retrieval.label(),
+        options_retrieval.label()
     );
     match &auth_token {
         Some(_) => println!("Auth: /metrics requires 'Authorization: Bearer <token>' (CAUSAL_MEMORY_HTTP_AUTH_TOKEN); /add /search /health* stay open"),
@@ -676,6 +780,18 @@ mod tests {
         auth_token: Option<String>,
         retrieval: RetrievalMode,
     ) -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
+        spawn_server_full(mode, auth_token, retrieval, OptionsRetrieval::Off).await
+    }
+
+    /// Same, pinning BOTH A/B switches: the options arm comes from
+    /// `AMC_OPTIONS_RETRIEVAL` in production, and tests pin it for the same
+    /// reason they pin the retrieval arm.
+    async fn spawn_server_full(
+        mode: WriteMode,
+        auth_token: Option<String>,
+        retrieval: RetrievalMode,
+        options_retrieval: OptionsRetrieval,
+    ) -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
         // tempfile::tempdir() gives an O_EXCL-unique dir; the old
         // pid+Instant::now() name could collide when the harness starts
         // several tests in the same tick, and one test's remove_dir_all
@@ -684,7 +800,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().to_path_buf();
         let app = build_app(
-            Arc::new(UserMemories::with_retrieval(dir, mode, retrieval)),
+            Arc::new(UserMemories::with_retrieval(
+                dir,
+                mode,
+                retrieval,
+                options_retrieval,
+            )),
             auth_token,
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -711,6 +832,34 @@ mod tests {
 
     fn add_body(user: &str, session: &str, msgs: &[(&str, &str)]) -> serde_json::Value {
         add_body_with_request(user, session, &format!("req-{user}-{session}"), msgs)
+    }
+
+    /// `POST /search` with an explicit `options` array → the response's
+    /// `data` array.
+    async fn search_with_options(
+        client: &reqwest::Client,
+        base: &str,
+        user: &str,
+        query: &str,
+        options: serde_json::Value,
+    ) -> Vec<serde_json::Value> {
+        client
+            .post(format!("{base}/search"))
+            .json(&serde_json::json!({
+                "query": query,
+                "user_id": user,
+                "top_k": 5,
+                "options": options,
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap()["data"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default()
     }
 
     #[tokio::test]
@@ -1047,6 +1196,79 @@ mod tests {
         );
         assert!(data[0]["created_at"].is_string());
         assert!(data[0]["score"].as_f64().unwrap_or(0.0) > 0.0);
+    }
+
+    #[tokio::test]
+    async fn options_retrieval_reaches_evidence_the_query_cannot() {
+        // AMC_OPTIONS_RETRIEVAL: the query is deliberately oblique — it
+        // shares no content token with the evidence — while the correct
+        // option names the evidence's own vocabulary. No embedder is live
+        // under `cargo test` (the library forces `init_embedder` to `None`),
+        // so the BM25 leg is the only one that can fire: this case asserts
+        // the option expansion itself, not the semantic path.
+        const QUERY: &str = "what do I normally have in the morning";
+        const EVIDENCE: &str = "my usual coffee order is a flat white with oat milk";
+        let options = serde_json::json!(["oat milk", "green tea", "orange juice"]);
+
+        let ingest = |user: &'static str, arm: OptionsRetrieval| async move {
+            let (base, server, tmp) =
+                spawn_server_full(WriteMode::Raw, None, RetrievalMode::Fused, arm).await;
+            let client = test_client();
+            wait_ready(&client, &base).await;
+            let resp = client
+                .post(format!("{base}/add"))
+                .json(&add_body(
+                    user,
+                    "s1",
+                    &[
+                        ("user", QUERY),
+                        ("assistant", EVIDENCE),
+                        ("assistant", "the billing job uses the mongoose ORM"),
+                    ],
+                ))
+                .send()
+                .await
+                .unwrap();
+            assert!(resp.status().is_success(), "add failed");
+            (base, client, server, tmp)
+        };
+
+        // ── Switch ON: the option's wording is what reaches the evidence ──
+        let (base, client, _server, _tmp) = ingest("june", OptionsRetrieval::On).await;
+        let data = search_with_options(&client, &base, "june", QUERY, options.clone()).await;
+        assert!(
+            data.iter().any(|h| h["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("oat milk")),
+            "the correct option must reach the evidence turn: {data:?}"
+        );
+        // Compliance: every returned id is a raw chunk, i.e. the content is
+        // ingested conversation text — an option string is never evidence.
+        assert!(
+            data.iter()
+                .all(|h| h["id"].as_str().unwrap_or_default().starts_with("raw:")),
+            "options must never surface as evidence: {data:?}"
+        );
+        assert!(
+            data.iter().all(|h| !options
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|o| o.as_str() == h["content"].as_str())),
+            "no hit may be a bare option string: {data:?}"
+        );
+
+        // ── Switch OFF (the default): same store, same request, inert ──
+        let (base, client, _server2, _tmp2) = ingest("karl", OptionsRetrieval::Off).await;
+        let data = search_with_options(&client, &base, "karl", QUERY, options.clone()).await;
+        assert!(
+            !data.iter().any(|h| h["content"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("oat milk")),
+            "with the switch off, options must not change retrieval: {data:?}"
+        );
     }
 
     #[tokio::test]
