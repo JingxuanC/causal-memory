@@ -17,7 +17,7 @@ pub use fusion::rrf_merge_many;
 use anyhow::{anyhow, Result};
 use rusqlite::{params, OptionalExtension};
 
-use super::{CausalStore, ENTRY_COLUMNS, entry_from_row, CausalEntry};
+use super::{entry_from_row, CausalEntry, CausalStore, ENTRY_COLUMNS};
 
 impl CausalStore {
     pub fn rejudge_decision(
@@ -69,6 +69,26 @@ impl CausalStore {
         );
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(edge_ids.iter()), entry_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))
+    }
+
+    /// v18 (hardening §2.3) reverse influence lookup: which still-valid
+    /// decisions recorded `edge_id` in their `influenced_by` chain. Returns
+    /// (edge_id, decision_text, outcome_text) ordered by id. Used by
+    /// invalidate_decision to flag error-propagation candidates.
+    pub fn influenced_decisions(&self, edge_id: i64) -> Result<Vec<(i64, String, String)>> {
+        let conn = self.acquire()?;
+        let mut stmt = conn.prepare(
+            "SELECT ce.id, cf.text, ct.text
+             FROM causal_edges ce
+             JOIN chunks cf ON cf.id = ce.from_id
+             JOIN chunks ct ON ct.id = ce.to_id
+             JOIN json_each(ce.influenced_by) je ON je.value = ?1
+             WHERE ce.valid_to IS NULL
+             ORDER BY ce.id",
+        )?;
+        let rows = stmt.query_map(params![edge_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| anyhow!("Query failed: {e}"))
     }
@@ -397,6 +417,24 @@ impl CausalStore {
         Ok(n)
     }
 
+    /// Count valid facts (scrape-time store gauge for /metrics).
+    pub fn count_facts(&self) -> Result<i64> {
+        let conn = self.acquire()?;
+        let n: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM agent_facts WHERE valid_to IS NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(n)
+    }
+
+    /// Count chunks (scrape-time store gauge for /metrics).
+    pub fn count_chunks(&self) -> Result<i64> {
+        let conn = self.acquire()?;
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM chunks", [], |row| row.get(0))?;
+        Ok(n)
+    }
+
     // ─── Internal helpers ──────────────────────────────────────────────────
 
     /// Bump access counters for edges returned by a read-path query.
@@ -419,9 +457,16 @@ impl CausalStore {
         Ok(())
     }
 
-    /// Flush buffered access counts to the DB (one UPDATE per edge).
-    /// Idempotent; a no-op when the buffer is empty. Failures are
-    /// swallowed — access tracking must never block a memory operation.
+    /// Flush buffered access counts to the DB.
+    ///
+    /// F4: the whole batch runs in ONE transaction instead of one implicit
+    /// transaction per edge — that per-edge commit overhead is the cost, not
+    /// fsync (synchronous=NORMAL WAL commits do not fsync).
+    ///
+    /// Idempotent; a no-op when the buffer is empty. Failures are swallowed —
+    /// access tracking must never block a memory operation. A failed batch is
+    /// dropped whole, exactly as a failed per-edge UPDATE was: best-effort
+    /// tracking must not leave a poisoned batch stuck in the buffer forever.
     pub(crate) fn flush_access_buffer(&self, conn: &rusqlite::Connection) {
         let mut buf = match self.access_buffer.lock() {
             Ok(g) => g,
@@ -430,14 +475,29 @@ impl CausalStore {
         if buf.is_empty() {
             return;
         }
-        let now = chrono::Utc::now().timestamp();
-        for &id in buf.iter() {
-            let _ = conn.execute(
-                "UPDATE causal_edges SET access_count = access_count + 1, last_accessed_at = ?1 WHERE id = ?2",
-                rusqlite::params![now, id],
-            );
-        }
+        let _ = Self::flush_access_batch(conn, buf.iter().copied());
         buf.clear();
+    }
+
+    /// One transaction covering N access bumps, with the UPDATE prepared once
+    /// for the whole batch. Errors propagate to the caller, which swallows
+    /// them; an abandoned transaction rolls back on drop.
+    fn flush_access_batch(
+        conn: &rusqlite::Connection,
+        ids: impl Iterator<Item = i64>,
+    ) -> rusqlite::Result<()> {
+        let now = chrono::Utc::now().timestamp();
+        let tx = conn.unchecked_transaction()?;
+        {
+            // Scoped so the statement's borrow of `tx` ends before commit.
+            let mut stmt = tx.prepare(
+                "UPDATE causal_edges SET access_count = access_count + 1, last_accessed_at = ?1 WHERE id = ?2",
+            )?;
+            for id in ids {
+                stmt.execute(params![now, id])?;
+            }
+        }
+        tx.commit()
     }
 
     fn resolve_chunk_pair(
@@ -456,6 +516,20 @@ impl CausalStore {
             |row| row.get(0),
         )?;
         Ok((dec_text, out_text))
+    }
+
+    /// Text of one chunk by id; None when absent (density-weighted
+    /// session expansion tolerates missing ids — e.g. synthetic ones).
+    pub fn chunk_text(&self, id: &str) -> Result<Option<String>> {
+        let conn = self.acquire()?;
+        let text = conn
+            .query_row(
+                "SELECT text FROM chunks WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(text)
     }
 
     // ─── Cross-session causal tracing ──────────────────────────────────────
@@ -493,9 +567,23 @@ impl CausalStore {
     /// turns BM25 happened to hit.
     pub fn chunks_by_prefix(&self, prefix: &str) -> Result<Vec<(String, String)>> {
         let conn = self.acquire()?;
-        let mut stmt =
-            conn.prepare("SELECT id, text FROM chunks WHERE id LIKE ?1 ORDER BY id")?;
+        // Turn-numeric order, not lexicographic: '...::2' must precede
+        // '...::10' (lexicographic gives 1,10,11,12,2,...). Session
+        // expansion feeds prompts in this order — conversation chronology
+        // matters for multi-turn reasoning. The suffix after the prefix
+        // (a turn number in the harness convention) casts to an integer
+        // for ordering; rows whose suffix does not cast sort last, keeping
+        // lexicographic order among themselves.
+        // substr start = length(pattern-with-%) = prefix.len()+1 → skips
+        // exactly the prefix, landing on the suffix's first char.
         let pattern = format!("{prefix}%");
+        let suffix_expr = format!("substr(id, {})", prefix.chars().count() + 1);
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, text FROM chunks WHERE id LIKE ?1
+             ORDER BY CAST({suffix_expr} AS INTEGER) IS NOT CAST({suffix_expr} AS INTEGER),
+                      CAST({suffix_expr} AS INTEGER),
+                      id",
+        ))?;
         let rows = stmt.query_map(params![pattern], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;

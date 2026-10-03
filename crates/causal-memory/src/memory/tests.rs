@@ -16,14 +16,25 @@ mod tests {
     #[test]
     fn test_format_entry_layered_l0_compact() {
         let entry = CausalEntry {
-            edge_id: 1, decision_id: "d1".into(),
+            edge_id: 1,
+            decision_id: "d1".into(),
             decision_text: "used Redis for caching".into(),
-            outcome_id: "o1".into(), outcome_text: "cache stampede".into(),
-            relation: "caused".into(), confidence: 0.9,
-            task_tag: Some("caching".into()), event_time: 0, valid_to: None,
-            access_count: 0, last_accessed_at: None,
-            discovered_by: "agent".into(), discovered_at: 0, outcome_polarity: None,
+            outcome_id: "o1".into(),
+            outcome_text: "cache stampede".into(),
+            relation: "caused".into(),
+            confidence: 0.9,
+            task_tag: Some("caching".into()),
+            event_time: 0,
+            valid_to: None,
+            access_count: 0,
+            last_accessed_at: None,
+            discovered_by: "agent".into(),
+            discovered_at: 0,
+            outcome_polarity: None,
             superseded_by: None,
+            context_fingerprint: None,
+            context_text: None,
+            influenced_by: None,
         };
         let (l0, t0) = format_entry_layered(&entry, 1, "l0");
         let (l2, t2) = format_entry_layered(&entry, 1, "l2");
@@ -38,6 +49,23 @@ mod tests {
         assert!(b.try_spend(60));
         assert!(b.try_spend(40));
         assert!(!b.try_spend(1));
+    }
+
+    #[test]
+    fn test_format_activation_layered_levels() {
+        let text = "a".repeat(200);
+        let (l0, t0) = format_activation_layered(&text, 0.8, 1, "l0");
+        let (l1, t1) = format_activation_layered(&text, 0.8, 1, "l1");
+        let (l2, t2) = format_activation_layered(&text, 0.8, 1, "l2");
+        // Cost rises with detail; l0/l1 truncate, l2 keeps the full text.
+        assert!(t0 < t1 && t1 < t2);
+        assert!(l0.contains("[80%+]"));
+        assert!(l0.len() < l1.len());
+        assert!(l2.contains(&text));
+        // Negative activation keeps its sign at every level.
+        assert!(format_activation_layered("x", -0.5, 1, "l1")
+            .0
+            .contains("[50%-]"));
     }
 
     #[test]
@@ -298,6 +326,8 @@ mod tests {
                     "rule",
                     1000 + i as i64,
                     Some(pol),
+                    None,
+                    None,
                 )
                 .unwrap();
         }
@@ -353,6 +383,8 @@ mod tests {
                 "rule",
                 1000,
                 Some("mixed"),
+                None,
+                None,
             )
             .unwrap();
         let edge = store.get_edge(1).unwrap().unwrap();
@@ -408,4 +440,1922 @@ mod tests {
         let out = memory.reconstruct_lesson_inner("totally unknown topic", 20, 0, None);
         assert!(out.contains("📭 No recorded causal context"), "{out}");
     }
+
+    // ─── AMC backend: raw write path + structured retrieval core ──────────
+
+    #[test]
+    fn test_remember_raw_turns_writes_searchable_pool() {
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let turns = vec![
+            (
+                "alice".to_string(),
+                "we moved the build to bazel".to_string(),
+            ),
+            (
+                "bob".to_string(),
+                "bazel cut our build time in half".to_string(),
+            ),
+        ];
+        let written = memory.remember_raw_turns(&turns, "s7");
+        assert_eq!(written, 2);
+        let (hits, _mode) = memory.search_memory_entries("bazel build", None, None, 5);
+        assert!(!hits.is_empty(), "raw turns must be retrievable");
+        let all: String = hits.iter().map(|h| h.content.as_str()).collect();
+        assert!(all.contains("bazel"), "hit content: {all}");
+        // Layer-namespaced keys, ranked, fused score present.
+        assert!(hits[0].key.starts_with("causal:") || hits[0].key.starts_with("fact:"));
+        assert_eq!(hits[0].rank, 1);
+        assert!(hits[0].score > 0.0);
+    }
+
+    #[test]
+    fn test_remember_raw_turns_respects_timestamps() {
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let turns = vec![
+            (
+                "alice".to_string(),
+                "added the null pointer guard".to_string(),
+                Some(1_700_000_000i64),
+            ),
+            (
+                "bob".to_string(),
+                "removed the null pointer guard".to_string(),
+                Some(1_700_000_100i64),
+            ),
+        ];
+        let written = memory.remember_raw_turns_with_timestamps(&turns, "s8");
+        assert_eq!(written, 2);
+        // created_at reflects the per-message timestamp, not the ingest time.
+        let times: Vec<i64> = memory
+            .store()
+            .with_conn(|c| {
+                let mut stmt = c.prepare(
+                    "SELECT created_at FROM chunks WHERE id LIKE 'raw:s8:%' ORDER BY id",
+                )?;
+                let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+                Ok(rows.collect::<rusqlite::Result<Vec<i64>>>()?)
+            })
+            .unwrap();
+        assert_eq!(times, vec![1_700_000_000, 1_700_000_100]);
+    }
+
+    /// Chunk ids stored for `session`, ordered — the raw write path's output.
+    fn raw_chunk_ids(memory: &Memory, session: &str) -> Vec<String> {
+        let pattern = format!("raw:{session}:%");
+        memory
+            .store()
+            .with_conn(|c| {
+                let mut stmt = c.prepare("SELECT id FROM chunks WHERE id LIKE ?1 ORDER BY id")?;
+                let rows = stmt.query_map(rusqlite::params![pattern], |r| r.get::<_, String>(0))?;
+                Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn test_raw_requests_in_one_session_all_survive() {
+        // N1: a second /add for the same session used to reuse the ids
+        // `raw:{session}:{idx}` turn-for-turn and be dropped whole by
+        // INSERT OR IGNORE. The request id is part of the id now.
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let batch = |line: &str| -> Vec<(String, String, Option<i64>)> {
+            vec![
+                (
+                    "user".to_string(),
+                    "what changed in the billing job?".to_string(),
+                    None,
+                ),
+                ("assistant".to_string(), line.to_string(), None),
+            ]
+        };
+        assert_eq!(
+            memory.remember_raw_turns_with_request_id(
+                &batch("frank adopted the mongoose ORM"),
+                "s10",
+                "req-1"
+            ),
+            2
+        );
+        assert_eq!(
+            memory.remember_raw_turns_with_request_id(
+                &batch("frank retired the mongoose ORM"),
+                "s10",
+                "req-2"
+            ),
+            2
+        );
+        let stored = raw_chunk_ids(&memory, "s10");
+        assert_eq!(
+            stored.len(),
+            4,
+            "both requests' turns must persist: {stored:?}"
+        );
+        assert!(stored.iter().any(|id| id.contains(":req-1:")));
+        assert!(stored.iter().any(|id| id.contains(":req-2:")));
+
+        // A retry of the SAME request hits the same ids and stays idempotent.
+        assert_eq!(
+            memory.remember_raw_turns_with_request_id(
+                &batch("frank retired the mongoose ORM"),
+                "s10",
+                "req-2"
+            ),
+            2
+        );
+        assert_eq!(
+            raw_chunk_ids(&memory, "s10").len(),
+            4,
+            "a retried request must not duplicate turns"
+        );
+    }
+
+    #[test]
+    fn test_raw_empty_request_id_does_not_drop_a_batch() {
+        // An empty request id is not addressable, so the facade falls back
+        // to a session-scoped offset: dropping a batch silently is worse
+        // than duplicating a retried one.
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let turns = |line: &str| -> Vec<(String, String, Option<i64>)> {
+            vec![("assistant".to_string(), line.to_string(), None)]
+        };
+        memory.remember_raw_turns_with_request_id(&turns("step one shipped"), "s13", "");
+        memory.remember_raw_turns_with_request_id(&turns("step two shipped"), "s13", "");
+        let stored = raw_chunk_ids(&memory, "s13");
+        assert_eq!(
+            stored.len(),
+            2,
+            "both batches must persist without a request id: {stored:?}"
+        );
+    }
+
+    #[test]
+    fn test_raw_reingest_does_not_duplicate_temporal_edges() {
+        // `causal_edges` has no unique constraint, so the bare temporal
+        // INSERT used to stack a second copy of every adjacency link on any
+        // re-ingest (the chunk insert is guarded by OR IGNORE, the edge was
+        // not).
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let turns = vec![
+            ("assistant".to_string(), "first turn".to_string(), None),
+            ("assistant".to_string(), "second turn".to_string(), None),
+        ];
+        memory.remember_raw_turns_with_timestamps(&turns, "s14");
+        memory.remember_raw_turns_with_timestamps(&turns, "s14");
+        let edges: i64 = memory
+            .store()
+            .with_conn(|c| {
+                let n: i64 = c.query_row(
+                    "SELECT COUNT(*) FROM causal_edges WHERE discovered_by = 'temporal'",
+                    [],
+                    |r| r.get(0),
+                )?;
+                Ok(n)
+            })
+            .unwrap();
+        assert_eq!(edges, 1, "the same temporal link must exist once");
+    }
+
+    #[test]
+    fn test_chunk_embeddings_backfill_and_semantic_search() {
+        // The Batch 2 store leg without an embedder: vectors are written by
+        // hand (the write path's job), the semantic lookup is what a synonym
+        // rewrite rides on.
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        memory.remember_raw_turns(
+            &[
+                (
+                    "assistant".to_string(),
+                    "the deploy failed on a missing env var".to_string(),
+                ),
+                (
+                    "assistant".to_string(),
+                    "we rolled the release back".to_string(),
+                ),
+            ],
+            "s11",
+        );
+        let ids = raw_chunk_ids(&memory, "s11");
+        assert_eq!(ids.len(), 2);
+
+        // Write-time embedding is opt-in: a fresh raw write leaves both
+        // chunks queued for a backfill, not embedded.
+        assert_eq!(
+            memory.store().chunks_without_embedding(0).unwrap().len(),
+            2,
+            "the write switch defaults off — bulk ingest must not embed"
+        );
+
+        memory
+            .store()
+            .put_chunk_embedding(&ids[0], "test", &[1.0, 0.0, 0.0])
+            .unwrap();
+        memory
+            .store()
+            .put_chunk_embedding(&ids[1], "test", &[0.0, 1.0, 0.0])
+            .unwrap();
+        assert!(memory
+            .store()
+            .chunks_without_embedding(0)
+            .unwrap()
+            .is_empty());
+
+        // The nearest vector ranks first, and the returned id is the chunk
+        // id — i.e. already a graph node id.
+        let hits = memory
+            .store()
+            .search_chunks_semantic(&[0.95, 0.05, 0.0], 10)
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            hits[0].0, ids[0],
+            "closest vector must rank first: {hits:?}"
+        );
+        assert!(hits[0].1 > hits[1].1, "cosine ranking: {hits:?}");
+
+        // Re-putting replaces (chunk_id is the primary key) instead of
+        // adding a second vector for the same chunk.
+        memory
+            .store()
+            .put_chunk_embedding(&ids[0], "test", &[0.0, 0.0, 1.0])
+            .unwrap();
+        let hits = memory
+            .store()
+            .search_chunks_semantic(&[0.0, 0.05, 0.95], 10)
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].0, ids[0]);
+    }
+
+    #[test]
+    fn test_raw_write_stores_no_vectors_without_embedder() {
+        // Switch on + no embedder (init_embedder is disabled under
+        // cfg(test)) must be a no-op: the write path stays a pure local
+        // write — no vectors, no failure, no embedding detour per turn.
+        std::env::set_var("CAUSAL_MEMORY_EMBED_WRITE", "1");
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let written = memory.remember_raw_turns(
+            &[
+                (
+                    "assistant".to_string(),
+                    "shipped the ingest fix".to_string(),
+                ),
+                (
+                    "assistant".to_string(),
+                    "the ingest lag dropped to zero".to_string(),
+                ),
+            ],
+            "s12",
+        );
+        let vectors: i64 = memory
+            .store()
+            .with_conn(|c| {
+                let n: i64 =
+                    c.query_row("SELECT COUNT(*) FROM chunk_embeddings", [], |r| r.get(0))?;
+                Ok(n)
+            })
+            .unwrap();
+        std::env::remove_var("CAUSAL_MEMORY_EMBED_WRITE");
+        assert_eq!(written, 2);
+        assert_eq!(vectors, 0, "no embedder ⇒ no chunk vectors");
+    }
+
+    // ─── Batch 3: chunk-level fused retrieval ─────────────────────────────
+
+    /// The fusion itself, over hand-written legs. `init_embedder` is forced
+    /// to `None` under cfg(test), so the semantic leg can never be reached
+    /// through the embedder here — the pure helper is what makes the RRF
+    /// arithmetic testable at all.
+    #[test]
+    fn test_fuse_ranked_ids_sums_both_legs() {
+        use super::super::fused::fuse_ranked_ids;
+        let bm25 = vec!["c0".to_string(), "c1".to_string(), "c2".to_string()];
+        // c2 is BM25 rank 3 but the vector leg's top hit; c0 agrees on both.
+        let semantic = vec!["c2".to_string(), "c0".to_string()];
+        let fused = fuse_ranked_ids(&bm25, &semantic);
+
+        let scores: std::collections::HashMap<&str, f64> =
+            fused.iter().map(|(k, s)| (k.as_str(), *s)).collect();
+        assert!((scores["c0"] - (1.0 / (RRF_K + 1.0) + 1.0 / (RRF_K + 2.0))).abs() < 1e-12);
+        assert!((scores["c2"] - (1.0 / (RRF_K + 3.0) + 1.0 / (RRF_K + 1.0))).abs() < 1e-12);
+        assert!((scores["c1"] - 1.0 / (RRF_K + 2.0)).abs() < 1e-12);
+        // Agreement (c0) beats a single top rank (c2); the two-leg hit that
+        // BM25 alone ranked last still beats the single-leg c1.
+        let order: Vec<&str> = fused.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(order, vec!["c0", "c2", "c1"], "fused order: {fused:?}");
+    }
+
+    #[test]
+    fn test_fuse_ranked_ids_degrades_to_bm25_without_semantic_leg() {
+        use super::super::fused::fuse_ranked_ids;
+        let bm25 = vec!["a".to_string(), "b".to_string()];
+        let fused = fuse_ranked_ids(&bm25, &[]);
+        assert_eq!(
+            fused,
+            vec![
+                ("a".to_string(), 1.0 / (RRF_K + 1.0)),
+                ("b".to_string(), 1.0 / (RRF_K + 2.0)),
+            ],
+            "an empty semantic leg must leave the BM25 ranking untouched"
+        );
+        assert!(fuse_ranked_ids(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn test_fuse_ranked_ids_surfaces_semantic_only_hit() {
+        use super::super::fused::fuse_ranked_ids;
+        // Zero keyword overlap: only the vector leg can see c1.
+        let fused = fuse_ranked_ids(&[], &["c1".to_string()]);
+        assert_eq!(fused[0].0, "c1");
+        assert!((fused[0].1 - 1.0 / (RRF_K + 1.0)).abs() < 1e-12);
+    }
+
+    /// End-to-end materialization with no embedder (the hermetic test
+    /// environment): the BM25 leg alone must still return the raw turn text.
+    #[test]
+    fn test_search_chunks_fused_materializes_raw_text() {
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        memory.remember_raw_turns(
+            &[
+                (
+                    "assistant".to_string(),
+                    "the billing job uses the mongoose ORM".to_string(),
+                ),
+                ("user".to_string(), "which ORM does billing use".to_string()),
+            ],
+            "s20",
+        );
+        let ids = raw_chunk_ids(&memory, "s20");
+        assert_eq!(ids.len(), 2);
+
+        let (hits, mode) = memory.search_chunks_fused("mongoose ORM billing", 5);
+        assert_eq!(mode, "fused");
+        assert_eq!(hits.len(), 2, "both turns share the query tokens: {hits:?}");
+        assert_eq!(hits[0].key, ids[0], "the evidence turn ranks first");
+        assert_eq!(
+            hits[0].content, "[s20] assistant: the billing job uses the mongoose ORM",
+            "content is the chunk text verbatim, session/role prefix included"
+        );
+        assert_eq!(hits[0].rank, 1);
+        assert!((hits[0].score - 1.0 / (RRF_K + 1.0)).abs() < 1e-12);
+        assert!(hits[0].created_at.is_some());
+        assert_eq!(hits[1].rank, 2);
+
+        // `limit` binds on the materialized list, and 0 short-circuits.
+        assert_eq!(
+            memory
+                .search_chunks_fused("mongoose ORM billing", 1)
+                .0
+                .len(),
+            1
+        );
+        assert!(memory
+            .search_chunks_fused("mongoose ORM billing", 0)
+            .0
+            .is_empty());
+    }
+
+    /// The semantic leg's contract, exercised without the embedder: a vector
+    /// written straight into `chunk_embeddings` is the only way a turn with
+    /// zero keyword overlap can surface at all.
+    ///
+    /// The leg is exercised through the store call + the pure fusion, NOT
+    /// through `search_chunks_fused`: `init_embedder` is forced to `None`
+    /// under cfg(test), so the fused path's own semantic leg is dead here by
+    /// design (embedding the query would need a real embedder).
+    #[test]
+    fn test_search_chunks_fused_semantic_leg_without_embedder() {
+        use super::super::fused::fuse_ranked_ids;
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        memory.remember_raw_turns(
+            &[
+                (
+                    "assistant".to_string(),
+                    "we settled on a 384-dimensional sentence encoder".to_string(),
+                ),
+                (
+                    "assistant".to_string(),
+                    "the ingest lag dropped to zero".to_string(),
+                ),
+            ],
+            "s21",
+        );
+        let ids = raw_chunk_ids(&memory, "s21");
+
+        // Premise: the probe query shares no token with either turn.
+        assert!(
+            memory
+                .store()
+                .bm25_seed_ids("which embedding model is used", None, 10)
+                .unwrap()
+                .is_empty(),
+            "the semantic-only probe must have an empty BM25 leg"
+        );
+
+        memory
+            .store()
+            .put_chunk_embedding(&ids[0], "test", &[0.0, 1.0, 0.0])
+            .unwrap();
+        memory
+            .store()
+            .put_chunk_embedding(&ids[1], "test", &[1.0, 0.0, 0.0])
+            .unwrap();
+        let semantic: Vec<String> = memory
+            .store()
+            .search_chunks_semantic(&[0.05, 0.95, 0.0], 10)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(semantic[0], ids[0], "closest vector ranks first");
+        // Fused against an empty BM25 leg (the zero-keyword-overlap case),
+        // the vector-only hit is the answer — at full rank-1 score.
+        let fused = fuse_ranked_ids(&[], &semantic);
+        assert_eq!(
+            fused[0].0, ids[0],
+            "the semantic hit must surface: {fused:?}"
+        );
+        assert!((fused[0].1 - 1.0 / (RRF_K + 1.0)).abs() < 1e-12);
+        assert_eq!(fused[1].0, ids[1]);
+    }
+
+    /// Namespace rule: a `fact:{id}` row lives in the BM25 index but has no
+    /// `chunks` row, so it is kept in the ranking and dropped at
+    /// materialization — its rank stays SPENT, not shifted.
+    #[test]
+    fn test_search_chunks_fused_drops_fact_namespace_ids() {
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        memory.remember_raw_turns(
+            &[(
+                "assistant".to_string(),
+                "the billing job uses the mongoose ORM".to_string(),
+            )],
+            "s22",
+        );
+        let ids = raw_chunk_ids(&memory, "s22");
+        memory
+            .store()
+            .with_conn(|c| {
+                crate::store::CausalStore::index_chunk(
+                    c,
+                    "fact:999",
+                    "the billing job uses the mongoose ORM",
+                )
+            })
+            .unwrap();
+
+        let (hits, _) = memory.search_chunks_fused("mongoose ORM billing job", 5);
+        assert!(
+            hits.iter().all(|h| !h.key.starts_with("fact:")),
+            "a fact index row must never come back as raw evidence: {hits:?}"
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].key, ids[0]);
+        // Equal overlap ⇒ `fact:999` sorts first by chunk id, so the real
+        // turn keeps fused rank 2.
+        assert!(
+            (hits[0].score - 1.0 / (RRF_K + 2.0)).abs() < 1e-12,
+            "the dropped row must still consume rank 1: {hits:?}"
+        );
+    }
+
+    /// `merge` mode's combinator: two hit lists, keyed dedup, RRF sum.
+    #[test]
+    fn test_rrf_merge_hits_dedups_and_sums() {
+        let hit = |key: &str| crate::memory::ops::MemoryHit {
+            key: key.to_string(),
+            content: format!("text-of-{key}"),
+            score: 0.0,
+            rank: 0,
+            created_at: Some(7),
+        };
+        let spread = vec![hit("causal:1"), hit("fact:2")];
+        let fused = vec![hit("fact:2"), hit("raw:s:r:0")];
+        let merged = Memory::rrf_merge_hits(&[spread.as_slice(), fused.as_slice()], 10);
+
+        assert_eq!(merged.len(), 3, "keys dedup across lists: {merged:?}");
+        assert_eq!(merged[0].key, "fact:2", "a key in both lists floats up");
+        assert!((merged[0].score - (1.0 / (RRF_K + 2.0) + 1.0 / (RRF_K + 1.0))).abs() < 1e-12);
+        assert_eq!(
+            merged[0].content, "text-of-fact:2",
+            "first list's content wins"
+        );
+        assert_eq!(merged[0].rank, 1);
+        assert_eq!(merged[2].key, "raw:s:r:0");
+        assert_eq!(merged[2].rank, 3);
+
+        assert_eq!(Memory::rrf_merge_hits(&[spread.as_slice()], 1).len(), 1);
+        assert!(Memory::rrf_merge_hits(&[spread.as_slice()], 0).is_empty());
+        assert!(Memory::rrf_merge_hits(&[], 5).is_empty());
+    }
+
+    #[test]
+    fn test_search_finds_camel_case_symbol() {
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        let turns = vec![
+            (
+                "alice".to_string(),
+                "we hit a crash in the auth service".to_string(),
+            ),
+            (
+                "bob".to_string(),
+                "fixed the NullPointerException by adding a null guard".to_string(),
+            ),
+        ];
+        memory.remember_raw_turns(&turns, "s9");
+        // The query uses space-separated words; the memory stores a camelCase
+        // symbol. camelCase tokenization + raw-turn BM25 indexing meet them.
+        let (hits, _mode) = memory.search_memory_entries("null pointer", None, None, 5);
+        let all: String = hits.iter().map(|h| h.content.as_str()).collect();
+        assert!(
+            all.contains("NullPointerException"),
+            "camelCase symbol must be retrievable: {all}"
+        );
+    }
+
+    #[test]
+    fn test_camel_case_code_memory_recall_regression() {
+        // Regression guard for the two retrieval fixes that made this work:
+        // (1) raw turns are BM25-indexed, (2) camelCase symbols split into
+        // sub-tokens. A space-separated query must reach a stored camelCase
+        // code symbol. Baseline before these fixes: 0/30 recall@5.
+        let cases: &[(&str, &str)] = &[
+            ("NullPointerException", "null pointer"),
+            ("CacheStampede", "cache stampede"),
+            ("RaceCondition", "race condition"),
+            ("DeadlockTimeout", "deadlock timeout"),
+            ("StackOverflowError", "stack overflow"),
+            ("RedisCluster", "redis cluster"),
+            ("ThreadPool", "thread pool"),
+            ("SocketTimeout", "socket timeout"),
+            ("MemoryLeak", "memory leak"),
+            ("AuthService", "auth service"),
+            ("DatabaseConnection", "database connection"),
+            ("FileNotFound", "file not found"),
+            ("BufferOverflow", "buffer overflow"),
+            ("ApiGateway", "api gateway"),
+            ("ConfigParser", "config parser"),
+            ("HttpClient", "http client"),
+            ("JsonSerialization", "json serialization"),
+            ("QueryOptimizer", "query optimizer"),
+            ("SessionManager", "session manager"),
+            ("RateLimiter", "rate limiter"),
+            ("CircuitBreaker", "circuit breaker"),
+            ("LoadBalancer", "load balancer"),
+            ("MessageQueue", "message queue"),
+            ("TransactionRollback", "transaction rollback"),
+            ("TypeInference", "type inference"),
+            ("GarbageCollector", "garbage collector"),
+            ("EventDispatcher", "event dispatcher"),
+            ("CacheInvalidation", "cache invalidation"),
+            ("DependencyInjection", "dependency injection"),
+            ("ObservabilityTracing", "observability tracing"),
+        ];
+        let memory = Memory::new(crate::store::CausalStore::open_in_memory().unwrap());
+        for (idx, (symbol, _)) in cases.iter().enumerate() {
+            let session = format!("s{idx}");
+            let turns = vec![
+                (
+                    "assistant".to_string(),
+                    format!("deploy {idx} crashed in production"),
+                ),
+                (
+                    "assistant".to_string(),
+                    format!("fixed the {symbol} by patching the handler"),
+                ),
+            ];
+            memory.remember_raw_turns(&turns, &session);
+        }
+        let mut hit5 = 0usize;
+        for (symbol, query) in cases {
+            let (hits, _mode) = memory.search_memory_entries(query, None, None, 5);
+            if hits.iter().any(|h| h.content.contains(symbol)) {
+                hit5 += 1;
+            }
+        }
+        assert_eq!(
+            hit5,
+            cases.len(),
+            "every camelCase code symbol must be recallable at @5"
+        );
+    }
+
+    #[test]
+    fn test_search_memory_entries_matches_text_tool_layers() {
+        let memory = counterfactual_memory();
+        // Same query through both presentations: the structured core must
+        // surface the same memories the text tool reports.
+        let text = memory.search_memory("redis mutex", None, None, Some(10), None, None, None);
+        let (hits, _mode) = memory.search_memory_entries("redis mutex", None, None, 10);
+        assert!(!hits.is_empty(), "seeded edges must surface");
+        assert!(text.contains("redis"), "text tool: {text}");
+        // Every structured hit's decision text appears in the text output.
+        for h in &hits {
+            let needle = h.content.split('"').nth(1).unwrap_or_default();
+            if !needle.is_empty() && h.key.starts_with("causal:") {
+                assert!(
+                    text.contains(&needle[..needle.len().min(20)]),
+                    "text tool missing {} from {}",
+                    needle,
+                    h.key
+                );
+            }
+        }
+    }
+
+    // ─── Phase A: record_fact marks the graph dirty ──────────────────────
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: memory construction must succeed or the test is meaningless"
+    )]
+    fn test_record_fact_marks_graph_dirty_for_rebuild() {
+        let memory = Memory::open_in_memory().expect("memory");
+        // 1 causal write + 5 fact writes ≥ GRAPH_REBUILD_WRITES (5): the
+        // next hippocampus query must rebuild and see the fresh facts.
+        memory.record_decision(
+            "cfg",
+            "zsh plugins load",
+            "caused",
+            "shell",
+            None,
+            None,
+            None,
+        );
+        for i in 0..5 {
+            memory.record_fact(
+                &format!("pref_{i}"),
+                &format!("user prefers zsh setup variant {i}"),
+                Some("user"),
+                None,
+                None,
+            );
+        }
+        let out = memory.search_causal(None, Some("prefers zsh setup"), Some(5), None, None, None);
+        assert!(
+            out.starts_with("[hippocampus"),
+            "fresh fact must be reachable via the graph path, got: {out}"
+        );
+        assert!(
+            out.contains("user prefers zsh setup"),
+            "fact text must appear in the activation results: {out}"
+        );
+    }
+
+    // ─── Phase B: search_memory served by the unified spread engine ─────
+
+    /// The exact staleness the MCP e2e caught: 4 writes < the lazy rebuild
+    /// threshold, so the graph still predates the facts — the engine must
+    /// detect the seed miss and rebuild, never serve a stale graph.
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: memory construction must succeed or the test is meaningless"
+    )]
+    fn test_unified_engine_rebuilds_on_stale_seed_miss() {
+        let memory = Memory::open_in_memory().expect("memory");
+        // Startup graph is EMPTY; these 4 writes stay under the lazy
+        // threshold (5), no rebuild fires before the query.
+        memory.record_decision(
+            "used global lock for cache",
+            "deadlock error under load",
+            "caused",
+            "locking",
+            None,
+            None,
+            None,
+        );
+        memory.record_decision(
+            "ran backup migration",
+            "backup completed",
+            "caused",
+            "backup",
+            None,
+            None,
+            None,
+        );
+        memory.record_fact("tech_stack", "Redis 7.2", Some("user"), None, None);
+        memory.record_fact("tech_stack", "Redis 8.0", Some("user"), None, Some(true));
+
+        let (hits, mode) = memory.search_memory_entries("redis cache", None, None, 10);
+        assert_eq!(mode, "spread", "engine must serve, got: {hits:?}");
+        assert!(
+            hits.iter()
+                .any(|h| h.key.starts_with("fact:") && h.content.contains("Redis 8.0")),
+            "fresh fact must surface despite the stale graph: {hits:?}"
+        );
+        assert!(
+            !hits.iter().any(|h| h.content.contains("Redis 7.2")),
+            "retired fact must not surface: {hits:?}"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: memory construction must succeed or the test is meaningless"
+    )]
+    fn test_search_memory_uses_unified_spread_engine() {
+        let memory = Memory::open_in_memory().expect("memory");
+        memory.record_decision(
+            "rewrote module in TypeScript",
+            "compile errors dropped",
+            "caused",
+            "rust",
+            None,
+            None,
+            None,
+        );
+        memory.record_fact(
+            "editor_preference",
+            "user prefers TypeScript for module rewrites",
+            Some("user"),
+            None,
+            None,
+        );
+        // 2 real writes < GRAPH_REBUILD_WRITES(5): pad with 3 more writes
+        // so the lazy rebuild fires and the engine sees fresh nodes.
+        for i in 0..3 {
+            memory.record_fact(
+                &format!("pad_{i}"),
+                &format!("padding entry {i}"),
+                Some("user"),
+                None,
+                None,
+            );
+        }
+
+        // Structured core: one spread, typed hits, "spread" mode.
+        let (hits, mode) = memory.search_memory_entries("TypeScript module", None, None, 10);
+        assert_eq!(mode, "spread", "unified engine must serve this query");
+        assert!(
+            hits.iter().any(|h| h.key.starts_with("fact:")),
+            "fact hits: {hits:?}"
+        );
+        assert!(
+            hits.iter().any(|h| h.key.starts_with("causal:")),
+            "causal hits: {hits:?}"
+        );
+
+        // Text tool: same engine, grouped display.
+        let text = memory.search_memory("TypeScript module", None, None, None, None, None, None);
+        assert!(text.starts_with("[unified/spread]"), "{text}");
+        assert!(text.contains("editor_preference"), "{text}");
+        assert!(text.contains("Causal lessons"), "{text}");
+    }
+
+    // ─── Phase C: write-path patches — instant visibility + differential ──
+
+    #[test]
+    #[allow(
+        clippy::expect_used,
+        reason = "test invariant: temp file and memory construction must succeed"
+    )]
+    fn test_write_then_query_patched_equals_rebuilt() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = dir.path().join("phase_c.db");
+
+        // Instance 1: write, then query IMMEDIATELY (2 writes < the lazy
+        // threshold of 5, well inside the 30s window → no rebuild may have
+        // run; the visibility must come from the write-path patch).
+        //
+        // F2: a fresh instance's first query builds the graph, so that build
+        // — not the patch — would supply the visibility. Build up front to
+        // pin the write-path patch this test is about.
+        let m1 = Memory::open(&db).expect("memory 1");
+        m1.ensure_graph_built();
+        m1.record_decision(
+            "rewrote module in TypeScript",
+            "compile errors dropped",
+            "caused",
+            "rust",
+            None,
+            None,
+            None,
+        );
+        m1.record_fact(
+            "editor_preference",
+            "user prefers TypeScript for module rewrites",
+            Some("user"),
+            None,
+            None,
+        );
+        let writes_before = m1.graph_writes.load(Ordering::Relaxed);
+
+        let (hits1, mode) = m1.search_memory_entries("TypeScript module", None, None, 10);
+        assert_eq!(mode, "spread");
+        assert!(
+            hits1.iter().any(|h| h.key.starts_with("fact:")),
+            "patched fact must surface instantly: {hits1:?}"
+        );
+        assert!(
+            hits1.iter().any(|h| h.key.starts_with("causal:")),
+            "patched edge must surface instantly: {hits1:?}"
+        );
+        // No rebuild consumed the dirty counter: the 2 writes are still
+        // pending (below threshold), so visibility came from patches.
+        assert_eq!(
+            m1.graph_writes.load(Ordering::Relaxed),
+            writes_before,
+            "no lazy rebuild may have fired (writes pending: {})",
+            writes_before
+        );
+
+        // Differential: a SECOND instance on the same file does a full
+        // from_store on its first query (F2) — its results must match the
+        // patched view.
+        let m2 = Memory::open(&db).expect("memory 2");
+        let (hits2, _) = m2.search_memory_entries("TypeScript module", None, None, 10);
+        let keys1: std::collections::HashSet<String> =
+            hits1.iter().map(|h| h.key.clone()).collect();
+        let keys2: std::collections::HashSet<String> =
+            hits2.iter().map(|h| h.key.clone()).collect();
+        assert_eq!(
+            keys1, keys2,
+            "patched state must equal fully-rebuilt state (differential assertion)"
+        );
+    }
+}
+
+// ─── Production-path sink of the bench optimizations ──────────────
+
+/// multi_pass now runs the episode quota + weighted top-N expansion
+/// (the LME dilution cut). Production chunk ids are flat (no
+/// '::session::' segments), so session-keyed expansion is a no-op on
+/// agent-native stores by design (comment on session_key: "production
+/// data with flat chunk ids simply never expands sessions") — this
+/// test pins that the QUOTA half applies and that session-structured
+/// stores (harness convention) get the whitelist behavior.
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: memory construction must succeed"
+)]
+fn multi_pass_sinks_bench_optimizations() {
+    let memory = Memory::open_in_memory().expect("memory");
+    for turn in 0..6 {
+        memory.record_decision(
+            &format!("bought plants number {turn} for the garden"),
+            &format!("plants thriving batch {turn}"),
+            "caused",
+            "garden",
+            None,
+            None,
+            None,
+        );
+    }
+    let out = memory.search_memory_multi_pass("how many plants did I buy", None, None, Some(10));
+    // Flat-id store: no session expansion (documented), but the
+    // multi-pass path itself must return the garden evidence.
+    assert!(
+        out.contains("bought plants"),
+        "multi-pass must surface evidence: {out}"
+    );
+    assert!(out.contains("[multi-pass]"), "mode tag present: {out}");
+}
+
+// ─── search_memory detail_level / max_tokens + invalidate_pattern ──────
+
+#[test]
+fn search_memory_detail_levels_and_default_compat() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_fact(
+        "editor",
+        "Neovim with a fairly long configuration description",
+        None,
+        None,
+        None,
+    );
+    memory.record_decision(
+        "used redis mutex for cache invalidation",
+        "deadlock under concurrent load",
+        "caused",
+        "concurrency",
+        None,
+        None,
+        None,
+    );
+
+    let l2 = memory.search_memory("redis mutex", None, None, Some(10), None, None, None);
+    let l0 = memory.search_memory("redis mutex", None, None, Some(10), Some("l0"), None, None);
+    let l1 = memory.search_memory("redis mutex", None, None, Some(10), Some("l1"), None, None);
+
+    // l0 is strictly cheaper than l2; l1 sits between (or equal at l1's cap).
+    assert!(
+        l0.len() < l2.len(),
+        "l0 must be shorter than l2\nl0: {l0}\nl2: {l2}"
+    );
+    assert!(l1.len() <= l2.len(), "l1 must not exceed l2");
+    // l0 pointers drop the confidence annotations.
+    assert!(!l0.contains("confidence:"), "l0 drops confidence: {l0}");
+    assert!(l2.contains("confidence:"), "l2 keeps confidence: {l2}");
+
+    // Default (None, None) is byte-identical to explicit l2 + unlimited —
+    // and to the pre-feature format (same lines, no truncation note).
+    let explicit = memory.search_memory(
+        "redis mutex",
+        None,
+        None,
+        Some(10),
+        Some("l2"),
+        Some(0),
+        None,
+    );
+    assert_eq!(l2, explicit, "default == explicit l2/0");
+    assert!(
+        !l2.contains("truncated (token budget)"),
+        "unlimited default must not truncate: {l2}"
+    );
+
+    // Invalid level rejected like invalid scope.
+    let bad = memory.search_memory("redis mutex", None, None, Some(10), Some("l9"), None, None);
+    assert!(bad.contains("Invalid detail_level"), "{bad}");
+}
+
+#[test]
+fn search_memory_max_tokens_truncates() {
+    let memory = Memory::open_in_memory().expect("memory");
+    for i in 0..6 {
+        memory.record_decision(
+            &format!("deployed cache variant {i} without warmup"),
+            &format!("cold start latency spike {i}"),
+            "caused",
+            "deploy",
+            None,
+            None,
+            None,
+        );
+    }
+    let full = memory.search_memory(
+        "cache warmup deploy",
+        None,
+        None,
+        Some(10),
+        None,
+        None,
+        None,
+    );
+    // Budget below the cost of the full pool: items are dropped and the
+    // truncation note reports how many.
+    let capped = memory.search_memory(
+        "cache warmup deploy",
+        None,
+        None,
+        Some(10),
+        None,
+        Some(150),
+        None,
+    );
+    assert!(
+        capped.len() < full.len(),
+        "capped must be shorter\ncapped: {capped}\nfull: {full}"
+    );
+    assert!(
+        capped.contains("more result(s) truncated (token budget)"),
+        "truncation note: {capped}"
+    );
+}
+
+#[test]
+fn invalidate_pattern_soft_deletes_meta_edge() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "switched apk sources to Aliyun mirrors",
+        "alpine build stabilized",
+        "caused",
+        "docker",
+        None,
+        None,
+        None,
+    );
+    // Mine a pattern between the two chunks of that lesson.
+    let (from_id, to_id) = {
+        let store = memory.store();
+        store
+            .with_conn(|c| {
+                Ok(
+                    c.query_row("SELECT from_id, to_id FROM causal_edges LIMIT 1", [], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                    })?,
+                )
+            })
+            .expect("chunk ids")
+    };
+    let meta_id = memory
+        .store()
+        .upsert_meta_edge(
+            &from_id,
+            &to_id,
+            "similar_to",
+            "both are mirror-source fixes",
+            0.7,
+        )
+        .expect("meta edge");
+
+    // Visible before revocation, with the #id handle exposed.
+    let before = memory.search_patterns(Some("mirror"), None, Some(10));
+    assert!(before.contains("similar_to"), "pattern listed: {before}");
+    assert!(
+        before.contains(&format!("(#{meta_id})")),
+        "id exposed: {before}"
+    );
+
+    // Revoke: confirmation message, then gone from search_patterns.
+    let msg = memory.invalidate_pattern(meta_id, Some("spurious"));
+    assert!(msg.starts_with("✅ Invalidated pattern edge"), "{msg}");
+    assert!(msg.contains("(reason: spurious)"), "{msg}");
+    let after = memory.search_patterns(Some("mirror"), None, Some(10));
+    assert!(
+        after.contains("No cross-task patterns"),
+        "revoked pattern must not be listed: {after}"
+    );
+
+    // Idempotent: second revocation is a clean no-op message, not an error.
+    let again = memory.invalidate_pattern(meta_id, None);
+    assert!(again.contains("already invalidated"), "{again}");
+
+    // Unknown id is a clean miss.
+    let missing = memory.invalidate_pattern(999_999, None);
+    assert!(missing.contains("not found"), "{missing}");
+}
+
+// ─── explain (Flip-path marking) + recall audit e2e ──────────────────
+
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: memory construction must succeed"
+)]
+fn search_explain_tags_and_default_invariance() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "skipped the test suite before the release",
+        "production outage on friday",
+        "caused",
+        "release",
+        None,
+        None,
+        None,
+    );
+    memory.record_decision(
+        "deployed without env check",
+        "crash loop in production",
+        "caused",
+        "release",
+        None,
+        None,
+        None,
+    );
+
+    // Default == explicit explain=false, byte-identical, no ↳ markers.
+    let default = memory.search_causal(None, Some("test suite release"), Some(5), None, None, None);
+    let explicit_false = memory.search_causal(
+        None,
+        Some("test suite release"),
+        Some(5),
+        None,
+        None,
+        Some(false),
+    );
+    assert_eq!(default, explicit_false, "default == explain=false");
+    assert!(!default.contains('↳'), "default has no explain tags");
+
+    // explain=true: every surfaced hit carries a provenance tag.
+    let explained = memory.search_causal(
+        None,
+        Some("test suite release"),
+        Some(5),
+        None,
+        None,
+        Some(true),
+    );
+    assert!(
+        explained.contains("↳ ["),
+        "explain tags present: {explained}"
+    );
+    assert!(
+        explained.contains("[seed]") || explained.contains("[spread hop="),
+        "tag shape: {explained}"
+    );
+
+    // search_memory: same contract.
+    let d = memory.search_memory("test suite release", None, None, Some(10), None, None, None);
+    let e = memory.search_memory(
+        "test suite release",
+        None,
+        None,
+        Some(10),
+        None,
+        None,
+        Some(true),
+    );
+    assert!(!d.contains('↳'), "default unified output unchanged");
+    assert!(e.contains("↳ ["), "unified explain tags: {e}");
+
+    // Every recall wrote an audit row (v13 recall_audit).
+    let audits = memory.store().recent_recall_audits(10).expect("audit read");
+    assert!(
+        audits.iter().any(|a| a.query == "test suite release"),
+        "audit row for the recall: {audits:?}"
+    );
+    let row = audits
+        .iter()
+        .find(|a| a.query == "test suite release")
+        .expect("audit row");
+    assert!(row.result_count > 0);
+    assert!(!row.results.as_array().unwrap().is_empty());
+}
+
+// ─── §2.1 proactive contradiction retrieval (explain mode) ───────────
+
+#[test]
+fn search_explain_surfaces_contradicting_history() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "used Redis as the session cache",
+        "cache held through the flash sale and checkout succeeded",
+        "caused",
+        "shop",
+        None,
+        None,
+        None,
+    );
+    memory.record_decision(
+        "kept Redis as the session cache for the anniversary sale",
+        "redis cache stampede crashed checkout for ten minutes",
+        "caused",
+        "shop",
+        None,
+        None,
+        None,
+    );
+
+    // explain=false: byte-stable, no contradiction section.
+    let plain = memory.search_causal(
+        Some("shop"),
+        Some("redis session cache"),
+        Some(5),
+        None,
+        None,
+        Some(false),
+    );
+    assert!(
+        !plain.contains("contradicting history"),
+        "default output unchanged: {plain}"
+    );
+
+    // explain=true: the failure episode is proactively surfaced.
+    let explained = memory.search_causal(
+        Some("shop"),
+        Some("redis session cache"),
+        Some(5),
+        None,
+        None,
+        Some(true),
+    );
+    assert!(
+        explained.contains("contradicting history"),
+        "section header present: {explained}"
+    );
+    assert!(
+        explained.contains("stampede"),
+        "the negative episode is surfaced: {explained}"
+    );
+    assert!(
+        explained.contains("[contradiction"),
+        "tag shape: {explained}"
+    );
+}
+
+// ── v14 fork-aware counterfactual ────────────────────────────────
+
+#[test]
+fn test_counterfactual_fork_section_and_paired_verdict() {
+    let store = crate::store::CausalStore::open_in_memory().unwrap();
+    // One shared context, two branches — a natural experiment.
+    let ctx = Some("rust agent, cache redesign, v0.9");
+    for (dec, out, pol) in [
+        (
+            "used redis mutex for cache",
+            "deadlock under load",
+            "negative",
+        ),
+        (
+            "switched to channel ownership",
+            "race fixed, all tests pass",
+            "positive",
+        ),
+    ] {
+        store
+            .record_decision_full(
+                dec,
+                out,
+                "caused",
+                Some("concurrency"),
+                0.8,
+                "rule",
+                1000,
+                Some(pol),
+                ctx,
+                None,
+            )
+            .unwrap();
+    }
+    let memory = Memory::new(store);
+    let out = memory.counterfactual_inner("redis mutex", "channel", None, 5);
+    assert!(
+        out.contains("🔀 Same-context branches (natural experiments, 1 pair(s))"),
+        "fork section must render: {out}"
+    );
+    assert!(
+        out.contains("same-context evidence favors B"),
+        "paired verdict must favor B (channel won in the same world): {out}"
+    );
+    assert!(
+        out.contains("(outranks the pooled distribution)"),
+        "paired evidence must be flagged as outranking: {out}"
+    );
+    // v14.1 regression: the paired verdict string must map to ledger code
+    // prefer_b — the pre-constant era's "favor"/"favors" mismatch silently
+    // coded every paired verdict no_difference. Reality takes B and wins,
+    // so the prediction must resolve correct (not ambiguous).
+    assert!(
+        out.contains("📐 Prediction #"),
+        "paired verdict must still log a prediction: {out}"
+    );
+    let rec = memory.record_decision(
+        "channel",
+        "rollout succeeded, no regressions",
+        "caused",
+        "concurrency",
+        None,
+        None,
+        None,
+    );
+    assert!(
+        rec.contains("Resolved 1 pending prediction"),
+        "recording option B must auto-resolve the prediction: {rec}"
+    );
+    let report = memory.prediction_report();
+    assert!(
+        report.contains("accuracy 1/1 (100%)"),
+        "prefer_b + B succeeded ⇒ correct, not ambiguous: {report}"
+    );
+}
+
+#[test]
+fn test_counterfactual_no_forks_output_unchanged() {
+    // Records WITHOUT context ⇒ no fork section, verdict stays
+    // distribution-based (byte-shape compatibility with pre-v14).
+    let store = crate::store::CausalStore::open_in_memory().unwrap();
+    for (i, (dec, out, pol)) in [
+        (
+            "used redis mutex for cache",
+            "deadlock under load",
+            "negative",
+        ),
+        ("used redis mutex for queue", "deadlock again", "negative"),
+        (
+            "switched to channel ownership",
+            "race fixed, all tests pass",
+            "positive",
+        ),
+    ]
+    .iter()
+    .enumerate()
+    {
+        store
+            .record_decision_full(
+                dec,
+                out,
+                "caused",
+                Some("concurrency"),
+                0.8,
+                "rule",
+                1000 + i as i64,
+                Some(pol),
+                None,
+                None,
+            )
+            .unwrap();
+    }
+    let memory = Memory::new(store);
+    let out = memory.counterfactual_inner("redis mutex", "channel", None, 5);
+    assert!(
+        !out.contains("🔀"),
+        "no fork section without context: {out}"
+    );
+    assert!(out.contains("recorded evidence favors B"), "{out}");
+}
+
+// ── v14 prediction ledger e2e ────────────────────────────────────
+
+#[test]
+fn test_prediction_ledger_e2e_log_resolve_report() {
+    let memory = Memory::open_in_memory().expect("memory");
+    // Seed evidence so a verdict fires (B wins: 2 negative vs 1 positive).
+    for (dec, out, _pol) in [
+        (
+            "used redis mutex for cache",
+            "deadlock under load",
+            "negative",
+        ),
+        ("used redis mutex for queue", "deadlock again", "negative"),
+        (
+            "switched to channel ownership",
+            "race fixed, all tests pass",
+            "positive",
+        ),
+    ] {
+        memory.record_decision(dec, out, "caused", "concurrency", None, None, None);
+    }
+    let out = memory.counterfactual_inner(
+        "used redis mutex for cache",
+        "switched to channel ownership",
+        Some("concurrency"),
+        5,
+    );
+    assert!(
+        out.contains("📐 Prediction #1 logged"),
+        "footer must report the ledger id: {out}"
+    );
+    // Reality: the agent actually takes the preferred option and wins.
+    let rec = memory.record_decision(
+        "switched to channel ownership",
+        "cutover succeeded, no deadlocks",
+        "caused",
+        "concurrency",
+        None,
+        None,
+        None,
+    );
+    assert!(
+        rec.contains("Resolved 1 pending prediction"),
+        "record must report the auto-resolution: {rec}"
+    );
+    let report = memory.prediction_report();
+    assert!(
+        report.contains("1 resolved / 0 pending"),
+        "report header: {report}"
+    );
+    assert!(
+        report.contains("accuracy 1/1 (100%)"),
+        "preferred option won ⇒ correct: {report}"
+    );
+    assert!(
+        report.contains("method=contrastive: 1/1 correct"),
+        "per-method split: {report}"
+    );
+    assert!(
+        report.contains("task_tag=concurrency: 1/1 correct"),
+        "per-tag split: {report}"
+    );
+}
+
+#[test]
+fn test_prediction_report_empty_ledger() {
+    let memory = Memory::open_in_memory().expect("memory");
+    let report = memory.prediction_report();
+    assert!(
+        report.contains("Prediction ledger is empty"),
+        "empty ledger guidance: {report}"
+    );
+}
+
+#[test]
+fn test_counterfactual_closed_world_replay_routing() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "enabled lto in release profile",
+        "build time doubled, size -2%",
+        "caused",
+        "build",
+        None,
+        None,
+        None,
+    );
+    memory.record_decision(
+        "kept default release profile",
+        "build time unchanged",
+        "caused",
+        "build",
+        None,
+        None,
+        None,
+    );
+    let out = memory.counterfactual_inner(
+        "enabled lto in release profile",
+        "kept default release profile",
+        Some("build"),
+        5,
+    );
+    assert!(
+        out.contains("🧪 Closed-world decision"),
+        "closed-world tags must route to the replay plan: {out}"
+    );
+    // Open-world tag: no routing note.
+    let out2 = memory.counterfactual_inner(
+        "enabled lto in release profile",
+        "kept default release profile",
+        Some("release"),
+        5,
+    );
+    assert!(
+        !out2.contains("🧪"),
+        "open-world stays estimate-only: {out2}"
+    );
+}
+
+// ── v14.1 competitive separation ─────────────────────────────────
+
+#[test]
+fn test_counterfactual_competitive_separation_shared_vocab() {
+    // The contamination scenario from the design doc: options share
+    // vocabulary ("store", "migration"), BM25 matches decision AND
+    // outcome text, so pre-separation both sides pooled BOTH episodes
+    // and the verdict collapsed to a tie.
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "chose mysql for the session store",
+        "migration deadlock during cutover",
+        "caused",
+        "database",
+        None,
+        None,
+        None,
+    );
+    memory.record_decision(
+        "switched the store to postgres",
+        "cutover passed, zero downtime",
+        "caused",
+        "database",
+        None,
+        None,
+        None,
+    );
+    let out = memory.counterfactual_inner(
+        "chose mysql for the session store",
+        "switched the store to postgres",
+        None,
+        5,
+    );
+    // Post-separation each side must own exactly its own episode:
+    // A = 1 negative, B = 1 positive → a real verdict, not a tie.
+    assert!(
+        out.contains("A. \"chose mysql for the session store\" (n=1): 0 positive / 1 negative"),
+        "side A must hold only the mysql episode: {out}"
+    );
+    assert!(
+        out.contains("B. \"switched the store to postgres\" (n=1): 1 positive / 0 negative"),
+        "side B must hold only the postgres episode: {out}"
+    );
+    assert!(
+        out.contains("recorded evidence favors B"),
+        "separated pools must produce a verdict instead of a tie: {out}"
+    );
+}
+
+// ─── v18: memory influence chain (record_decision + invalidate_decision) ──
+
+#[test]
+fn record_decision_response_shows_influence_chain() {
+    let memory = Memory::open_in_memory().expect("memory");
+    let r1 = memory.record_decision(
+        "used redis mutex",
+        "deadlock under load",
+        "caused",
+        "cache",
+        None,
+        None,
+        None,
+    );
+    assert!(
+        !r1.contains("🔗 Influenced by"),
+        "no chain section without the param: {r1}"
+    );
+    let e1 = memory.store().all_valid_edges().unwrap()[0].edge_id;
+
+    let r2 = memory.record_decision(
+        "sharded the cache",
+        "p99 latency dropped",
+        "caused",
+        "cache",
+        None,
+        None,
+        Some(&[e1, 999_999]),
+    );
+    assert!(
+        r2.contains(&format!("🔗 Influenced by: #{e1}")),
+        "stored influence reported: {r2}"
+    );
+    assert!(
+        r2.contains("skipped unknown id(s): #999999"),
+        "filtered id noted: {r2}"
+    );
+}
+
+#[test]
+fn invalidate_decision_warns_about_influenced_followers() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "always retry on timeout",
+        "masked a deeper bug",
+        "caused",
+        "ops",
+        None,
+        None,
+        None,
+    );
+    let src = memory.store().all_valid_edges().unwrap()[0].edge_id;
+    memory.record_decision(
+        "added retry to the billing job",
+        "double charge incident",
+        "caused",
+        "ops",
+        None,
+        None,
+        Some(&[src]),
+    );
+
+    let out = memory.invalidate_decision(src, Some("retry storm was the root cause"));
+    assert!(
+        out.contains(&format!("Invalidated edge #{src}")),
+        "invalidation itself still works: {out}"
+    );
+    assert!(
+        out.contains("⚠️ This edge influenced 1 later decision(s)"),
+        "propagation warning present: {out}"
+    );
+    assert!(
+        out.contains("added retry to the billing job"),
+        "follower named in the warning: {out}"
+    );
+
+    // An edge with no followers invalidates without the warning.
+    let follower = memory.store().all_valid_edges().unwrap()[0].edge_id;
+    let clean = memory.invalidate_decision(follower, None);
+    assert!(
+        !clean.contains("⚠️ This edge influenced"),
+        "no warning when nothing downstream: {clean}"
+    );
+}
+
+// ─── P5: rebuild/write-path race ──────────────────────────────────────
+
+/// A write that lands inside a rebuild's build window must survive the
+/// install. The snapshot below predates the write, so installing it would
+/// drop the just-recorded edge — and the old code cleared the dirty counter
+/// on install, leaving no later rebuild to repair it.
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: memory and snapshot construction must succeed"
+)]
+fn test_stale_snapshot_install_is_refused() {
+    use std::sync::atomic::Ordering;
+
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "sharded the ledger by account",
+        "one hot shard skewed the p99",
+        "caused",
+        "storage",
+        None,
+        None,
+        None,
+    );
+
+    // F2: the graph is built lazily, so this instance has no live graph to
+    // protect yet — build it now, so the scenario below is the one this test
+    // is about (a patch landing in a rebuild's window over a live graph).
+    memory.ensure_graph_built();
+
+    // A rebuild's lock-free half: snapshot the store as it stands.
+    let (snapshot, snapshot_ts, epoch) = memory.build_graph_snapshot().expect("snapshot");
+    let version_before = memory.graph_version.load(Ordering::Acquire);
+
+    // The next write lands while that snapshot is in flight; only the
+    // write-path patch reaches the live graph.
+    memory.record_decision(
+        "cached the index in Redis",
+        "stale reads after the writer moved",
+        "caused",
+        "caching",
+        None,
+        None,
+        None,
+    );
+
+    assert!(
+        !memory.install_graph(snapshot, snapshot_ts, epoch),
+        "a snapshot that predates a patch must not be installed"
+    );
+    assert_eq!(
+        memory.graph_version.load(Ordering::Acquire),
+        version_before,
+        "a refused install must not swap the graph"
+    );
+    assert!(
+        memory.graph_writes.load(Ordering::Relaxed) > 0,
+        "the write stays pending, so a later rebuild retries"
+    );
+
+    // The newer lesson is still reachable — through the patched graph, not
+    // through a repair rebuild (a lost patch would make the seed miss and
+    // bump the generation here).
+    let (hits, mode) = memory.search_memory_entries("cached the index in Redis", None, None, 10);
+    assert_eq!(mode, "spread");
+    assert!(
+        hits.iter().any(|h| h.key.starts_with("causal:")),
+        "the edge must not be lost: {hits:?}"
+    );
+    assert_eq!(
+        memory.graph_version.load(Ordering::Acquire),
+        version_before,
+        "the answer came from the patched graph, not from a repair rebuild"
+    );
+}
+
+/// Concurrent queries that all prove staleness at the same instant must
+/// produce ONE rebuild: a rebuild is O(store), so without single-flight a
+/// burst of N queries serializes N of them on the query threads (the
+/// pool-amplified version of this is F1's stampede).
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: temp file and memory construction must succeed"
+)]
+fn test_concurrent_stale_queries_rebuild_once() {
+    use std::sync::atomic::Ordering;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("stampede.db");
+    let memory = std::sync::Arc::new(Memory::open(&db).expect("memory"));
+    // F2: the graph is built lazily, so build it here — the write below must
+    // land *after* the build for the queries to prove staleness.
+    memory.ensure_graph_built();
+
+    // Written straight to the store: the graph never learns about it, so
+    // every query below resolves a seed the graph cannot honor — provable
+    // staleness.
+    memory
+        .store()
+        .record_decision_full(
+            "moved the queue into SQLite",
+            "lost the in-flight jobs on restart",
+            "caused",
+            Some("queue"),
+            0.7,
+            "rule",
+            chrono::Utc::now().timestamp(),
+            None,
+            None,
+            None,
+        )
+        .expect("store write");
+
+    let version_before = memory.graph_version.load(Ordering::Acquire);
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                let _ = memory.search_memory_entries("moved the queue into SQLite", None, None, 10);
+            });
+        }
+    });
+    assert_eq!(
+        memory.graph_version.load(Ordering::Acquire) - version_before,
+        1,
+        "8 concurrent stale queries must trigger exactly one rebuild"
+    );
+}
+
+// ─── F2: lazy graph construction ──────────────────────────────────────
+
+/// The graph is built by the first *graph-consuming* query, not by opening
+/// the store — and that query gets the real engine, not the store-only
+/// fallback it would fall back to if the slot stayed unbuilt.
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: memory construction and the query must succeed"
+)]
+fn test_graph_builds_on_first_query_not_at_open() {
+    let memory = Memory::open_in_memory().expect("memory");
+    memory.record_decision(
+        "moved the retry loop into the queue worker",
+        "duplicate jobs on every deploy",
+        "caused",
+        "queue",
+        None,
+        None,
+        None,
+    );
+    assert!(
+        matches!(
+            *memory.graph.lock().expect("graph lock"),
+            super::GraphSlot::Unbuilt
+        ),
+        "opening a store and writing must not build the graph (F2)"
+    );
+
+    let (hits, mode) = memory.search_memory_entries("retry loop queue worker", None, None, 10);
+    assert_eq!(
+        mode, "spread",
+        "the first query must build the graph, not serve the fallback: {hits:?}"
+    );
+    assert!(
+        matches!(
+            *memory.graph.lock().expect("graph lock"),
+            super::GraphSlot::Ready(_)
+        ),
+        "the first graph query must leave the slot Ready"
+    );
+}
+
+/// The batch's core win: write-only traffic never pays the O(store) build.
+/// A write-path patch on an unbuilt slot must not build one either — it only
+/// leaves the write pending for the build a query triggers.
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: memory construction must succeed"
+)]
+fn test_record_decisions_do_not_build_graph() {
+    use std::sync::atomic::Ordering;
+
+    let memory = Memory::open_in_memory().expect("memory");
+    for turn in 0..5 {
+        memory.record_decision(
+            &format!("pinned the toolchain at revision {turn}"),
+            &format!("reproducible builds after bump {turn}"),
+            "enabled",
+            "build",
+            None,
+            None,
+            None,
+        );
+    }
+    assert_eq!(
+        memory.graph_version.load(Ordering::Acquire),
+        0,
+        "five writes must not swap in a graph"
+    );
+    assert!(
+        matches!(
+            *memory.graph.lock().expect("graph lock"),
+            super::GraphSlot::Unbuilt
+        ),
+        "five writes must leave the slot unbuilt"
+    );
+    assert!(
+        memory.graph_writes.load(Ordering::Relaxed) >= 5,
+        "the writes stay pending for the build that does happen"
+    );
+}
+
+/// A build that cannot read the store lands in `Failed`: queries keep
+/// serving the store-only pool instead of panicking, and the failed load is
+/// not retried per query.
+///
+/// Terminal on purpose — the alternative (a retry on every retrieval)
+/// spends an O(store) load per query on a store that just failed. Recovery
+/// is a process restart (same as the eager load this replaces).
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: memory, rename and queries must not panic"
+)]
+fn test_failed_graph_build_degrades_to_store_paths() {
+    let memory = Memory::open_in_memory().expect("memory");
+    let rename = |from: &str, to: &str| {
+        let sql = format!("ALTER TABLE {from} RENAME TO {to}");
+        memory
+            .store()
+            .with_conn(|conn| {
+                conn.execute_batch(&sql)?;
+                Ok(())
+            })
+            .expect("rename");
+    };
+
+    // Break a table the builder reads unconditionally. The store's retrieval
+    // paths tolerate their own failures (`dual_pool_fused` unwraps to empty),
+    // which is exactly the degradation under test.
+    rename("causal_edges", "causal_edges_hidden");
+
+    let (hits, mode) = memory.search_memory_entries("anything at all", None, None, 10);
+    assert!(
+        matches!(
+            *memory.graph.lock().expect("graph lock"),
+            super::GraphSlot::Failed
+        ),
+        "a failed build must land in Failed, not stay Unbuilt"
+    );
+    assert_eq!(
+        mode, "bm25",
+        "a failed graph must degrade to the store-only pool: {hits:?}"
+    );
+    assert!(
+        !memory.should_rebuild(),
+        "a Failed slot must not be retried by the periodic rebuild policy"
+    );
+
+    // Terminal: with the store readable again, a query must still not retry
+    // the load (a retry would have succeeded and produced Ready).
+    rename("causal_edges_hidden", "causal_edges");
+    let _ = memory.search_memory_entries("anything at all", None, None, 10);
+    assert!(
+        matches!(
+            *memory.graph.lock().expect("graph lock"),
+            super::GraphSlot::Failed
+        ),
+        "Failed is terminal for this instance"
+    );
+}
+
+// ─── P7: bypass writes (another process commits to the same file) ──────
+
+/// A write committed by another connection — the git-sync process replaying
+/// an align snapshot — must reach the live graph through the delta, without
+/// a full rebuild: the point of P7 is that pooling makes instances long-lived
+/// enough to outlive a rebuild window, so "wait for the next rebuild to
+/// notice" is exactly the staleness being fixed.
+///
+/// The write path a git-sync pull takes is mirrored faithfully: raw rows on
+/// its own connection (chunks + `causal_edges`), with the persistent BM25
+/// index maintained the way an import does — so the seed layer can resolve
+/// the new content and the graph is the only thing standing between the
+/// write and the answer.
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: temp file, memory construction and the bypass writes must succeed"
+)]
+fn test_bypass_write_visible_via_delta_without_rebuild() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("bypass.db");
+    let memory = Memory::open(&db).expect("memory");
+
+    // The first query builds the graph (F2) — the snapshot the delta below
+    // has to patch, and the baseline the data_version probe arms against.
+    memory.record_decision(
+        "pinned the toolchain to 1.81",
+        "the build stopped drifting between machines",
+        "enabled",
+        "build",
+        None,
+        None,
+        None,
+    );
+    let (hits, mode) = memory.search_memory_entries("toolchain build drifting", None, None, 10);
+    assert_eq!(mode, "spread", "{hits:?}");
+    assert!(
+        hits.iter().any(|h| h.key.starts_with("causal:")),
+        "the local write must be visible: {hits:?}"
+    );
+    let version = memory.graph_version();
+
+    // Bypass write: a second connection, like the git-sync process.
+    let now = chrono::Utc::now().timestamp();
+    {
+        let conn = rusqlite::Connection::open(&db).expect("bypass connection");
+        for (id, text) in [
+            ("d-bypass", "switched the ingest pipeline to batch mode"),
+            ("o-bypass", "nightly ingest finished before sunrise"),
+        ] {
+            conn.execute(
+                "INSERT INTO chunks (id, text, created_at, q_value) VALUES (?1, ?2, ?3, 0.5)",
+                rusqlite::params![id, text, now],
+            )
+            .expect("bypass chunk");
+            crate::store::CausalStore::index_chunk(&conn, id, text).expect("bypass bm25 index");
+        }
+        conn.execute(
+            "INSERT INTO causal_edges
+                 (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
+             VALUES (?1, ?2, 'caused', 0.9, 'user_feedback', ?3, ?3, 'ingest')",
+            rusqlite::params!["d-bypass", "o-bypass", now],
+        )
+        .expect("bypass edge");
+    }
+
+    // The next query must see it — through the graph (mode=spread, so the
+    // seed resolved to a node) and without a rebuild (version unchanged).
+    let (hits, mode) = memory.search_memory_entries("batch mode nightly ingest", None, None, 10);
+    assert_eq!(
+        mode, "spread",
+        "the bypass write must be in the graph, not a store-only fallback: {hits:?}"
+    );
+    assert!(
+        hits.iter().any(|h| h.content.contains("batch mode")),
+        "the bypass edge must surface: {hits:?}"
+    );
+    assert_eq!(
+        memory.graph_version(),
+        version,
+        "the delta patches the live graph; a rebuild here means the write was \
+         not caught and the seed fell back to the staleness repair"
+    );
 }

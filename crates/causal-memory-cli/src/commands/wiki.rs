@@ -74,7 +74,13 @@ fn slugify(text: &str) -> String {
     let mut s: String = text
         .chars()
         .take(60)
-        .map(|c| if c.is_alphanumeric() || c == ' ' { c } else { ' ' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == ' ' {
+                c
+            } else {
+                ' '
+            }
+        })
         .collect::<String>()
         .split_whitespace()
         .collect::<Vec<_>>()
@@ -112,15 +118,12 @@ fn export_obsidian(
     // Collect all unique nodes (by chunk id)
     let mut node_map: HashMap<String, (String, String)> = HashMap::new(); // id → (slug, text)
     for e in edges {
-        node_map.entry(e.decision_id.clone()).or_insert_with(|| {
-            (
-                slugify(&e.decision_text),
-                e.decision_text.clone(),
-            )
-        });
-        node_map.entry(e.outcome_id.clone()).or_insert_with(|| {
-            (slugify(&e.outcome_text), e.outcome_text.clone())
-        });
+        node_map
+            .entry(e.decision_id.clone())
+            .or_insert_with(|| (slugify(&e.decision_text), e.decision_text.clone()));
+        node_map
+            .entry(e.outcome_id.clone())
+            .or_insert_with(|| (slugify(&e.outcome_text), e.outcome_text.clone()));
     }
 
     // Build adjacency: for each node, what edges connect it?
@@ -141,7 +144,9 @@ fn export_obsidian(
     let mut notes_written = 0;
     for (node_id, (slug, text)) in &node_map {
         let mut md = String::new();
-        md.push_str(&format!("---\nid: \"{node_id}\"\nslug: \"{slug}\"\n---\n\n"));
+        md.push_str(&format!(
+            "---\nid: \"{node_id}\"\nslug: \"{slug}\"\n---\n\n"
+        ));
         md.push_str(&format!("## {text}\n\n"));
 
         // Outgoing edges
@@ -171,7 +176,11 @@ fn export_obsidian(
                 };
                 md.push_str(&format!(
                     "- **{}** {} [[{}|{}]] ({:.0}% confidence)\n",
-                    arrow, icon, target_slug, truncate_safe(target_text, 60), edge.confidence * 100.0
+                    arrow,
+                    icon,
+                    target_slug,
+                    truncate_safe(target_text, 60),
+                    edge.confidence * 100.0
                 ));
             }
             md.push('\n');
@@ -235,7 +244,7 @@ fn export_html(
     facts: &[causal_memory::store::AgentFact],
     out: &std::path::Path,
 ) -> anyhow::Result<()> {
-    std::fs::create_dir_all(out.parent().unwrap_or(out))?;
+    std::fs::create_dir_all(out)?;
 
     // Collect nodes
     let mut node_ids: HashMap<String, usize> = HashMap::new();
@@ -361,7 +370,11 @@ network.on('click', function(params) {{
         nodes_count = node_ids.len(),
         facts_count = facts.len(),
         nodes_data = nodes_json.join(","),
-        facts_data = if fact_nodes_json.is_empty() { String::new() } else { format!(",{}", fact_nodes_json.join(",")) },
+        facts_data = if fact_nodes_json.is_empty() {
+            String::new()
+        } else {
+            format!(",{}", fact_nodes_json.join(","))
+        },
         edges_data = edges_json.join(","),
     );
 

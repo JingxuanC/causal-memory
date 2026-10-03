@@ -46,10 +46,7 @@ impl SessionParser for ClaudeParser {
             );
         }
         if !source.path.exists() {
-            return Err(anyhow!(
-                "Session file not found: {}",
-                source.path.display()
-            ));
+            return Err(anyhow!("Session file not found: {}", source.path.display()));
         }
 
         let raw = std::fs::read_to_string(&source.path)?;
@@ -91,7 +88,11 @@ impl SessionParser for ClaudeParser {
                                             .get("input")
                                             .map(|v| serde_json::to_string(v).unwrap_or_default())
                                             .unwrap_or_default();
-                                        decisions.push(CandidateDecision { id, name, arguments });
+                                        decisions.push(CandidateDecision {
+                                            id,
+                                            name,
+                                            arguments,
+                                        });
                                     }
                                     "text" => {
                                         if let Some(text) =
@@ -126,10 +127,7 @@ impl SessionParser for ClaudeParser {
                                     .unwrap_or("")
                                     .to_string();
                                 let content = block.get("content").cloned().unwrap_or_default();
-                                results.insert(
-                                    tool_id.clone(),
-                                    CandidateResult { content },
-                                );
+                                results.insert(tool_id.clone(), CandidateResult { content });
                                 // Synthesize an event for the outcome queue.
                                 // Claude has no events.jsonl — infer from content.
                                 let outcome = infer_outcome_from_result(&results[&tool_id].content);

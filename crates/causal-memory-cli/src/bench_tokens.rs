@@ -22,8 +22,8 @@ use std::path::PathBuf;
 use anyhow::Result;
 use causal_memory::store::{CausalEntry, CausalStore};
 
-use causal_memory::token::estimate_tokens;
 use crate::server::{format_entry_layered, rrf_fuse};
+use causal_memory::token::estimate_tokens;
 
 pub fn run(args: &[String]) -> Result<()> {
     let mut db_path: Option<&String> = None;
@@ -52,9 +52,7 @@ pub fn run(args: &[String]) -> Result<()> {
         i += 1;
     }
     let Some(queries_path) = queries_path else {
-        anyhow::bail!(
-            "Usage: causal-memory bench-tokens --db <PATH> --queries <file> [--topk N]"
-        );
+        anyhow::bail!("Usage: causal-memory bench-tokens --db <PATH> --queries <file> [--topk N]");
     };
     let queries: Vec<String> = std::fs::read_to_string(queries_path)?
         .lines()
@@ -65,7 +63,9 @@ pub fn run(args: &[String]) -> Result<()> {
     if queries.is_empty() {
         anyhow::bail!("no queries in {queries_path}");
     }
-    let db_path = db_path.map(PathBuf::from).unwrap_or_else(crate::get_db_path);
+    let db_path = db_path
+        .map(PathBuf::from)
+        .unwrap_or_else(crate::get_db_path);
     let store = CausalStore::open(&db_path)?;
 
     let mut raw_tokens = 0usize;
@@ -73,7 +73,11 @@ pub fn run(args: &[String]) -> Result<()> {
     let mut layered_tokens = 0usize;
 
     println!("# bench-tokens (token efficiency, P6)\n");
-    println!("db: {}   queries: {}   topk: {topk}\n", db_path.display(), queries.len());
+    println!(
+        "db: {}   queries: {}   topk: {topk}\n",
+        db_path.display(),
+        queries.len()
+    );
     println!("| query | strategy | entries | est. tokens |");
     println!("|---|---|---|---|");
 
