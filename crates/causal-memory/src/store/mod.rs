@@ -536,6 +536,24 @@ impl CausalStore {
         let conn = self.acquire()?;
         f(&conn)
     }
+
+    /// A dedicated connection to this store's database, outside the pool —
+    /// for the P7 freshness probe's `PRAGMA data_version`
+    /// (see `Memory::arm_freshness_probe`). It must NOT be a pooled
+    /// connection: `data_version` is per-connection and a connection's own
+    /// commits never bump its own counter, so a pooled connection reused by
+    /// the write path would report this process's traffic as "external" and
+    /// mask the bypass writes the probe exists to catch.
+    ///
+    /// `None` for in-memory stores — no second connection can see them, and
+    /// nothing outside the process can write them either.
+    pub fn probe_connection(&self) -> Result<Option<Connection>> {
+        let Some(path) = self.conn.path() else {
+            return Ok(None);
+        };
+        // No pragmas: the probe only reads a pager counter, never the file.
+        Ok(Some(Connection::open(path)?))
+    }
 }
 
 // ─── Hand-rolled connection pool (A2) ────────────────────────────────
@@ -567,6 +585,11 @@ impl ConnPool {
             .map_err(|e| anyhow!("pool lock: {e}"))?
             .push(first);
         Ok(pool)
+    }
+
+    /// The database file, or `None` for an in-memory pool.
+    fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
     }
 
     fn open_conn(&self) -> Result<Connection> {

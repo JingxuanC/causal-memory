@@ -1825,3 +1825,88 @@ fn test_failed_graph_build_degrades_to_store_paths() {
         "Failed is terminal for this instance"
     );
 }
+
+// ─── P7: bypass writes (another process commits to the same file) ──────
+
+/// A write committed by another connection — the git-sync process replaying
+/// an align snapshot — must reach the live graph through the delta, without
+/// a full rebuild: the point of P7 is that pooling makes instances long-lived
+/// enough to outlive a rebuild window, so "wait for the next rebuild to
+/// notice" is exactly the staleness being fixed.
+///
+/// The write path a git-sync pull takes is mirrored faithfully: raw rows on
+/// its own connection (chunks + `causal_edges`), with the persistent BM25
+/// index maintained the way an import does — so the seed layer can resolve
+/// the new content and the graph is the only thing standing between the
+/// write and the answer.
+#[test]
+#[allow(
+    clippy::expect_used,
+    reason = "test invariant: temp file, memory construction and the bypass writes must succeed"
+)]
+fn test_bypass_write_visible_via_delta_without_rebuild() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db = dir.path().join("bypass.db");
+    let memory = Memory::open(&db).expect("memory");
+
+    // The first query builds the graph (F2) — the snapshot the delta below
+    // has to patch, and the baseline the data_version probe arms against.
+    memory.record_decision(
+        "pinned the toolchain to 1.81",
+        "the build stopped drifting between machines",
+        "enabled",
+        "build",
+        None,
+        None,
+        None,
+    );
+    let (hits, mode) = memory.search_memory_entries("toolchain build drifting", None, None, 10);
+    assert_eq!(mode, "spread", "{hits:?}");
+    assert!(
+        hits.iter().any(|h| h.key.starts_with("causal:")),
+        "the local write must be visible: {hits:?}"
+    );
+    let version = memory.graph_version();
+
+    // Bypass write: a second connection, like the git-sync process.
+    let now = chrono::Utc::now().timestamp();
+    {
+        let conn = rusqlite::Connection::open(&db).expect("bypass connection");
+        for (id, text) in [
+            ("d-bypass", "switched the ingest pipeline to batch mode"),
+            ("o-bypass", "nightly ingest finished before sunrise"),
+        ] {
+            conn.execute(
+                "INSERT INTO chunks (id, text, created_at, q_value) VALUES (?1, ?2, ?3, 0.5)",
+                rusqlite::params![id, text, now],
+            )
+            .expect("bypass chunk");
+            crate::store::CausalStore::index_chunk(&conn, id, text).expect("bypass bm25 index");
+        }
+        conn.execute(
+            "INSERT INTO causal_edges
+                 (from_id, to_id, relation, confidence, discovered_by, event_time, discovered_at, task_tag)
+             VALUES (?1, ?2, 'caused', 0.9, 'user_feedback', ?3, ?3, 'ingest')",
+            rusqlite::params!["d-bypass", "o-bypass", now],
+        )
+        .expect("bypass edge");
+    }
+
+    // The next query must see it — through the graph (mode=spread, so the
+    // seed resolved to a node) and without a rebuild (version unchanged).
+    let (hits, mode) = memory.search_memory_entries("batch mode nightly ingest", None, None, 10);
+    assert_eq!(
+        mode, "spread",
+        "the bypass write must be in the graph, not a store-only fallback: {hits:?}"
+    );
+    assert!(
+        hits.iter().any(|h| h.content.contains("batch mode")),
+        "the bypass edge must surface: {hits:?}"
+    );
+    assert_eq!(
+        memory.graph_version(),
+        version,
+        "the delta patches the live graph; a rebuild here means the write was \
+         not caught and the seed fell back to the staleness repair"
+    );
+}

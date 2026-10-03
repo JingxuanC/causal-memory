@@ -15,12 +15,14 @@
 //!
 //! When the file is configured and loads as a non-empty map, `/mcp` requires
 //! `Authorization: Bearer <token>`; the resolved tenant gets its own
-//! `CausalStore` (one SQLite db per tenant under
-//! `<db-dir>/tenants/<safe>.<fnv1a>.db`, the amc.rs per-user pattern), opened
-//! lazily on first request. Unknown or missing tokens get 401 and never
-//! create a store. When the file is unset/empty/unreadable the server keeps
-//! the pre-existing behavior: no `/mcp` auth, one shared store for everyone
-//! (`auth=open` — the startup log states the mode either way).
+//! `Memory` — one SQLite db per tenant under
+//! `<db-dir>/tenants/<safe>.<fnv1a>.db` (the amc.rs per-user pattern) plus
+//! the pooled hippocampus graph that goes with it — opened lazily on first
+//! request and reused across requests (F1 pooling; see [`TenantStores`]).
+//! Unknown or missing tokens get 401 and never create a store. When the file
+//! is unset/empty/unreadable the server keeps the pre-existing behavior: no
+//! `/mcp` auth, one shared store for everyone (`auth=open` — the startup log
+//! states the mode either way).
 //!
 //! Hot-reload tradeoff: each source file is re-read when its mtime changes
 //! (one `stat` per file per request, no full re-parse), so ops can
@@ -38,6 +40,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use axum::extract::{Request, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
+use causal_memory::memory::Memory;
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use tower::ServiceExt;
@@ -244,20 +247,121 @@ impl TenantTokens {
     }
 }
 
-/// tenant → `CausalStore` registry, opened lazily on first sight. One SQLite
-/// db file per tenant — physical isolation, the same retrieval boundary the
-/// AMC server uses per user_id.
+/// Default cap on pooled tenant `Memory` instances, overridden by
+/// `CAUSAL_MEMORY_TENANT_POOL`. The cap bounds **RAM**, not connections:
+/// each resident instance holds a whole hippocampus graph
+/// (measured ~0.12 GB at 50k nodes, 1.6 GB at 1M, 7.5 GB at 5M —
+/// enterprise-scaling §3), so raising it multiplies that footprint by the
+/// number of tenants that stay hot. A miss re-opens the tenant's db
+/// (migrations are idempotent) and rebuilds its graph on the first query, so
+/// a cap that is too small costs latency, never correctness.
+const DEFAULT_TENANT_POOL_CAP: usize = 64;
+
+/// Env (or config-file) override for the pool cap.
+const TENANT_POOL_ENV: &str = "CAUSAL_MEMORY_TENANT_POOL";
+
+/// The configured cap, clamped to at least 1 (a 0 cap would evict the
+/// instance it just opened, i.e. rebuild a graph per request).
+fn pool_cap_from_env() -> usize {
+    causal_memory::config::get(TENANT_POOL_ENV)
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_TENANT_POOL_CAP)
+        .max(1)
+}
+
+/// tenant → `Memory` registry, opened lazily on first sight. One SQLite db
+/// file per tenant — physical isolation, the same retrieval boundary the AMC
+/// server uses per user_id.
+///
+/// F1: the pool holds `Memory` instances, not `CausalStore`s. A `Memory` is
+/// what remembers the hippocampus graph, and building that graph is O(store)
+/// (measured 4.9 s at 50k nodes, 107 s at 1M): a per-request instance rebuilt
+/// it on *every* tool call. Pooling moves that cost to the first request per
+/// tenant, and — because an instance now lives long enough to see them — makes
+/// D1's co-activation flush and the P7 bypass-write catch-up meaningful
+/// (see `Memory::flush` / `Memory::ensure_graph_current`).
+///
+/// Eviction is LRU by instance count, on `get` only (no background thread:
+/// the pool is touched by requests anyway, and a reaper thread would have to
+/// fight the registry lock for nothing). An evicted instance is flushed
+/// before it is dropped — its buffered co-activation pairs would otherwise
+/// die with it, since an unpooled instance never reaches a graph rebuild.
 pub(crate) struct TenantStores {
     /// `<db-dir>/tenants` — created on first store open.
     root: PathBuf,
-    stores: Mutex<HashMap<String, Arc<causal_memory::store::CausalStore>>>,
+    /// Maximum resident instances (see [`DEFAULT_TENANT_POOL_CAP`]).
+    cap: usize,
+    inner: Mutex<TenantPool>,
+}
+
+/// LRU pool state. `tick` is a monotonic touch counter rather than a clock:
+/// two touches inside the same millisecond must still order, and a clock that
+/// steps backwards (NTP) would poison the ordering.
+#[derive(Default)]
+struct TenantPool {
+    entries: HashMap<String, PoolEntry>,
+    tick: u64,
+}
+
+struct PoolEntry {
+    memory: Arc<Memory>,
+    touched: u64,
+}
+
+impl TenantPool {
+    /// Insert `memory` for `tenant` as the most recently used instance, then
+    /// evict least-recently-used entries until the pool fits `cap`.
+    fn insert(&mut self, tenant: &str, memory: Arc<Memory>, cap: usize) {
+        self.tick += 1;
+        let touched = self.tick;
+        self.entries
+            .insert(tenant.to_string(), PoolEntry { memory, touched });
+        self.evict_over_cap(cap);
+    }
+
+    /// Evict LRU instances until `entries.len() <= cap`.
+    ///
+    /// Each victim is flushed **before** it is dropped: the D1 buffer only
+    /// flushes at graph rebuild, and an evicted instance will never rebuild —
+    /// without this the learning it buffered since the last rebuild is lost
+    /// exactly at the eviction point. `access_buffer` needs nothing here: it
+    /// lives inside `CausalStore` and is released with it (the pending
+    /// access-count bumps are dropped, as they always have been).
+    ///
+    /// Dropping the pool's `Arc` does not necessarily drop the `Memory`: a
+    /// request in flight holds its own clone and keeps it alive until done.
+    /// That is fine — the entry is out of the pool (so it cannot grow back
+    /// into the working set) and already flushed.
+    fn evict_over_cap(&mut self, cap: usize) {
+        while self.entries.len() > cap {
+            let Some(victim) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.touched)
+                .map(|(tenant, _)| tenant.clone())
+            else {
+                return;
+            };
+            if let Some(entry) = self.entries.remove(&victim) {
+                entry.memory.flush();
+                tracing::info!(tenant = %victim, "evicted tenant memory (flushed + dropped)");
+            }
+        }
+    }
 }
 
 impl TenantStores {
     pub(crate) fn new(root: PathBuf) -> Self {
+        Self::with_capacity(root, pool_cap_from_env())
+    }
+
+    /// Explicit-capacity constructor (tests pin the cap instead of fighting
+    /// over the process-global env).
+    fn with_capacity(root: PathBuf, cap: usize) -> Self {
         Self {
             root,
-            stores: Mutex::new(HashMap::new()),
+            cap: cap.max(1),
+            inner: Mutex::new(TenantPool::default()),
         }
     }
 
@@ -280,26 +384,39 @@ impl TenantStores {
         self.root.join(format!("{safe}.{hashed}.db"))
     }
 
-    /// Get (or lazily open) the tenant's store. Only ever called with a
-    /// tenant that authenticated, so an unknown token can never materialize
+    /// Get (or lazily open) the tenant's pooled memory. Only ever called with
+    /// a tenant that authenticated, so an unknown token can never materialize
     /// a db file.
-    pub(crate) fn get(
-        &self,
-        tenant: &str,
-    ) -> anyhow::Result<Arc<causal_memory::store::CausalStore>> {
-        if let Some(store) = poison_lock(&self.stores).get(tenant) {
-            return Ok(Arc::clone(store));
-        }
-        let mut guard = poison_lock(&self.stores);
-        if let Some(store) = guard.get(tenant) {
-            return Ok(Arc::clone(store));
+    ///
+    /// The open runs under the registry lock, matching the pre-pooling
+    /// double-check: two racing first requests for the same tenant must not
+    /// migrate the same db file concurrently (SQLite would serialize them at
+    /// best, and a half-applied migration at worst). The lock is held across a
+    /// migration and, on eviction, a co-activation flush — both are
+    /// sub-millisecond on tenant-sized stores, and both happen on a miss.
+    pub(crate) fn get(&self, tenant: &str) -> anyhow::Result<Arc<Memory>> {
+        let mut pool = poison_lock(&self.inner);
+        pool.tick += 1;
+        let touched = pool.tick;
+        if let Some(entry) = pool.entries.get_mut(tenant) {
+            entry.touched = touched;
+            return Ok(Arc::clone(&entry.memory));
         }
         std::fs::create_dir_all(&self.root)?;
         let path = self.db_path(tenant);
-        let store = Arc::new(causal_memory::store::CausalStore::open(&path)?);
-        tracing::info!(tenant, db = %path.display(), "opened tenant store");
-        guard.insert(tenant.to_string(), Arc::clone(&store));
-        Ok(store)
+        let memory = Arc::new(Memory::new_with_label(
+            causal_memory::store::CausalStore::open(&path)?,
+            "mcp-http",
+        ));
+        tracing::info!(tenant, db = %path.display(), "opened tenant memory");
+        // F1: a pooled instance is long-lived, so the F2 rule that forbids
+        // prewarming per-request instances does not apply — building its graph
+        // now keeps the first request from paying the O(store) build on the
+        // request thread. Single-flight makes this race with that first
+        // request harmlessly (whoever wins builds, the other serves).
+        memory.spawn_prewarm();
+        pool.insert(tenant, Arc::clone(&memory), self.cap);
+        Ok(memory)
     }
 }
 
@@ -345,10 +462,13 @@ impl McpTenantState {
 }
 
 /// Per-request dispatch: authenticate → resolve tenant → serve the MCP
-/// request against that tenant's store. A fresh `StreamableHttpService` is
-/// built per request (construction is a handful of Arc clones) because its
-/// service factory takes no request context — capturing the tenant's store
-/// in the factory closure is the per-request binding point.
+/// request against that tenant's pooled `Memory`. A fresh
+/// `StreamableHttpService` is still built per request — its service factory
+/// takes no request context, so capturing the tenant in the factory closure
+/// is the per-request binding point — but the service is now a thin shell
+/// over an `Arc<Memory>` the pool owns, not a new memory: the per-request
+/// construction cost that mattered was the O(store) graph build inside, and
+/// that instance is gone (F1).
 async fn mcp_tenant_handler(State(state): State<Arc<McpTenantState>>, req: Request) -> Response {
     let Some(tenant) = state.tokens.resolve(req.headers()) else {
         return (
@@ -358,21 +478,20 @@ async fn mcp_tenant_handler(State(state): State<Arc<McpTenantState>>, req: Reque
         )
             .into_response();
     };
-    let store = match state.stores.get(&tenant) {
-        Ok(store) => store,
+    let memory = match state.stores.get(&tenant) {
+        Ok(memory) => memory,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!("tenant store unavailable: {e:#}"),
+                format!("tenant memory unavailable: {e:#}"),
             )
                 .into_response();
         }
     };
-    let tenant_store = (*store).clone();
     let service = StreamableHttpService::new(
         move || {
-            Ok(CausalMemoryServer::new_with_label(
-                tenant_store.clone(),
+            Ok(CausalMemoryServer::from_memory(
+                Arc::clone(&memory),
                 "mcp-http",
             ))
         },
@@ -465,6 +584,131 @@ mod tests {
         assert!(p.extension().is_some_and(|e| e == "db"), "{p:?}");
         // Distinct names stay distinct after sanitizing (hash disambiguates).
         assert_ne!(stores.db_path("a/b"), stores.db_path("a_b"));
+    }
+
+    // ─── F1: tenant-level Memory pooling ──────────────────────────────────
+
+    /// Pool misses prewarm the tenant's graph on a background thread (the F2
+    /// rule that forbids prewarming applies to per-request instances, not to
+    /// pooled ones). These tests assert on the pooled instance's graph
+    /// behaviour, so wait that build out first: single-flight makes the first
+    /// query serve the store-only path while a build is in flight, which is
+    /// correct in production and a race in a test.
+    fn wait_for_graph(memory: &Memory) {
+        for _ in 0..1000 {
+            if memory.graph_version() > 0 {
+                // The prewarm thread's last act after installing the graph is
+                // the D1 flush; let it finish so the buffer assertions below
+                // measure this test's queries, not that flush.
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("tenant graph was never built");
+    }
+
+    /// Committed co-occurrence rows in a tenant db, read through a fresh store
+    /// (another connection — proves the flush reached the file, not a buffer).
+    fn cooc_rows(path: &Path) -> usize {
+        causal_memory::store::CausalStore::open(path)
+            .expect("open tenant db")
+            .load_cooccurrences()
+            .expect("load co-occurrences")
+            .len()
+    }
+
+    /// P1's fix at the tenant boundary: the second request for a tenant must
+    /// land on the same `Memory` — and therefore on the graph the first
+    /// request built — instead of building a fresh one (and rebuilding the
+    /// graph) per request.
+    #[test]
+    fn pooled_tenant_reuses_instance_and_keeps_graph() {
+        let dir = tempfile::tempdir().unwrap();
+        let stores = TenantStores::with_capacity(dir.path().join("tenants"), 4);
+        let first = stores.get("alice").unwrap();
+        wait_for_graph(&first);
+        first.record_decision(
+            "sharded the ingest pipeline by tenant",
+            "the nightly ingest stopped starving the writers",
+            "caused",
+            "ingest",
+            None,
+            None,
+            None,
+        );
+        let (hits, mode) = first.search_memory_entries("nightly ingest writers", None, None, 10);
+        assert_eq!(mode, "spread", "{hits:?}");
+        let version = first.graph_version();
+        assert!(version > 0, "the first query must have a graph");
+
+        let second = stores.get("alice").unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "a second request must reuse the pooled instance"
+        );
+        let _ = second.search_memory_entries("nightly ingest writers", None, None, 10);
+        assert_eq!(
+            second.graph_version(),
+            version,
+            "the second search must not rebuild the graph (F1's whole point)"
+        );
+    }
+
+    /// Eviction is the one point where a pooled instance goes away, and its
+    /// D1 co-activation buffer has no other flush before that (the rebuild
+    /// cadence is 900 s or 512 writes). Evicting without flushing would throw
+    /// away the learning the pool was introduced to keep.
+    #[test]
+    fn lru_eviction_flushes_cooccurrences_before_dropping() {
+        let dir = tempfile::tempdir().unwrap();
+        // One slot: the second tenant overflows it and evicts the first.
+        let stores = TenantStores::with_capacity(dir.path().join("tenants"), 1);
+        let alice = stores.get("alice").unwrap();
+        wait_for_graph(&alice);
+        for (decision, outcome) in [
+            (
+                "moved the retry loop into the queue worker",
+                "duplicate jobs on every deploy",
+            ),
+            (
+                "moved the queue worker into its own process",
+                "duplicate jobs again on the next deploy",
+            ),
+        ] {
+            alice.record_decision(decision, outcome, "caused", "queue", None, None, None);
+        }
+        let (hits, mode) =
+            alice.search_memory_entries("moved the queue worker deploy", None, None, 10);
+        assert_eq!(mode, "spread", "{hits:?}");
+        assert!(
+            hits.iter().filter(|h| h.key.starts_with("causal:")).count() >= 2,
+            "need ≥2 co-activated chunks for the buffer to hold anything: {hits:?}"
+        );
+
+        // Buffered, not written: no rebuild has run since the graph was built
+        // (searches are reads, and two writes are far below the threshold).
+        let path = stores.db_path("alice");
+        assert_eq!(
+            cooc_rows(&path),
+            0,
+            "pairs stay buffered until a flush point (rebuild or eviction)"
+        );
+
+        let bob = stores.get("bob").unwrap();
+        assert!(
+            cooc_rows(&path) > 0,
+            "eviction must flush the D1 buffer before dropping the instance"
+        );
+        drop(bob);
+
+        // The evicted instance is really gone from the pool: the next get
+        // reopens the db and rebuilds from it.
+        let alice_again = stores.get("alice").unwrap();
+        assert!(
+            !Arc::ptr_eq(&alice, &alice_again),
+            "an evicted tenant must not come back as the same instance"
+        );
     }
 
     #[test]

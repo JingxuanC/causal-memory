@@ -33,7 +33,7 @@
 - 或每个图入口显式 `ensure_graph_built()`：`hippocampus_search`、`unified_spread_hits`、`trace_cause`、`disable_spread`，配断言测试
 - stdio 模式需后台预热（否则首查询从热变 30s 请求内建图，UX 回退）
 
-### 第 4 批：F1 租户级 Memory 池化（收益最大风险最大，放最后）
+### 第 4 批：F1 租户级 Memory 池化（收益最大风险最大，放最后）✅ 已合入本提交
 
 前置：第 1 批全部合入。要点：
 - `TenantStores` 改存 `Arc<Memory>`（amc.rs:65 有先例，但无淘汰——必须加）

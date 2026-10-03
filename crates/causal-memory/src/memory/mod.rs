@@ -10,7 +10,7 @@
 //! outputs.
 
 use crate::hippocampus::{CausalGraph, NodeData, Relation};
-use crate::store::CausalStore;
+use crate::store::{entry_from_row, CausalEntry, CausalStore, ENTRY_COLUMNS};
 use anyhow::Result;
 use std::path::Path;
 use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
@@ -102,6 +102,88 @@ impl GraphSlot {
     }
 }
 
+/// P7: freshness cursor for writes that land outside this instance's write
+/// path — the git-sync process (`git pull` in align mode updates `valid_to`
+/// and inserts imported edges straight into the same SQLite file). The graph
+/// cannot learn about those by itself: the write-path patches only see this
+/// process's own ops, and the periodic full rebuild is *amortized
+/// maintenance* (up to 900 s old, GRAPH_REBUILD_SECS). Before this cursor,
+/// a long-lived instance — exactly what F1's tenant pool introduces — would
+/// serve a refuted lesson as live evidence for that whole window.
+///
+/// The change signal is `PRAGMA data_version` read on a **dedicated
+/// long-lived connection**, which is the whole design:
+/// - **not the db file's mtime**: under WAL the file is not touched until a
+///   checkpoint, so a busy writer hides commits for minutes (and a checkpoint
+///   can move mtime with no logical change);
+/// - **not a pooled connection**: `data_version` is per-connection and a
+///   connection's own commits never bump it, so a pooled connection handed to
+///   the write path would read "no change" for this process's own writes and
+///   — worse — reset the baseline across borrowers, masking the external
+///   writes the probe exists to catch.
+///
+/// `data_version` only says *something* changed, so the cursor also carries
+/// the watermarks that localize the catch-up: the `causal_edges` /
+/// `agent_facts` row-id high-water marks (a row id is monotonic and never
+/// reused, so it catches inserts whose own timestamps are old — an align
+/// import replays the *source's* `discovered_at`) and a `valid_to` horizon
+/// for retirements.
+struct FreshnessCursor {
+    /// The probe connection. Never used for anything but `data_version`.
+    conn: rusqlite::Connection,
+    /// `data_version` as of the last delta: a reading that differs from this
+    /// one means another connection committed since.
+    version: i64,
+    /// Highest `causal_edges.id` covered by the graph.
+    edge_id: i64,
+    /// Highest `agent_facts.id` covered by the graph.
+    fact_id: i64,
+    /// `valid_to` floor for retirements the graph has caught up with
+    /// (0 = the installed snapshot's time bounds it).
+    horizon: i64,
+}
+
+/// The rows one bypass-write delta carries: everything committed since the
+/// graph's snapshot that the graph must know about. Read in one pooled
+/// connection/closure (four indexed queries — milliseconds at tenant scale),
+/// applied as write-path patches (idempotent, so a delta overlapping a
+/// rebuild or a patch is harmless).
+struct BypassDelta {
+    /// When the delta's read started. Sampled *before* the reads (the same
+    /// rule as `build_graph_snapshot`): a write landing mid-read may be
+    /// missed by the rows below, and must not be hidden by a horizon
+    /// stamped after it.
+    ts: i64,
+    /// Row-id high-water marks sampled with `ts` — the next delta's floor.
+    edge_watermark: i64,
+    fact_watermark: i64,
+    new_edges: Vec<CausalEntry>,
+    /// `(from_id, to_id)` of edges retired since the horizon.
+    retired_edges: Vec<(String, String)>,
+    /// Facts written since the horizon (still valid).
+    new_facts: Vec<crate::store::AgentFact>,
+    /// Ids of facts retired since the horizon.
+    retired_facts: Vec<i64>,
+}
+
+impl BypassDelta {
+    /// Nothing to patch — the common case (a delta runs whenever another
+    /// connection committed, which includes this process's own writes).
+    fn is_empty(&self) -> bool {
+        self.new_edges.is_empty()
+            && self.retired_edges.is_empty()
+            && self.new_facts.is_empty()
+            && self.retired_facts.is_empty()
+    }
+}
+
+/// Read `PRAGMA data_version` — the per-connection counter that flips when
+/// another connection commits. Comparisons are only meaningful between two
+/// readings on the *same* connection (see [`FreshnessCursor`]).
+fn read_data_version(conn: &rusqlite::Connection) -> rusqlite::Result<i64> {
+    conn.pragma_query_value(None, "data_version", |row| row.get(0))
+}
+
 /// The unified agent memory: one `CausalStore` plus a lazily-rebuilt
 /// hippocampus graph accelerator and the Hebbian co-occurrence buffer.
 ///
@@ -139,6 +221,11 @@ pub struct Memory {
     /// cooccurrence_edges table when the graph rebuilds. Keeps Hebbian
     /// learning off the read path (batched, low-frequency writes).
     cooc_buffer: Mutex<Vec<(String, String)>>,
+    /// P7: bypass-write freshness cursor (`PRAGMA data_version` on a
+    /// dedicated connection + the delta watermarks). Created lazily on the
+    /// first graph query — a write-only instance never opens a second
+    /// connection. See [`FreshnessCursor`].
+    bypass: Mutex<Option<FreshnessCursor>>,
     /// Observability: which frontend this instance serves ("core" default;
     /// "mcp-stdio" / "mcp-http" / "amc" when the server sets it). Labels
     /// the recall_audit rows and request metrics.
@@ -171,6 +258,7 @@ impl Memory {
             graph_last_rebuild: AtomicI64::new(0),
             rebuild_flight: Mutex::new(()),
             cooc_buffer: Mutex::new(Vec::new()),
+            bypass: Mutex::new(None),
             server_label,
         }
     }
@@ -234,6 +322,25 @@ impl Memory {
     /// raw queries; prefer the high-level ops).
     pub fn store(&self) -> &CausalStore {
         &self.store
+    }
+
+    /// Graph generation: +1 on every full swap, unchanged by a write-path
+    /// patch or a bypass-write delta. Observability and tests use it to prove
+    /// an answer came from the patched live graph rather than from a rebuild.
+    pub fn graph_version(&self) -> u64 {
+        self.graph_version.load(Ordering::Acquire)
+    }
+
+    /// Persist the buffered Hebbian co-activation pairs (D1) now.
+    ///
+    /// Call this before an instance stops serving queries — the tenant pool
+    /// calls it on eviction, and [`Drop`] covers every other exit (process
+    /// shutdown, a per-request instance). The buffer otherwise flushes only
+    /// when the graph rebuilds, so an instance that is dropped between
+    /// rebuilds (P2: *every* per-request HTTP instance) loses the learning it
+    /// buffered.
+    pub fn flush(&self) {
+        self.flush_cooccurrences();
     }
 
     /// Ablation switch: disable spreading activation on the live graph —
@@ -349,14 +456,49 @@ impl Memory {
                 Ok(ids?)
             })
             .unwrap_or_default();
-        if superseded.is_empty() {
+        self.patch_graph_retire_fact_ids(&superseded);
+    }
+
+    /// Phase C: retire the fact nodes for `ids` (soft-deleted facts never
+    /// seed or surface again; the next full rebuild drops them). Shared by
+    /// the supersede path above and the P7 bypass delta, where the rows were
+    /// retired by another process (a replicated `forget`).
+    fn patch_graph_retire_fact_ids(&self, ids: &[i64]) {
+        if ids.is_empty() {
             return;
         }
         self.patch_graph_optimistic(|graph| {
-            for id in &superseded {
+            for id in ids {
                 graph.retire_node(&format!("fact:{id}"));
             }
         });
+    }
+
+    /// Phase C: flip validity off for every graph edge (CSR or patch)
+    /// between the two chunk ids — the write-path reaction to a store-side
+    /// retirement (`invalidate_decision`, or a replicated `forget` seen by
+    /// the P7 delta). Without it the falsified lesson keeps spreading until
+    /// the next full rebuild. Returns whether any edge was live, i.e. whether
+    /// this changed the graph.
+    fn patch_graph_retire_edge(&self, from_id: &str, to_id: &str) -> bool {
+        // The closure runs synchronously on this thread, so a cell is enough
+        // to carry `invalidate_edges_between`'s count back out.
+        let flipped = std::cell::Cell::new(false);
+        self.patch_graph_optimistic(|graph| {
+            flipped.set(graph.invalidate_edges_between(from_id, to_id) > 0);
+        });
+        flipped.get()
+    }
+
+    /// Does the live graph already hold this node? Used by the P7 delta to
+    /// tell a row the write path already patched (this process's own writes,
+    /// which the id watermark re-selects) from one it is absorbing for the
+    /// first time.
+    fn graph_knows(&self, node_id: &str) -> bool {
+        self.graph
+            .lock()
+            .map(|guard| guard.as_graph().is_some_and(|g| g.has_node(node_id)))
+            .unwrap_or(false)
     }
 
     /// Apply a write-path patch to the live graph under a generation
@@ -436,6 +578,298 @@ impl Memory {
             return false;
         };
         matches!(*guard, GraphSlot::Ready(_))
+    }
+
+    /// The graph entry gate: arm the bypass-write probe, build the graph if
+    /// it has never been built (F2), then catch up on writes another process
+    /// committed (P7). Every graph entry point calls this before touching the
+    /// slot. Arming comes first on purpose — its watermarks must predate the
+    /// snapshot, so a write that lands *while* the snapshot builds is caught
+    /// by row id instead of being attributed to the baseline.
+    fn ensure_graph_current(&self) {
+        self.arm_freshness_probe();
+        self.ensure_graph_built();
+        self.catch_up_bypass_writes();
+    }
+
+    /// Arm the P7 freshness cursor. Idempotent, and a no-op for in-memory
+    /// stores (nothing outside the process can write them, and no second
+    /// connection could see them anyway).
+    fn arm_freshness_probe(&self) {
+        let Ok(mut slot) = self.bypass.lock() else {
+            return;
+        };
+        if slot.is_some() {
+            return;
+        }
+        let conn = match self.store.probe_connection() {
+            Ok(Some(conn)) => conn,
+            Ok(None) => return,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e, server = self.server_label,
+                    "bypass-write probe unavailable; graph will only refresh on rebuild"
+                );
+                return;
+            }
+        };
+        // Watermarks before the version reading: these queries borrow a
+        // pooled connection, whose checkout may flush buffered access-count
+        // bumps (A4) — that write must land before the baseline, or the next
+        // query would read it as an external change.
+        let (edge_id, fact_id): (i64, i64) = self
+            .store
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row("SELECT COALESCE(MAX(id), 0) FROM causal_edges", [], |r| {
+                        r.get(0)
+                    })?,
+                    conn.query_row("SELECT COALESCE(MAX(id), 0) FROM agent_facts", [], |r| {
+                        r.get(0)
+                    })?,
+                ))
+            })
+            .unwrap_or((0, 0));
+        match read_data_version(&conn) {
+            Ok(version) => {
+                *slot = Some(FreshnessCursor {
+                    conn,
+                    version,
+                    edge_id,
+                    fact_id,
+                    horizon: 0,
+                });
+            }
+            Err(e) => tracing::warn!(
+                error = %e, server = self.server_label,
+                "bypass-write probe: data_version unreadable"
+            ),
+        }
+    }
+
+    /// P7: run a delta catch-up when the probe proves another connection
+    /// committed since the last one.
+    ///
+    /// Single-flight with rebuilds (the same `rebuild_flight` the lazy
+    /// rebuild uses, and held for the whole delta): the patches go onto the
+    /// live graph and the cursor advances, so a swap landing in the middle
+    /// would leave the cursor describing a graph that no longer exists.
+    /// Losing the race is fine — the winner is refreshing the graph from the
+    /// store anyway.
+    fn catch_up_bypass_writes(&self) {
+        if !self.graph_is_ready() {
+            // Unbuilt/Failed has no graph to patch: the first build reads the
+            // store, and a Failed slot is not retried per query (F2).
+            return;
+        }
+        let Ok(_flight) = self.rebuild_flight.try_lock() else {
+            return;
+        };
+        let Ok(mut slot) = self.bypass.lock() else {
+            return;
+        };
+        let Some(cursor) = slot.as_mut() else {
+            return;
+        };
+        let Ok(version) = read_data_version(&cursor.conn) else {
+            return;
+        };
+        if version == cursor.version {
+            return;
+        }
+        // The graph's own snapshot horizon and the last delta's share the
+        // job: the snapshot can be newer (a full rebuild happened in
+        // between), the delta's can be (a rebuild refused to install because
+        // a patch landed). Whichever is newer bounds what the graph covers.
+        let horizon = cursor
+            .horizon
+            .max(self.graph_last_rebuild.load(Ordering::Relaxed));
+        let delta = match self.read_bypass_delta(horizon, cursor.edge_id, cursor.fact_id) {
+            Ok(delta) => delta,
+            Err(e) => {
+                // The change signal is NOT consumed: the next query retries
+                // instead of serving the stale graph until a later write.
+                tracing::warn!(
+                    error = %e, server = self.server_label,
+                    "bypass-write delta read failed"
+                );
+                return;
+            }
+        };
+        // Consume the reading *before* applying: a write landing during the
+        // patch is not in `delta`'s rows, and must show up as a change on the
+        // next query rather than being folded into this baseline.
+        cursor.version = version;
+        cursor.horizon = delta.ts;
+        cursor.edge_id = delta.edge_watermark;
+        cursor.fact_id = delta.fact_watermark;
+        if delta.is_empty() {
+            return;
+        }
+        tracing::debug!(
+            server = self.server_label,
+            edges = delta.new_edges.len(),
+            retired_edges = delta.retired_edges.len(),
+            facts = delta.new_facts.len(),
+            retired_facts = delta.retired_facts.len(),
+            "bypass-write delta applied"
+        );
+        self.apply_bypass_delta(&delta);
+    }
+
+    /// Read the rows committed since the graph's snapshot, in one pooled
+    /// connection.
+    ///
+    /// Inserts are found by **row id**, not by `discovered_at`: an align
+    /// import replays the *source's* timestamps, so a lesson learned last week
+    /// on another machine is inserted here with a week-old `discovered_at` —
+    /// a timestamp window would skip it. Row ids are monotonic and never
+    /// reused (AUTOINCREMENT), so `id > watermark` catches every insert,
+    /// whatever its stamp. Watermarks are sampled before the snapshot is built
+    /// (`ensure_graph_current`), which keeps the window narrow: only rows
+    /// committed between that sample and the snapshot's read can be returned
+    /// here *and* be in the snapshot already, and re-patching one is
+    /// idempotent for the node and edge, at the cost of an overlay copy of an
+    /// existing CSR edge (the same overlap the write-path patch has; the next
+    /// rebuild drops it).
+    ///
+    /// Retirements are found by `valid_to`, the only field an align update
+    /// moves. `>=` includes the horizon's own second — re-invalidating an
+    /// already-invalid edge is a no-op, while a same-second retirement must
+    /// not be missed.
+    ///
+    /// Known gaps, all covered by the amortized full rebuild
+    /// (GRAPH_REBUILD_SECS) and the seed-miss repair in `ensure_fresh_for`:
+    /// - an align `UPDATE` replays the source's `valid_to`, which can predate
+    ///   the horizon (a forget made days ago elsewhere, pulled now);
+    /// - a re-validation (`valid_to` cleared) or a confidence-only update
+    ///   leaves no timestamp to key on at all.
+    fn read_bypass_delta(
+        &self,
+        horizon: i64,
+        prev_edge_id: i64,
+        prev_fact_id: i64,
+    ) -> Result<BypassDelta> {
+        self.store.with_conn(|conn| {
+            // The new horizon, sampled before the reads below: a write landing
+            // while they run is then caught by the next delta rather than
+            // hidden behind a horizon stamped after it.
+            let ts = chrono::Utc::now().timestamp();
+            // MAX(rowid) is a single b-tree seek, not a scan.
+            let edge_watermark: i64 =
+                conn.query_row("SELECT COALESCE(MAX(id), 0) FROM causal_edges", [], |r| {
+                    r.get(0)
+                })?;
+            let fact_watermark: i64 =
+                conn.query_row("SELECT COALESCE(MAX(id), 0) FROM agent_facts", [], |r| {
+                    r.get(0)
+                })?;
+
+            let mut edge_stmt = conn.prepare(&format!(
+                "SELECT {ENTRY_COLUMNS} FROM causal_edges ce
+                 JOIN chunks cf ON cf.id = ce.from_id
+                 JOIN chunks ct ON ct.id = ce.to_id
+                 WHERE ce.id > ?1 AND ce.valid_to IS NULL
+                 ORDER BY ce.id"
+            ))?;
+            let rows = edge_stmt.query_map(rusqlite::params![prev_edge_id], entry_from_row)?;
+            let new_edges: Vec<CausalEntry> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(edge_stmt);
+
+            let mut retired_stmt =
+                conn.prepare("SELECT from_id, to_id FROM causal_edges WHERE valid_to >= ?1")?;
+            let rows = retired_stmt.query_map(rusqlite::params![horizon], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?;
+            let retired_edges: Vec<(String, String)> =
+                rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(retired_stmt);
+
+            let mut fact_stmt = conn.prepare(
+                "SELECT id, key, value, scope, source, confidence, created_at, updated_at
+                 FROM agent_facts
+                 WHERE id > ?1 AND valid_to IS NULL
+                 ORDER BY id",
+            )?;
+            let rows = fact_stmt
+                .query_map(rusqlite::params![prev_fact_id], crate::store::fact_from_row)?;
+            let new_facts: Vec<crate::store::AgentFact> =
+                rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(fact_stmt);
+
+            let mut retired_fact_stmt =
+                conn.prepare("SELECT id FROM agent_facts WHERE valid_to >= ?1")?;
+            let rows = retired_fact_stmt.query_map(rusqlite::params![horizon], |r| r.get(0))?;
+            let retired_facts: Vec<i64> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+
+            Ok(BypassDelta {
+                ts,
+                edge_watermark,
+                fact_watermark,
+                new_edges,
+                retired_edges,
+                new_facts,
+                retired_facts,
+            })
+        })
+    }
+
+    /// Apply a delta as write-path patches — the same patch surface a local
+    /// write uses, so a bypass write is as visible as a local one, and no
+    /// graph generation is swapped (the delta is not a rebuild).
+    ///
+    /// The rows this delta actually absorbs are counted as writes — they are
+    /// exactly "changes the installed snapshot does not have", which is what
+    /// `graph_writes` means. Without the count, a store whose writes *only*
+    /// ever arrive from another process (a pure git-sync tenant) would never
+    /// reach the amortized rebuild, leaving patch overlays and retired nodes
+    /// to accumulate with nothing to GC them.
+    ///
+    /// The count is *not* "rows returned": the id watermark also re-selects
+    /// this process's own writes, which the write path already patched. A
+    /// patch over an existing graph node is an idempotent no-op, and counting
+    /// it would double every local write's weight in the rebuild policy —
+    /// halving a 512-write cadence that was calibrated against the O(store)
+    /// rebuild cost (107 s at 1M nodes). So a row counts only when the graph
+    /// does not already know it: an unknown endpoint node (or, for
+    /// retirements, a flip that actually happened). A row reusing both
+    /// endpoint nodes (chunk reuse on an import) is therefore not counted —
+    /// an undercount that only delays the next amortized rebuild.
+    ///
+    /// `graph_last_rebuild` is left alone on purpose: it is the rebuild's own
+    /// age timer, not a delta cursor.
+    fn apply_bypass_delta(&self, delta: &BypassDelta) {
+        let mut absorbed = 0usize;
+        for entry in &delta.new_edges {
+            if !self.graph_knows(&entry.decision_id) || !self.graph_knows(&entry.outcome_id) {
+                absorbed += 1;
+            }
+            self.patch_graph_new_edge(entry);
+        }
+        for (from_id, to_id) in &delta.retired_edges {
+            if self.patch_graph_retire_edge(from_id, to_id) {
+                absorbed += 1;
+            }
+        }
+        for fact in &delta.new_facts {
+            if !self.graph_knows(&format!("fact:{}", fact.id)) {
+                absorbed += 1;
+            }
+            self.patch_graph_new_fact(
+                fact.id,
+                &fact.key,
+                &fact.value,
+                &fact.scope,
+                fact.confidence,
+            );
+        }
+        for id in &delta.retired_facts {
+            if self.graph_knows(&format!("fact:{id}")) {
+                absorbed += 1;
+            }
+        }
+        self.patch_graph_retire_fact_ids(&delta.retired_facts);
+        self.graph_writes.fetch_add(absorbed, Ordering::Relaxed);
     }
 
     /// Rebuild the graph when enough writes have accumulated or enough time
@@ -607,7 +1041,7 @@ impl Memory {
         max_tokens: usize,
         explain: bool,
     ) -> Option<String> {
-        self.ensure_graph_built();
+        self.ensure_graph_current();
         self.maybe_rebuild_graph();
         let mut guard = self.graph.lock().ok()?;
         let graph = guard.as_graph_mut()?;
@@ -663,6 +1097,18 @@ impl Memory {
             }
         }
         Some(out)
+    }
+}
+
+/// Best-effort D1 flush on the way out (P2). The buffer's only other flush
+/// point is a graph rebuild, so without this an instance that stops serving
+/// between rebuilds — an evicted pool entry, a per-request HTTP instance, the
+/// process itself — would drop the co-activation learning it buffered. The
+/// `CausalStore` is still alive here, and its `access_buffer` needs no
+/// equivalent: it lives inside the store and is released with it.
+impl Drop for Memory {
+    fn drop(&mut self) {
+        self.flush_cooccurrences();
     }
 }
 

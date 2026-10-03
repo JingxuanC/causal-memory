@@ -39,6 +39,14 @@ impl CausalMemoryServer {
         }
     }
 
+    /// Wrap an already-constructed, shared `Memory` — the F1 tenant path:
+    /// the pooled instance is what makes a tenant's graph (and its D1 /
+    /// freshness state) survive across requests, so the handler must serve
+    /// the pool's instance rather than build one per request.
+    pub fn from_memory(memory: Arc<Memory>, label: &'static str) -> Self {
+        Self { memory, label }
+    }
+
     /// F2: build the graph on a background thread so the first query is warm
     /// — for single-instance frontends only (the stdio server). Per-request
     /// instances (HTTP) must not: their query builds on demand anyway, and

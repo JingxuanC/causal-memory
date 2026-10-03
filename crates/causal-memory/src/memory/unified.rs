@@ -63,7 +63,7 @@ impl Memory {
         scope: Option<&str>,
         limit: usize,
     ) -> Option<UnifiedSpreadHits> {
-        self.ensure_graph_built();
+        self.ensure_graph_current();
         self.maybe_rebuild_graph();
         let (seed_ids, seeds) = self.unified_seed_ids(query, task_tag, scope);
         self.ensure_fresh_for(&seed_ids);
