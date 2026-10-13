@@ -1,32 +1,52 @@
-# Agent Memory Challenge (AMC/01) — causal-memory submission image.
+# causal-memory — two images in one Dockerfile.
 #
-# Builds and runs the Add/Search integration server (`causal-memory-amc`)
-# on the shared memory facade — the same retrieval pipeline as the MCP
-# server and Python bindings (BM25 inverted index + optional semantic +
-# entity boost + hop expansion + RRF fusion).
+# DEFAULT (`docker build .`): the MCP server image — stdio transport, what
+# the Glama MCP directory (https://glama.ai/mcp/servers) builds and health
+# checks (it boots the container and sends MCP introspection over stdio).
+#   docker run -i causal-memory          # speaks MCP on stdin/stdout
+#
+# AMC target (`docker build --target amc .`): the Agent Memory Challenge
+# (AMC/01) Add/Search integration server on the shared memory facade — the
+# same retrieval pipeline as the MCP server and Python bindings (BM25
+# inverted index + optional semantic + entity boost + hop expansion + RRF
+# fusion).
 #   POST /add      store memory chunks (one store per user_id)
 #   POST /search   return ordered memory evidence
 #   GET  /health   liveness + the live embedding model (null = BM25-only)
-#
-# Build:  docker build -t causal-memory-amc .
-# Run:    docker run -p 8787:8787 -v amc-data:/data causal-memory-amc
+#   docker build --target amc -t causal-memory-amc .
+#   docker run -p 8787:8787 -v amc-data:/data causal-memory-amc
 #         (per-user DBs live under /data/stores; override with AMC_DB_DIR.
 #          Write strategy defaults to raw — no LLM keys on the platform;
 #          AMC_WRITE_MODE=distill needs CAUSAL_MEMORY_LLM_* env.)
-#
-# Verify the semantic layer after a run — this is the whole point of the
-# build-time warm-up below:
-#   curl -s localhost:8787/health     # expect embedding: BAAI/bge-small-en-v1.5
-# `embedding: null` means the process is BM25-only (see the server's WARN).
 
-# ── Builder: compile the workspace, take only the amc binary ───────────────
-FROM rust:1.92-trixie AS builder
+# ── Shared source stage ─────────────────────────────────────────────────────
+FROM rust:1.92-trixie AS base
 WORKDIR /build
 COPY . .
+
+# ── MCP builder: compile only the stdio server binary ───────────────────────
+# No feature flags: the default build has no ONNX/fastembed dependency, so
+# this stage is fast and the runtime image needs no ORT shared library.
+FROM base AS mcp-builder
+RUN cargo build --release --bin causal-memory
+
+# ── MCP runtime (DEFAULT target) ────────────────────────────────────────────
+# Debian trixie (non-slim) ships ca-certificates + libssl3, which the
+# reqwest-based LLM/judge code paths link against. Data lives on /data so a
+# named volume survives container restarts; the server creates the DB dir
+# on first start if it does not exist.
+FROM debian:trixie AS mcp
+COPY --from=mcp-builder /build/target/release/causal-memory /usr/local/bin/causal-memory
+ENV CAUSAL_MEMORY_DB=/data
+VOLUME /data
+CMD ["causal-memory"]
+
+# ── AMC builder (Agent Memory Challenge image) ──────────────────────────────
 # The workspace lints deny correctness issues; release profile is LTO+stripped.
 # local-embed: offline fastembed (bge-small-en-v1.5, ONNX) for semantic fusion.
 # CARGO_BUILD_JOBS: cap compilation parallelism — ONNX Runtime's C++ build is
 # memory-hungry and can OOM small Docker VMs (3.8GB default) at full -jN.
+FROM base AS amc-builder
 ARG CARGO_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS
 RUN cargo build --release --bin causal-memory-amc --features local-embed
@@ -116,15 +136,15 @@ RUN ./target/release/causal-memory-amc --warm-embed \
     || { [ "$WARM_EMBED" = "0" ] \
          && echo "warn: building a BM25-only image (WARM_EMBED=0)"; }
 
-# ── Runtime: Debian trixie (non-slim) ships ca-certificates + libssl3 AND a
+# ── AMC runtime: Debian trixie (non-slim) ships ca-certificates + libssl3 AND a
 #    GCC-14 libstdc++ — the ONNX Runtime prebuilt needs the newer C++
 #    symbols (__cxa_call_terminate, _M_replace_cold) that bookworm's
 #    libstdc++ lacks. ───────────────────────────────────────────────────────
-FROM debian:trixie
-COPY --from=builder /build/target/release/causal-memory-amc /usr/local/bin/causal-memory-amc
+FROM debian:trixie AS amc
+COPY --from=amc-builder /build/target/release/causal-memory-amc /usr/local/bin/causal-memory-amc
 
 # ONNX Runtime shared library + its OpenMP dependency (see the builder).
-COPY --from=builder /opt/onnxruntime/lib/ /usr/local/lib/onnxruntime/
+COPY --from=amc-builder /opt/onnxruntime/lib/ /usr/local/lib/onnxruntime/
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libgomp1 \
  && rm -rf /var/lib/apt/lists/*
@@ -136,7 +156,7 @@ ENV ORT_DYLIB_PATH=/usr/local/lib/onnxruntime/libonnxruntime.so
 # present; the mkdir covers a bind-mounted (empty) /data, where the server
 # would otherwise have to download on first use — or, worse, not initialize
 # at all (the code creates that directory before init for the same reason).
-COPY --from=builder /fastembed-cache /data/fastembed-cache
+COPY --from=amc-builder /fastembed-cache /data/fastembed-cache
 RUN mkdir -p /data/fastembed-cache /data/stores
 
 # FASTEMBED_CACHE_DIR points at the volume so a model downloaded there
