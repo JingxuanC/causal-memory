@@ -44,7 +44,7 @@ Beyond recall, it implements an honest slice of causal reasoning:
   `prediction_report` shows per-domain accuracy — the advice grades
   itself.
 
-Ships as: MCP server (stdio, 17 tools), an activation skill teaching when
+Ships as: MCP server (stdio, 18 tools), an activation skill teaching when
 to recall/record, `/recall <task>` and `/memory-report` commands. Lessons
 are shared with Codex / kimi / Hermes / Python integrations via the same
 local DB.

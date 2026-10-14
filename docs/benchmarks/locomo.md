@@ -360,6 +360,31 @@ against text + un-compacted causal edges (condition B).
 
 ## Compaction survival (run 20260727_174000, k = 5)
 
+### Frozen protocol
+
+| Parameter | Value |
+|---|---|
+| Dataset | `benches/locomo/data/locomo10.json` — LoCoMo 10-conversation subset ([snap-research/locomo](https://github.com/snap-research/locomo), ACL 2024). The data dir is **gitignored** (dataset license — not redistributed): fetch it before running, e.g. `curl -L -o benches/locomo/data/locomo10.json https://raw.githubusercontent.com/snap-research/locomo/main/data/locomo10.json` |
+| Dataset identity | SHA-256 of the data file is recorded in every summary as `data_sha256` (harness gained hashing in CE-3, 2026-10). The reference run below predates it — a hashed re-run is the canonical way to verify byte-identical input |
+| Compressor | `deepseek-chat`, temperature 0.0, max_tokens 2048, prompt version `compact-v1-third` (full text recorded in each summary JSON) — compress to ≤1/3 length, chained k times (summary i feeds compression i+1) |
+| k | 5 (default; `--compact K` for other depths) |
+| Condition A ingest | one chunk per session holding the k-times-compressed summary; consecutive sessions chained by a 0.4-confidence temporal `caused` edge (retrieval connectivity only — both endpoints are the compressed text) |
+| Condition B ingest | condition A **plus** causal edges over the ORIGINAL uncompressed turns (decision = turn i, outcome = turn i+1, same relation/confidence as the plain ingest path) — the edge text is never compacted |
+| QA pipeline | identical for both conditions: BM25 (Okapi, k1=1.2, b=0.75, Robertson IDF), top-k = 10; answerer `deepseek-chat` temp 0.0 max 200; judge `deepseek-chat` temp 0.0 (prompt in `benches/locomo/main.rs`) |
+| Anti-cheat | B's causal edges come from the *original* text only; A and B share the byte-identical compressed summaries and the identical QA pipeline, so the delta is attributable to the causal edges alone |
+| Compression cache | `benches/locomo/results/cache/conv{N}_session{M}_k{K}.txt` — re-runs skip already-paid compressor calls (gitignored; deleting it re-runs compression) |
+
+Reproduce:
+
+```bash
+export DEEPSEEK_API_KEY=...   # any OpenAI-compatible endpoint via CAUSAL_MEMORY_LLM_*
+cargo build --release --bin causal-memory-locomo
+./target/release/causal-memory-locomo compact \
+    --data benches/locomo/data/locomo10.json --compact 5 --concurrency 8
+```
+
+Summary (with `data_sha256`, per-condition and per-category accuracy, delta): `benches/locomo/results/compact_<ts>_summary.json`; per-question rows: `compact_<ts>_conv<N>_{A,B}.jsonl` (gitignored). Unit tests for the cache resume and both ingest layouts: `cargo test -p causal-memory-cli --bin causal-memory-locomo`.
+
 Every session compressed 5 times by an LLM before QA; the causal edges are
 extracted from the *original* text and never compacted (they live outside
 the context window — that is the architecture).

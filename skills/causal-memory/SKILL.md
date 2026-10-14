@@ -241,8 +241,8 @@ Shipped in the `scripts/` directory **next to this SKILL.md** — resolve
                      "caused", "portfolio", context="120d lookback, 10 names")
   cm.close()
   ```
-  Wraps all 17 tools (`record_decision` / `search_*` / `trace_*` /
+  Wraps all 18 tools (`record_decision` / `search_*` / `trace_*` /
   `intervention_query` / `counterfactual_query` / `reconstruct_lesson` …).
 
-Full reference (17 tools): repo README "MCP tools" —
+Full reference (18 tools): repo README "MCP tools" —
 github.com/JingxuanC/causal-memory.

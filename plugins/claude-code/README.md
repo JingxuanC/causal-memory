@@ -10,7 +10,7 @@ when to record.
 
 | Component | What it does |
 |---|---|
-| `.mcp.json` | Registers the `causal-memory` MCP server (stdio, 17 tools) with the plugin |
+| `.mcp.json` | Registers the `causal-memory` MCP server (stdio, 18 tools) with the plugin |
 | `skills/causal-memory` | Activation skill: WHEN to search / intervene / counterfactual / record (with `context`) / report |
 | `commands/recall` | `/recall <task or decision>` — experience check before acting |
 | `commands/memory-report` | `/memory-report` — prediction-ledger calibration + memory inventory |

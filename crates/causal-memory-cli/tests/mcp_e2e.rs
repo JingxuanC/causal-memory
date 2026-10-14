@@ -28,6 +28,7 @@ const EXPECTED_TOOLS: &[&str] = &[
     "resolve_updates",
     "search_patterns",
     "causal_directory",
+    "causal_pin",
     "intervention_query",
     "counterfactual_query",
     "prediction_report",
@@ -115,7 +116,7 @@ async fn mcp_stdio_end_to_end() {
     let info = client.peer_info().expect("server must report its info");
     assert!(!info.server_info.name.is_empty());
 
-    // ── 2. tools/list: exactly the 17 documented tools.
+    // ── 2. tools/list: exactly the 18 documented tools.
     let tools = client.list_all_tools().await.unwrap();
     let names: HashSet<String> = tools.iter().map(|t| t.name.to_string()).collect();
     let expected: HashSet<String> = EXPECTED_TOOLS.iter().map(|s| s.to_string()).collect();
@@ -308,6 +309,48 @@ async fn mcp_stdio_end_to_end() {
     assert!(text.contains("[e2e-test]"), "{text}");
     assert!(text.contains("skip backup before db migration"), "{text}");
 
+    // ── 6b. CE-2: causal_pin writes a line-capped CAUSAL_MEMORY.md.
+    let pin_path = dir.path().join("pinned").join("CAUSAL_MEMORY.md");
+    let r = client
+        .call_tool(
+            CallToolRequestParams::new("causal_pin").with_arguments(args(
+                serde_json::json!({"path": pin_path.to_string_lossy()}),
+            )),
+        )
+        .await
+        .unwrap();
+    let text = text_of(&r);
+    assert!(text.contains("📌 Pinned"), "{text}");
+    let pinned = std::fs::read_to_string(&pin_path).expect("pin file written");
+    let pinned_lines = pinned.lines().count();
+    assert!(pinned_lines <= 200, "{pinned_lines} lines");
+    assert!(pinned.contains("# CAUSAL_MEMORY.md"), "{pinned}");
+    assert!(pinned.contains("trace_cause"), "{pinned}");
+    assert!(
+        pinned.contains("skip backup before db migration"),
+        "{pinned}"
+    );
+    assert!(!pinned.contains("truncated"), "under cap: {pinned}");
+
+    // ── 6c. CE-2: a tiny max_lines cap truncates and says so.
+    let tiny_path = dir.path().join("pinned").join("TINY.md");
+    let r = client
+        .call_tool(
+            CallToolRequestParams::new("causal_pin").with_arguments(args(
+                serde_json::json!({"path": tiny_path.to_string_lossy(), "max_lines": 8}),
+            )),
+        )
+        .await
+        .unwrap();
+    let _ = text_of(&r);
+    let tiny = std::fs::read_to_string(&tiny_path).expect("tiny pin file written");
+    assert!(
+        tiny.lines().count() <= 8,
+        "cap honored: {} lines",
+        tiny.lines().count()
+    );
+    assert!(tiny.contains("truncated"), "{tiny}");
+
     // ── 7. intervention_query: forward chains with risk labels.
     let r = client
         .call_tool(
@@ -384,6 +427,25 @@ async fn mcp_stdio_end_to_end() {
     let text = text_of(&r);
     assert!(!text.contains("skip backup before db migration"), "{text}");
     assert!(text.contains("restored db from nightly snapshot"), "{text}");
+
+    // ── 9b. CE-2: re-pin after invalidation — the struck lesson moves to the
+    //         do-NOT-retry section.
+    let pin2_path = dir.path().join("pinned").join("AFTER_INVALIDATE.md");
+    let r = client
+        .call_tool(
+            CallToolRequestParams::new("causal_pin").with_arguments(args(
+                serde_json::json!({"path": pin2_path.to_string_lossy()}),
+            )),
+        )
+        .await
+        .unwrap();
+    assert!(text_of(&r).contains("📌 Pinned"), "{}", text_of(&r));
+    let pinned2 = std::fs::read_to_string(&pin2_path).expect("re-pin file written");
+    assert!(pinned2.contains("do NOT retry"), "{pinned2}");
+    assert!(
+        pinned2.contains("~~[e2e-test] skip backup before db migration~~"),
+        "{pinned2}"
+    );
 
     // ── 10. Graceful shutdown of the long-lived connection.
     client.cancel().await.unwrap();

@@ -14,7 +14,7 @@ The script below is the no-marketplace fallback (direct MCP registration
 
 ## What it wires up
 
-1. **MCP server**: `causal-memory` (stdio, no args). All 17 tools:
+1. **MCP server**: `causal-memory` (stdio, no args). All 18 tools:
    `record_decision` (with `context`) / `search_memory` /
    `counterfactual_query` / `prediction_report` / …
 2. **Skill**: `~/.claude/skills/causal-memory/SKILL.md` — teaches Claude

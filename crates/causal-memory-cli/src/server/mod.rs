@@ -1,14 +1,15 @@
-//! MCP server handler — exposes 16 tools for unified agent memory.
+//! MCP server handler — exposes 18 tools for unified agent memory.
 //!
 //! Thin shell: every tool handler parses its rmcp parameters and delegates
 //! to the shared library facade `causal_memory::memory::Memory`, which owns
 //! all orchestration logic (see that module for the tool semantics). The
 //! Python bindings (`causal-memory-py`) sit on the same facade.
 //!
-//! Tools: record_decision, search_causal, record_fact, search_facts,
-//! search_memory, trace_cause, trace_cause_chain, invalidate_decision,
-//! search_patterns, causal_directory, intervention_query,
-//! counterfactual_query, reconstruct_lesson, remember.
+//! Tools: record_decision, remember, search_causal, record_fact,
+//! search_facts, search_memory, trace_cause, trace_cause_chain,
+//! invalidate_decision, resolve_updates, search_patterns, invalidate_pattern,
+//! causal_directory, causal_pin, intervention_query, counterfactual_query,
+//! prediction_report, reconstruct_lesson.
 
 use std::sync::Arc;
 

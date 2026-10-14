@@ -5,6 +5,35 @@ All notable changes to causal-memory are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **CE-2: L0 pinning — `causal_pin` (18th MCP tool)** — renders the causal
+  directory to a `<200`-line `CAUSAL_MEMORY.md` for constant system-prompt
+  injection: recent decision pointers (invalidated excluded), a
+  `⚠️ Invalidated — do NOT retry` section (strikethrough), and active
+  cross-task patterns with confounded/Simpson flags. Pure renderer in
+  `core::memory::pin` + `Memory::build_pin_file` facade op; path resolution
+  `$CAUSAL_MEMORY_PIN` → DB dir → `~/.local/share/causal-memory/`; idempotent.
+  Ported from `feat/hippocampus-architecture`, adapted to main's directory
+  store layout.
+- **CE-3: `causal-memory compact-ingest`** — re-ingests a compaction
+  summary into the causal store (sha256 content hash dedup), closing the
+  loop so context surviving compaction lands as causal edges. Benchmark
+  basis: LoCoMo 5× compaction, text+causal 65.3% vs text-only 44.5%
+  (frozen protocol).
+- `store::recent_invalidations` + `recent_active_decisions` retrieval ops
+  (feed the pin renderer; the active variant filters `valid_to` at the SQL
+  layer so an invalidated edge can never resurface as a live pointer).
+- LoCoMo compact harness: `data_sha256` dataset-integrity hash recorded in
+  every cached compact summary (frozen-protocol pinning).
+
+### Notes
+- CE-1 (budget assembly) intentionally not ported: main already ships the
+  more evolved core-layer implementation (`TokenBudget` + `explain` +
+  contradiction-aware §2.1 retrieval); the fork's CLI-layer assembly was
+  superseded. See docs/roadmap.md "Context Engineering V1".
+
 ## [0.10.0] - 2026-10-16
 
 ### Added

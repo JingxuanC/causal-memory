@@ -175,15 +175,58 @@ impl CausalStore {
     /// Search past causal episodes by task tag and/or text similarity.
     /// Returns entries ordered by confidence descending.
     pub fn recent_decisions(&self, limit: usize) -> Result<Vec<super::DecisionDirectoryEntry>> {
+        self.decision_directory(limit, None, false)
+    }
+
+    /// Valid-only variant of `recent_decisions` — invalidated edges excluded
+    /// at the SQL layer (CE-2 `causal_pin`): the caller must never surface a
+    /// do-not-retry edge as a live pointer, so the filter must not depend on
+    /// how many invalidations the do-not-retry section itself displays.
+    pub fn recent_active_decisions(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<super::DecisionDirectoryEntry>> {
+        self.decision_directory(limit, Some(true), false)
+    }
+
+    /// Get recently invalidated edges for the "do-not-retry" section of the
+    /// L0 pinned directory (CE-2). Same compact shape as `recent_decisions`,
+    /// ordered by most-recently-invalidated first.
+    pub fn recent_invalidations(&self, limit: usize) -> Result<Vec<super::DecisionDirectoryEntry>> {
+        self.decision_directory(limit, Some(false), true)
+    }
+
+    /// Shared renderer for the three directory queries above. `valid_filter`:
+    /// None = all edges, Some(true) = valid only, Some(false) = invalidated
+    /// only. `order_by_valid_to`: most-recently-invalidated first (only
+    /// meaningful with Some(false)).
+    fn decision_directory(
+        &self,
+        limit: usize,
+        valid_filter: Option<bool>,
+        order_by_valid_to: bool,
+    ) -> Result<Vec<super::DecisionDirectoryEntry>> {
         let conn = self.acquire()?;
-        let mut stmt = conn.prepare(
+        let where_sql = match valid_filter {
+            Some(true) => "WHERE ce.valid_to IS NULL",
+            Some(false) => "WHERE ce.valid_to IS NOT NULL",
+            None => "",
+        };
+        let order_sql = if order_by_valid_to {
+            "ORDER BY ce.valid_to DESC"
+        } else {
+            "ORDER BY ce.event_time DESC"
+        };
+        let sql = format!(
             "SELECT cf.id, ce.task_tag, cf.text, ct.text, ce.relation
              FROM causal_edges ce
              JOIN chunks cf ON cf.id = ce.from_id
              JOIN chunks ct ON ct.id = ce.to_id
-             ORDER BY ce.event_time DESC
-             LIMIT ?1",
-        )?;
+             {where_sql}
+             {order_sql}
+             LIMIT ?1"
+        );
+        let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(params![limit as i64], |row| {
             let dec_text: String = row.get(2)?;
             let out_text: String = row.get(3)?;

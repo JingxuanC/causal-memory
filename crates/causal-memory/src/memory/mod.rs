@@ -58,6 +58,7 @@ pub mod format;
 mod fused;
 pub mod ops;
 pub mod output;
+pub mod pin;
 mod unified;
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 //! CLI subcommand implementations, split from main.rs (pure move).
 
+pub mod compact_ingest;
 pub mod distill;
 pub mod drift;
 pub mod git;

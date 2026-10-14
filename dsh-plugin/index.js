@@ -191,7 +191,7 @@ export async function apply(ctx, config = {}) {
       + 'edges with typed relations (caused / enabled / prevented). It lives '
       + 'outside the context window: recorded lessons survive compaction and '
       + 'restart.\n'
-      + 'What is actually usable (verified 2026-10-16, 10 of 16 tools carry real value): '
+      + 'What is actually usable (verified 2026-10-16, 10 of 18 tools carry real value): '
       + 'search_causal / record_decision / record_fact / search_facts / search_memory / '
       + 'causal_directory / trace_cause / invalidate_decision / invalidate_pattern / '
       + 'prediction_report are live. counterfactual_query only matches DECISION text — put '

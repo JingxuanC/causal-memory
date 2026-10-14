@@ -1,6 +1,6 @@
 # causal-memory DSH plugin
 
-DeepSeek Harness 原生记忆插件：把 causal-memory 的 17 个工具以**干净命名**
+DeepSeek Harness 原生记忆插件：把 causal-memory 的 18 个工具以**干净命名**
 （无 `mcp__` 前缀）挂到 DSH 的 `ctx.tools`，并注入一条系统提示词段落
 （order 300），告诉模型何时查阅因果记忆库。
 
@@ -75,11 +75,11 @@ dsh plugin --profile web add "$PWD/dsh-plugin"
 
 ⚠️ `CAUSAL_MEMORY_LLM_API` 必须填 **base**（`https://api.deepseek.com/v1`）。填成完整路径 `.../v1/chat/completions` 会被再拼一次，得到 `.../chat/completions/chat/completions` → 404，而工具**不会报错**，只会悄悄退回规则路径。密钥建议走环境变量或 vault，不要明文写进本文件。
 
-## 工具清单（17 个）
+## 工具清单（18 个）
 
 `record_decision` · `record_fact` · `remember` · `search_causal` ·
 `search_facts` · `search_memory` · `search_patterns` · `causal_directory` ·
-`trace_cause` · `trace_cause_chain` · `intervention_query` ·
+`causal_pin` · `trace_cause` · `trace_cause_chain` · `intervention_query` ·
 `counterfactual_query` · `prediction_report` · `invalidate_decision` ·
 `invalidate_pattern` · `resolve_updates` · `reconstruct_lesson`
 
