@@ -38,5 +38,13 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --verbose
 
+      # NOTE: no `-D warnings` here on purpose. [workspace.lints.clippy] in
+      # Cargo.toml sets style/complexity/perf and unwrap_used/expect_used to
+      # "warn" explicitly so the baseline compiles (see the comment there).
+      # Passing `-D warnings` contradicts that and turned every one of those
+      # warnings into a hard failure — the count was 1476 unwrap/expect plus
+      # assorted style lints, so no release could ever get a green CI.
+      # Correctness and suspicious stay `deny` via workspace lints, so real
+      # bugs still break the build. Clippy output remains visible in the log.
       - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace

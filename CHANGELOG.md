@@ -5,6 +5,64 @@ All notable changes to causal-memory are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-10-16
+
+### Added
+- **Causal refutation hardening (§2)**: precise d-separation refuter replacing
+  the approximate backdoor logic (`refute`); `influenced_by` provenance chain
+  for `record_decision` with error-propagation warnings (§2.3); and a
+  `consolidate` Stage 5 BiasAudit that detects systematic bias in memory (§2.2).
+- **Active contradiction retrieval** — the `search_causal` explain path now
+  surfaces contradicting history instead of only supporting edges (#29).
+- **`co_occurrence` relation end-to-end** — full write/search/trace support
+  plus BM25 seed-relevance gating for `intervention_query` (#28).
+- **Calibration harnesses**: synthetic ground-truth calibration for
+  `intervention_query` (CMB Layer-2 alignment, #27) and for the d-separation
+  refuter; plus `extraction_eval` (§3.1) and `adversarial_eval` (§3.2) benches
+  measuring extraction accuracy and self-correction under adversarial injection.
+- **`drift` — long-horizon drift report** (§3.3): trend / propagation /
+  self-reinforcement analysis as a first-class CLI command.
+- **AMC (agent memory chunk) retrieval**: chunk-level fused retrieval
+  (`search_chunks_fused`) with the three-tier `AMC_RETRIEVAL` switch (Batch 3),
+  chunk-level vectors and schema v19 (Cycle 2), and BGE query-prefix fix plus
+  options-override retrieval (Batch 4). Bench extended to 42 gold items.
+- **Retrieval quality**: camelCase-aware BM25 recall, raw-turn indexing, AMC
+  timestamps (#33).
+- **Multi-tenant hosting**: per-tenant `Memory` pooling with LRU +
+  `data_version` probe + delta catch-up (query-path batch 4); `/mcp` bearer auth
+  and per-tenant stores via `CAUSAL_MEMORY_TOKENS_FILE`; directory-mode token
+  sources with `sha256:`-hashed keys; the multi-tenant HTTP image
+  (`Dockerfile.server`) is now tracked in-repo.
+- **`causal-memory-skills` merge**: guided installer + docs (#32), and
+  `glama.json` for the Glama MCP directory listing.
+- **DSH plugin**: 17-tool count corrected; `config.env` pass-through added so
+  the child's LLM / embed configuration can be injected.
+
+### Changed
+- **Default retrieval path switched to fused** — `bench-amc-ab` won on all three
+  seeds (#AMC batch), with an A/B harness to reproduce the comparison.
+- Graph construction is now lazily loaded (tri-state graph slots, zero graph
+  build from write tools) and the access buffer flushes in single transactions
+  (query-path batches 2–3); T0 rebuild cadence and T0b entity-cache bounds tuned
+  for enterprise scaling.
+- Skill docs reframed: git-sync is context recovery first (agent-private
+  snapshots, clone = restore entry point, team sharing as an extension).
+- CI: the Clippy step no longer passes `-D warnings`. Workspace lints
+  deliberately set `unwrap_used` / `expect_used` and style/complexity/perf to
+  `warn` ("so the baseline compiles"); `-D warnings` contradicted that and made
+  every release gate red against 1476 unwrap/expect sites. Correctness and
+  suspicious remain `deny`.
+
+### Fixed
+- `migrate` v16 table rebuild failed with FK error 787 on stores that already
+  contained `decision_forks` / `edge_embeddings` rows.
+- Rebuild graph-swap correctness: generation double-check, single-flight, and
+  consistent snapshot (query-path batch 1).
+- AMC image semantics revived; batched `add` no longer loses data.
+- Dockerfile build chain (TARGETARCH declaration, curl-preseeded model cache,
+  `FETCH_PROXY` scope) and BGE query-prefix handling in retrieval.
+- Tenancy: rustfmt regressions and directory-mode token resolution.
+
 ## [0.9.3] - 2026-09-07
 
 ### Added
