@@ -19,7 +19,7 @@
 | Docker 部署 | `docs/design/deploy-docker.md` | 数据平面交付形态 |
 | git-sync 云同步 | `causal-memory git-sync` + sync server | 本地↔云端迁移工具（commercialization §2 L1 配套） |
 | 扩容实测 | `docs/design/enterprise-scaling.md` | 容量规划的实测依据（本文 §3.4） |
-| 17 MCP tools + skill + 4 框架插件 | 全仓 | 获客漏斗的免费层 |
+| 18 MCP tools + skill + 4 框架插件 | 全仓 | 获客漏斗的免费层 |
 | drift 报告 / 自我纠错 harness | `drift.rs`、benches/ | 托管版的差异化付费功能（§4.3） |
 
 **缺口**：控制面（账号/项目/token 签发/计费/用量聚合）、配额与限流、per-tenant LLM 配置（BYOK）、store 池 LRU 驱逐、团队共享语义。

@@ -2442,6 +2442,96 @@ impl Memory {
             Err(_) => String::new(),
         }
     }
+
+    /// L0 active pinning (CE-2): render the causal directory to a
+    /// `CAUSAL_MEMORY.md` file's content. Sections: recent decision
+    /// pointers (invalidated excluded), invalidated lessons (do-not-retry),
+    /// active cross-task patterns with confounded/Simpson flags. All
+    /// pointer-style; line-capped via `pin::render_pin`.
+    pub fn build_pin_file(&self, limit: usize, max_lines: usize) -> String {
+        let mut sections: Vec<super::pin::PinSection> = Vec::new();
+
+        // Invalidated edges for the do-not-retry section. The recent-
+        // decisions index below uses `recent_active_decisions`, which filters
+        // `valid_to` at the SQL layer — an invalidated edge must never
+        // resurface as a live pointer just because it fell out of this list.
+        let invalidations = self.store.recent_invalidations(limit).unwrap_or_default();
+
+        // 1. Recent decisions — the core pointer index.
+        let mut dec = Vec::new();
+        if let Ok(entries) = self.store.recent_active_decisions(limit) {
+            for e in entries {
+                dec.push(format!(
+                    "- [{}] {} →({})→ {}",
+                    e.task_tag.as_deref().unwrap_or("?"),
+                    e.decision_snippet,
+                    e.relation,
+                    e.outcome_snippet,
+                ));
+            }
+        }
+        sections.push(super::pin::PinSection {
+            heading: "## Recent decisions".to_string(),
+            lines: dec,
+        });
+
+        // 2. Invalidated lessons — highest-value warnings: don't re-step here.
+        let mut inv = Vec::new();
+        for e in &invalidations {
+            inv.push(format!(
+                "- ~~[{}] {}~~ → invalidated (recorded outcome was wrong — do NOT retry)",
+                e.task_tag.as_deref().unwrap_or("?"),
+                e.decision_snippet,
+            ));
+        }
+        sections.push(super::pin::PinSection {
+            heading: "## ⚠️ Invalidated lessons — do NOT retry".to_string(),
+            lines: inv,
+        });
+
+        // 3. Active cross-task patterns, with stratified-replication flags.
+        let mut pat = Vec::new();
+        if let Ok(edges) = self.store.search_patterns(None, None, 5) {
+            for e in edges {
+                let label = match e.relation.as_str() {
+                    "similar_to" => "similar",
+                    "repeated" => "🔁 repeated",
+                    "contradicts" => "⚡ contradicts",
+                    "refines" => "🔧 refines",
+                    other => other,
+                };
+                let mut line = format!(
+                    "- \"{}\" --[{label}]--> \"{}\" ({:.0}%)",
+                    e.from_text,
+                    e.to_text,
+                    e.confidence * 100.0,
+                );
+                if e.confounded == Some(true) {
+                    line.push_str(" ⚠️confounded");
+                }
+                if e.simpson == Some(true) {
+                    line.push_str(" ⚠️Simpson");
+                }
+                pat.push(line);
+            }
+        }
+        sections.push(super::pin::PinSection {
+            heading: "## Active cross-task patterns".to_string(),
+            lines: pat,
+        });
+
+        if sections.iter().all(|s| s.lines.is_empty()) {
+            sections.insert(
+                0,
+                super::pin::PinSection {
+                    heading: "## Status".to_string(),
+                    lines: vec!["(no decisions recorded yet)".to_string()],
+                },
+            );
+        }
+
+        super::pin::render_pin(sections, max_lines).0
+    }
 }
 
 // ─── Unified search presentation (shared by both retrieval paths) ────

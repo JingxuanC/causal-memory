@@ -195,6 +195,9 @@ fn dispatch(args: &[String]) -> anyhow::Result<()> {
             }
             // Subcommand: bench-tokens — token-efficiency benchmark (P6)
             "bench-tokens" => return bench_tokens::run(&args[1..]),
+            // Subcommand: compact-ingest — backfill a transcript into the
+            // causal store before compaction eats it (CE-3 compact_with_causal)
+            "compact-ingest" => return commands::compact_ingest::run(&args[1..]),
             // Subcommand: wiki [--out <dir>] [--format obsidian|html] —
             // export causal memory as an Obsidian markdown vault or
             // standalone interactive HTML graph.
@@ -279,6 +282,11 @@ fn print_help() {
          \x20 bench-compaction       compaction-degradation bench\n\
          \x20 bench-agent            ablation with/without causal memory\n\
          \x20 bench-tokens           token-efficiency benchmark\n\
+         \n\
+         Context engineering (CE-1..3):\n\
+         \x20 compact-ingest <transcript.jsonl>|--stdin [--task-tag T] [--pin]\n\
+         \x20                        backfill a transcript into the causal store\n\
+         \x20                        before compaction eats it (PostCompact hook)\n\
          \n\
          DB: $CAUSAL_MEMORY_DB, default ~/.local/share/causal-memory/causal.db"
     );

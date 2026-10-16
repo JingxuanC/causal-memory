@@ -10,7 +10,7 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Status: v0.10.0](https://img.shields.io/badge/status-v0.10.0--alpha-orange.svg)](#status)
-[![Tests: 368](https://img.shields.io/badge/tests-368-brightgreen.svg)](#build--test)
+[![Tests: 541](https://img.shields.io/badge/tests-541-brightgreen.svg)](#build--test)
 [![Release: v0.10.0](https://img.shields.io/badge/release-v0.10.0-blue.svg)](https://github.com/JingxuanC/causal-memory/releases)
 [![Hermes plugin](https://img.shields.io/badge/hermes-plugin-blue.svg)](hermes-plugin/)
 [![DSH plugin](https://img.shields.io/badge/deepseek--harness-plugin-blue.svg)](dsh-plugin/)
@@ -374,7 +374,7 @@ print(mem.search_causal(query="cache stampede protection"))
 print(mem.intervention_query("skip the test suite before shipping"))
 ```
 
-Methods mirror the 17 MCP tools one-to-one and return the same text. Embedding
+Methods mirror the 18 MCP tools one-to-one and return the same text. Embedding
 and LLM features use the same `CAUSAL_MEMORY_EMBED_*` / `CAUSAL_MEMORY_LLM_*`
 environment variables; without them the bindings degrade gracefully to
 BM25-only retrieval. Smoke tests: `maturin develop && pytest tests/`.
@@ -401,7 +401,7 @@ context window, Hermes compaction can't touch it. Install and configuration:
 
 ### DeepSeek Harness (DSH) native plugin
 
-[dsh-plugin/](dsh-plugin/) mounts all 16 causal-memory tools onto DSH's
+[dsh-plugin/](dsh-plugin/) mounts all 18 causal-memory tools onto DSH's
 `ctx.tools` with clean names (no `mcp__` prefix) and injects a system-prompt
 block telling the model when to consult the causal store. Zero runtime
 dependencies — JSON-RPC over stdio straight to the causal-memory binary.
@@ -412,7 +412,7 @@ Details: [dsh-plugin/README.md](dsh-plugin/README.md).
 
 ---
 
-## Seventeen MCP tools
+## Eighteen MCP tools
 
 | Tool | When to call | What it does |
 |---|---|---|
@@ -429,6 +429,7 @@ Details: [dsh-plugin/README.md](dsh-plugin/README.md).
 | `resolve_updates` | After contradicting outcomes | LLM-judged supersession pass over diverged repeated decisions |
 | `search_patterns` | To recall cross-task lessons | Mined meta edges: similar_to / repeated / contradicts / refines |
 | `causal_directory` | Pinned in system prompt | L0 compact pointer list of what the agent knows |
+| `causal_pin` | To refresh the pinned L0 directory | Renders the directory to a <200-line `CAUSAL_MEMORY.md` (recent pointers + invalidated do-not-retry + active patterns) for system-prompt injection; idempotent |
 | `intervention_query` | **Before taking an action** | Forward simulation: predicts outcomes (safe/warning/danger) |
 | `counterfactual_query` | When choosing between options | Contrastive: compares recorded outcomes of two alternatives; renders same-context branches (natural experiments) when they exist; every verdict logs a falsifiable prediction |
 | `prediction_report` | Periodic calibration check | Prediction-ledger accuracy overall / per method / per task_tag + pending list |
@@ -551,7 +552,7 @@ research papers. Key references:
 
 What works (16/16 layers with end-to-end validation):
 
-- ✅ 17 MCP tools (stdio + HTTP transport)
+- ✅ 18 MCP tools (stdio + HTTP transport)
 - ✅ Write-time gatekeeping (session_logs separation, V3 distill prompt)
 - ✅ BM25 + semantic RRF unified retrieval
 - ✅ Hippocampus engine: CSR spreading activation, DG SimHash, CA1 novelty, SWR 2.0
@@ -569,7 +570,7 @@ What works (16/16 layers with end-to-end validation):
 - ✅ PyO3 Python bindings (crates/causal-memory-py)
 - ✅ Hermes memory-provider plugin (hermes-plugin/)
 - ✅ DSH native plugin (dsh-plugin/) + architecture visualization (docs/architecture.html)
-- ✅ 368/368 tests passing + clippy clean
+- ✅ 541/541 tests passing + clippy clean
 
 What's not done yet:
 

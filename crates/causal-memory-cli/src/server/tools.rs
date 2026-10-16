@@ -1,4 +1,4 @@
-//! The 16 MCP tools — thin rmcp handlers over the shared library facade
+//! The 18 MCP tools — thin rmcp handlers over the shared library facade
 //! (`causal_memory::memory::Memory`). All orchestration logic lives in the
 //! library; this file only declares parameter schemas and delegates.
 
@@ -221,6 +221,41 @@ pub struct CausalDirectoryParams {
     /// Max directory entries (default 20)
     #[schemars(description = "Maximum directory entries to return (default 20)")]
     pub limit: Option<usize>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct CausalPinParams {
+    /// Output file path (default: $CAUSAL_MEMORY_PIN, else the DB directory's
+    /// CAUSAL_MEMORY.md)
+    #[schemars(
+        description = "Output file path for the pinned CAUSAL_MEMORY.md (default: $CAUSAL_MEMORY_PIN or DB dir)"
+    )]
+    pub path: Option<String>,
+    /// Max decision pointers in the file (default 20)
+    #[schemars(description = "Maximum decision pointers in the file (default 20)")]
+    pub limit: Option<usize>,
+    /// Hard cap on total lines (default 200)
+    #[schemars(description = "Hard cap on total lines of the file (default 200)")]
+    pub max_lines: Option<usize>,
+}
+
+/// Default output path for `causal_pin` (CE-2): explicit env override, else
+/// alongside the DB file, else the default data dir (mirrors the CLI's db
+/// path resolution so the pin file travels with the store).
+pub(crate) fn default_pin_path() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("CAUSAL_MEMORY_PIN") {
+        return std::path::PathBuf::from(p);
+    }
+    if let Ok(db) = std::env::var("CAUSAL_MEMORY_DB") {
+        let db = std::path::PathBuf::from(db);
+        if let Some(dir) = db.parent() {
+            return dir.join("CAUSAL_MEMORY.md");
+        }
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home)
+        .join(".local/share/causal-memory")
+        .join("CAUSAL_MEMORY.md")
 }
 
 #[derive(Deserialize, schemars::JsonSchema, Default)]
@@ -457,6 +492,40 @@ impl CausalMemoryServer {
     fn causal_directory(&self, Parameters(params): Parameters<CausalDirectoryParams>) -> String {
         self.timed("causal_directory", || {
             self.memory.causal_directory(params.limit)
+        })
+    }
+
+    #[tool(
+        name = "causal_pin",
+        description = "L0 active pinning (CE-2): write the causal memory directory to a CAUSAL_MEMORY.md file (default <200 lines) to be pinned in the agent's system prompt, so you always know what experience you hold without calling any tool. Idempotent — re-run after recording/invalidating to refresh. Sections: recent decision pointers, invalidated lessons (do-not-retry), active cross-task patterns with confounded/Simpson flags."
+    )]
+    fn causal_pin(&self, Parameters(params): Parameters<CausalPinParams>) -> String {
+        self.timed("causal_pin", || {
+            let limit = params.limit.unwrap_or(20);
+            let max_lines = params.max_lines.unwrap_or(200);
+            let content = self.memory.build_pin_file(limit, max_lines);
+            let path = match params.path {
+                Some(p) => std::path::PathBuf::from(p),
+                None => default_pin_path(),
+            };
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() && !parent.exists() {
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        return format!("❌ Cannot create {}: {e}", parent.display());
+                    }
+                }
+            }
+            match std::fs::write(&path, &content) {
+                Ok(()) => {
+                    let lines = content.lines().count();
+                    let est = content.len() / 2;
+                    format!(
+                        "📌 Pinned causal memory directory to {}\n   {lines} lines, ~{est} tokens (cap {max_lines}) — pin this file into the system prompt and re-run causal_pin to refresh.",
+                        path.display()
+                    )
+                }
+                Err(e) => format!("❌ Cannot write {}: {e}", path.display()),
+            }
         })
     }
 

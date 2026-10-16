@@ -124,6 +124,13 @@ fn cache_path(cache_dir: &Path, conv: usize, session: u32, k: usize) -> PathBuf 
     cache_dir.join(format!("conv{conv}_session{session}_k{k}.txt"))
 }
 
+/// SHA-256 hex digest — dataset identity for reproducibility claims.
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 /// Longest cached prefix of the compression chain. Returns (next_k, text):
 /// the first compression level that still needs an LLM call, and the text to
 /// feed into it (the cached summary at next_k - 1, or the source when no
@@ -343,6 +350,9 @@ struct CompactSummary {
     compact_k: usize,
     topk: usize,
     data: String,
+    /// SHA-256 of the dataset file — the dataset itself is gitignored
+    /// (license), so the hash is how a re-run proves it used the same bytes.
+    data_sha256: String,
     conversations: Vec<usize>,
     cache_dir: String,
     compression_errors: Vec<String>,
@@ -620,6 +630,7 @@ pub(crate) async fn run(args: CompactArgs) -> Result<()> {
         compact_k: args.compact_k,
         topk: COMPACT_TOPK,
         data: args.data.display().to_string(),
+        data_sha256: sha256_hex(raw.as_bytes()),
         conversations: ran_convs,
         cache_dir: cache_dir.display().to_string(),
         compression_errors,
@@ -660,6 +671,18 @@ fn write_rows(
 mod tests {
     use super::*;
     use crate::Turn;
+
+    #[test]
+    fn sha256_known_vector() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            sha256_hex(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
 
     fn mk_session(number: u32, date: &str, texts: &[&str]) -> Session {
         Session {

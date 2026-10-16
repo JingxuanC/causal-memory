@@ -1,5 +1,10 @@
 # Roadmap
 
+> Updated 2026-10-14: **Context Engineering V1 ported to main** — CE-2
+> (`causal_pin`, 18th tool) and CE-3 (`compact-ingest`) shipped; CE-1
+> aligned with main's more evolved core-layer budget implementation
+> (fork's CLI-layer version superseded, not ported). 541 tests green.
+>
 > Updated 2026-08-24: **code-audited sync** — checked every open item
 > against the source instead of the docs. Shipped but unticked: half-life
 > decay tiers, per-type answer prompting, multi-session retrieval,
@@ -96,10 +101,10 @@ Mechanism absorption (from the 2026-07-30 deep dives, deduplicated):
 
 ## Current state — v0.9.0+ (main)
 
-**Seventeen MCP tools**: `record_decision` / `search_causal` / `record_fact` /
+**Eighteen MCP tools**: `record_decision` / `search_causal` / `record_fact` /
 `search_facts` / `search_memory` / `trace_cause` / `trace_cause_chain` /
 `invalidate_decision` / `invalidate_pattern` / `resolve_updates` /
-`search_patterns` / `causal_directory` / `intervention_query` /
+`search_patterns` / `causal_directory` / `causal_pin` / `intervention_query` /
 `counterfactual_query` / `reconstruct_lesson` / `remember` /
 `prediction_report` — over stdio **and** HTTP transport
 (`causal-memory-http --port 9938`).
@@ -137,7 +142,7 @@ Core capabilities (all shipped, all tested):
   #2)
 - Cross-agent sharing: `causal-memory export` / `import` (JSONL, idempotent,
   best-effort redaction)
-- 368 tests (unit + e2e: migration / pipeline / MCP stdio)
+- 541 tests (unit + e2e: migration / pipeline / MCP stdio)
 
 ## Benchmarks (frozen protocols, all published in docs/benchmarks/)
 
@@ -235,13 +240,44 @@ Ecosystem:
   loading on the existing `detail_level` path, object-store sync, plus
   `/mcp` auth + multi-tenant stores (shipped 2026-09-07, see below). fork stays orthogonal:
   it compares same-context branches, it does not snapshot context.
-- [ ] **L0 file injection**: generate `CAUSAL_MEMORY.md` (< 200 lines,
-  pointer-style) for constant system-prompt pinning — proactive, vs the
+- [x] **L0 file injection** — ✅ shipped 2026-10-14 (`causal_pin`, 18th MCP
+  tool, CE-2 below): renders the directory to a <200-line
+  `CAUSAL_MEMORY.md` (recent pointers + invalidated do-not-retry + active
+  patterns) for constant system-prompt pinning — proactive, vs the
   on-demand `causal_directory` tool
 - [ ] Team memory: shared read-only causal edges (Claude Code `team/`
   analogue); cross-task abstraction translation (insights/11 §8.5)
 - [ ] Dream integration: position as the causal layer under Claude Code's
   Auto Dream (text consolidation ≠ causal storage)
+
+## Context Engineering V1 (2026-10-14)
+
+Ported from the `feat/hippocampus-architecture` fork onto main. Three items,
+one alignment decision:
+
+- [~] **CE-1 budget assembly** — main already shipped the more evolved
+  version (core-layer `TokenBudget` + `explain` provenance tags + §2.1
+  contradiction-aware retrieval on `search_causal`); the fork's CLI-layer
+  assembly was superseded and intentionally *not* ported. Treat the two
+  implementations as aligned on the core mechanism.
+- [x] **CE-2 L0 pinning (`causal_pin`)** — ✅ shipped: 18th MCP tool +
+  `memory/pin.rs` renderer + `build_pin_file` facade op. Three sections:
+  recent decisions (invalidated excluded), `⚠️ Invalidated — do NOT retry`
+  (strikethrough), active cross-task patterns (with confounded/Simpson
+  flags); hard line cap via `max_lines`. Path resolution:
+  `$CAUSAL_MEMORY_PIN` → DB dir → `~/.local/share/causal-memory/`.
+  Idempotent; e2e-tested including the invalidated-retry warning.
+- [x] **CE-3 compact-with-causal ingestion (`compact-ingest`)** — ✅ shipped:
+  CLI subcommand that re-ingests a compaction summary into the causal store
+  (sha2 content hash for dedup), closing the loop so post-compaction context
+  survives as causal edges. Benchmark: 5 LoCoMo compactions, text+causal
+  65.3% vs text-only 44.5% (frozen protocol, see
+  [docs/benchmarks/locomo.md](benchmarks/locomo.md) +
+  [docs/compact-with-causal.md](compact-with-causal.md)).
+
+Milestones: M1 core renderers ✅ → M2 tool surface + CLI ✅ → M3
+benchmark-harness `data_sha256` pinning (dataset integrity hash in every
+cached compact summary) ✅.
 
 ## v1.0 — engineering hardening
 
