@@ -12,7 +12,7 @@
 | **Plugin name** | `causal-memory` |
 | **Repository** | https://github.com/JingxuanC/causal-memory |
 | **Plugin path in repo** | `plugins/claude-code` |
-| **Version** | 0.9.3 |
+| **Version** | 0.10.0 |
 | **Author** | JingxuanC |
 | **Category** | Memory / Developer productivity |
 | **Install (post-approval)** | `claude plugin install causal-memory@claude-plugins-community` |
