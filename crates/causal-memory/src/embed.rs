@@ -32,18 +32,20 @@ pub struct EmbedConfig {
 }
 
 impl EmbedConfig {
-    /// Load from env. Returns None if not configured (semantic search unavailable).
+    /// Load from env / config file (`config::get`: process env wins, the
+    /// JSON config file is the fallback). Returns None if not configured
+    /// (semantic search unavailable).
     ///
     /// - CAUSAL_MEMORY_EMBED_API, default: CAUSAL_MEMORY_LLM_API
     /// - CAUSAL_MEMORY_EMBED_KEY, default: CAUSAL_MEMORY_LLM_KEY
     /// - CAUSAL_MEMORY_EMBED_MODEL, default: "text-embedding-3-small"
     pub fn from_env() -> Option<Self> {
         Self::resolve(
-            std::env::var("CAUSAL_MEMORY_EMBED_API").ok().as_deref(),
-            std::env::var("CAUSAL_MEMORY_EMBED_KEY").ok().as_deref(),
-            std::env::var("CAUSAL_MEMORY_EMBED_MODEL").ok().as_deref(),
-            std::env::var("CAUSAL_MEMORY_LLM_API").ok().as_deref(),
-            std::env::var("CAUSAL_MEMORY_LLM_KEY").ok().as_deref(),
+            crate::config::get("CAUSAL_MEMORY_EMBED_API").as_deref(),
+            crate::config::get("CAUSAL_MEMORY_EMBED_KEY").as_deref(),
+            crate::config::get("CAUSAL_MEMORY_EMBED_MODEL").as_deref(),
+            crate::config::get("CAUSAL_MEMORY_LLM_API").as_deref(),
+            crate::config::get("CAUSAL_MEMORY_LLM_KEY").as_deref(),
         )
     }
 
@@ -160,8 +162,8 @@ impl LocalEmbedder {
         // 150s stall). Cache root resolves exactly like fastembed's
         // `get_cache_dir()` (FASTEMBED_CACHE_DIR, default `.fastembed_cache`).
         // Pre-creating the cache dir is the opt-in for download-on-first-use.
-        let cache_root = std::env::var("FASTEMBED_CACHE_DIR")
-            .unwrap_or_else(|_| ".fastembed_cache".to_string());
+        let cache_root =
+            std::env::var("FASTEMBED_CACHE_DIR").unwrap_or_else(|_| ".fastembed_cache".to_string());
         if !std::path::Path::new(&cache_root).is_dir() {
             anyhow::bail!(
                 "local embedding model not cached (missing {cache_root}/); \
@@ -169,9 +171,7 @@ impl LocalEmbedder {
                  create the directory to allow download-on-first-use"
             );
         }
-        let model = fastembed::TextEmbedding::try_new(
-            fastembed::TextInitOptions::new(model_enum),
-        )?;
+        let model = fastembed::TextEmbedding::try_new(fastembed::TextInitOptions::new(model_enum))?;
         Ok(Self { model, model_name })
     }
 
@@ -201,6 +201,85 @@ impl LocalEmbedder {
             .next()
             .ok_or_else(|| anyhow::anyhow!("fastembed returned no embedding"))
     }
+}
+
+// ─── Query-side instruction prefixes ──────────────────────────────────
+
+/// BGE English models are trained ASYMMETRICALLY: the query carries this
+/// instruction sentence, the passage carries nothing. fastembed 5.17.4
+/// applies no prefix of its own (no prefix logic anywhere in the crate;
+/// `embed()` is tokenizer + forward), so every query this process embedded
+/// up to now was off-distribution for the model that scored it.
+const BGE_EN_QUERY_PREFIX: &str = "Represent this sentence for searching relevant passages: ";
+
+/// E5 models express the same asymmetry as a two-token tag instead of a
+/// sentence ("passage: " is the write-side counterpart).
+const E5_QUERY_PREFIX: &str = "query: ";
+
+/// The query-side instruction for a local model name — `""` for models
+/// trained symmetrically (or names we do not know), so callers can append
+/// the result unconditionally.
+///
+/// Only the LOCAL (fastembed) backend has a prefix concept at all; the HTTP
+/// backend case is decided in [`prefix_for_embedder`], never here.
+fn query_prefix_for_model(model: &str) -> &'static str {
+    let m = model.to_ascii_lowercase();
+    // The `-en` infix separates the English BGE v1.5 line (which wants the
+    // instruction) from `bge-*-zh-v1.5` (which does NOT — its instruction is
+    // Chinese and its passages were trained against bare queries) and from
+    // `bge-m3` (no instruction at all). Keeping the `bge-` guard makes the
+    // intent explicit and keeps the e5 arm below from ever shadowing it.
+    if m.contains("bge-") && m.contains("-en") {
+        return BGE_EN_QUERY_PREFIX;
+    }
+    if m.contains("e5") {
+        return E5_QUERY_PREFIX;
+    }
+    // all-MiniLM-*, and anything unrecognized: symmetric training, no prefix.
+    ""
+}
+
+/// The query prefix for a given embedder instance. HTTP is always `""`:
+/// an OpenAI-compatible `/embeddings` endpoint takes one text per request
+/// and defines no query/passage instruction channel, so there is nothing to
+/// append (the model behind it was not trained with one either).
+fn prefix_for_embedder(embedder: Option<&UnifiedEmbedder>) -> &'static str {
+    match embedder {
+        Some(UnifiedEmbedder::Http(_)) | None => "",
+        #[cfg(feature = "local-embed")]
+        Some(UnifiedEmbedder::Local(local)) => query_prefix_for_model(local.model()),
+    }
+}
+
+/// [`prefix_for_embedder`] for the process-global shared embedder. The
+/// `OnceLock` means this answer never changes for the life of the process,
+/// so the brief lock here costs one uncontended acquire per query.
+fn shared_query_prefix() -> &'static str {
+    let Some(slot) = shared_embedder() else {
+        return prefix_for_embedder(None);
+    };
+    // A poisoned guard must not take the query path down; no prefix.
+    match slot.lock() {
+        Ok(guard) => prefix_for_embedder(guard.as_ref()),
+        Err(_) => "",
+    }
+}
+
+/// Is the query-side prefix applied? Pure resolver, split from env access so
+/// tests never mutate process env (env writes race under `cargo test`).
+/// Anything but an explicit off value means `auto` — a typo must not
+/// silently degrade retrieval to the pre-fix behaviour.
+fn query_prefix_enabled_with(raw: Option<&str>) -> bool {
+    !matches!(
+        raw.map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        Some("off" | "false" | "0" | "no")
+    )
+}
+
+/// `CAUSAL_MEMORY_QUERY_PREFIX=auto` (default) | `off`. Read per call,
+/// never cached: the A/B arms toggle it inside one process.
+fn query_prefix_enabled() -> bool {
+    query_prefix_enabled_with(std::env::var("CAUSAL_MEMORY_QUERY_PREFIX").ok().as_deref())
 }
 
 // ─── Unified embedder ─────────────────────────────────────────────────
@@ -239,30 +318,40 @@ impl UnifiedEmbedder {
 /// 2. Local ONNX (if `local-embed` feature is compiled in and HTTP is absent)
 /// 3. None (semantic search unavailable)
 pub fn init_embedder() -> Option<UnifiedEmbedder> {
-    // Priority 1: HTTP endpoint
-    if let Some(config) = EmbedConfig::from_env() {
-        return Some(UnifiedEmbedder::Http(Embedder::new(config)));
-    }
+    // Unit tests must be hermetic: EmbedConfig::from_env falls back to
+    // CAUSAL_MEMORY_LLM_API/KEY, so a configured dev environment would make
+    // tests issue real HTTP calls and wedge on the global embed mutex
+    // (observed: cargo test hung 11+ min; with this guard it passes in 0.01s).
+    #[cfg(test)]
+    return None;
 
-    // Priority 2: Local ONNX (feature-gated)
-    #[cfg(feature = "local-embed")]
+    #[cfg(not(test))]
     {
-        match LocalEmbedder::new() {
-            Ok(e) => {
-                eprintln!(
-                    "[causal-memory] local embedding initialized: {} ({} dims)",
-                    e.model(),
-                    "384"
-                );
-                return Some(UnifiedEmbedder::Local(e));
-            }
-            Err(e) => {
-                eprintln!("[causal-memory] local embedding init failed: {e}");
+        // Priority 1: HTTP endpoint
+        if let Some(config) = EmbedConfig::from_env() {
+            return Some(UnifiedEmbedder::Http(Embedder::new(config)));
+        }
+
+        // Priority 2: Local ONNX (feature-gated)
+        #[cfg(feature = "local-embed")]
+        {
+            match LocalEmbedder::new() {
+                Ok(e) => {
+                    eprintln!(
+                        "[causal-memory] local embedding initialized: {} ({} dims)",
+                        e.model(),
+                        "384"
+                    );
+                    return Some(UnifiedEmbedder::Local(e));
+                }
+                Err(e) => {
+                    eprintln!("[causal-memory] local embedding init failed: {e}");
+                }
             }
         }
-    }
 
-    None
+        None
+    }
 }
 
 /// Process-global shared embedder (C1): one reqwest Client (or one ONNX
@@ -280,6 +369,36 @@ pub fn shared_embedder() -> Option<&'static std::sync::Mutex<Option<UnifiedEmbed
         Ok(g) if g.is_some() => Some(slot),
         _ => None,
     }
+}
+
+/// Is a shared embedder live right now? The write paths use this to skip the
+/// embedding detour entirely when the semantic layer is off: `embed_shared`
+/// would return the same `None`, but only after the caller entered
+/// `block_on` — which parks the calling thread (or spins up a throwaway
+/// runtime) once per turn for a guaranteed no-op.
+pub fn embedder_available() -> bool {
+    shared_embedder().is_some()
+}
+
+/// Model name of the live shared embedder — `None` when semantic retrieval
+/// is off (the AMC server's `/health` `embedding` field).
+pub fn shared_embedder_model() -> Option<String> {
+    let slot = shared_embedder()?;
+    let guard = slot.lock().ok()?;
+    guard.as_ref().map(|e| e.model().to_string())
+}
+
+/// Write-time chunk-embedding switch (`CAUSAL_MEMORY_EMBED_WRITE`).
+///
+/// Off by default and read per call (never cached in a `OnceLock`): the
+/// bulk ingest paths — the longmemeval bench ingests 32万 turns through the
+/// raw writer — must not pay one ONNX/HTTP call per turn unless explicitly
+/// asked, while the AMC server turns it on for the query path.
+pub fn embed_write_enabled() -> bool {
+    matches!(
+        std::env::var("CAUSAL_MEMORY_EMBED_WRITE").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes") | Ok("on")
+    )
 }
 
 /// Run one embed through the shared embedder and the LRU cache. This is
@@ -300,6 +419,40 @@ pub async fn embed_shared(text: &str) -> Option<Result<Vec<f32>>> {
     let mut guard = slot.lock().ok()?;
     let embedder = guard.as_mut()?;
     Some(embed_cached(embedder, text).await)
+}
+
+/// Query-side sibling of [`embed_shared`]: prepends the ACTIVE model's query
+/// instruction (see [`query_prefix_for_model`]) and then embeds.
+///
+/// This is what every RETRIEVAL path must call. The WRITE paths
+/// (`record_decision` / `record_fact` / `embed_raw_chunk`) must keep calling
+/// bare [`embed_shared`]: a passage carrying the query instruction is pulled
+/// away from every real query, which is the exact asymmetry this fixes.
+///
+/// Prefixing the TEXT (rather than post-processing the vector) keeps the LRU
+/// key honest — `embed_cached` keys on the string handed to the endpoint, so
+/// a prefixed query and a bare passage of the same words are two distinct
+/// entries and can never poison each other. That is also why nothing has to
+/// be rebuilt: the write side is untouched, so no stored vector is stale.
+pub async fn embed_shared_query(text: &str) -> Option<Result<Vec<f32>>> {
+    let prefix = query_prefix_label();
+    if prefix.is_empty() {
+        return embed_shared(text).await;
+    }
+    embed_shared(&format!("{prefix}{text}")).await
+}
+
+/// The instruction [`embed_shared_query`] would prepend right now — `""`
+/// when the switch is off, when the backend is HTTP, or when the model was
+/// trained symmetrically. Exposed so the AMC server can print it at startup:
+/// a missing prefix on a model that needs one degrades the semantic leg
+/// silently (the vectors still come back, they are just less useful), which
+/// is exactly the kind of failure a one-line startup log prevents.
+pub fn query_prefix_label() -> &'static str {
+    if !query_prefix_enabled() {
+        return "";
+    }
+    shared_query_prefix()
 }
 
 // ─── Embedding result cache (B4) ───────────────────────────────────────
@@ -329,7 +482,10 @@ fn embed_cache() -> &'static std::sync::Mutex<lru::LruCache<String, Vec<f32>>> {
 /// Minimal interface so the cache works over every embedder variant
 /// (HTTP Embedder, UnifiedEmbedder, local ONNX).
 pub trait CachedEmbed {
-    fn embed_async(&mut self, text: &str) -> impl std::future::Future<Output = Result<Vec<f32>>> + Send;
+    fn embed_async(
+        &mut self,
+        text: &str,
+    ) -> impl std::future::Future<Output = Result<Vec<f32>>> + Send;
 }
 
 impl CachedEmbed for UnifiedEmbedder {
@@ -400,8 +556,10 @@ pub fn blob_to_vec(b: &[u8]) -> Result<Vec<f32>> {
     if !b.len().is_multiple_of(4) {
         anyhow::bail!("embedding blob length {} is not a multiple of 4", b.len());
     }
-    Ok(b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+    Ok(b.as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| f32::from_le_bytes(*c))
         .collect())
 }
 
@@ -483,6 +641,80 @@ mod tests {
         assert_eq!(c.model, "bge-m3");
     }
 
+    // ─── Query-side instruction prefix ──────────────────────────────────
+
+    #[test]
+    fn test_query_prefix_english_bge_gets_the_sentence() {
+        for m in [
+            "BAAI/bge-small-en-v1.5",
+            "BAAI/bge-base-en-v1.5",
+            "BAAI/bge-large-en-v1.5",
+            "bge-small-en-v1.5",
+        ] {
+            assert_eq!(
+                query_prefix_for_model(m),
+                BGE_EN_QUERY_PREFIX,
+                "{m} is an English BGE — it wants the instruction"
+            );
+        }
+    }
+
+    #[test]
+    fn test_query_prefix_chinese_bge_and_m3_get_none() {
+        // The Chinese line's instruction is a different (Chinese) sentence and
+        // its passages were trained against bare queries: appending the
+        // English one would be a *worse* mismatch than appending nothing.
+        for m in [
+            "BAAI/bge-small-zh-v1.5",
+            "BAAI/bge-large-zh-v1.5",
+            "BAAI/bge-m3",
+        ] {
+            assert_eq!(query_prefix_for_model(m), "", "{m} must stay bare");
+        }
+    }
+
+    #[test]
+    fn test_query_prefix_e5_and_minilm() {
+        assert_eq!(
+            query_prefix_for_model("intfloat/multilingual-e5-small"),
+            E5_QUERY_PREFIX
+        );
+        assert_eq!(
+            query_prefix_for_model("intfloat/e5-large-v2"),
+            E5_QUERY_PREFIX
+        );
+        // Symmetric models, and unknown names (never guess a prefix).
+        assert_eq!(query_prefix_for_model("all-MiniLM-L6-v2"), "");
+        assert_eq!(query_prefix_for_model("all-MiniLM-L12-v2"), "");
+        assert_eq!(query_prefix_for_model("some/future-model"), "");
+    }
+
+    #[test]
+    fn test_query_prefix_http_backend_has_none() {
+        // An OpenAI-compatible endpoint has no query/passage channel: no
+        // prefix, whatever model name the config carries.
+        let http = UnifiedEmbedder::Http(Embedder::new(EmbedConfig {
+            api_base: "http://127.0.0.1:1/v1".into(),
+            api_key: "k".into(),
+            model: "bge-small-en-v1.5".into(),
+        }));
+        assert_eq!(prefix_for_embedder(Some(&http)), "");
+        // No embedder at all → nothing to prefix.
+        assert_eq!(prefix_for_embedder(None), "");
+    }
+
+    #[test]
+    fn test_query_prefix_switch_off_disables() {
+        assert!(query_prefix_enabled_with(None), "unset = auto = on");
+        assert!(query_prefix_enabled_with(Some("auto")));
+        // A typo must fall back to auto, not silently to off.
+        assert!(query_prefix_enabled_with(Some("AUTO")));
+        assert!(query_prefix_enabled_with(Some("nonsense")));
+        for off in ["off", "OFF", " off ", "false", "0", "no"] {
+            assert!(!query_prefix_enabled_with(Some(off)), "{off} must disable");
+        }
+    }
+
     // ─── B4: embedding LRU cache ────────────────────────────────────────
 
     #[test]
@@ -490,7 +722,11 @@ mod tests {
         let mut lru = lru::LruCache::new(std::num::NonZeroUsize::new(4).unwrap());
         assert!(lru.get("q").is_none(), "miss on empty");
         lru.put("q".to_string(), vec![1.0, 2.0]);
-        assert_eq!(lru.get("q").cloned(), Some(vec![1.0, 2.0]), "hit after insert");
+        assert_eq!(
+            lru.get("q").cloned(),
+            Some(vec![1.0, 2.0]),
+            "hit after insert"
+        );
     }
 
     #[test]

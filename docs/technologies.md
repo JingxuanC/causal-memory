@@ -23,7 +23,7 @@ mindmap
       bm25_index
       WAL + busy_timeout
     MCP (rmcp)
-      15 个工具
+      16 个工具
       stdio
       streamable-HTTP
     axum

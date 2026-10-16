@@ -54,8 +54,33 @@ impl Relation {
             _ => Relation::NoEffect,
         }
     }
+
+    /// Stable lowercase name (provenance display; inverse of
+    /// `from_str_lossy` for the canonical spellings).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Relation::Caused => "caused",
+            Relation::Enabled => "enabled",
+            Relation::Prevented => "prevented",
+            Relation::NoEffect => "no_effect",
+            Relation::Fact => "fact",
+            Relation::Meta => "meta",
+            Relation::CoOccurrence => "co_occurrence",
+        }
+    }
 }
 
+/// Provenance of a spread activation (Flip-path marking): the edge whose
+/// contribution won this node's CURRENT (strongest) activation. `from` is
+/// the source node index, `contribution` the signed value the edge added
+/// in the winning hop (negative for prevented edges — this is what makes
+/// "why does this result carry a negative score" answerable).
+#[derive(Debug, Clone, Copy)]
+pub struct ViaEdge {
+    pub from: u32,
+    pub relation: Relation,
+    pub contribution: f32,
+}
 
 /// Result of a spreading activation query.
 #[derive(Debug, Clone)]
@@ -64,6 +89,12 @@ pub struct ActivationResult {
     pub activation: f32,
     pub text: String,
     pub task_tag: Option<String>,
+    /// Hop at which the node's CURRENT activation was written: 0 = direct
+    /// seed hit, N = lit by spreading in hop N. Pure provenance — the
+    /// activation values and ordering are unchanged by this field.
+    pub hop: u8,
+    /// The edge responsible for the current activation (None for seeds).
+    pub via: Option<ViaEdge>,
 }
 
 /// Result of novelty detection.
@@ -132,4 +163,9 @@ pub struct NodeData {
     pub replay_count: u16,
     pub last_activated: i64,
     pub task_tag: Option<String>,
+    /// Fact nodes only: the fact's scope ("user"/"session"/"agent" or a
+    /// colon-namespaced custom scope like "lme:{qid}" / "tenant:acme").
+    /// Phase A entity linking uses it to keep cross-scope links out
+    /// (benchmark/multi-tenant isolation); None on chunk/scope nodes.
+    pub scope: Option<String>,
 }

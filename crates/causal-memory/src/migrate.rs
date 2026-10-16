@@ -5,6 +5,15 @@
 //! Every step checks actual column existence before altering, so migrations
 //! are idempotent and safe to re-run.
 //!
+//! Convention: `migrate()` runs with `PRAGMA foreign_keys=OFF` (restored on
+//! every exit, success or failure) because table-rebuild steps DROP parent
+//! tables that child tables still reference (v16 causal_edges ←
+//! decision_forks / edge_embeddings; v7/v9 agent_facts ←
+//! agent_facts_embeddings). Bundled SQLite enforces FK by default, so
+//! without this those rebuilds fail with code 787 on any store that has
+//! child rows. After migrating, `PRAGMA foreign_key_check` runs once —
+//! violations in legacy data are logged, never fatal.
+//!
 //! Version history:
 //! - v0/v1: pre-v0.6 schema — `causal_edges` lacks `event_time` /
 //!   `discovered_at` / `valid_to` (may have `created_at` instead), and a
@@ -31,14 +40,58 @@ use rusqlite::{params, Connection};
 use crate::store::CAUSAL_SCHEMA_SQL;
 
 /// Current schema version. Bump when adding a new migration step.
-pub const SCHEMA_VERSION: u32 = 11;
+pub const SCHEMA_VERSION: u32 = 19;
 
 /// Bring `conn` up to `SCHEMA_VERSION`. Runs in a single transaction:
 /// any failure rolls everything back.
 ///
 /// Order matters: column migrations run before `CAUSAL_SCHEMA_SQL` because
 /// the v3 indexes reference columns that older DBs don't have yet.
+///
+/// Foreign keys are DISABLED for the whole migration: bundled SQLite
+/// enforces them by default, and the table-rebuild migrations (v7/v9
+/// agent_facts, v16 causal_edges) DROP a parent table while child tables
+/// (decision_forks, edge_embeddings) still hold rows referencing it —
+/// with enforcement on, that DROP fails with code 787 and the store can
+/// never open (production: athena tenant, v15→v16). The pragma only takes
+/// effect outside a transaction, so it wraps the inner transaction and is
+/// re-enabled on every exit path, error included.
 pub fn migrate(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA foreign_keys=OFF")?;
+    let result = migrate_inner(conn);
+    // Restore enforcement even on failure — a later open of this connection
+    // must not inherit a silently FK-off state.
+    conn.execute_batch("PRAGMA foreign_keys=ON")?;
+    result?;
+
+    // Post-migration sanity: legacy dirty data (dangling references) must
+    // NOT block migration — warn loudly instead of failing, so a store with
+    // historical orphans stays migratable.
+    let violations: Result<Vec<String>> = (|| {
+        let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(format!(
+                "{} rowid={} → parent {}",
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    })();
+    match violations {
+        Ok(v) if !v.is_empty() => eprintln!(
+            "[migrate] foreign_key_check: {} violation(s) in legacy data (kept as-is): {}",
+            v.len(),
+            v.join("; ")
+        ),
+        Err(e) => eprintln!("[migrate] foreign_key_check failed to run: {e}"),
+        _ => {}
+    }
+    Ok(())
+}
+
+fn migrate_inner(conn: &Connection) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
 
     let version = detect_version(&tx)?;
@@ -76,6 +129,30 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
     if version < 11 {
         migrate_to_v11(&tx)?;
+    }
+    if version < 12 {
+        migrate_to_v12(&tx)?;
+    }
+    if version < 13 {
+        migrate_to_v13(&tx)?;
+    }
+    if version < 14 {
+        migrate_to_v14(&tx)?;
+    }
+    if version < 15 {
+        migrate_to_v15(&tx)?;
+    }
+    if version < 16 {
+        migrate_to_v16(&tx)?;
+    }
+    if version < 17 {
+        migrate_to_v17(&tx)?;
+    }
+    if version < 18 {
+        migrate_to_v18(&tx)?;
+    }
+    if version < 19 {
+        migrate_to_v19(&tx)?;
     }
 
     // Creates any missing tables/indexes at v3 (no-op for existing ones).
@@ -449,6 +526,42 @@ mod tests {
         assert_eq!(null_polarity, 2);
 
         assert!(table_exists(&conn, "edge_embeddings").unwrap());
+        assert!(table_exists(&conn, "chunk_embeddings").unwrap());
+    }
+
+    #[test]
+    fn test_migrate_v19_chunk_embeddings() {
+        // A store marked v18 takes the v19 step: the chunk-vector table
+        // appears (additive CREATE TABLE, no rebuild of `chunks` or of the
+        // edges it is deliberately kept away from), holds one vector per
+        // chunk, and survives a re-run. The fixture is a current-shape DB
+        // (a v1 skeleton stamped v18 would skip the column migrations that
+        // CAUSAL_SCHEMA_SQL's indexes rely on) with the v19 table dropped.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(CAUSAL_SCHEMA_SQL).unwrap();
+        conn.execute_batch("DROP TABLE chunk_embeddings; PRAGMA user_version = 18")
+            .unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
+        assert!(table_exists(&conn, "chunk_embeddings").unwrap());
+
+        conn.execute(
+            "INSERT INTO chunks (id, text, created_at) VALUES ('d1', 'x', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, model, vector, created_at)
+             VALUES ('d1', 'test', X'0000803F', 1)
+             ON CONFLICT(chunk_id) DO UPDATE SET model = excluded.model",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM chunk_embeddings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1, "a re-run must not disturb stored vectors");
     }
 
     /// Reproduces a real-world pre-v0.6 DB shape (found in the wild):
@@ -832,6 +945,62 @@ mod tests {
         migrate(&conn).unwrap();
         assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
     }
+
+    #[test]
+    fn test_migrate_v15_drops_fork_fingerprint_and_keeps_pairs() {
+        // Hand-build a v14-shape DB: decision_forks WITH the denormalized
+        // fingerprint column, user_version = 14. migrate() must drop the
+        // column and preserve existing pair rows.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE chunks (id TEXT PRIMARY KEY, text TEXT NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE causal_edges (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                from_id TEXT NOT NULL, to_id TEXT NOT NULL,
+                relation TEXT NOT NULL, confidence REAL NOT NULL DEFAULT 0.5,
+                discovered_by TEXT NOT NULL DEFAULT 'llm_inferred',
+                task_tag TEXT, created_at INTEGER NOT NULL,
+                event_time INTEGER, valid_to INTEGER,
+                discovered_at INTEGER, access_count INTEGER, last_accessed_at INTEGER,
+                outcome_polarity TEXT, superseded_by INTEGER,
+                context_fingerprint TEXT, context_text TEXT
+             );
+             CREATE TABLE decision_forks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                edge_id_a INTEGER NOT NULL,
+                edge_id_b INTEGER NOT NULL,
+                fingerprint TEXT NOT NULL,
+                discovered_at INTEGER NOT NULL,
+                UNIQUE(edge_id_a, edge_id_b)
+             );
+             INSERT INTO chunks (id, text, created_at) VALUES
+                ('d1','decision one',1000),('o1','outcome one',1000),
+                ('d2','decision two',2000),('o2','outcome two',2000);
+             INSERT INTO causal_edges (from_id, to_id, relation, task_tag, created_at)
+             VALUES ('d1','o1','caused','tag',1000),('d2','o2','enabled','tag',2000);
+             INSERT INTO decision_forks (edge_id_a, edge_id_b, fingerprint, discovered_at)
+             VALUES (1, 2, 'tag\x1frust agent', 3000);
+             PRAGMA user_version = 14;",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        assert_eq!(user_version(&conn), i64::from(SCHEMA_VERSION));
+        assert!(
+            !table_columns(&conn, "decision_forks")
+                .unwrap()
+                .contains("fingerprint"),
+            "v15 must drop the denormalized fingerprint column"
+        );
+        let pairs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM decision_forks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(pairs, 1, "existing fork pairs must survive the drop");
+
+        // Idempotent: re-running on an already-v15 DB is a no-op success.
+        migrate(&conn).unwrap();
+    }
 }
 
 /// v8 → v9: chunk-level learning state. `q_value` persists the hippocampus
@@ -846,9 +1015,7 @@ fn migrate_to_v9(conn: &Connection) -> Result<()> {
     }
     let cols = table_columns(conn, "chunks")?;
     if !cols.contains("q_value") {
-        conn.execute_batch(
-            "ALTER TABLE chunks ADD COLUMN q_value REAL NOT NULL DEFAULT 0.5",
-        )?;
+        conn.execute_batch("ALTER TABLE chunks ADD COLUMN q_value REAL NOT NULL DEFAULT 0.5")?;
     }
     if !cols.contains("sparse_code") {
         conn.execute_batch("ALTER TABLE chunks ADD COLUMN sparse_code TEXT")?;
@@ -873,7 +1040,7 @@ fn migrate_to_v10(conn: &Connection) -> Result<()> {
             chunk_id TEXT NOT NULL,
             PRIMARY KEY (token, chunk_id)
          );
-         CREATE INDEX IF NOT EXISTS idx_bm25_chunk ON bm25_index(chunk_id);"
+         CREATE INDEX IF NOT EXISTS idx_bm25_chunk ON bm25_index(chunk_id);",
     )?;
 
     // Backfill: index every existing chunk and fact so fresh stores and
@@ -881,18 +1048,16 @@ fn migrate_to_v10(conn: &Connection) -> Result<()> {
     // keeps it idempotent for partially-migrated DBs. Very old DBs (v1-v2)
     // may not have the chunks/agent_facts tables yet — the base schema runs
     // after all migrations — so guard each backfill source.
-    let mut idx = conn.prepare(
-        "INSERT OR IGNORE INTO bm25_index (token, chunk_id) VALUES (?1, ?2)",
-    )?;
+    let mut idx =
+        conn.prepare("INSERT OR IGNORE INTO bm25_index (token, chunk_id) VALUES (?1, ?2)")?;
     let mut count = 0usize;
 
     if !table_exists(conn, "chunks")? {
         tracing::debug!("v10: no chunks table yet, skipping chunk backfill");
     } else {
         let mut cstmt = conn.prepare("SELECT id, text FROM chunks")?;
-    let crows = cstmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-    })?;
+        let crows =
+            cstmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         for row in crows {
             let (id, text) = row?;
             for tok in crate::patterns::tokenize(&text) {
@@ -905,7 +1070,11 @@ fn migrate_to_v10(conn: &Connection) -> Result<()> {
     if table_exists(conn, "agent_facts")? {
         let mut fstmt = conn.prepare("SELECT id, key, value FROM agent_facts")?;
         let frows = fstmt.query_map([], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
         })?;
         for row in frows {
             let (fid, key, value) = row?;
@@ -932,7 +1101,195 @@ fn migrate_to_v11(conn: &Connection) -> Result<()> {
             weight REAL NOT NULL DEFAULT 0.2,
             updated_at INTEGER NOT NULL,
             PRIMARY KEY (from_id, to_id)
-         );"
+         );",
+    )?;
+    Ok(())
+}
+
+/// v11 → v12: fact supersession lineage (one-graph-convergence Phase D).
+/// `agent_facts.superseded_by` records which fact replaced a retired one
+/// (set by `record_fact_replacing`, cleared on revive). The column is
+/// audit/lineage — default retrieval behavior is unchanged (retired facts
+/// stay hidden; the id powers the graph's write-path retire patch).
+fn migrate_to_v12(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "agent_facts")? {
+        // Created with the column by CAUSAL_SCHEMA_SQL below.
+        return Ok(());
+    }
+    let cols = table_columns(conn, "agent_facts")?;
+    if !cols.contains("superseded_by") {
+        conn.execute_batch("ALTER TABLE agent_facts ADD COLUMN superseded_by INTEGER")?;
+    }
+    Ok(())
+}
+
+/// v12 → v13: recall audit table (observability). One best-effort row per
+/// recall (query, seeds, per-hop activation summary, per-result
+/// provenance, latency) powers `/debug/recalls` — an audit log that
+/// survives restarts. Writes never block retrieval (callers count + log
+/// failures). Fresh DBs get the table from CAUSAL_SCHEMA_SQL below; this
+/// step covers existing DBs (idempotent).
+fn migrate_to_v13(conn: &Connection) -> Result<()> {
+    conn.execute_batch(crate::store::RECALL_AUDIT_DDL)?;
+    Ok(())
+}
+
+/// v13 → v14: Rung-3 Phase A (counterfactual rung-3 design, 2026-09).
+///
+/// - `causal_edges.context_fingerprint` + `context_text`: the abduction
+///   substrate — records the world state a decision was made in so
+///   same-context decisions become comparable branches. NULL on all
+///   legacy rows (excluded from fork logic by construction).
+/// - `decision_forks` + `pending_predictions`: created by
+///   RUNG3_PHASE_A_TABLES_DDL (idempotent; fresh DBs also get them from
+///   CAUSAL_SCHEMA_SQL).
+/// - The fingerprint index is a partial index (WHERE … IS NOT NULL) so
+///   legacy-heavy DBs don't index a sea of NULLs.
+fn migrate_to_v14(conn: &Connection) -> Result<()> {
+    if table_exists(conn, "causal_edges")? {
+        let cols = table_columns(conn, "causal_edges")?;
+        if !cols.contains("context_fingerprint") {
+            conn.execute_batch("ALTER TABLE causal_edges ADD COLUMN context_fingerprint TEXT")?;
+        }
+        if !cols.contains("context_text") {
+            conn.execute_batch("ALTER TABLE causal_edges ADD COLUMN context_text TEXT")?;
+        }
+    }
+    conn.execute_batch(crate::store::RUNG3_PHASE_A_TABLES_DDL)?;
+    // The index needs causal_edges to exist; partial fixture DBs (e.g. the
+    // v6→v7 test) may not have it — CAUSAL_SCHEMA_SQL creates both the table
+    // and the index right after the per-version steps.
+    if table_exists(conn, "causal_edges")? {
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_causal_fingerprint
+             ON causal_edges(context_fingerprint) WHERE context_fingerprint IS NOT NULL;",
+        )?;
+    }
+    Ok(())
+}
+
+/// v15: drop the denormalized `fingerprint` column from `decision_forks`.
+/// It was written on every pair insert but never read — both consumers
+/// (`fork_siblings_for_edges`, the `stats` gauges) already JOIN
+/// `causal_edges`, where the fingerprint lives as `context_fingerprint`, so
+/// the column duplicated normalized context text per pair for zero read
+/// benefit. Fresh DBs (and pre-v14 DBs, whose forks table is created from
+/// the updated DDL const) never have it; this only rewrites DBs that ran
+/// v14 before this fix. Idempotent via the column probe; DROP COLUMN needs
+/// SQLite ≥ 3.35 (bundled rusqlite is far newer).
+fn migrate_to_v15(conn: &Connection) -> Result<()> {
+    if table_exists(conn, "decision_forks")?
+        && table_columns(conn, "decision_forks")?.contains("fingerprint")
+    {
+        conn.execute_batch("ALTER TABLE decision_forks DROP COLUMN fingerprint")?;
+    }
+    Ok(())
+}
+
+/// v16: widen the causal_edges.relation CHECK with 'co_occurrence' —
+/// observational associations whose confounding is not ruled out
+/// (intervention_calibration Fix-1, 2026-09-09). SQLite cannot alter a
+/// CHECK constraint, so the table is rebuilt (12-step recipe).
+fn migrate_to_v16(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "causal_edges")? {
+        return Ok(()); // fresh DB: CAUSAL_SCHEMA_SQL creates the v16 shape
+    }
+    conn.execute_batch(
+        "
+        CREATE TABLE causal_edges_v16 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_id TEXT NOT NULL,
+            to_id TEXT NOT NULL,
+            relation TEXT NOT NULL CHECK(relation IN ('caused','enabled','prevented','no_effect','co_occurrence')),
+            confidence REAL NOT NULL DEFAULT 0.5,
+            discovered_by TEXT NOT NULL DEFAULT 'llm_inferred',
+            event_time INTEGER NOT NULL,
+            discovered_at INTEGER NOT NULL,
+            valid_to INTEGER,
+            task_tag TEXT,
+            access_count INTEGER NOT NULL DEFAULT 0,
+            last_accessed_at INTEGER,
+            outcome_polarity TEXT CHECK(outcome_polarity IN ('positive','negative','mixed','neutral')),
+            superseded_by INTEGER,
+            context_fingerprint TEXT,
+            context_text TEXT,
+            FOREIGN KEY (from_id) REFERENCES chunks(id),
+            FOREIGN KEY (to_id) REFERENCES chunks(id)
+        );
+        INSERT INTO causal_edges_v16
+            SELECT id, from_id, to_id, relation, confidence, discovered_by,
+                   COALESCE(event_time, 0), COALESCE(discovered_at, 0),
+                   valid_to, task_tag, COALESCE(access_count, 0),
+                   last_accessed_at, outcome_polarity, superseded_by,
+                   context_fingerprint, context_text
+            FROM causal_edges;
+        DROP TABLE causal_edges;
+        ALTER TABLE causal_edges_v16 RENAME TO causal_edges;
+        CREATE INDEX IF NOT EXISTS idx_causal_from ON causal_edges(from_id);
+        CREATE INDEX IF NOT EXISTS idx_causal_to ON causal_edges(to_id);
+        CREATE INDEX IF NOT EXISTS idx_causal_task ON causal_edges(task_tag);
+        CREATE INDEX IF NOT EXISTS idx_causal_event_time ON causal_edges(event_time);
+        CREATE INDEX IF NOT EXISTS idx_causal_valid ON causal_edges(valid_to);
+        CREATE INDEX IF NOT EXISTS idx_causal_fingerprint
+            ON causal_edges(context_fingerprint) WHERE context_fingerprint IS NOT NULL;
+        ",
+    )?;
+    Ok(())
+}
+
+/// v17: add the bias-audit annotation column (hardening §2.2). Nullable,
+/// unconstrained TEXT — one ALTER, no table rebuild. Guarded by a column
+/// check so a store that somehow already carries the column (restore from a
+/// newer backup, hand-edited DB) skips instead of erroring.
+fn migrate_to_v17(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "causal_edges")? {
+        return Ok(()); // fresh DB: CAUSAL_SCHEMA_SQL creates the v17 shape
+    }
+    if table_columns(conn, "causal_edges")?.contains("bias_flag") {
+        return Ok(()); // already migrated (idempotent re-run)
+    }
+    conn.execute_batch("ALTER TABLE causal_edges ADD COLUMN bias_flag TEXT")?;
+    Ok(())
+}
+
+/// v18: add the influence-chain column (hardening §2.3). Nullable,
+/// unconstrained TEXT holding a JSON array of edge ids (`[12, 45]`) —
+/// which existing memories influenced this decision. JSON1's `json_each`
+/// (bundled SQLite ≥ 3.38) powers the reverse lookup. One ALTER, no table
+/// rebuild; column-exists guard for idempotent re-runs.
+fn migrate_to_v18(conn: &Connection) -> Result<()> {
+    if !table_exists(conn, "causal_edges")? {
+        return Ok(()); // fresh DB: CAUSAL_SCHEMA_SQL creates the v18 shape
+    }
+    if table_columns(conn, "causal_edges")?.contains("influenced_by") {
+        return Ok(()); // already migrated (idempotent re-run)
+    }
+    conn.execute_batch("ALTER TABLE causal_edges ADD COLUMN influenced_by TEXT")?;
+    Ok(())
+}
+
+/// v19: chunk-level embeddings — a vector per `chunks` row, so raw turns
+/// (the AMC raw write path) can seed retrieval semantically instead of
+/// leaning on BM25 alone (see `Memory::embed_raw_chunk`).
+///
+/// Separate table on purpose: `edge_embeddings` holds the causal layer's
+/// vectors and is ranked as decision→outcome similarity — folding turn
+/// chunks into it would pollute that geometry. Purely additive, so no table
+/// rebuild is involved; in particular the v16 rebuild of `causal_edges`
+/// cannot orphan rows here, because nothing ever rebuilds `chunks`.
+/// Existence-guarded for idempotent re-runs; CAUSAL_SCHEMA_SQL creates the
+/// same table on a fresh DB.
+fn migrate_to_v19(conn: &Connection) -> Result<()> {
+    if table_exists(conn, "chunk_embeddings")? {
+        return Ok(()); // already migrated (idempotent re-run)
+    }
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS chunk_embeddings (
+            chunk_id TEXT PRIMARY KEY REFERENCES chunks(id),
+            model TEXT NOT NULL,
+            vector BLOB NOT NULL,
+            created_at INTEGER NOT NULL
+        );",
     )?;
     Ok(())
 }

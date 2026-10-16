@@ -55,10 +55,7 @@ impl SessionParser for KimiParser {
             );
         }
         if !source.path.exists() {
-            return Err(anyhow!(
-                "Session file not found: {}",
-                source.path.display()
-            ));
+            return Err(anyhow!("Session file not found: {}", source.path.display()));
         }
 
         let raw = std::fs::read_to_string(&source.path)?;
@@ -109,12 +106,18 @@ impl SessionParser for KimiParser {
                                             .get("arguments")
                                             .map(|v| serde_json::to_string(v).unwrap_or_default())
                                             .unwrap_or_default();
-                                        let tc = CandidateDecision { id: id.clone(), name: name.clone(), arguments };
+                                        let tc = CandidateDecision {
+                                            id: id.clone(),
+                                            name: name.clone(),
+                                            arguments,
+                                        };
                                         decisions.push(tc.clone());
                                         new_tool_calls.push(tc);
                                     }
                                     "text" => {
-                                        if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
+                                        if let Some(text) =
+                                            block.get("text").and_then(|v| v.as_str())
+                                        {
                                             if text.len() >= 100 {
                                                 assistant_texts.push(text.to_string());
                                             }

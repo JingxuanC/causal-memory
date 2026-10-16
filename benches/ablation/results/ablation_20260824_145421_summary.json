@@ -1,0 +1,61 @@
+{
+  "arms": [
+    {
+      "arm": "baseline",
+      "avg_pool_tokens": 1837,
+      "delta_avg_pool_tokens_vs_baseline": 0,
+      "delta_hit_rate_vs_baseline": 0.0,
+      "delta_mean_rank_vs_baseline": 0.0,
+      "evidence_hit_rate": 0.1278538812785388,
+      "evidence_hits": 28,
+      "mean_rank": 14.785714285714286,
+      "total_questions": 219
+    },
+    {
+      "arm": "no-spread",
+      "avg_pool_tokens": 892,
+      "delta_avg_pool_tokens_vs_baseline": -945,
+      "delta_hit_rate_vs_baseline": 0.821917808219178,
+      "delta_mean_rank_vs_baseline": -4.37706043956044,
+      "evidence_hit_rate": 0.9497716894977168,
+      "evidence_hits": 208,
+      "mean_rank": 10.408653846153847,
+      "total_questions": 219
+    },
+    {
+      "arm": "no-inhibition",
+      "avg_pool_tokens": 1839,
+      "delta_avg_pool_tokens_vs_baseline": 2,
+      "delta_hit_rate_vs_baseline": 0.0,
+      "delta_mean_rank_vs_baseline": 0.0357142857142847,
+      "evidence_hit_rate": 0.1278538812785388,
+      "evidence_hits": 28,
+      "mean_rank": 14.821428571428571,
+      "total_questions": 219
+    },
+    {
+      "arm": "no-swr",
+      "avg_pool_tokens": 1833,
+      "delta_avg_pool_tokens_vs_baseline": -4,
+      "delta_hit_rate_vs_baseline": 0.0,
+      "delta_mean_rank_vs_baseline": 0.42857142857142705,
+      "evidence_hit_rate": 0.1278538812785388,
+      "evidence_hits": 28,
+      "mean_rank": 15.214285714285714,
+      "total_questions": 219
+    }
+  ],
+  "data": "self-derived from causal_edges (query=outcome text, gold=causal edge hit key)",
+  "date": "2026-08-24T14:54:21.161127+08:00",
+  "db": "/tmp/ablation_real.db",
+  "git_commit": "8b2a151",
+  "metric": "retrieval-level: evidence hit rate + mean evidence rank + pool token mass (judge-free)",
+  "n": 219,
+  "notes": {
+    "no-inhibition": "DB copy with prevented edges flipped to caused (inhibitory side removed, negative spread gone)",
+    "no-spread": "engine-level switch (Memory::disable_spread): seeding layer intact (BM25/semantic direct hits, Q-weighted), zero spreading-activation hops — seed-hits-only retrieval over the same store",
+    "no-swr": "DB copy with chunk q_value flattened to 0.5 (approximates a never-consolidated store; decayed confidence is lossy and not restored)",
+    "run": "store: real production causal.db backup, sleep-consolidated x2 on 2026-08-24 (cycle1: 126 replay-protected, decayed 223, access-boosted 210, GC invalidated 3, facts decayed 1400, Bellman 126 chunks; cycle2: decayed 220, access-boosted 213, GC invalidated 1, Bellman 125 chunks; q_value 24 distinct values in [0.30,1.00], 90/433 still at default 0.5); queries: self-derived causal pairs (query=outcome text, gold=causal edge hit key via MemoryHit.key); edges with either endpoint text <20 chars skipped"
+  },
+  "run_id": "20260824_145421"
+}

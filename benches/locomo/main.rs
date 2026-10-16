@@ -180,8 +180,12 @@ fn usage() {
     eprintln!("  --search-only       retrieval + evidence_hit only (zero LLM calls)");
     eprintln!("  --reembed           re-embed all edges with the local ONNX embedder");
     eprintln!("  --prompt-version VER  v1 (legacy) | v2 (7-step reasoning, default)");
-    eprintln!("  --judge-style STYLE  strict (default) | mem0 (lenient: partial credit, ±14d dates)");
-    eprintln!("  rejudge --input results/<run>.jsonl --judge-style mem0  (re-judge without re-answering)");
+    eprintln!(
+        "  --judge-style STYLE  strict (default) | mem0 (lenient: partial credit, ±14d dates)"
+    );
+    eprintln!(
+        "  rejudge --input results/<run>.jsonl --judge-style mem0  (re-judge without re-answering)"
+    );
     eprintln!();
     eprintln!("compact options: --data PATH (required) [--conv N] [--compact K] (default 5)");
     eprintln!("  [--limit Q] [--concurrency N] [--out DIR] (default benches/locomo/results)");
@@ -374,8 +378,13 @@ fn ingest_conversation(store: &CausalStore, conv: &LocomoConversation) -> Result
     let sessions = conv.sessions()?;
     let expected_chunks: usize = sessions.iter().map(|s| s.turns.len()).sum();
 
-    let existing: i64 =
-        store.with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM chunks WHERE id GLOB 'D[0-9]*'", [], |r| r.get(0))?))?;
+    let existing: i64 = store.with_conn(|c| {
+        Ok(c.query_row(
+            "SELECT COUNT(*) FROM chunks WHERE id GLOB 'D[0-9]*'",
+            [],
+            |r| r.get(0),
+        )?)
+    })?;
     // Count only raw turn chunks (D-prefixed dia_ids from the dataset).
     // record_decision / record_distilled create extra d{id}/o{id} chunks
     // as causal-edge endpoints — those are expected and must not trigger
@@ -462,7 +471,12 @@ fn ingest_conversation(store: &CausalStore, conv: &LocomoConversation) -> Result
 /// length normalization — BM25 fixes both while staying dependency-free.
 /// All retrieval signals come from the system (store), not harness-local
 /// copies — the harness measures the product, it does not re-implement it.
-fn retrieve(store: &CausalStore, question: &str, topk: usize, query_vec: Option<&[f32]>) -> Result<Vec<CausalEntry>> {
+fn retrieve(
+    store: &CausalStore,
+    question: &str,
+    topk: usize,
+    query_vec: Option<&[f32]>,
+) -> Result<Vec<CausalEntry>> {
     let bm25_results = store.search_causal_bm25(None, question, topk)?;
     let mut lists: Vec<&[CausalEntry]> = vec![&bm25_results];
 
@@ -774,11 +788,21 @@ async fn judge_with_retry(
         // Use judge model if configured separately from answer model
         let judge_model = cfg.judge_model();
         let judge_cfg = if cfg.model != judge_model {
-            LlmConfig { model: judge_model, ..cfg.clone() }
+            LlmConfig {
+                model: judge_model,
+                ..cfg.clone()
+            }
         } else {
             cfg.clone()
         };
-        match chat_json(&judge_cfg, judge_style.system_prompt(), &user, JUDGE_MAX_TOKENS).await {
+        match chat_json(
+            &judge_cfg,
+            judge_style.system_prompt(),
+            &user,
+            JUDGE_MAX_TOKENS,
+        )
+        .await
+        {
             Ok(raw) => match parse_judge_output(&raw) {
                 Some(parsed) => return parsed,
                 None => {
@@ -800,7 +824,10 @@ async fn judge_with_retry(
             tokio::time::sleep(std::time::Duration::from_secs(1 << attempt)).await;
         }
     }
-    (Verdict::Error, format!("unparseable judge output: {last_raw}"))
+    (
+        Verdict::Error,
+        format!("unparseable judge output: {last_raw}"),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1265,7 +1292,8 @@ async fn answer_question(
             None => None,
         }
     };
-    let mut retrieved = retrieve(store, &qa.question, topk, query_vec.as_deref()).unwrap_or_default();
+    let mut retrieved =
+        retrieve(store, &qa.question, topk, query_vec.as_deref()).unwrap_or_default();
     let retrieved_ids = retrieved_chunk_ids(&retrieved);
     let evidence_hit = qa
         .evidence
@@ -1325,14 +1353,23 @@ async fn answer_question(
     // E1: select prompt by version and question category.
     // cat5 (adversarial) always uses the abstention-capable prompt.
     let (system_prompt, max_tokens) = if qa.category == 5 {
-        (ANSWER_SYSTEM_PROMPT_ADVERSARIAL.to_string(), ANSWER_MAX_TOKENS)
+        (
+            ANSWER_SYSTEM_PROMPT_ADVERSARIAL.to_string(),
+            ANSWER_MAX_TOKENS,
+        )
     } else {
         match prompt_version {
             PromptVersion::V1 => (ANSWER_SYSTEM_PROMPT.to_string(), ANSWER_MAX_TOKENS),
             // A3: cat1 gets composition/assertion, cat3 gets inference.
             PromptVersion::V2 => match qa.category {
-                1 => (format!("{ANSWER_SYSTEM_PROMPT_V2}{STEP8_MULTI_SESSION}"), ANSWER_MAX_TOKENS_V2),
-                3 => (format!("{ANSWER_SYSTEM_PROMPT_V2}{STEP8_INFERENCE}"), ANSWER_MAX_TOKENS_V2),
+                1 => (
+                    format!("{ANSWER_SYSTEM_PROMPT_V2}{STEP8_MULTI_SESSION}"),
+                    ANSWER_MAX_TOKENS_V2,
+                ),
+                3 => (
+                    format!("{ANSWER_SYSTEM_PROMPT_V2}{STEP8_INFERENCE}"),
+                    ANSWER_MAX_TOKENS_V2,
+                ),
                 _ => (ANSWER_SYSTEM_PROMPT_V2.to_string(), ANSWER_MAX_TOKENS_V2),
             },
         }
@@ -1446,7 +1483,10 @@ async fn reembed_all(store: &CausalStore, embedder: &SharedEmbedder) -> Result<(
 
 /// Answer + judge a batch of questions against one store, in parallel.
 /// Shared by `run` and the compact experiment's QA phase.
-#[allow(clippy::too_many_arguments, reason = "benchmark harness; params are independent")]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "benchmark harness; params are independent"
+)]
 pub(crate) async fn answer_all(
     cfg: &LlmConfig,
     store: &CausalStore,
@@ -1467,7 +1507,19 @@ pub(crate) async fn answer_all(
         let embedder = embedder.clone();
         let done = done.clone();
         async move {
-            let row = answer_question(&cfg, &store, &embedder, conv_idx, &qa, topk, with_facts, prompt_version, judge_style, search_only).await;
+            let row = answer_question(
+                &cfg,
+                &store,
+                &embedder,
+                conv_idx,
+                &qa,
+                topk,
+                with_facts,
+                prompt_version,
+                judge_style,
+                search_only,
+            )
+            .await;
             let d = done.fetch_add(1, Ordering::Relaxed) + 1;
             if d.is_multiple_of(50) {
                 eprintln!("conv {conv_idx}: {d} questions done");
@@ -1511,8 +1563,9 @@ async fn run(args: Args) -> Result<()> {
     let mut ran_convs = Vec::new();
     let mut distill_totals = DistillStats::default();
     // One embedder for the whole run (HTTP or local ONNX); see SharedEmbedder.
-    let embedder: SharedEmbedder =
-        Arc::new(tokio::sync::Mutex::new(causal_memory::embed::init_embedder()));
+    let embedder: SharedEmbedder = Arc::new(tokio::sync::Mutex::new(
+        causal_memory::embed::init_embedder(),
+    ));
 
     for conv_idx in conv_indices {
         let conv = &conversations[conv_idx];
@@ -1706,7 +1759,9 @@ async fn rejudge(argv: &[String]) -> Result<()> {
         }
         i += 1;
     }
-    let input_path = input.ok_or_else(|| anyhow!("--input is required (path to a .jsonl file or results directory)"))?;
+    let input_path = input.ok_or_else(|| {
+        anyhow!("--input is required (path to a .jsonl file or results directory)")
+    })?;
 
     // Collect input files: directory → all *.jsonl excluding _rejudged_; file → just that file.
     let input_files: Vec<PathBuf> = if input_path.is_dir() {
@@ -1726,16 +1781,25 @@ async fn rejudge(argv: &[String]) -> Result<()> {
     };
 
     if input_files.is_empty() {
-        anyhow::bail!("no .jsonl files found in {} (excluding _rejudged_)", input_path.display());
+        anyhow::bail!(
+            "no .jsonl files found in {} (excluding _rejudged_)",
+            input_path.display()
+        );
     }
 
-    eprintln!("re-judging {} file(s) with {} style...", input_files.len(), judge_style.as_str());
+    eprintln!(
+        "re-judging {} file(s) with {} style...",
+        input_files.len(),
+        judge_style.as_str()
+    );
 
     // Output directory: sibling to input, named rejudged_<style>/.
     let out_dir = if input_path.is_dir() {
         input_path.join(format!("rejudged_{}", judge_style.as_str()))
     } else {
-        input_path.parent().unwrap_or(&PathBuf::from("."))
+        input_path
+            .parent()
+            .unwrap_or(&PathBuf::from("."))
             .join(format!("rejudged_{}", judge_style.as_str()))
     };
     std::fs::create_dir_all(&out_dir)?;
@@ -1755,7 +1819,11 @@ async fn rejudge(argv: &[String]) -> Result<()> {
             .map(|l| serde_json::from_str(l).with_context(|| "parsing row"))
             .collect::<Result<Vec<_>>>()?;
 
-        eprintln!("  {} ({} rows)", file_path.file_name().unwrap_or_default().to_string_lossy(), rows.len());
+        eprintln!(
+            "  {} ({} rows)",
+            file_path.file_name().unwrap_or_default().to_string_lossy(),
+            rows.len()
+        );
 
         let done = Arc::new(AtomicUsize::new(0));
         let total = rows.len();
@@ -1821,16 +1889,32 @@ async fn rejudge(argv: &[String]) -> Result<()> {
         }
     }
 
-    eprintln!("\n=== re-judge ({}) aggregate results ===", judge_style.as_str());
-    eprintln!("overall: {:.1}% ({}/{})",
+    eprintln!(
+        "\n=== re-judge ({}) aggregate results ===",
+        judge_style.as_str()
+    );
+    eprintln!(
+        "overall: {:.1}% ({}/{})",
         grand_overall.correct as f64 / grand_overall.total as f64 * 100.0,
-        grand_overall.correct, grand_overall.total);
+        grand_overall.correct,
+        grand_overall.total
+    );
     // Category names: 1=multi-hop, 2=temporal, 3=open-domain, 4=single-hop, 5=adversarial
-    let cat_names = [(1u32, "multi-hop"), (2, "temporal"), (3, "open-domain"), (4, "single-hop"), (5, "adversarial")];
+    let cat_names = [
+        (1u32, "multi-hop"),
+        (2, "temporal"),
+        (3, "open-domain"),
+        (4, "single-hop"),
+        (5, "adversarial"),
+    ];
     for (cat, name) in &cat_names {
         if let Some(acc) = grand_per_cat.get(cat) {
-            eprintln!("  cat{cat} ({name}): {:.1}% ({}/{})",
-                acc.correct as f64 / acc.total as f64 * 100.0, acc.correct, acc.total);
+            eprintln!(
+                "  cat{cat} ({name}): {:.1}% ({}/{})",
+                acc.correct as f64 / acc.total as f64 * 100.0,
+                acc.correct,
+                acc.total
+            );
         }
     }
     eprintln!("output dir: {}", out_dir.display());

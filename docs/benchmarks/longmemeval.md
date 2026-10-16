@@ -3,8 +3,28 @@
 Evaluation on [LongMemEval](https://github.com/xiaowu0162/LongMemEval)
 (`longmemeval_s_cleaned`, 500 questions, ~115k-token chat histories per question).
 
-**Headline (distill + fact layer + P7 expansion): composed overall ≈74.0% (370/500); the frozen-protocol headline is 69.6% (348/500) vs raw-ingest baseline 61.8% — +7.8pp, zero errors.**
-Raw baseline: overall 61.8% (309/500) · abstention 96.7% (29/30) · evidence hit rate 84.4%.
+**Headline (2026-08-22, git 5064b90 — full pipeline): overall 76.4% (382/500), avg ctx 11,524 tok/query (-32%).**
+Pipeline: distill + fact layer + semantic seed layer (zhipu embedding-3) + episode quota + density-weighted top-2 session whitelist + date-math aggregation carve-out + article/weekday temporal anchors.
+Multi-session 60.2% · temporal 69.9% · preference 80.0% · knowledge-update 82.1% · abstention 96.7% · evidence hit 89.2%.
+48 verdict flips vs the 8/20 run, all evidence-stable — the gain is reasoning-environment (dilution cut), not retrieval luck.
+
+## vs mem0 and the 2026 field (added 2026-08-22)
+
+| | mem0 official (2026.4 algo) | mem0 independent repro | causal-memory |
+|---|---|---|---|
+| Overall | **94.4%** | 73.8% (r/AIMemory, same harness) | **76.4%** |
+| Tokens/query | 6.8K | — | 11.5K |
+| Model stack | Mem0 platform (GPT-class + pipeline) | same harness | deepseek-chat everywhere (answer+judge+distill+embed) |
+
+mem0's per-category: single-user 98.6 · assistant 98.2 · knowledge-update 93.6 · multi-session 88.0.
+Read with the usual judge-caliber discount: our own LoCoMo history measured ~+10pp between
+self-judged and independent-judge runs, and the mem0 93.4→73.8 repro gap (19.6pp) is consistent.
+Under a same-harness independent comparison we are ahead (+2.6pp); under official-vs-official
+(different model classes) behind (-18pp). The honest position: mid-field, single-model-stack,
+with the differentiators (typed causal edges, inhibition, compaction survival) not scored here.
+Field context: Mastra observational-memory 94.9% (gpt-5-mini), ByteRover 92.8%, Hindsight 87.2%
+— the top of this board is commercial stacks on frontier models; mem0's 6.8K tok/query marks the
+token-efficiency frontier our 11.5K should keep chasing.
 
 ## Distill-mode run (run 20260730_212026, schema v7 fact layer)
 

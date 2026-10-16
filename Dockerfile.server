@@ -1,0 +1,15 @@
+# 源码构建（多租户版）：pip wheel 不含 /mcp bearer + per-tenant
+FROM rust:1-slim-bookworm AS builder
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev perl make g++ \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+COPY . .
+RUN cargo build --release -p causal-memory-cli --features local-embed
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /src/target/release/causal-memory /usr/local/bin/causal-memory
+ENV PYTHONUNBUFFERED=1
+EXPOSE 50061
+CMD ["causal-memory", "http", "--port", "50061", "--host", "0.0.0.0"]

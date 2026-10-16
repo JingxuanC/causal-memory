@@ -23,7 +23,7 @@ from typing import Optional, List, Dict, Any
 
 
 class CausalMemoryClient:
-    """Client for the causal-memory MCP server (14 tools)."""
+    """Client for the causal-memory MCP server (17 tools)."""
 
     def __init__(self, transport: str = "http", url: str = "", binary_path: str = "", db_path: str = ""):
         self._transport = transport
@@ -95,12 +95,18 @@ class CausalMemoryClient:
 
     def record_decision(self, decision: str, outcome: str, relation: str = "caused",
                         task_tag: str = "general", confidence: float = 0.6,
-                        confidence_source: str = "llm_inferred") -> str:
-        return self._call_tool("record_decision", {
+                        confidence_source: str = "llm_inferred",
+                        influenced_by: Optional[List[int]] = None) -> str:
+        args = {
             "decision": decision, "outcome": outcome, "relation": relation,
             "task_tag": task_tag, "confidence": confidence,
             "confidence_source": confidence_source,
-        })
+        }
+        # v18: ids of past memories (the #N in search results) that
+        # influenced this decision — builds the influence chain.
+        if influenced_by:
+            args["influenced_by"] = influenced_by
+        return self._call_tool("record_decision", args)
 
     def search_causal(self, query: str, task_tag: Optional[str] = None,
                       topk: int = 10) -> str:

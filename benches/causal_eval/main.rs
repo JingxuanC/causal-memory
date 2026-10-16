@@ -111,7 +111,14 @@ impl Rng {
 // ─── Graph generation ──────────────────────────────────────────────────────
 
 const PERSONS: &[&str] = &["Melanie", "Caroline", "Nate", "Joanna", "Priya", "Sam"];
-const TASKS: &[&str] = &["deployment", "data-migration", "auth", "api", "testing", "infra"];
+const TASKS: &[&str] = &[
+    "deployment",
+    "data-migration",
+    "auth",
+    "api",
+    "testing",
+    "infra",
+];
 
 /// Deterministic action templates per task domain — events sound like real
 /// engineering decisions (the dialogue domain). Each entry is a self-contained
@@ -255,17 +262,39 @@ const CAUSAL_PAIRS: &[CausalPair] = &[
 /// DISTINCT final failure that is still the same failure class (review #4).
 fn escalation(failure: &str) -> String {
     match failure {
-        "a regression slipped into production" => "the regression reached every user and forced a full rollback".to_string(),
-        "the release caused an outage" => "the outage lasted hours and triggered an incident review".to_string(),
-        "the migration corrupted customer records" => "the corruption spread to the backups and took days to repair".to_string(),
-        "the migration locked the database" => "the lockout cascaded to every dependent service".to_string(),
-        "user accounts were compromised" => "the compromise spread to the admin accounts".to_string(),
-        "an attacker found the debug account" => "the attacker moved laterally inside the network".to_string(),
-        "the API timed out under load" => "the timeouts cascaded into a full API outage".to_string(),
-        "customer data leaked into the logs" => "the leaked data was exposed to every engineer with log access".to_string(),
-        "the app broke right after release" => "the breakage hit every new session for a week".to_string(),
-        "traffic hit a cluster that could not serve it" => "the outage lasted for hours and hit every region".to_string(),
-        "the service went down under a traffic spike" => "the downtime cascaded to the dependent services".to_string(),
+        "a regression slipped into production" => {
+            "the regression reached every user and forced a full rollback".to_string()
+        }
+        "the release caused an outage" => {
+            "the outage lasted hours and triggered an incident review".to_string()
+        }
+        "the migration corrupted customer records" => {
+            "the corruption spread to the backups and took days to repair".to_string()
+        }
+        "the migration locked the database" => {
+            "the lockout cascaded to every dependent service".to_string()
+        }
+        "user accounts were compromised" => {
+            "the compromise spread to the admin accounts".to_string()
+        }
+        "an attacker found the debug account" => {
+            "the attacker moved laterally inside the network".to_string()
+        }
+        "the API timed out under load" => {
+            "the timeouts cascaded into a full API outage".to_string()
+        }
+        "customer data leaked into the logs" => {
+            "the leaked data was exposed to every engineer with log access".to_string()
+        }
+        "the app broke right after release" => {
+            "the breakage hit every new session for a week".to_string()
+        }
+        "traffic hit a cluster that could not serve it" => {
+            "the outage lasted for hours and hit every region".to_string()
+        }
+        "the service went down under a traffic spike" => {
+            "the downtime cascaded to the dependent services".to_string()
+        }
         other => format!("{other} — and it got worse"),
     }
 }
@@ -318,10 +347,26 @@ fn generate_graph(id: usize, seed: u64) -> CausalGraph {
     nodes.push(mk(3, main.fix, "neutral", &task));
     nodes.push(mk(4, main.fix_outcome, "positive", &task));
     nodes.push(mk(5, main.preventer, "positive", &task));
-    edges.push(CausalEdge { from: 0, to: 1, relation: "caused".to_string() });
-    edges.push(CausalEdge { from: 1, to: 2, relation: "caused".to_string() });
-    edges.push(CausalEdge { from: 3, to: 4, relation: "enabled".to_string() });
-    edges.push(CausalEdge { from: 5, to: 2, relation: "prevented".to_string() });
+    edges.push(CausalEdge {
+        from: 0,
+        to: 1,
+        relation: "caused".to_string(),
+    });
+    edges.push(CausalEdge {
+        from: 1,
+        to: 2,
+        relation: "caused".to_string(),
+    });
+    edges.push(CausalEdge {
+        from: 3,
+        to: 4,
+        relation: "enabled".to_string(),
+    });
+    edges.push(CausalEdge {
+        from: 5,
+        to: 2,
+        relation: "prevented".to_string(),
+    });
 
     // ── Twin story (task B) — STRUCTURALLY ISOMORPHIC to the main chain ──
     // 6 bad X' → 7 failure Y' (caused); 8 fix Z' (enabled) → 9 good W'
@@ -335,7 +380,9 @@ fn generate_graph(id: usize, seed: u64) -> CausalGraph {
             // level (bad → fail → fix), just not same-archetype.
             let other_task = loop {
                 let t = (*rng.pick(TASKS)).to_string();
-                if t != task { break t; }
+                if t != task {
+                    break t;
+                }
             };
             *rng.pick(&pairs_for(&other_task))
         } else {
@@ -347,20 +394,40 @@ fn generate_graph(id: usize, seed: u64) -> CausalGraph {
     nodes.push(mk(7, twin.failure, "negative", &twin_task));
     nodes.push(mk(8, twin.fix, "positive", &twin_task));
     nodes.push(mk(9, twin.fix_outcome, "positive", &twin_task));
-    edges.push(CausalEdge { from: 6, to: 7, relation: "caused".to_string() });
-    edges.push(CausalEdge { from: 8, to: 9, relation: "enabled".to_string() });
+    edges.push(CausalEdge {
+        from: 6,
+        to: 7,
+        relation: "caused".to_string(),
+    });
+    edges.push(CausalEdge {
+        from: 8,
+        to: 9,
+        relation: "enabled".to_string(),
+    });
     // similar_to meta links: both bad practices AND fixes are analogous across
     // domains (same archetype → same error pattern → analogous corrections).
     // The fix-level link (3→8) is what lets C6 transfer reach the twin's fix,
     // not just its failure.
-    edges.push(CausalEdge { from: 0, to: 6, relation: "similar_to".to_string() });
-    edges.push(CausalEdge { from: 3, to: 8, relation: "similar_to".to_string() });
+    edges.push(CausalEdge {
+        from: 0,
+        to: 6,
+        relation: "similar_to".to_string(),
+    });
+    edges.push(CausalEdge {
+        from: 3,
+        to: 8,
+        relation: "similar_to".to_string(),
+    });
 
     // ── Update phase (review #2): the fix turns out insufficient ──
     // 10 correction Q (invalidates 3) — the falsification phase for C7.
     // Task-aware: each pair carries its own correction text.
     nodes.push(mk(10, main.correction, "positive", &task));
-    edges.push(CausalEdge { from: 10, to: 3, relation: "invalidates".to_string() });
+    edges.push(CausalEdge {
+        from: 10,
+        to: 3,
+        relation: "invalidates".to_string(),
+    });
 
     CausalGraph { id, nodes, edges }
 }
@@ -611,14 +678,22 @@ async fn chat(
         let req = ChatReq {
             model: &cfg.model,
             messages: vec![
-                ChatMsg { role: "system", content: system },
-                ChatMsg { role: "user", content: user },
+                ChatMsg {
+                    role: "system",
+                    content: system,
+                },
+                ChatMsg {
+                    role: "user",
+                    content: user,
+                },
             ],
             max_tokens,
             temperature: 0.0,
         };
         let url = format!("{}/chat/completions", cfg.api_base.trim_end_matches('/'));
-        let mut builder = client.post(&url).header("Authorization", format!("Bearer {}", cfg.api_key));
+        let mut builder = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", cfg.api_key));
         if json_mode {
             builder = builder.json(&serde_json::json!({
                 "model": &cfg.model,
@@ -676,9 +751,8 @@ fn load_bundles(data: &Path) -> Result<Vec<GraphBundle>> {
         let entry = entry?;
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with("graph_") && name.ends_with(".json") {
-            let bundle: GraphBundle =
-                serde_json::from_str(&std::fs::read_to_string(entry.path())?)
-                    .with_context(|| format!("parsing {}", entry.path().display()))?;
+            let bundle: GraphBundle = serde_json::from_str(&std::fs::read_to_string(entry.path())?)
+                .with_context(|| format!("parsing {}", entry.path().display()))?;
             out.push(bundle);
         }
     }
@@ -753,7 +827,11 @@ fn extract_json(raw: &str) -> Option<serde_json::Value> {
 
 /// Key tokens of an action (lowercased words ≥ 4 chars, stopwords dropped).
 fn key_tokens(text: &str) -> Vec<String> {
-    const STOP: &[&str] = &["with", "without", "before", "after", "during", "under", "into", "from", "were", "was", "the", "and", "that", "this", "have", "has", "had", "did", "they", "their", "there", "them"];
+    const STOP: &[&str] = &[
+        "with", "without", "before", "after", "during", "under", "into", "from", "were", "was",
+        "the", "and", "that", "this", "have", "has", "had", "did", "they", "their", "there",
+        "them",
+    ];
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|w| w.len() >= 4)
         .map(|w| w.to_lowercase())
@@ -784,9 +862,21 @@ fn verify_narration(g: &CausalGraph, conv_text: &str) -> Vec<usize> {
     // nice-to-have. Without this, the conversation has no falsification
     // semantics and C7 is unanswerable.
     const FALSIFY_SIGNALS: &[&str] = &[
-        "not enough", "wasn't enough", "insufficient", "wrong", "fell short",
-        "turned out", "replaced", "switched to", "instead of", "realized",
-        "superseded", "no longer", "didn't work", "didn't help", "moved to",
+        "not enough",
+        "wasn't enough",
+        "insufficient",
+        "wrong",
+        "fell short",
+        "turned out",
+        "replaced",
+        "switched to",
+        "instead of",
+        "realized",
+        "superseded",
+        "no longer",
+        "didn't work",
+        "didn't help",
+        "moved to",
     ];
     if !missing.contains(&10) {
         let has_signal = FALSIFY_SIGNALS.iter().any(|s| lower.contains(s));
@@ -925,8 +1015,11 @@ fn cmd_run(args: &[String]) -> Result<()> {
     let bundles = load_bundles(&data)?;
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
-        let embedder: std::sync::Arc<tokio::sync::Mutex<Option<causal_memory::embed::UnifiedEmbedder>>> =
-            std::sync::Arc::new(tokio::sync::Mutex::new(causal_memory::embed::init_embedder()));
+        let embedder: std::sync::Arc<
+            tokio::sync::Mutex<Option<causal_memory::embed::UnifiedEmbedder>>,
+        > = std::sync::Arc::new(tokio::sync::Mutex::new(
+            causal_memory::embed::init_embedder(),
+        ));
         for bundle in &bundles {
             let g = &bundle.graph;
             let mut qas: Vec<&CausalQa> = bundle.qa.iter().collect();
@@ -946,11 +1039,10 @@ fn cmd_run(args: &[String]) -> Result<()> {
             let db_path = format!("benches/causal_eval/db/graph_{}{}.db", g.id, db_suffix);
             let store = causal_memory::store::CausalStore::open(&db_path)?;
             // Ingest conversations (turn chunks + temporal edges), if not present.
-            let mut chunk_count: i64 = store
-                .with_conn(|c| {
-                    c.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get::<_, i64>(0))
-                        .map_err(|e| anyhow!("{e}"))
-                })?;
+            let mut chunk_count: i64 = store.with_conn(|c| {
+                c.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get::<_, i64>(0))
+                    .map_err(|e| anyhow!("{e}"))
+            })?;
             if chunk_count == 0 {
                 ingest_conversations(&store, &bundle.conversations)?;
                 distill_if_available(&store, &bundle.conversations, concurrency).await?;
@@ -1004,16 +1096,30 @@ fn cmd_run(args: &[String]) -> Result<()> {
                 }
                 // Re-read AFTER ingest — printing the stale pre-ingest count
                 // once masked empty conversations as "0 chunks" mid-run.
-                chunk_count = store
-                    .with_conn(|c| {
-                        c.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get::<_, i64>(0))
-                            .map_err(|e| anyhow!("{e}"))
-                    })?;
+                chunk_count = store.with_conn(|c| {
+                    c.query_row("SELECT COUNT(*) FROM chunks", [], |r| r.get::<_, i64>(0))
+                        .map_err(|e| anyhow!("{e}"))
+                })?;
             }
             let evidence_tokens = precompute_evidence(g);
-            eprintln!("graph {}: {} chunks, {} questions", g.id, chunk_count, qas.len());
+            eprintln!(
+                "graph {}: {} chunks, {} questions",
+                g.id,
+                chunk_count,
+                qas.len()
+            );
             for qa in qas {
-                let row = run_question(&cfg, &store, &embedder, g, qa, &evidence_tokens, topk, search_only).await;
+                let row = run_question(
+                    &cfg,
+                    &store,
+                    &embedder,
+                    g,
+                    qa,
+                    &evidence_tokens,
+                    topk,
+                    search_only,
+                )
+                .await;
                 println!("{}", serde_json::to_string(&row)?);
             }
         }
@@ -1033,7 +1139,10 @@ struct ResultRow {
     retrieved_ids: Vec<String>,
 }
 
-fn ingest_conversations(store: &causal_memory::store::CausalStore, convs: &[NarratedGraph]) -> Result<()> {
+fn ingest_conversations(
+    store: &causal_memory::store::CausalStore,
+    convs: &[NarratedGraph],
+) -> Result<()> {
     use rusqlite::params;
     let mut base_ts: i64 = 1_683_000_000;
     for conv in convs {
@@ -1042,7 +1151,10 @@ fn ingest_conversations(store: &causal_memory::store::CausalStore, convs: &[Narr
             for (idx, turn) in session.turns.iter().enumerate() {
                 let chunk_id = format!("g{}:s{}:t{}", conv.graph_id, session.number, idx);
                 let ts = base_ts + idx as i64 * 3600;
-                let text = format!("[session_{} {}] {}: {}", session.number, session.date_time, turn.speaker, turn.text);
+                let text = format!(
+                    "[session_{} {}] {}: {}",
+                    session.number, session.date_time, turn.speaker, turn.text
+                );
                 store.with_conn(|c| {
                     c.execute(
                         "INSERT OR IGNORE INTO chunks (id, text, created_at) VALUES (?1, ?2, ?3)",
@@ -1088,7 +1200,11 @@ async fn distill_if_available(
             match distiller.distill_session(&date, &turns).await {
                 Ok(items) => {
                     for item in &items {
-                        let _ = causal_memory::distill::record_items(store, std::slice::from_ref(item), None)?;
+                        let _ = causal_memory::distill::record_items(
+                            store,
+                            std::slice::from_ref(item),
+                            None,
+                        )?;
                     }
                 }
                 Err(e) => eprintln!("distill session {} failed: {e}", session.number),
@@ -1101,13 +1217,17 @@ async fn distill_if_available(
 /// Find the store chunk ID whose text best covers each graph node's action.
 /// Used to bridge graph-level edges (similar_to, invalidates) into store-level
 /// edges (meta_causal_edges, valid_to supersession).
-fn find_node_chunks(store: &causal_memory::store::CausalStore, g: &CausalGraph) -> HashMap<usize, String> {
+fn find_node_chunks(
+    store: &causal_memory::store::CausalStore,
+    g: &CausalGraph,
+) -> HashMap<usize, String> {
     let rows: Vec<(String, String)> = store
         .with_conn(|c| {
             let mut stmt = c.prepare("SELECT id, text FROM chunks")?;
-            let rows = stmt
-                .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
-            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(|e| anyhow!("{e}"))
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| anyhow!("{e}"))
         })
         .unwrap_or_default();
     g.nodes
@@ -1171,14 +1291,21 @@ fn seed_similar_to_meta(store: &causal_memory::store::CausalStore, g: &CausalGra
 /// This measures the ACTION layer's ceiling — detection is assumed perfect
 /// (it IS, we hold the ground truth). The `detect`/`detect-retire` arms
 /// replace this with the production detection pipeline.
-fn seed_oracle_supersession(store: &causal_memory::store::CausalStore, g: &CausalGraph) -> Result<()> {
+fn seed_oracle_supersession(
+    store: &causal_memory::store::CausalStore,
+    g: &CausalGraph,
+) -> Result<()> {
     let node_chunks = find_node_chunks(store, g);
     for edge in &g.edges {
         if edge.relation != "invalidates" {
             continue;
         }
-        let Some(old_chunk) = node_chunks.get(&edge.from) else { continue };
-        let Some(corr_chunk) = node_chunks.get(&edge.to) else { continue };
+        let Some(old_chunk) = node_chunks.get(&edge.from) else {
+            continue;
+        };
+        let Some(corr_chunk) = node_chunks.get(&edge.to) else {
+            continue;
+        };
         store.with_conn(|c| {
             // The correction's representative edge: latest edge whose
             // outcome endpoint is the correction chunk.
@@ -1240,7 +1367,11 @@ fn expand_meta_edges(
 
     store.with_conn(|conn| {
         // 1) Find analogue chunks via meta_causal_edges (similar_to).
-        let placeholders = seed_chunk_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let placeholders = seed_chunk_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(",");
         let mut analogues: Vec<String> = Vec::new();
         {
             let sql = format!(
@@ -1261,7 +1392,8 @@ fn expand_meta_edges(
                 .chain(seed_chunk_ids.iter())
                 .map(|s| s as &dyn rusqlite::ToSql)
                 .collect();
-            let rows = stmt.query_map(rusqlite::params_from_iter(binds), |r| r.get::<_, String>(0))?;
+            let rows =
+                stmt.query_map(rusqlite::params_from_iter(binds), |r| r.get::<_, String>(0))?;
             for id in rows.flatten() {
                 if !analogues.contains(&id) && !seed_chunk_ids.contains(&id) {
                     analogues.push(id);
@@ -1286,16 +1418,24 @@ fn expand_meta_edges(
             analogue_ph,
         );
         let mut stmt = conn.prepare(&sql)?;
-        let binds: Vec<&dyn rusqlite::ToSql> =
-            analogues.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(rusqlite::params_from_iter(binds), causal_memory::store::entry_from_row)?;
-        let mut candidates: Vec<causal_memory::store::CausalEntry> =
-            rows.collect::<rusqlite::Result<Vec<_>>>()
-                .map_err(|e| anyhow!("Query failed: {e}"))?;
+        let binds: Vec<&dyn rusqlite::ToSql> = analogues
+            .iter()
+            .map(|s| s as &dyn rusqlite::ToSql)
+            .collect();
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(binds),
+            causal_memory::store::entry_from_row,
+        )?;
+        let mut candidates: Vec<causal_memory::store::CausalEntry> = rows
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))?;
 
         // Rank by query-token overlap (same heuristic as entity_hop).
         let overlap = |entry: &causal_memory::store::CausalEntry| -> usize {
-            let toks = causal_memory::patterns::tokenize(&format!("{} {}", entry.decision_text, entry.outcome_text));
+            let toks = causal_memory::patterns::tokenize(&format!(
+                "{} {}",
+                entry.decision_text, entry.outcome_text
+            ));
             q_tokens.iter().filter(|t| toks.contains(t)).count()
         };
         candidates.sort_by_key(|e| std::cmp::Reverse(overlap(e)));
@@ -1317,7 +1457,9 @@ async fn run_question(
 ) -> ResultRow {
     // Retrieval: BM25 + entity-boosted semantic + hop (same signals as the
     // LoCoMo harness — all store-side).
-    let bm25 = store.search_causal_bm25(None, &qa.question, topk).unwrap_or_default();
+    let bm25 = store
+        .search_causal_bm25(None, &qa.question, topk)
+        .unwrap_or_default();
     let mut lists: Vec<&[causal_memory::store::CausalEntry]> = vec![&bm25];
     let semantic: Vec<causal_memory::store::CausalEntry> = {
         let mut guard = embedder.lock().await;
@@ -1327,19 +1469,21 @@ async fn run_question(
             None => None,
         };
         qv.map(|v| {
-                store
-                    .search_causal_semantic_entity_boosted(&v, &qa.question, None, topk * 2)
-                    .map(|hits| hits.into_iter().map(|(en, _)| en).collect())
-                    .unwrap_or_default()
-            })
-            .unwrap_or_default()
+            store
+                .search_causal_semantic_entity_boosted(&v, &qa.question, None, topk * 2)
+                .map(|hits| hits.into_iter().map(|(en, _)| en).collect())
+                .unwrap_or_default()
+        })
+        .unwrap_or_default()
     };
     if !semantic.is_empty() {
         lists.push(&semantic);
     }
     let primary = causal_memory::store::retrieve::rrf_merge_many(&lists, topk);
     let seed_ids: Vec<i64> = primary.iter().map(|e| e.edge_id).collect();
-    let hop = store.search_causal_hop(&qa.question, &seed_ids, topk * 2).unwrap_or_default();
+    let hop = store
+        .search_causal_hop(&qa.question, &seed_ids, topk * 2)
+        .unwrap_or_default();
     if !hop.is_empty() {
         lists.push(&hop);
     }
@@ -1383,9 +1527,9 @@ async fn run_question(
         .filter_map(|n| evidence_tokens.get(n))
         .collect();
     let evidence_hit = ranked.iter().any(|e| {
-        gold_tokens.iter().any(|toks| {
-            text_covers(&e.decision_text, toks) || text_covers(&e.outcome_text, toks)
-        })
+        gold_tokens
+            .iter()
+            .any(|toks| text_covers(&e.decision_text, toks) || text_covers(&e.outcome_text, toks))
     });
 
     if search_only {
@@ -1408,7 +1552,10 @@ async fn run_question(
     let mut memory_lines = Vec::new();
     let mut seen2 = std::collections::HashSet::new();
     for e in &ranked {
-        for (id, text) in [(&e.decision_id, &e.decision_text), (&e.outcome_id, &e.outcome_text)] {
+        for (id, text) in [
+            (&e.decision_id, &e.decision_text),
+            (&e.outcome_id, &e.outcome_text),
+        ] {
             if seen2.insert(id.clone()) {
                 let mut line = format!("- {text}");
                 if let Some(sid) = e.superseded_by {
@@ -1426,9 +1573,18 @@ async fn run_question(
             }
         }
     }
-    let memories = if memory_lines.is_empty() { "(no memories retrieved)".to_string() } else { memory_lines.join("
-") };
-    let answer_user = format!("Memories:\n{memories}\n\nQuestion: {}\nAnswer:", qa.question);
+    let memories = if memory_lines.is_empty() {
+        "(no memories retrieved)".to_string()
+    } else {
+        memory_lines.join(
+            "
+",
+        )
+    };
+    let answer_user = format!(
+        "Memories:\n{memories}\n\nQuestion: {}\nAnswer:",
+        qa.question
+    );
     let raw = match chat(cfg, ANSWER_SYSTEM, &answer_user, 600, false).await {
         Ok(s) => s,
         Err(_) => {
@@ -1444,7 +1600,12 @@ async fn run_question(
             };
         }
     };
-    let predicted = raw.rsplit("ANSWER:").next().unwrap_or(&raw).trim().to_string();
+    let predicted = raw
+        .rsplit("ANSWER:")
+        .next()
+        .unwrap_or(&raw)
+        .trim()
+        .to_string();
 
     // Judge (with retry + JSON mode).
     let judge_user = format!(
@@ -1465,7 +1626,11 @@ async fn run_question(
                     let vd = vd.to_lowercase();
                     if vd == "correct" || vd == "incorrect" {
                         verdict = vd;
-                        reason = v.get("reason").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        reason = v
+                            .get("reason")
+                            .and_then(|x| x.as_str())
+                            .unwrap_or("")
+                            .to_string();
                         break;
                     }
                 }
@@ -1494,7 +1659,10 @@ mod tests {
     fn graphs_are_deterministic() {
         let a = generate_graph(0, 42);
         let b = generate_graph(0, 42);
-        assert_eq!(serde_json::to_string(&a).unwrap(), serde_json::to_string(&b).unwrap());
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap()
+        );
     }
 
     #[test]
@@ -1513,17 +1681,35 @@ mod tests {
             let depth = reach.len().saturating_sub(1);
             longest = longest.max(depth);
         }
-        assert!(longest >= 2, "causal chain depth must be ≥ 2 (got {longest})");
+        assert!(
+            longest >= 2,
+            "causal chain depth must be ≥ 2 (got {longest})"
+        );
         // Twin is isomorphic: 6→7 caused, 8→9 enabled, and similar_to 0→6 + 3→8.
-        assert!(g.edges.iter().any(|e| e.from == 6 && e.to == 7 && e.relation == "caused"));
-        assert!(g.edges.iter().any(|e| e.from == 8 && e.to == 9 && e.relation == "enabled"));
-        assert!(g.edges.iter().any(|e| e.from == 0 && e.to == 6 && e.relation == "similar_to"));
+        assert!(g
+            .edges
+            .iter()
+            .any(|e| e.from == 6 && e.to == 7 && e.relation == "caused"));
+        assert!(g
+            .edges
+            .iter()
+            .any(|e| e.from == 8 && e.to == 9 && e.relation == "enabled"));
+        assert!(g
+            .edges
+            .iter()
+            .any(|e| e.from == 0 && e.to == 6 && e.relation == "similar_to"));
         // Fix-level analogy (C6 transfer signal): 3→8 connects the fixes.
-        assert!(g.edges.iter().any(|e| e.from == 3 && e.to == 8 && e.relation == "similar_to"));
+        assert!(g
+            .edges
+            .iter()
+            .any(|e| e.from == 3 && e.to == 8 && e.relation == "similar_to"));
         // Nodes carry distinct actions (≥ 6 distinct).
         let actions: std::collections::HashSet<String> =
             g.nodes.iter().map(|n| n.action.clone()).collect();
-        assert!(actions.len() >= 6, "actions must be distinct enough for narration");
+        assert!(
+            actions.len() >= 6,
+            "actions must be distinct enough for narration"
+        );
     }
 
     #[test]
@@ -1541,7 +1727,10 @@ mod tests {
         let g = generate_graph(0, 42);
         let c4 = question_for(&g, 14).expect("C4");
         let c7 = question_for(&g, 17).expect("C7");
-        assert_ne!(c4.answer, c7.answer, "preventer and correction must be distinct (review #6)");
+        assert_ne!(
+            c4.answer, c7.answer,
+            "preventer and correction must be distinct (review #6)"
+        );
         assert_ne!(c4.evidence_nodes, c7.evidence_nodes);
     }
 
@@ -1551,7 +1740,10 @@ mod tests {
         let c7 = question_for(&g, 17).expect("C7");
         // Gold must be the CORRECTION (node 10), not the old fix (node 3).
         assert_eq!(c7.answer, g.nodes[10].action);
-        assert_ne!(c7.answer, g.nodes[3].action, "C7 must not be the pre-update fix");
+        assert_ne!(
+            c7.answer, g.nodes[3].action,
+            "C7 must not be the pre-update fix"
+        );
     }
 
     #[test]
@@ -1609,7 +1801,10 @@ mod tests {
             .find(|e| e.relation == "prevented")
             .expect("must have a prevented edge");
         assert_eq!(prevented_edge.from, 5, "preventer is node 5");
-        assert_eq!(prevented_edge.to, 2, "prevented edge must target the final failure (node 2)");
+        assert_eq!(
+            prevented_edge.to, 2,
+            "prevented edge must target the final failure (node 2)"
+        );
     }
 
     #[test]
