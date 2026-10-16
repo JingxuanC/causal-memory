@@ -148,7 +148,28 @@ export async function apply(ctx, config = {}) {
   const exclude = new Set(Array.isArray(config.exclude) ? config.exclude : [])
   const failOnStartupError = config.failOnStartupError !== false
 
-  const client = createMcpClient(command, { ...process.env, CAUSAL_MEMORY_DB: dbPath }, timeoutMs)
+  // Extra env for the child. Needed because the server reads its LLM / embed
+  // configuration from the environment (CAUSAL_MEMORY_LLM_API / _KEY / _MODEL,
+  // CAUSAL_MEMORY_EMBED_*). Without this the tools that delegate to an LLM —
+  // resolve_updates, reconstruct_lesson's narrative + calibration, and the
+  // extraction path behind `remember` — silently degrade to their rule-based
+  // fallbacks. Values in config.env win over the ambient environment; non-string
+  // values are dropped rather than coerced, so `!!js` expressions that evaluate
+  // to undefined cannot kill the child at spawn.
+  const configEnv = config.env && typeof config.env === 'object' && !Array.isArray(config.env)
+    ? config.env
+    : {}
+  const envFromConfig = Object.fromEntries(
+    Object.entries(configEnv)
+      .filter(([, value]) => typeof value === 'string' && value.length > 0),
+  )
+  const droppedEnvKeys = Object.keys(configEnv).filter((key) => !(key in envFromConfig))
+  if (droppedEnvKeys.length > 0) {
+    ctx.logger.warn(`causal-memory: ignored non-string config.env value(s): ${droppedEnvKeys.join(', ')}`)
+  }
+  const childEnv = { ...process.env, ...envFromConfig, CAUSAL_MEMORY_DB: dbPath }
+
+  const client = createMcpClient(command, childEnv, timeoutMs)
 
   // Cleanup: kill the child and unregister tools when this plugin unloads.
   const disposers = []
@@ -169,16 +190,27 @@ export async function apply(ctx, config = {}) {
       + `${dbPath}) that records stable facts and decision → outcome causal `
       + 'edges with typed relations (caused / enabled / prevented). It lives '
       + 'outside the context window: recorded lessons survive compaction and '
-      + 'restart. Use it: before a non-trivial decision, query past episodes '
-      + 'with search_causal or compare alternatives with counterfactual_query; '
-      + 'before acting, forecast outcomes with intervention_query; after acting '
-      + 'on a decision, record the outcome with record_decision — and when you '
-      + 'weighed multiple options, ALWAYS pass the context param (a short '
-      + 'description of the situation): same task_tag + context becomes a '
-      + 'comparable branch for same-world counterfactual evidence; record stable '
-      + 'user or project facts with record_fact; when something fails, trace '
-      + 'the cause with trace_cause or trace_cause_chain; periodically check '
-      + 'prediction_report to see whether past counterfactual advice held up.',
+      + 'restart.\n'
+      + 'What is actually usable (verified 2026-10-16, 10 of 16 tools carry real value): '
+      + 'search_causal / record_decision / record_fact / search_facts / search_memory / '
+      + 'causal_directory / trace_cause / invalidate_decision / invalidate_pattern / '
+      + 'prediction_report are live. counterfactual_query only matches DECISION text — put '
+      + 'the alternative you are weighing verbatim in the decision string, or it returns '
+      + 'insufficient evidence. trace_cause_chain and search_patterns return empty on this '
+      + 'store (flat graph, empty pattern table); do not spend calls on them.\n'
+      + 'Trigger rules — apply these deterministically, not "when it seems relevant":\n'
+      + '- Starting a non-trivial task → search_causal (pass task_tag; add query text for broader recall).\n'
+      + '- Weighing A against B, before choosing → counterfactual_query(decision=A, alternative=B).\n'
+      + '- Before an irreversible or high-risk action (editing production config, deleting data, '
+      + 'running heavy commands on shared hosts) → intervention_query.\n'
+      + '- A decision has produced an outcome → record_decision, and ALWAYS pass context (a short '
+      + 'description of the situation): same task_tag + context becomes a comparable branch for '
+      + 'same-world counterfactual evidence. Without context the fork is never created.\n'
+      + '- A new stable fact appears (user preference, config, project fact) → record_fact. '
+      + 'Keep keys narrow and semantic — replace_same_key retires EVERY valid entry under that '
+      + 'key, so never use it with a catch-all key like "config".\n'
+      + '- Something failed → trace_cause (single-hop, works).\n'
+      + '- Wrapping up a task, or every few turns → prediction_report.',
   })
 
   // Discover tools; activation blocks until this settles.

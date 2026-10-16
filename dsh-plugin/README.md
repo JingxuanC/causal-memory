@@ -56,6 +56,24 @@ dsh plugin --profile web add "$PWD/dsh-plugin"
 | `toolCallTimeoutMs` | `60000` | 单次工具调用超时 |
 | `exclude` | `[]` | 不挂载的工具名数组 |
 | `failOnStartupError` | `true` | 启动连接失败时是否让插件激活失败（默认失败并附安装提示；显式设 `false` 则降级为仅记日志） |
+| `env` | `{}` | 透传给服务端子进程的额外环境变量（优先级高于当前环境）。非字符串值会被丢弃并记一条 warn，因此 `!!js` 表达式算出 `undefined` 不会毒死子进程 |
+
+### 用 `env` 打开 LLM 能力（可选）
+
+服务端从环境变量读 LLM / Embed 配置。缺了它，依赖 LLM 的工具会**静默降级**成规则回退——`resolve_updates`、`reconstruct_lesson` 的叙事与 calibrate、以及 `remember` 的自动抽取都会被影响：
+
+```yaml
+    - id: causal-memory-plugin
+      name: causal-memory-dsh-plugin
+      config:
+        env:
+          # 注意：此值是 base URL，源码会自行追加 /chat/completions
+          CAUSAL_MEMORY_LLM_API: https://api.deepseek.com/v1
+          CAUSAL_MEMORY_LLM_KEY: !!js process.env.DEEPSEEK_API_KEY || ''
+          CAUSAL_MEMORY_LLM_MODEL: deepseek-chat
+```
+
+⚠️ `CAUSAL_MEMORY_LLM_API` 必须填 **base**（`https://api.deepseek.com/v1`）。填成完整路径 `.../v1/chat/completions` 会被再拼一次，得到 `.../chat/completions/chat/completions` → 404，而工具**不会报错**，只会悄悄退回规则路径。密钥建议走环境变量或 vault，不要明文写进本文件。
 
 ## 工具清单（17 个）
 
