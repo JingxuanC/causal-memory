@@ -20,9 +20,12 @@ library selection, deployment strategy):
 2. For risky or irreversible actions, also call `intervention_query` to see
    what outcomes similar past actions caused (safe / warning / danger)
 3. **When choosing between two concrete options**, call `counterfactual_query`
-   with both option texts — it compares recorded outcomes, shows same-context
-   branches (natural experiments) when they exist, and logs a falsifiable
-   prediction that resolves automatically when either option is later recorded
+   with both option texts — it compares recorded outcomes and shows same-context
+   branches (natural experiments) when they exist. It logs a falsifiable
+   prediction that resolves later **when a new `record_decision` under the same
+   `task_tag` carries matching option text** — comparing two options that are
+   already recorded leaves the prediction pending by design. A pending (or
+   empty) ledger is not a broken one.
 4. If past experience is relevant, incorporate it into your approach
 
 ### After acting on a decision and observing the result:
@@ -61,6 +64,31 @@ library selection, deployment strategy):
 
 9. Call `prediction_report` to check whether the system's counterfactual
    advice is actually any good (accuracy per method / per task_tag).
+
+### How retrieval actually behaves (read before concluding a tool is broken):
+
+- **Retrieval is keyword-based (BM25) unless an embedding endpoint is
+  configured** (`CAUSAL_MEMORY_EMBED_API` + `_KEY` + `_MODEL`, or they fall
+  back to the `CAUSAL_MEMORY_LLM_*` values). Without it there is no semantic
+  leg, so **quote the original wording**: reuse the exact words a lesson was
+  recorded with, especially the outcome polarity (`成功` / `失败` / `无效` /
+  `no_effect`). An abstract paraphrase can miss an edge that exists — that is
+  a phrasing mismatch, not a missing memory.
+- `trace_cause` is single-hop and needs lexical overlap with the recorded
+  **outcome** text. If it returns nothing, retry with the original wording
+  before concluding there is no cause.
+- `trace_cause_chain` returns empty until the graph holds multi-hop chains
+  (it needs more than one hop). `search_patterns` returns empty until pattern
+  mining has produced meta-edges. In both cases an empty result means
+  "not enough data yet", never "broken" — do not skip them permanently; the
+  store grows.
+
+### Host notes
+
+- The store lives outside the context window: it survives compaction and
+  restarts, which is the whole point — a lesson recorded once keeps paying.
+- `remember` may not exist in every host: where the name is already taken,
+  the plugin excludes it and you record facts with `record_fact` instead.
 
 **Do NOT ask the user before searching or recording — do it proactively.**
 **Especially record surprising outcomes — those are the most valuable lessons.**
