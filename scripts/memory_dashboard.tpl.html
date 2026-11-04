@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>causal-memory 本地记忆面板</title>
+<style>
+  :root {
+    --bg:#fbfaf8; --card:#ffffff; --subtle:#f4f2ee; --ink:#1a1a1a;
+    --muted:#5f5f5f; --faint:#8a8a8a; --rule:#e4e1dc; --accent:#1f5fb4;
+    --accent-soft:#e8eff9; --green:#1a7f4f; --red:#b42318; --amber:#b45309;
+    --c1:#1f5fb4; --c2:#1a7f4f; --c3:#b45309; --c4:#7a6a58;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0f1117; --card:#171a22; --subtle:#1c2029; --ink:#e8e8e8;
+      --muted:#a3a9b5; --faint:#7b8290; --rule:#282d38; --accent:#6ea8ff;
+      --accent-soft:#1b2637; --green:#3fb37a; --red:#f0685a; --amber:#e0a047;
+      --c1:#6ea8ff; --c2:#3fb37a; --c3:#e0a047; --c4:#b8a894;
+    }
+  }
+  * { box-sizing:border-box; }
+  svg { max-width:100%; }
+  html,body { margin:0; background:var(--bg); color:var(--ink); }
+  body {
+    font:14px/1.55 -apple-system, BlinkMacSystemFont, "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing:antialiased; padding:28px 20px 60px;
+  }
+  .wrap { max-width:1180px; margin:0 auto; }
+  .eyebrow { font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--faint); margin-bottom:6px; }
+  h1 { font-size:23px; font-weight:600; letter-spacing:-.01em; margin:0 0 6px; }
+  .meta { color:var(--muted); font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
+  .meta code { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:11.5px; background:var(--subtle);
+               padding:1px 5px; border-radius:3px; color:var(--ink); word-break:break-all; }
+  .badge { display:inline-block; border:1px solid var(--rule); border-radius:99px; padding:1px 8px;
+           font-size:11px; color:var(--muted); margin-left:6px; vertical-align:1px; }
+  .badge.warn { color:var(--amber); border-color:color-mix(in srgb, var(--amber) 40%, var(--rule)); }
+
+  .kpis { display:grid; grid-template-columns:repeat(6,1fr); gap:12px; margin:22px 0 16px; }
+  .kpi { background:var(--card); border:1px solid var(--rule); border-radius:9px; padding:13px 14px 12px; }
+  .kpi .label { font-size:11px; color:var(--muted); letter-spacing:.04em; margin-bottom:7px; }
+  .kpi .value { font-size:26px; line-height:1.1; font-variant-numeric:tabular-nums; letter-spacing:-.02em; }
+  .kpi .sub { font-size:11px; color:var(--faint); margin-top:6px; }
+  .kpi .unit { font-size:12px; color:var(--muted); margin-left:3px; letter-spacing:0; }
+
+  .grid { display:grid; grid-template-columns:repeat(12,1fr); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--rule); border-radius:10px; padding:15px 17px 13px; min-width:0; }
+  .s4 { grid-column:span 4; } .s5 { grid-column:span 5; } .s6 { grid-column:span 6; }
+  .s7 { grid-column:span 7; } .s8 { grid-column:span 8; } .s12 { grid-column:span 12; }
+  .card h2 { font-size:13px; font-weight:600; margin:0 0 2px; letter-spacing:.01em; }
+  .card .hint { font-size:11.5px; color:var(--faint); margin:0 0 12px; }
+  .chart { width:100%; height:auto; display:block; overflow:visible; }
+  svg text { font-family:inherit; }
+  .axis { stroke:var(--rule); stroke-width:1; }
+  .gridline { stroke:var(--rule); stroke-width:1; stroke-dasharray:2 3; opacity:.7; }
+  .tick { fill:var(--faint); font-size:10.5px; }
+  .c1 { stroke:var(--c1); } .c2 { stroke:var(--c2); } .c3 { stroke:var(--c3); }
+  .f1 { fill:var(--c1); } .f2 { fill:var(--c2); } .f3 { fill:var(--c3); } .f4 { fill:var(--c4); }
+  .f1-soft { fill:var(--c1); opacity:.10; }
+
+  .legend { display:flex; gap:16px; flex-wrap:wrap; font-size:11.5px; color:var(--muted); margin-top:10px; }
+  .legend i { display:inline-block; width:14px; height:3px; border-radius:2px; margin-right:6px; vertical-align:3px; }
+  .swatch { display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:6px; vertical-align:0; }
+
+  .hbar { display:grid; grid-template-columns:minmax(110px,1.7fr) 2.4fr 42px; align-items:center; gap:10px; padding:5px 0; }
+  .hbar .name { font-size:12px; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hbar .track { background:var(--subtle); height:7px; border-radius:4px; overflow:hidden; }
+  .hbar .fill { height:100%; background:var(--accent); border-radius:4px; }
+  .hbar .val { font-size:12px; text-align:right; font-variant-numeric:tabular-nums; color:var(--muted); }
+
+  .rowline { display:flex; justify-content:space-between; align-items:baseline; padding:7px 0; border-bottom:1px solid var(--rule); font-size:12.5px; }
+  .rowline:last-child { border-bottom:0; }
+  .rowline .k { color:var(--muted); }
+  .rowline .v { font-variant-numeric:tabular-nums; }
+  .rowline .v em { font-style:normal; color:var(--faint); font-size:11px; margin-left:5px; }
+
+  table { width:100%; border-collapse:collapse; font-size:12.5px; font-variant-numeric:tabular-nums; }
+  th { text-align:left; font-weight:500; color:var(--muted); font-size:11px; letter-spacing:.03em;
+       padding:7px 8px; border-bottom:1px solid var(--rule); white-space:nowrap; }
+  th.sortable { cursor:pointer; user-select:none; }
+  th.sortable:hover { color:var(--ink); }
+  th .arrow { color:var(--accent); font-size:9px; margin-left:3px; }
+  td { padding:7px 8px; border-bottom:1px solid var(--rule); vertical-align:top; }
+  tr:last-child td { border-bottom:0; }
+  td.num, th.num { text-align:right; }
+  td.trunc { max-width:340px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tag { display:inline-block; font-size:10.5px; padding:1px 6px; border-radius:3px; background:var(--subtle);
+         color:var(--muted); white-space:nowrap; }
+  .dot { display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:5px; vertical-align:1px; }
+
+  .tabs { display:flex; gap:2px; border-bottom:1px solid var(--rule); margin-bottom:12px; }
+  .tab { border:0; background:none; font:inherit; font-size:12.5px; color:var(--muted); padding:7px 11px;
+         cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
+  .tab[aria-selected="true"] { color:var(--ink); border-bottom-color:var(--accent); font-weight:500; }
+  .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:8px; }
+  .search { flex:1; max-width:320px; font:inherit; font-size:12.5px; color:var(--ink); background:var(--subtle);
+            border:1px solid var(--rule); border-radius:6px; padding:6px 10px; }
+  .search:focus { outline:2px solid var(--accent-soft); border-color:var(--accent); }
+  .count { font-size:11.5px; color:var(--faint); }
+
+  .health { display:grid; grid-template-columns:repeat(4,1fr); gap:10px 18px; }
+  .hitem .hk { font-size:11px; color:var(--muted); margin-bottom:3px; }
+  .hitem .hv { font-size:13px; font-variant-numeric:tabular-nums; }
+  .good { color:var(--green); } .bad { color:var(--red); } .warn { color:var(--amber); }
+  .meter { height:5px; background:var(--subtle); border-radius:3px; margin-top:5px; overflow:hidden; }
+  .meter > div { height:100%; background:var(--green); border-radius:3px; }
+
+  .note { font-size:11.5px; color:var(--faint); line-height:1.65; margin-top:10px; }
+  .note b { color:var(--muted); font-weight:500; }
+  footer { margin-top:26px; color:var(--faint); font-size:11.5px; line-height:1.7; border-top:1px solid var(--rule); padding-top:12px; }
+  .empty { color:var(--faint); font-size:12px; padding:14px 0; }
+
+  @media (max-width:980px) {
+    .kpis { grid-template-columns:repeat(3,1fr); }
+    .s4,.s5,.s6,.s7,.s8 { grid-column:span 12; }
+    .health { grid-template-columns:repeat(2,1fr); }
+  }
+  @media (max-width:560px) {
+    body { padding:18px 12px 40px; }
+    .kpis { grid-template-columns:repeat(2,1fr); }
+    h1 { font-size:19px; }
+  }
+  @media print {
+    body { background:#fff; color:#000; padding:0; }
+    .card { break-inside:avoid; }
+    .search, .tabs { display:none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">causal-memory · local store</div>
+    <h1>本地记忆：调用、构成与增长</h1>
+    <div class="meta" id="meta"></div>
+  </header>
+
+  <section class="kpis" id="kpis"></section>
+
+  <section class="grid">
+
+    <article class="card s8">
+      <h2>增长曲线</h2>
+      <p class="hint">按天累计的记忆节点数；下方为每日新增</p>
+      <div id="growth"></div>
+      <div id="growthDaily" style="margin-top:6px"></div>
+      <div class="legend" id="growthLegend"></div>
+      <p class="note" id="growthNote"></p>
+    </article>
+
+    <article class="card s4">
+      <h2>调用概况</h2>
+      <p class="hint">access_count 是每条因果边被检索命中的累计次数</p>
+      <div id="accessSummary"></div>
+      <p class="note">召回审计表里另有 <b id="auditN"></b> 次检索事件，来源于 MCP 直连会话；它与边级计数是两套独立记录。</p>
+    </article>
+
+    <article class="card s7">
+      <h2>被调用最多的记忆</h2>
+      <p class="hint">Top 15 因果边 · 悬停看完整决策与结果文本</p>
+      <div id="topAccess"></div>
+    </article>
+
+    <article class="card s5">
+      <h2>召回事件</h2>
+      <p class="hint">每次检索的返回量、激活节点与耗时</p>
+      <div id="recalls"></div>
+    </article>
+
+    <article class="card s4">
+      <h2>因果边关系</h2>
+      <p class="hint">决策 → 结果 的判定类型</p>
+      <div id="relDist"></div>
+    </article>
+
+    <article class="card s4">
+      <h2>结果极性</h2>
+      <p class="hint">结果对决策是正面、负面还是中性</p>
+      <div id="polDist"></div>
+    </article>
+
+    <article class="card s4">
+      <h2>记忆来源</h2>
+      <p class="hint">这条边由谁发现</p>
+      <div id="discDist"></div>
+    </article>
+
+    <article class="card s6">
+      <h2>任务标签分布</h2>
+      <p class="hint">因果边按 task_tag 归类，前 12 个</p>
+      <div id="tagDist"></div>
+    </article>
+
+    <article class="card s6">
+      <h2>置信度分布</h2>
+      <p class="hint">事实与因果边的置信度分箱（每 0.1 一档）</p>
+      <div id="confHist"></div>
+      <div class="legend" id="confLegend"></div>
+    </article>
+
+    <article class="card s6">
+      <h2>调用次数分布</h2>
+      <p class="hint">75 条边里有 <span id="zeroEdges"></span> 条从未被检索命中</p>
+      <div id="accHist"></div>
+    </article>
+
+    <article class="card s6">
+      <h2>事实构成</h2>
+      <p class="hint">scope 与 source 的交叉分布</p>
+      <div id="factMix"></div>
+    </article>
+
+    <article class="card s12">
+      <h2>置信度 × 调用次数</h2>
+      <p class="hint">横轴为置信度，纵轴为调用次数；每个点是一条因果边。右下“高置信、0 次调用”的区域是信任最高却从未被检索用上的记忆</p>
+      <div id="scatter"></div>
+      <div class="legend" id="scatterLegend"></div>
+    </article>
+
+    <article class="card s12">
+      <h2>记忆明细</h2>
+      <p class="hint">全部记录，可搜索与排序</p>
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" data-tab="facts" aria-selected="true">事实 <span class="count" id="nFacts"></span></button>
+        <button class="tab" role="tab" data-tab="edges" aria-selected="false">因果边 <span class="count" id="nEdges"></span></button>
+        <button class="tab" role="tab" data-tab="chunks" aria-selected="false">片段 <span class="count" id="nChunks"></span></button>
+      </div>
+      <div class="toolbar">
+        <input class="search" id="search" type="search" placeholder="搜索键名、文本、标签…" aria-label="搜索记忆">
+        <span class="count" id="filterCount"></span>
+      </div>
+      <div style="overflow-x:auto"><table id="detail"><thead></thead><tbody></tbody></table></div>
+    </article>
+
+    <article class="card s12">
+      <h2>存储健康</h2>
+      <p class="hint">索引覆盖、失效边、待结算预测与写入新鲜度</p>
+      <div class="health" id="health"></div>
+    </article>
+
+  </section>
+
+  <footer id="footer"></footer>
+</div>
+
+<script>
+const DATA = /*DATA*/null;
+
+const LBL = {
+  relation: {caused: "caused · 导致", prevented: "prevented · 阻止", enabled: "enabled · 促成", no_effect: "no_effect · 无影响", co_occurrence: "co_occurrence · 共现"},
+  polarity: {positive: "positive · 正面", negative: "negative · 负面", neutral: "neutral · 中性", mixed: "mixed · 混合"},
+  discovered: {llm_inferred: "模型推断", rule: "规则", temporal: "时序", user_feedback: "用户反馈"}
+};
+const relLabel = k => { const v = LBL.relation[k] || k; const p = v.split(" · "); return p.length > 1 ? p[1] : v; };
+const NS = "http://www.w3.org/2000/svg";
+const fmt = n => (n === null || n === undefined) ? "—" : Number(n).toLocaleString("en-US");
+const pct = (a, b) => b ? Math.round(a / b * 1000) / 10 : 0;
+function niceMax(v, div) {
+  const raw = v / div, mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag, step = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10;
+  return step * mag * div;
+}
+
+function svgEl(tag, attrs) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) if (attrs[k] !== null && attrs[k] !== undefined) e.setAttribute(k, attrs[k]);
+  return e;
+}
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== null && text !== undefined) e.textContent = text;
+  return e;
+}
+function tip(node, text) {
+  const t = svgEl("title"); t.textContent = text; node.appendChild(t);
+}
+
+/* ---------- line + bar charts ---------- */
+function growthChart(host, d) {
+  const W = 720, H = 230, P = {l: 40, r: 14, t: 10, b: 24};
+  const s = svgEl("svg", {viewBox: `0 0 ${W} ${H}`, class: "chart", role: "img",
+                          "aria-label": "记忆节点累计增长曲线"});
+  const maxV = Math.max(...d.chunks_cum, ...d.edges_cum, ...d.facts_cum, 1);
+  const yMax = niceMax(maxV, 4);
+  const n = d.dates.length;
+  const x = i => P.l + (n <= 1 ? 0 : i * (W - P.l - P.r) / (n - 1));
+  const y = v => H - P.b - (v / yMax) * (H - P.t - P.b);
+
+  for (let g = 0; g <= 4; g++) {
+    const v = yMax * g / 4, yy = y(v);
+    s.appendChild(svgEl("line", {x1: P.l, y1: yy, x2: W - P.r, y2: yy, class: g ? "gridline" : "axis"}));
+    const lb = svgEl("text", {x: P.l - 7, y: yy + 3.5, class: "tick", "text-anchor": "end"});
+    lb.textContent = fmt(Math.round(v)); s.appendChild(lb);
+  }
+  d.dates.forEach((dt, i) => {
+    if (n > 8 && i % 2) return;
+    const lb = svgEl("text", {x: x(i), y: H - 7, class: "tick", "text-anchor": "middle"});
+    lb.textContent = dt.slice(5); s.appendChild(lb);
+  });
+
+  const series = [
+    {key: "chunks_cum", cls: "c1", name: "片段"},
+    {key: "edges_cum", cls: "c2", name: "因果边"},
+    {key: "facts_cum", cls: "c3", name: "事实"}
+  ];
+  series.forEach(sr => {
+    const vals = d[sr.key];
+    const path = vals.map((v, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+    s.appendChild(svgEl("path", {d: path, fill: "none", "stroke-width": 2,
+                                 "stroke-linejoin": "round", class: sr.cls}));
+    vals.forEach((v, i) => {
+      const c = svgEl("circle", {cx: x(i), cy: y(v), r: 2.6, class: sr.cls, fill: "var(--card)", "stroke-width": 2});
+      tip(c, `${d.dates[i]} · ${sr.name}累计 ${v}`);
+      s.appendChild(c);
+    });
+  });
+  host.appendChild(s);
+}
+
+function dailyChart(host, d) {
+  const W = 720, H = 118, P = {l: 40, r: 14, t: 6, b: 24};
+  const s = svgEl("svg", {viewBox: `0 0 ${W} ${H}`, class: "chart", role: "img",
+                          "aria-label": "每日新增记忆"});
+  const n = d.dates.length;
+  const maxV = Math.max(...d.facts_new, ...d.chunks_new, ...d.edges_new, 1);
+  const bandW = (W - P.l - P.r) / n;
+  const barW = Math.max(2.5, (bandW - 10) / 3);
+  const y = v => H - P.b - (v / maxV) * (H - P.t - P.b);
+  s.appendChild(svgEl("line", {x1: P.l, y1: H - P.b, x2: W - P.r, y2: H - P.b, class: "axis"}));
+  const three = [["chunks_new", "f1"], ["edges_new", "f2"], ["facts_new", "f3"]];
+  d.dates.forEach((dt, i) => {
+    d.dates.forEach((dt, i) => {
+    const lb = svgEl("text", {x: P.l + i * bandW + bandW / 2, y: H - 5, class: "tick", "text-anchor": "middle"});
+    lb.textContent = dt.slice(5); s.appendChild(lb);
+  });
+  three.forEach(([k, cls], j) => {
+      const v = d[k][i];
+      if (!v) return;
+      const bx = P.l + i * bandW + 5 + j * barW;
+      const r = svgEl("rect", {x: bx, y: y(v), width: barW - 1.5, height: H - P.b - y(v), class: cls, rx: 1.5});
+      tip(r, `${dt} · 新增 ${v}`);
+      s.appendChild(r);
+    });
+  });
+  host.appendChild(s);
+}
+
+function hbars(host, items, opts) {
+  opts = opts || {};
+  const max = Math.max(...items.map(i => i.n), 1);
+  items.forEach(it => {
+    const row = el("div", "hbar");
+    const name = el("div", "name", it.name);
+    if (it.title) name.title = it.title;
+    row.appendChild(name);
+    const track = el("div", "track");
+    const fill = el("div", "fill");
+    fill.style.width = (it.n / max * 100).toFixed(1) + "%";
+    if (it.color) fill.style.background = it.color;
+    track.appendChild(fill); row.appendChild(track);
+    row.appendChild(el("div", "val", opts.unit === "%" ? it.n.toFixed(0) + "%" : fmt(it.n)));
+    host.appendChild(row);
+  });
+}
+
+function groupedHist(host, labels, a, b, na, nb) {
+  const W = 720, H = 190, P = {l: 34, r: 10, t: 8, b: 30};
+  const s = svgEl("svg", {viewBox: `0 0 ${W} ${H}`, class: "chart", role: "img", "aria-label": "置信度分布"});
+  const maxV = Math.max(...a, ...b, 1);
+  const bw = (W - P.l - P.r) / labels.length;
+  const y = v => H - P.b - (v / hMax) * (H - P.t - P.b);
+  const hMax = niceMax(maxV, 3);
+  for (let g = 0; g <= 3; g++) {
+    const v = hMax * g / 3, yy = y(v);
+    s.appendChild(svgEl("line", {x1: P.l, y1: yy, x2: W - P.r, y2: yy, class: g ? "gridline" : "axis"}));
+    const lb = svgEl("text", {x: P.l - 6, y: yy + 3.5, class: "tick", "text-anchor": "end"});
+    lb.textContent = Math.round(v); s.appendChild(lb);
+  }
+  labels.forEach((lab, i) => {
+    const x0 = P.l + i * bw;
+    [[a[i], "f1", 0], [b[i], "f3", 1]].forEach(([v, cls, j]) => {
+      if (!v) return;
+      const r = svgEl("rect", {x: x0 + 4 + j * (bw - 10) / 2, y: y(v),
+                               width: (bw - 10) / 2 - 2, height: H - P.b - y(v), class: cls, rx: 1.5});
+      tip(r, `${lab} · ${j ? "因果边" : "事实"} ${v} 条`);
+      s.appendChild(r);
+    });
+    const lb = svgEl("text", {x: x0 + bw / 2, y: H - 9, class: "tick", "text-anchor": "middle"});
+    lb.textContent = lab; s.appendChild(lb);
+  });
+  host.appendChild(s);
+}
+
+/* ---------- header, kpis ---------- */
+function renderHeader() {
+  const c = DATA.counts;
+  const m = document.getElementById("meta");
+  const bits = [
+    `快照生成 ${DATA.as_of}`,
+    `存储区间 ${DATA.span.first} → ${DATA.span.last}`,
+    `${(DATA.db_size / 1024).toFixed(0)} KB`
+  ];
+  bits.forEach((t, i) => {
+    if (i) m.appendChild(document.createTextNode(" · "));
+    m.appendChild(document.createTextNode(t));
+  });
+  const badge = el("span", "badge warn", `已 ${c.stale_days} 天无新写入`);
+  m.appendChild(badge);
+}
+
+function renderKpis() {
+  const c = DATA.counts;
+  const cards = [
+    {label: "记忆事实", value: fmt(c.facts), unit: "条", sub: `嵌入覆盖 ${DATA.health.embed_cover}%`},
+    {label: "因果边", value: fmt(c.edges), unit: "条", sub: `${c.invalid} 条已失效`},
+    {label: "记忆片段", value: fmt(c.chunks), unit: "条", sub: `BM25 词表 ${fmt(c.bm25_tokens)}`},
+    {label: "累计被调用", value: fmt(c.access_total), unit: "次", sub: `${c.access_edges} 条边被命中过`},
+    {label: "召回事件", value: fmt(c.recalls), unit: "次", sub: `共返回 ${fmt(c.recall_hits)} 条结果`},
+    {label: "向量索引", value: fmt(c.embedded), unit: `/ ${c.facts}`, sub: c.chunk_emb === 0 ? "片段向量未建（0 条）" : `${fmt(c.chunk_emb)} 条片段向量`}
+  ];
+  const host = document.getElementById("kpis");
+  cards.forEach(k => {
+    const box = el("div", "kpi");
+    box.appendChild(el("div", "label", k.label));
+    const v = el("div", "value", k.value);
+    v.appendChild(el("span", "unit", k.unit));
+    box.appendChild(v);
+    box.appendChild(el("div", "sub", k.sub));
+    host.appendChild(box);
+  });
+}
+
+/* ---------- panels ---------- */
+function renderGrowth() {
+  const d = DATA.daily;
+  growthChart(document.getElementById("growth"), d);
+  dailyChart(document.getElementById("growthDaily"), d);
+  const legend = document.getElementById("growthLegend");
+  [["片段", "var(--c1)"], ["因果边", "var(--c2)"], ["事实", "var(--c3)"]].forEach(([n, c]) => {
+    const s = el("span");
+    const i = el("i"); i.style.background = c; s.appendChild(i);
+    s.appendChild(document.createTextNode(n));
+    legend.appendChild(s);
+  });
+  const c = DATA.counts;
+  document.getElementById("growthNote").textContent =
+    `最后一条写入在 ${DATA.span.last}，距快照 ${c.stale_days} 天。曲线右端持平不代表系统空闲，只说明该 SQLite 存储在这段时间没有新记录。`;
+}
+
+function renderAccessSummary() {
+  const c = DATA.counts;
+  const avg = c.access_edges ? (c.access_total / c.access_edges) : 0;
+  const top = DATA.top_edges[0] || {access: 0};
+  const rows = [
+    ["累计调用次数", fmt(c.access_total), ""],
+    ["被命中过的边", `${c.access_edges} / ${c.edges}`, `${pct(c.access_edges, c.edges)}%`],
+    ["平均每条命中边", avg.toFixed(1), "次"],
+    ["单条最高", fmt(top.access), "次"],
+    ["从未命中", fmt(c.edges - c.access_edges), "条"],
+    ["最近一次访问", DATA.edges.reduce((m, e) => (e.last_access && e.last_access > m ? e.last_access : m), ""), ""]
+  ];
+  const host = document.getElementById("accessSummary");
+  rows.forEach(([k, v, u]) => {
+    const r = el("div", "rowline");
+    r.appendChild(el("span", "k", k));
+    const val = el("span", "v");
+    val.appendChild(document.createTextNode(v));
+    if (u) { const em = el("em", null, u); val.appendChild(em); }
+    r.appendChild(val); host.appendChild(r);
+  });
+  document.getElementById("auditN").textContent = c.recalls;
+}
+
+function renderTop() {
+  const host = document.getElementById("topAccess");
+  const items = DATA.top_edges.map(e => ({
+    name: `#${e.id} ${e.from_short}`,
+    n: e.access,
+    title: `决策：${e.from_text}\n结果：${e.to_text}\n关系：${e.relation} · 置信 ${e.confidence} · 标签 ${e.task_tag || "—"}\n最近访问 ${e.last_access || "—"}`
+  }));
+  hbars(host, items);
+}
+
+function renderRecalls() {
+  const host = document.getElementById("recalls");
+  if (!DATA.recalls.length) { host.appendChild(el("p", "empty", "无召回记录")); return; }
+  const t = el("table");
+  const thead = el("thead");
+  const hr = el("tr");
+  ["时间", "查询", "返回", "节点", "耗时 ms"].forEach((h, i) => {
+    const th = el("th", i > 1 ? "num" : "", h);
+    hr.appendChild(th);
+  });
+  thead.appendChild(hr); t.appendChild(thead);
+  const tb = el("tbody");
+  DATA.recalls.slice().reverse().forEach(r => {
+    const tr = el("tr");
+    const tc = el("td", null, r.time.slice(5)); tc.style.whiteSpace = "nowrap"; tr.appendChild(tc);
+    const q = el("td", "trunc", r.query); q.title = r.query + (r.tag ? `\n标签：${r.tag}` : "");
+    tr.appendChild(q);
+    tr.appendChild(el("td", "num", fmt(r.results)));
+    tr.appendChild(el("td", "num", fmt(r.activated)));
+    tr.appendChild(el("td", "num", r.latency));
+    tb.appendChild(tr);
+  });
+  t.appendChild(tb); host.appendChild(t);
+  const note = el("p", "note");
+  note.textContent = `模式：${[...new Set(DATA.recalls.map(r => r.mode))].join(" / ")}。审计表当前只有 ${DATA.recalls.length} 条记录，更早的检索没有留存，原因无记录。`;
+  host.appendChild(note);
+}
+
+function renderDists() {
+  hbars(document.getElementById("relDist"), DATA.dist.relation.map(x => ({name: LBL.relation[x.name] || x.name, n: x.n, title: x.name})));
+  hbars(document.getElementById("polDist"), DATA.dist.polarity.map(x => ({
+    name: LBL.polarity[x.name] || x.name, n: x.n, title: x.name,
+    color: x.name === "positive" ? "var(--green)" : x.name === "negative" ? "var(--red)" : "var(--c4)"
+  })));
+  hbars(document.getElementById("discDist"), DATA.dist.discovered.map(x => ({name: LBL.discovered[x.name] || x.name, n: x.n, title: x.name})));
+  hbars(document.getElementById("tagDist"), DATA.dist.tags.map(x => ({name: x.name, n: x.n})));
+
+  const labels = DATA.dist.fact_conf.map((_, i) => (i / 10).toFixed(1));
+  groupedHist(document.getElementById("confHist"), labels, DATA.dist.fact_conf, DATA.dist.edge_conf);
+  const lg = document.getElementById("confLegend");
+  [["事实", "var(--c1)"], ["因果边", "var(--c3)"]].forEach(([n, c]) => {
+    const s = el("span"); const i = el("i"); i.style.background = c; s.appendChild(i);
+    s.appendChild(document.createTextNode(n)); lg.appendChild(s);
+  });
+
+  const accItems = DATA.dist.access_hist.map((n, i) => ({name: `${i} 次`, n: n}));
+  hbars(document.getElementById("accHist"), accItems);
+  document.getElementById("zeroEdges").textContent = DATA.dist.access_hist[0] || 0;
+
+  const scope = DATA.dist.scope, source = DATA.dist.source;
+  const host = document.getElementById("factMix");
+  const rows = el("div");
+  const total = DATA.counts.facts || 1;
+  scope.forEach(s => {
+    const row = el("div", "rowline");
+    row.appendChild(el("span", "k", `scope · ${s.name}`));
+    const v = el("span", "v"); v.appendChild(document.createTextNode(`${s.n}`));
+    v.appendChild(el("em", null, `${pct(s.n, total)}%`)); row.appendChild(v); rows.appendChild(row);
+  });
+  source.forEach(s => {
+    const row = el("div", "rowline");
+    row.appendChild(el("span", "k", `source · ${s.name}`));
+    const v = el("span", "v"); v.appendChild(document.createTextNode(`${s.n}`));
+    v.appendChild(el("em", null, `${pct(s.n, total)}%`)); row.appendChild(v); rows.appendChild(row);
+  });
+  host.appendChild(rows);
+}
+
+function scatterChart() {
+  const host = document.getElementById("scatter");
+  const W = 1040, H = 250, P = {l: 46, r: 18, t: 14, b: 34};
+  const s = svgEl("svg", {viewBox: `0 0 ${W} ${H}`, class: "chart", role: "img",
+                          "aria-label": "置信度与调用次数散点图"});
+  const pts = DATA.edges;
+  const xMin = 0.3, xMax = 1.0;
+  const accMax = Math.max(...pts.map(p => p.access), 1);
+  const yStep = Math.max(1, Math.ceil(accMax / 4));
+  const yMax = yStep * 4;
+  const x = v => P.l + (v - xMin) / (xMax - xMin) * (W - P.l - P.r);
+  const y = v => H - P.b - (v / yMax) * (H - P.t - P.b);
+
+  for (let g = 0; g <= 4; g++) {
+    const v = yStep * g, yy = y(v);
+    s.appendChild(svgEl("line", {x1: P.l, y1: yy, x2: W - P.r, y2: yy, class: g ? "gridline" : "axis"}));
+    const lb = svgEl("text", {x: P.l - 8, y: yy + 3.5, class: "tick", "text-anchor": "end"});
+    lb.textContent = Math.round(v); s.appendChild(lb);
+  }
+  for (let c = 0.3; c <= 1.001; c += 0.1) {
+    const xx = x(c);
+    s.appendChild(svgEl("line", {x1: xx, y1: P.t, x2: xx, y2: H - P.b, class: "gridline"}));
+    const lb = svgEl("text", {x: xx, y: H - P.b + 15, class: "tick", "text-anchor": "middle"});
+    lb.textContent = c.toFixed(1); s.appendChild(lb);
+  }
+
+  const cls = {caused: "f1", prevented: "f3", enabled: "f2", no_effect: "f4"};
+  pts.forEach((p, i) => {
+    const jx = ((i * 37) % 9 - 4) * 0.5;   // deterministic jitter for ties
+    const c = svgEl("circle", {
+      cx: x(p.confidence) + jx, cy: y(p.access), r: 4.2,
+      class: cls[p.relation] || "f4", "fill-opacity": p.access ? 0.9 : 0.55
+    });
+    tip(c, `#${p.id} ${relLabel(p.relation)} · 置信 ${Number(p.confidence).toFixed(2)} · 调用 ${p.access} 次\n${p.from_short}`);
+    s.appendChild(c);
+  });
+  host.appendChild(s);
+
+  const lg = document.getElementById("scatterLegend");
+  [["导致", "var(--c1)"], ["阻止", "var(--c3)"], ["促成", "var(--c2)"], ["无影响", "var(--c4)"]].forEach(([n, c]) => {
+    const sp = el("span"); const i = el("i", null); i.style.background = c; i.style.height = "8px";
+    i.style.width = "8px"; i.style.borderRadius = "50%"; sp.appendChild(i);
+    sp.appendChild(document.createTextNode(n)); lg.appendChild(sp);
+  });
+}
+
+/* ---------- detail table ---------- */
+const TABLES = {
+  facts: {
+    cols: [
+      {key: "id", label: "#", num: true},
+      {key: "key", label: "键"},
+      {key: "value", label: "内容"},
+      {key: "scope", label: "scope"},
+      {key: "source", label: "source"},
+      {key: "confidence", label: "置信", num: true},
+      {key: "created", label: "创建"},
+      {key: "embedded", label: "向量"}
+    ],
+    rows: () => DATA.facts
+  },
+  chunks: {
+    cols: [
+      {key: "kind", label: "类型"},
+      {key: "text", label: "原文"},
+      {key: "created", label: "写入"},
+      {key: "edges", label: "关联边", num: true},
+      {key: "terms", label: "BM25 词", num: true},
+      {key: "sparse", label: "稀疏码"}
+    ],
+    rows: () => DATA.chunks
+  },
+  edges: {
+    cols: [
+      {key: "id", label: "#", num: true},
+      {key: "relation", label: "关系"},
+      {key: "from_short", label: "决策"},
+      {key: "to_short", label: "结果"},
+      {key: "confidence", label: "置信", num: true},
+      {key: "access", label: "调用", num: true},
+      {key: "task_tag", label: "标签"},
+      {key: "event_time", label: "时间"}
+    ],
+    rows: () => DATA.edges
+  }
+};
+const state = {tab: "facts", q: "", sort: {key: null, dir: 1}};
+
+function cellText(row, col) {
+  const v = row[col.key];
+  if (col.key === "relation") return relLabel(v);
+  if (col.key === "embedded" || col.key === "sparse") return v ? "有" : "缺";
+  if (col.key === "confidence") return Number(v).toFixed(2);
+  if (col.key === "event_time" || col.key === "created") return String(v || "").slice(5);
+  return v === null || v === undefined || v === "" ? "—" : String(v);
+}
+
+function drawTable() {
+  const cfg = TABLES[state.tab];
+  const q = state.q.trim().toLowerCase();
+  let rows = cfg.rows().filter(r => !q || Object.values(r).some(v => String(v).toLowerCase().includes(q)));
+  if (state.sort.key) {
+    const k = state.sort.key, dir = state.sort.dir;
+    rows = rows.slice().sort((a, b) => {
+      const x = a[k], y = b[k];
+      if (typeof x === "number" && typeof y === "number") return (x - y) * dir;
+      return String(x).localeCompare(String(y), "zh") * dir;
+    });
+  }
+  const t = document.getElementById("detail");
+  const thead = t.querySelector("thead"), tb = t.querySelector("tbody");
+  thead.textContent = ""; tb.textContent = "";
+  const hr = el("tr");
+  cfg.cols.forEach(c => {
+    const th = el("th", (c.num ? "num " : "") + "sortable");
+    th.appendChild(document.createTextNode(c.label));
+    if (state.sort.key === c.key) th.appendChild(el("span", "arrow", state.sort.dir > 0 ? "▲" : "▼"));
+    th.addEventListener("click", () => {
+      state.sort = {key: c.key, dir: state.sort.key === c.key ? -state.sort.dir : 1};
+      drawTable();
+    });
+    hr.appendChild(th);
+  });
+  thead.appendChild(hr);
+
+  rows.forEach(r => {
+    const tr = el("tr");
+    cfg.cols.forEach(c => {
+      let cls = c.num ? "num" : "";
+      if (c.key === "value" || c.key === "from_short" || c.key === "to_short" || c.key === "text") cls += " trunc";
+      const td = el("td", cls.trim(), cellText(r, c));
+      if (c.key === "value" || c.key === "from_short" || c.key === "to_short" || c.key === "text") {
+        td.title = String(r[c.key] || "");
+      }
+      if (c.key === "embedded") {
+        td.textContent = "";
+        const d = el("span", "dot");
+        d.style.background = r.embedded ? "var(--green)" : "var(--red)";
+        td.appendChild(d);
+        td.appendChild(document.createTextNode(r.embedded ? "有" : "缺"));
+      }
+      tr.appendChild(td);
+    });
+    tb.appendChild(tr);
+  });
+  document.getElementById("filterCount").textContent = `${rows.length} / ${cfg.rows().length} 条`;
+}
+
+function bindTabs() {
+  document.querySelectorAll(".tab").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".tab").forEach(b => b.setAttribute("aria-selected", "false"));
+      btn.setAttribute("aria-selected", "true");
+      state.tab = btn.dataset.tab; state.sort = {key: null, dir: 1};
+      drawTable();
+    });
+  });
+  document.getElementById("search").addEventListener("input", e => {
+    state.q = e.target.value; drawTable();
+  });
+  document.getElementById("nFacts").textContent = `(${DATA.counts.facts})`;
+  document.getElementById("nEdges").textContent = `(${DATA.counts.edges})`;
+  document.getElementById("nChunks").textContent = `(${DATA.counts.chunks})`;
+}
+
+function renderHealth() {
+  const h = DATA.health, c = DATA.counts;
+  const host = document.getElementById("health");
+  const items = [
+    {k: "事实嵌入覆盖", v: `${c.embedded} / ${c.facts}`, cls: h.embed_cover >= 90 ? "good" : "warn", meter: h.embed_cover},
+    {k: "片段嵌入", v: `${c.chunk_emb} 条`, cls: c.chunk_emb ? "good" : "warn"},
+    {k: "失效因果边", v: `${h.invalid} 条`, cls: h.invalid ? "warn" : "good"},
+    {k: "预测账本", v: `${c.preds} 条 · ${h.unresolved} 待结算`, cls: h.unresolved ? "warn" : "good"},
+    {k: "BM25 索引", v: `${fmt(c.bm25_tokens)} 词 · ${fmt(c.bm25_rows)} 行`, cls: "good"},
+    {k: "元因果边", v: `${c.meta} 条`, cls: c.meta ? "good" : "warn"},
+    {k: "会话日志", v: `${c.session} 条`, cls: c.session ? "good" : "warn"},
+    {k: "最后写入", v: `${DATA.span.last}`, cls: h.stale_days > 7 ? "bad" : "good"}
+  ];
+  items.forEach(it => {
+    const box = el("div", "hitem");
+    box.appendChild(el("div", "hk", it.k));
+    box.appendChild(el("div", "hv " + it.cls, it.v));
+    if (it.meter !== undefined) {
+      const m = el("div", "meter"), f = el("div");
+      f.style.width = Math.min(100, it.meter) + "%";
+      f.style.background = it.meter >= 90 ? "var(--green)" : "var(--amber)";
+      m.appendChild(f); box.appendChild(m);
+    }
+    host.appendChild(box);
+  });
+}
+
+document.getElementById("footer").textContent =
+  `只读快照：数据在 ${DATA.as_of} 从 ${DATA.db_path} 直接读出（只读连接），页面不发起任何网络请求，也不会自动刷新。` +
+  `“调用次数”来自 causal_edges.access_count 与 recall_audit 两张表，二者口径不同，不要相加。`;
+
+renderHeader();
+renderKpis();
+renderGrowth();
+renderAccessSummary();
+renderTop();
+renderRecalls();
+renderDists();
+scatterChart();
+bindTabs();
+drawTable();
+renderHealth();
+</script>
+</body>
+</html>
