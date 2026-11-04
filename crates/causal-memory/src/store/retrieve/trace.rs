@@ -1,10 +1,9 @@
 //! Split from `retrieve.rs` — pure module split, no logic change.
 
 use anyhow::{anyhow, Result};
-use rusqlite::{params};
+use rusqlite::params;
 
-
-use crate::store::{CausalStore, ENTRY_COLUMNS, entry_from_row};
+use crate::store::{entry_from_row, CausalStore, ENTRY_COLUMNS};
 
 impl CausalStore {
     pub fn trace_cause(&self, outcome_description: &str) -> Result<Vec<crate::store::CausalEntry>> {
@@ -207,6 +206,12 @@ impl CausalStore {
                 {anchor}
                   AND ce.confidence >= ?{conf_p}
                   AND ce.valid_to IS NULL
+                  -- Non-causal relations (observational associations,
+                  -- co_occurrence, no_effect) are excluded from do()-style
+                  -- forward chains: an association whose confounding is not
+                  -- ruled out must never surface as a causal prediction
+                  -- (intervention_calibration: confounded overclaim fix).
+                  AND ce.relation NOT IN ('co_occurrence', 'co-occurrence', 'no_effect')
 
                 UNION ALL
 
@@ -228,6 +233,7 @@ impl CausalStore {
                   AND ce2.confidence >= ?{conf_p}
                   AND ch.chain_confidence * ce2.confidence >= ?{conf_p}
                   AND ce2.valid_to IS NULL
+                  AND ce2.relation NOT IN ('co_occurrence', 'co-occurrence', 'no_effect')
             )
             SELECT path_json FROM chain
             WHERE depth >= 1
@@ -309,8 +315,7 @@ impl CausalStore {
         }
 
         let mut results: Vec<crate::store::CrossSessionChain> = Vec::new();
-        let mut seen_keys: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         for seed in seeds.iter().take(20) {
             // Session 1: backward chain from the seed's outcome within its session.
@@ -330,8 +335,7 @@ impl CausalStore {
                 // Try meta bridges from the root of this chain.
                 let root_id = seg1.hops.last().map(|h| h.decision_id.clone());
                 if let Some(ref root) = root_id {
-                    let bridges =
-                        self.meta_bridges_from_decision(root, min_confidence)?;
+                    let bridges = self.meta_bridges_from_decision(root, min_confidence)?;
 
                     let mut bridged = false;
                     for bridge in bridges.iter().take(max_meta_bridges) {
@@ -386,7 +390,11 @@ impl CausalStore {
                             let key = format!(
                                 "{}|{}",
                                 seg1.hops.first().map(|h| h.edge_id).unwrap_or(0),
-                                chain.segments.get(1).and_then(|s| s.hops.first().map(|h| h.edge_id)).unwrap_or(0)
+                                chain
+                                    .segments
+                                    .get(1)
+                                    .and_then(|s| s.hops.first().map(|h| h.edge_id))
+                                    .unwrap_or(0)
                             );
                             if seen_keys.insert(key) {
                                 results.push(chain);
@@ -610,5 +618,4 @@ impl CausalStore {
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(|e| anyhow!("Query failed: {e}"))
     }
-
 }

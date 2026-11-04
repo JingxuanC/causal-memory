@@ -4,9 +4,25 @@
 pub(crate) const WEIGHT_CAP: f32 = 2.0;
 
 /// SimHash for pattern separation (DG analog).
+///
+/// Tokens come from [`crate::patterns::tokenize`] (lowercased ASCII words
+/// minus stop words, CJK character bigrams) — the same tokenizer every
+/// retrieval path uses, so whitespace-free text (Chinese, Japanese, …) is
+/// hashed per-bigram instead of collapsing into one giant token.
 pub(crate) fn simhash(text: &str) -> u128 {
     let mut bits = [0_i32; 128];
-    for token in text.to_lowercase().split_whitespace() {
+    // Degenerate input (all stop words / punctuation) tokenizes to nothing;
+    // both texts would then hash to 0 and trip the write-path near-dup log
+    // (hamming 0 ≤ 2). Fall back to hashing the lowercased whole text.
+    let tokens = crate::patterns::tokenize(text);
+    let fallback;
+    let token_refs: Vec<&str> = if tokens.is_empty() {
+        fallback = text.to_lowercase();
+        vec![fallback.as_str()]
+    } else {
+        tokens.iter().map(String::as_str).collect()
+    };
+    for token in token_refs {
         let hash = fnv1a_64(token);
         for (i, bit) in bits[..64].iter_mut().enumerate() {
             if (hash >> i) & 1 == 1 {
@@ -43,12 +59,17 @@ pub(crate) fn fnv1a_64(s: &str) -> u64 {
 }
 
 /// Simple Jaccard text similarity (token overlap).
-/// LIMITATION: whitespace tokenization only; Chinese text needs bigram tokenizer.
+///
+/// Tokens come from [`crate::patterns::tokenize`] (lowercased ASCII words
+/// minus stop words, CJK character bigrams), matching the retrieval paths.
+/// NOTE: unlike [`crate::patterns::jaccard`], two empty token sets are
+/// similar (1.0) here — `detect_novelty`'s "nothing predicted" degenerate
+/// case relies on that convention.
 pub(crate) fn text_jaccard_similarity(a: &str, b: &str) -> f32 {
-    let a_lower = a.to_lowercase();
-    let b_lower = b.to_lowercase();
-    let set_a: std::collections::HashSet<&str> = a_lower.split_whitespace().collect();
-    let set_b: std::collections::HashSet<&str> = b_lower.split_whitespace().collect();
+    let a_tokens = crate::patterns::tokenize(a);
+    let b_tokens = crate::patterns::tokenize(b);
+    let set_a: std::collections::HashSet<&str> = a_tokens.iter().map(String::as_str).collect();
+    let set_b: std::collections::HashSet<&str> = b_tokens.iter().map(String::as_str).collect();
     if set_a.is_empty() && set_b.is_empty() {
         return 1.0;
     }

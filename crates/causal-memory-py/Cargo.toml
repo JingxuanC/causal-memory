@@ -20,6 +20,9 @@ doctest = false
 # Aliased: the built module is also named `causal_memory`, and the bare
 # extern-crate name would be ambiguous inside the #[pymodule] macro.
 cm = { path = "../causal-memory", package = "causal-memory" }
+# Aliased for symmetry: the console script (_main) forwards to the CLI
+# library dispatcher so pip users get the full MCP server command.
+cm_cli = { path = "../causal-memory-cli", package = "causal-memory-cli" }
 pyo3 = { version = "0.24", features = ["abi3-py39"] }
 
 # Canonical pyo3 layout: `extension-module` stays OFF for plain cargo builds

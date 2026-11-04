@@ -50,36 +50,58 @@ const READ_ONLY_TOOLS: &[&str] = &[
     "Bash",                 // claude code equivalent
     "exec",                 // kimi
     "exec_command",         // codex
-    "read", "Read",         // file reads
-    "WebSearch", "WebFetch",
-    "update_goal", "update_plan",
+    "read",
+    "Read", // file reads
+    "WebSearch",
+    "WebFetch",
+    "update_goal",
+    "update_plan",
     "kill_command_or_subagent",
-    "list_dir", "List",
-    "search_tool", "use_tool",
+    "list_dir",
+    "List",
+    "search_tool",
+    "use_tool",
 ];
 
 /// Result patterns that indicate a FAILURE (high-value edge).
 const FAILURE_MARKERS: &[&str] = &[
-    "error", "Error", "ERROR",
-    "failed", "Failed", "FAILED",
-    "panic", "Panic",
-    "traceback", "Traceback",
-    "exception", "Exception",
-    "denied", "Permission denied",
-    "not found", "No such file",
-    "fatal", "FATAL",
-    "exit: 1", "exit code: 1", "exit code 1",
-    "cannot find", "cannot resolve",
-    "unresolved", "compilation failed",
-    "test failed", "tests failed", "FAILED (",
+    "error",
+    "Error",
+    "ERROR",
+    "failed",
+    "Failed",
+    "FAILED",
+    "panic",
+    "Panic",
+    "traceback",
+    "Traceback",
+    "exception",
+    "Exception",
+    "denied",
+    "Permission denied",
+    "not found",
+    "No such file",
+    "fatal",
+    "FATAL",
+    "exit: 1",
+    "exit code: 1",
+    "exit code 1",
+    "cannot find",
+    "cannot resolve",
+    "unresolved",
+    "compilation failed",
+    "test failed",
+    "tests failed",
+    "FAILED (",
     "command not found",
-    "timeout", "timed out",
-    "conflict", "CONFLICT",
+    "timeout",
+    "timed out",
+    "conflict",
+    "CONFLICT",
 ];
 
 /// Alias for backward compatibility (pattern miner imports this name).
 pub(crate) const DECISION_WORTHY_TOOLS: &[&str] = STATE_CHANGING_TOOLS;
-
 
 #[derive(Debug, Default, Clone)]
 pub struct ExtractionStats {
@@ -121,7 +143,9 @@ impl DecisionExtractor {
         for decision in &parsed.decisions {
             // Tier 3: Skip read-only tools entirely (only record if CLEAR failure)
             let is_read_only = READ_ONLY_TOOLS.iter().any(|t| decision.name.contains(t));
-            let is_state_changing = STATE_CHANGING_TOOLS.iter().any(|t| decision.name.contains(t));
+            let is_state_changing = STATE_CHANGING_TOOLS
+                .iter()
+                .any(|t| decision.name.contains(t));
 
             if is_read_only {
                 // For read-only tools, ONLY record if it's a clear failure
@@ -400,15 +424,24 @@ impl DecisionExtractor {
         let first_200: String = text.chars().take(200).collect();
         let lines: Vec<&str> = first_200.lines().take(5).collect();
         let strong_markers = [
-            "error[", "error:", "Error:", "ERROR:",
-            "panic:", "thread 'main' panicked",
+            "error[",
+            "error:",
+            "Error:",
+            "ERROR:",
+            "panic:",
+            "thread 'main' panicked",
             "Traceback (most recent call last)",
-            "exit: 1", "exit code: 1", "Process exited with non-zero",
-            "test failed", "tests failed", "FAILED ",
+            "exit: 1",
+            "exit code: 1",
+            "Process exited with non-zero",
+            "test failed",
+            "tests failed",
+            "FAILED ",
             "command not found",
             "Permission denied",
             "fatal:",
-            "compilation failed", "could not compile",
+            "compilation failed",
+            "could not compile",
         ];
         // Check first 5 lines for strong markers
         for line in &lines {
@@ -425,10 +458,14 @@ impl DecisionExtractor {
     /// no decision value. E.g. "exit: 0" from a routine build.
     fn is_trivial_success(text: &str) -> bool {
         let trimmed = text.trim();
-        if trimmed.len() < 30 { return true; }
+        if trimmed.len() < 30 {
+            return true;
+        }
         let trivial_starts = ["exit: 0\n", "exit: 0\r", "exit: 0 "];
         for t in &trivial_starts {
-            if trimmed.starts_with(t) && trimmed.len() < 80 { return true; }
+            if trimmed.starts_with(t) && trimmed.len() < 80 {
+                return true;
+            }
         }
         matches!(trimmed, "success" | "ok" | "done")
     }

@@ -312,7 +312,10 @@ impl PredictionTracker {
 pub enum AgentAction {
     Run(String),
     Finish,
-    Record { decision: String, outcome: String },
+    Record {
+        decision: String,
+        outcome: String,
+    },
     Search(String),
     /// Forward simulation: "if I do X, what will happen?"
     /// Returns predicted outcomes from the causal graph, including
@@ -800,7 +803,12 @@ async fn run_condition(
                         // Build a temporary hippocampus graph for forward simulation
                         let graph = causal_memory::hippocampus::CausalGraph::from_store(store);
                         if let Ok(mut g) = graph {
-                            let results = g.spreading_activation_opts(&query, Some("agent-bench"), false, false);
+                            let results = g.spreading_activation_opts(
+                                &query,
+                                Some("agent-bench"),
+                                false,
+                                false,
+                            );
                             stats.predictions_total += 1;
                             if results.is_empty() {
                                 "intervention result: UNKNOWN — no past experience with this action. Proceed with caution.".to_string()
@@ -973,7 +981,11 @@ async fn run_condition_c_impl(
                         let mut obs = "⚠️ Loop detected: identical command 3× in a row — it failed before and will fail again; the world blocked it. Stop repeating; consult memory and try a different approach."
                             .to_string();
                         let hits = store
-                            .search_causal_bm25(Some("agent-bench"), &task.family.id.replace('-', " "), 3)
+                            .search_causal_bm25(
+                                Some("agent-bench"),
+                                &task.family.id.replace('-', " "),
+                                3,
+                            )
                             .unwrap_or_default();
                         if hits.is_empty() {
                             obs.push_str(" Memory search: no memories found.");
@@ -1049,8 +1061,12 @@ async fn run_condition_c_impl(
                         "already recorded for this task.".to_string()
                     } else {
                         store.record_decision(
-                            &decision, &outcome, "caused",
-                            Some("agent-bench"), 0.6, "llm_inferred",
+                            &decision,
+                            &outcome,
+                            "caused",
+                            Some("agent-bench"),
+                            0.6,
+                            "llm_inferred",
                         )?;
                         stats.mem_writes += 1;
                         recorded_this_task = true;
@@ -1084,7 +1100,10 @@ async fn run_condition_c_impl(
                         let graph = causal_memory::hippocampus::CausalGraph::from_store(&store);
                         if let Ok(mut g) = graph {
                             let results = g.spreading_activation_opts(
-                                &query, Some("agent-bench"), false, false,
+                                &query,
+                                Some("agent-bench"),
+                                false,
+                                false,
                             );
                             // predictions_total is folded from tracker.tested
                             // at task end (pairs evaluated against an actual
@@ -1131,7 +1150,9 @@ async fn run_condition_c_impl(
                                 }
                                 if has_warning {
                                     stats.predictions_avoided_trap += 1;
-                                    text.push_str("\n⚠️ Avoid this action — it caused problems before.");
+                                    text.push_str(
+                                        "\n⚠️ Avoid this action — it caused problems before.",
+                                    );
                                 }
                                 text
                             }
@@ -1255,8 +1276,10 @@ pub async fn run(args: &[String]) -> Result<()> {
     let mut b_stats = None;
     let mut c_stats = None;
     let mut d_stats = None;
-    let run_a = condition == "both" || condition == "a" || condition == "abc" || condition == "abcd";
-    let run_b = condition == "both" || condition == "b" || condition == "abc" || condition == "abcd";
+    let run_a =
+        condition == "both" || condition == "a" || condition == "abc" || condition == "abcd";
+    let run_b =
+        condition == "both" || condition == "b" || condition == "abc" || condition == "abcd";
     let run_c = condition == "c" || condition == "abc" || condition == "abcd";
     let run_d = condition == "d" || condition == "abcd";
 
@@ -1330,21 +1353,39 @@ pub async fn run(args: &[String]) -> Result<()> {
         println!("\n=== Condition C: Causal Memory Deep Metrics ===");
         println!("  Intervention queries:    {}", c.intervention_queries);
         println!("  Predictions evaluated:   {}", c.predictions_total);
-        println!("  Prediction accuracy:     {:.0}%", pct(c.predictions_correct, c.predictions_total));
+        println!(
+            "  Prediction accuracy:     {:.0}%",
+            pct(c.predictions_correct, c.predictions_total)
+        );
         println!("  Predictions avoided trap: {}", c.predictions_avoided_trap);
-        println!("  Warnings → heeded:       {}/{}", c.trap_warnings_heeded, c.trap_warnings);
+        println!(
+            "  Warnings → heeded:       {}/{}",
+            c.trap_warnings_heeded, c.trap_warnings
+        );
         println!("  Steps saved (predicted):  {}", c.steps_saved);
         println!("  Loops broken:            {}", c.loop_detections);
         println!("  Memory writes (causal):  {}", c.mem_writes);
-        println!("  Repeat-mistake rate:     {:.0}%", pct(c.exposure.repeat_trapped, c.exposure.repeat_exposures));
+        println!(
+            "  Repeat-mistake rate:     {:.0}%",
+            pct(c.exposure.repeat_trapped, c.exposure.repeat_exposures)
+        );
     }
 
     // Condition D extra report (P4 — forward-simulation benchmark)
     if let Some(ref d) = d_stats {
         println!("\n=== Condition D: Forward-Simulation Benchmark (P4) ===");
-        println!("  Prediction accuracy:      {:.0}% ({}/{})", pct(d.predictions_correct, d.predictions_total), d.predictions_correct, d.predictions_total);
+        println!(
+            "  Prediction accuracy:      {:.0}% ({}/{})",
+            pct(d.predictions_correct, d.predictions_total),
+            d.predictions_correct,
+            d.predictions_total
+        );
         println!("  Trap warnings:            {}", d.trap_warnings);
-        println!("  Warnings heeded:          {} ({:.0}%)", d.trap_warnings_heeded, pct(d.trap_warnings_heeded, d.trap_warnings));
+        println!(
+            "  Warnings heeded:          {} ({:.0}%)",
+            d.trap_warnings_heeded,
+            pct(d.trap_warnings_heeded, d.trap_warnings)
+        );
         println!("  Steps saved by warning:   {}", d.steps_saved);
         println!("  Loops broken:             {}", d.loop_detections);
         println!("  Solved:                   {}/{}", d.solved, d.tasks);

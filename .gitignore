@@ -37,3 +37,13 @@ graph-*.html
 
 # Python bindings local dev environment
 .venv/
+# Python build artifacts (editable installs, test caches)
+*.egg-info/
+.pytest_cache/
+benches/longmemeval/db/*.db-shm
+benches/longmemeval/db/*.db-wal
+__pycache__/
+
+# Rendered memory dashboard embeds the real text of your memories — build it
+# locally with scripts/build_memory_dashboard.py, never commit the output
+memory-dashboard.html

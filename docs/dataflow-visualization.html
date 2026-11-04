@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>causal-memory · 核心数据流可视化</title>
+<style>
+:root{
+  --bg:#f4f6fa; --panel:#ffffff; --line:#dde3ec; --ink:#0f172a; --dim:#64748b;
+  --rose:#f43f5e; --blue:#3b82f6; --sky:#0ea5e9; --green:#10b981; --amber:#f59e0b;
+  --red:#ef4444; --purple:#8b5cf6; --violet:#7c3aed; --slate:#64748b; --gray:#94a3b8;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",Segoe UI,Roboto,sans-serif;padding:26px 34px 120px}
+header{max-width:1240px;margin:0 auto 18px}
+h1{font-size:24px;font-weight:800;letter-spacing:.3px}
+h1 .ver{font-size:13px;color:var(--slate);font-weight:500;margin-left:8px}
+.sub{color:var(--dim);font-size:13px;margin-top:5px;max-width:900px}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.chip{background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:4px 12px;font-size:12px;color:var(--ink)}
+.chip b{color:var(--blue);font-weight:700}
+#tabs{max-width:1240px;margin:0 auto 14px;display:flex;gap:8px;flex-wrap:wrap}
+#tabs button{border:1px solid var(--line);background:var(--panel);color:var(--ink);font:600 13px/1 inherit;padding:8px 16px;border-radius:10px;cursor:pointer;transition:all .15s}
+#tabs button:hover{border-color:var(--blue);color:var(--blue)}
+#tabs button.active{background:var(--blue);border-color:var(--blue);color:#fff}
+main{max-width:1240px;margin:0 auto}
+.stage{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px;box-shadow:0 1px 3px rgba(15,23,42,.05)}
+.stage svg{display:block;width:100%;height:auto}
+#sceneTitle{font-size:13px;color:var(--slate);margin:10px 2px 4px;letter-spacing:.5px}
+#sceneTitle b{color:var(--ink);font-size:15px}
+#caption{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 16px;margin-top:12px;font-size:14px;line-height:1.7;min-height:52px}
+#caption .stepno{display:inline-block;background:var(--blue);color:#fff;border-radius:6px;font-size:11px;font-weight:700;padding:2px 8px;margin-right:10px;vertical-align:1px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:11.5px;color:var(--dim)}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.legend i{width:18px;height:3px;border-radius:2px;display:inline-block}
+.controls{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.92);backdrop-filter:blur(6px);border-top:1px solid var(--line);padding:10px 24px;display:flex;align-items:center;gap:10px;justify-content:center;z-index:10}
+.controls button{border:1px solid var(--line);background:var(--panel);color:var(--ink);width:42px;height:36px;border-radius:9px;font-size:15px;cursor:pointer}
+.controls button:hover{border-color:var(--blue);color:var(--blue)}
+.controls #play{background:var(--blue);border-color:var(--blue);color:#fff;width:64px}
+.controls select{border:1px solid var(--line);background:var(--panel);border-radius:9px;height:36px;padding:0 8px;font:600 13px inherit;color:var(--ink)}
+#stepInfo{font-size:12px;color:var(--dim);min-width:70px;text-align:center}
+footer{max-width:1240px;margin:20px auto 0;color:var(--gray);font-size:11px;line-height:1.8}
+/* svg node/edge styles */
+.node rect{transition:stroke-width .2s, filter .2s}
+.node.panel rect{fill:#f8fafc}
+.node-label{font-size:13px;font-weight:600;fill:var(--ink)}
+.node-sub{font-size:10.5px;fill:var(--dim)}
+.panel-title{font-size:11.5px;font-weight:700;fill:var(--slate);letter-spacing:1px}
+.edge path{transition:stroke-width .2s, opacity .2s}
+.edge{opacity:.55}
+.edge.on{opacity:1}
+.edge.on path{stroke-width:3.4}
+.edge-label{font-size:10.5px;fill:#475569;paint-order:stroke;stroke:#ffffff;stroke-width:3px;font-weight:600}
+.node.on rect{stroke-width:2.6;filter:drop-shadow(0 4px 8px rgba(15,23,42,.16))}
+.node.on .node-label{font-weight:800}
+.pkt{filter:url(#glow)}
+.pkt-label{font-size:11px;font-weight:700;paint-order:stroke;stroke:#ffffff;stroke-width:3px}
+@media (max-width:760px){body{padding:16px 12px 130px}h1{font-size:19px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>causal-memory <span class="ver">v0.9.0 · rust + sqlite · 核心数据流可视化</span></h1>
+  <div class="sub">一张图（查询表面）· 一个引擎（typed 激活扩散）· 一个循环（写入 → 巩固 → 更准的检索）。四个场景逐步播放数据流转，数字来自真实库（2026-08-26 实测）。</div>
+  <div class="chips">
+    <span class="chip">节点 <b>1832</b>（chunks 431 · facts 1400 · scope 枢纽 1）</span>
+    <span class="chip">有效边 <b>7,857</b></span>
+    <span class="chip">fact↔chunk 链接 <b>3,117</b>（≥3 token + df≤20）</span>
+    <span class="chip">分量 <b>29</b> / 最大 <b>1777</b></span>
+    <span class="chip">边类型 <b>7</b>：caused / enabled / prevented / fact / meta / cooc / patch</span>
+  </div>
+</header>
+<div id="tabs"></div>
+<main>
+  <div id="sceneTitle"></div>
+  <div class="stage" id="stage"></div>
+  <div class="legend" id="legend"></div>
+  <div id="caption"></div>
+</main>
+<div class="controls">
+  <button id="prev" title="上一步">◀</button>
+  <button id="play" title="播放/暂停">▶</button>
+  <button id="next" title="下一步">▶|</button>
+  <select id="speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="2">2×</option></select>
+  <span id="stepInfo"></span>
+  <button id="reset" title="重置">↺</button>
+</div>
+<footer>
+  说明：图中边与数字来自真实库 probe（2026-08-26）。「写入」= SQLite 单事务 → 图 overlay 补丁 → 懒重建兜底；
+  「查询」= SQL 播种 → 图扩散排序 → SQL 物化；「睡眠巩固」= distill 泛化 → C7 取代判定 → supersede/retire → Q 强化。
+  详见 docs/design/write-path.md · query-path.md · one-graph-convergence.md。
+</footer>
+<script>
+
+
+/* ============================ 场景数据 ============================ */
+var SCENES = [
+
+/* ---------- ① 一张图 ---------- */
+{ id:"graph", title:"① 一张图 · 查询表面（Graph Anatomy）",
+  legend:[
+    {c:"#3b82f6",t:"caused +1.0"}, {c:"#f59e0b",t:"enabled +0.5"}, {c:"#f43f5e",t:"prevented −0.3"},
+    {c:"#10b981",t:"fact 0.8"}, {c:"#8b5cf6",t:"meta 0.6"}, {c:"#94a3b8",t:"cooc 0.2"}
+  ],
+  nodes:[
+    {id:"hub", x:560, y:50, w:130, h:48, label:"scope:user", sub:"scope 枢纽", fill:"#fffbeb", stroke:"#f59e0b"},
+    {id:"f1", x:410, y:150, w:150, h:50, label:"fact:1", sub:"偏好 TypeScript", fill:"#ecfdf5", stroke:"#10b981"},
+    {id:"f2", x:640, y:150, w:150, h:50, label:"fact:2", sub:"用 redis 缓存", fill:"#ecfdf5", stroke:"#10b981"},
+    {id:"f3", x:220, y:260, w:150, h:50, label:"fact:3", sub:"pnpm 取代 npm", fill:"#ecfdf5", stroke:"#10b981"},
+    {id:"d1", x:40, y:390, w:180, h:54, label:"chunk d1", sub:"rewrote module in TS", fill:"#eff6ff", stroke:"#3b82f6"},
+    {id:"o1", x:320, y:390, w:180, h:54, label:"outcome o1", sub:"compile errors dropped", fill:"#f0f9ff", stroke:"#0ea5e9"},
+    {id:"d2", x:640, y:400, w:180, h:54, label:"chunk d2", sub:"caching worked", fill:"#eff6ff", stroke:"#3b82f6"},
+    {id:"o2", x:930, y:400, w:180, h:54, label:"outcome o2", sub:"race fixed", fill:"#f0f9ff", stroke:"#0ea5e9"},
+    {id:"d3", x:470, y:530, w:180, h:54, label:"chunk d3", sub:"deadlock error", fill:"#eff6ff", stroke:"#3b82f6"}
+  ],
+  edges:[
+    {id:"hub_f1", from:"hub", to:"f1", color:"#10b981", label:"0.8"},
+    {id:"hub_f2", from:"hub", to:"f2", color:"#10b981", label:"0.8"},
+    {id:"hub_f3", from:"hub", to:"f3", color:"#10b981", label:"0.8"},
+    {id:"f1_d1", from:"f1", to:"d1", color:"#10b981", dash:"5 4", label:"fact↔chunk"},
+    {id:"f2_d2", from:"f2", to:"d2", color:"#10b981", dash:"5 4", label:"fact↔chunk"},
+    {id:"d1_o1", from:"d1", to:"o1", color:"#3b82f6", label:"caused 1.0"},
+    {id:"d2_o2", from:"d2", to:"o2", color:"#3b82f6", label:"caused 1.0"},
+    {id:"o1_d3", from:"o1", to:"d3", color:"#f59e0b", label:"enabled 0.5"},
+    {id:"d3_o2", from:"d3", to:"o2", color:"#f43f5e", label:"prevented −0.3"},
+    {id:"meta", from:"o1", to:"d2", color:"#8b5cf6", dash:"3 3", label:"meta 0.6"},
+    {id:"cooc", from:"d1", to:"d2", color:"#94a3b8", dash:"2 3", label:"cooc 0.2"}
+  ],
+  steps:[
+    {hl:["hub","f1","f2","f3"], hlE:["hub_f1","hub_f2","hub_f3"],
+     cap:"四类节点入图：chunks(431) + facts(1400) + scope 枢纽(1)。fact 是一等公民——scope→fact 边把同一 scope 的事实挂在枢纽上。",
+     pk:[{e:"hub_f1",label:"0.8",delay:100},{e:"hub_f2",label:"0.8",delay:300},{e:"hub_f3",label:"0.8",delay:500}]},
+    {hl:["d1","o1","d2","o2","d3"], hlE:["d1_o1","d2_o2","o1_d3","d3_o2"],
+     cap:"因果边带类型与传播系数：caused +1.0（正向）、enabled +0.5（允许）、prevented −0.3（抑制侧，竞争壁垒）。",
+     pk:[{e:"d1_o1",delay:100},{e:"d2_o2",delay:350},{e:"o1_d3",delay:600},{e:"d3_o2",delay:850}]},
+    {hl:[], hlE:["f1_d1","f2_d2"],
+     cap:"fact↔chunk 实体链接（≥3 distinct token + df≤20 + scope 隔离，双向、上限 8）：fact 种子能到达因果链，因果种子能浮出 fact——跨类型联想的关键。",
+     pk:[{e:"f1_d1",label:"3 tok",delay:100},{e:"f2_d2",label:"3 tok",delay:450}]},
+    {hl:[], hlE:["meta","cooc"],
+     cap:"弱关联边：meta 0.6（跨任务模式）+ cooc 0.2（Hebbian 共现，重建时 flush）。它们不主导扩散，但能被激活——联想检索比关键词多一层。",
+     pk:[{e:"meta",delay:100},{e:"cooc",delay:450}]},
+    {hl:["hub","f1","f2","f3","d1","o1","d2","o2","d3"],
+     cap:"真实库现状：29 分量 / 最大 1777。scope 隔离（lme:{qid}）故意断开跨题链接——『一张图』指结构统一，不是单连通分量；隔离是特性不是缺陷。",
+     pk:[]}
+  ]
+},
+
+/* ---------- ② 写入链路 ---------- */
+{ id:"write", title:"② 写入链路 · SQLite 事务 → 图补丁 → 懒重建",
+  legend:[{c:"#3b82f6",t:"数据流"}, {c:"#94a3b8",t:"兜底/副作用"}, {c:"#10b981",t:"可见性"}],
+  nodes:[
+    {id:"entry", x:20, y:180, w:220, h:92, label:"入口", sub:"MCP / CLI / Cooper / remember(distill)", fill:"#fff1f2", stroke:"#f43f5e"},
+    {id:"sql1", x:300, y:50, w:250, h:48, label:"① chunk 精确复用", sub:"同文本只保留一个节点", fill:"#f8fafc", stroke:"#64748b"},
+    {id:"sql2", x:300, y:122, w:250, h:48, label:"② 规则级矛盾短路", sub:"旧负 → 新正 自动软失效（无 LLM）", fill:"#f8fafc", stroke:"#64748b"},
+    {id:"sql3", x:300, y:194, w:250, h:58, label:"③ INSERT 边 / fact upsert", sub:"+ 旧值退休 superseded_by", fill:"#f8fafc", stroke:"#64748b"},
+    {id:"g1", x:610, y:50, w:250, h:48, label:"append_node（幂等）", sub:"chunk 复用只加边", fill:"#eff6ff", stroke:"#3b82f6"},
+    {id:"g2", x:610, y:122, w:250, h:48, label:"add_patch_edge → overlay", sub:"不插 CSR，O(1)", fill:"#eff6ff", stroke:"#3b82f6"},
+    {id:"g3", x:610, y:194, w:250, h:58, label:"link_fact_node 增量链接", sub:"停用词 + df≤20 + scope + ≥3 token", fill:"#eff6ff", stroke:"#3b82f6"},
+    {id:"g4", x:610, y:282, w:250, h:48, label:"retire_node / invalidate", sub:"取代或被证伪 → 立即失效", fill:"#fef2f2", stroke:"#ef4444"},
+    {id:"vis", x:910, y:90, w:260, h:74, label:"查询立即可见", sub:"下一条查询命中（不需重建）", fill:"#ecfdf5", stroke:"#10b981"},
+    {id:"reb", x:910, y:230, w:260, h:70, label:"懒重建兜底", sub:"5 写 / 30s · from_store + cooc flush", fill:"#fffbeb", stroke:"#f59e0b"},
+    {id:"emb", x:300, y:330, w:250, h:52, label:"embedding → 语义索引", sub:"静默失败，不阻塞写入", fill:"#f8fafc", stroke:"#94a3b8"}
+  ],
+  edges:[
+    {id:"en_s1", from:"entry", to:"sql1", color:"#3b82f6"},
+    {id:"s1_s2", from:"sql1", to:"sql2", color:"#3b82f6"},
+    {id:"s2_s3", from:"sql2", to:"sql3", color:"#3b82f6"},
+    {id:"s3_g1", from:"sql3", to:"g1", color:"#3b82f6", label:"edge / fact"},
+    {id:"g1_g2", from:"g1", to:"g2", color:"#3b82f6"},
+    {id:"g2_g3", from:"g2", to:"g3", color:"#3b82f6"},
+    {id:"g3_g4", from:"g3", to:"g4", color:"#3b82f6"},
+    {id:"g3_vis", from:"g3", to:"vis", color:"#10b981", label:"✓"},
+    {id:"g4_vis", from:"g4", to:"vis", color:"#94a3b8", dash:"4 3"},
+    {id:"reb_g1", from:"reb", to:"g1", color:"#94a3b8", dash:"6 4", label:"from_store 全量重建"},
+    {id:"s3_emb", from:"sql3", to:"emb", color:"#94a3b8", dash:"4 3", label:"静默"}
+  ],
+  steps:[
+    {hl:["entry"], cap:"① 入口统一：MCP / CLI / Cooper / sleep 巩固 都走 record_decision / record_fact / invalidate_decision；remember 先经 distill（LLM 抽取）再落库。",
+     pk:[{e:"en_s1",label:"record",delay:300}]},
+    {hl:["sql1"], cap:"② SQLite 单事务（真相源）：精确文本复用 chunk——同文本只保留一个节点 id。真实库 431 chunks 却有 223 条有效边，就是复用带来的。",
+     pk:[]},
+    {hl:["sql2"], cap:"③ 规则级矛盾短路：旧边明确负面 ∧ 新边明确正面 → 自动软失效旧边（v4 起 outcome_polarity 优先于文本启发式）。",
+     pk:[{e:"s1_s2",delay:400}]},
+    {hl:["sql3"], cap:"④ INSERT causal_edges（relation / confidence / task_tag / polarity）；fact 则 upsert + 旧值退休（superseded_by 谱系）同批完成——『换 pnpm』无窗口期。",
+     pk:[{e:"s2_s3",label:"edge/fact",delay:400}]},
+    {hl:["g1","g2"], cap:"⑤ 图补丁 O(1)：append_node 幂等（chunk 复用只加边）+ add_patch_edge 挂 overlay——不插 CSR（中间插入是 O(E) 且会移位所有边索引）。",
+     pk:[{e:"s3_g1",delay:300},{e:"g1_g2",label:"patch",delay:800}]},
+    {hl:["g3"], cap:"⑥ link_fact_node 增量链接：停用词 + df≤20 + scope 隔离 + ≥3 distinct token，双向、上限 8——写路径与重建路径同一策略（2026-08-26 精度修复）。",
+     pk:[{e:"g2_g3",label:"fact↔chunk",delay:400}]},
+    {hl:["g4"], cap:"⑦ replace / invalidate：retire_node 与 invalidate_edges_between（O(deg) 翻转）——被取代或被证伪的旧记忆立即停止播种/扩散，不必等懒重建。",
+     pk:[{e:"g3_g4",label:"retire",delay:400}]},
+    {hl:["vis","reb","emb"], cap:"⑧ 新记忆对下一条查询可见（✓）；懒重建（5 写/30s）兜底漂移并 flush Hebbian 共现；embedding 静默失败不阻塞写入（CLI 可回填）。",
+     pk:[{e:"g3_vis",label:"✓",delay:300},{e:"s3_emb",delay:700},{e:"reb_g1",label:"from_store",delay:1100}]}
+  ]
+},
+
+/* ---------- ③ 查询链路 ---------- */
+{ id:"query", title:"③ 查询链路 · SQL 播种 → 图扩散排序 → SQL 物化",
+  legend:[{c:"#3b82f6",t:"图内扩散"}, {c:"#64748b",t:"SQL（播种/物化）"}, {c:"#94a3b8",t:"fallback"}],
+  nodes:[
+    {id:"q", x:20, y:250, w:130, h:72, label:"查询", sub:"search_memory", fill:"#fff1f2", stroke:"#f43f5e"},
+    {id:"seed", x:220, y:60, w:240, h:60, label:"播种层（SQL）", sub:"BM25 + 语义 · ≤16 种子 · 双命名空间", fill:"#f8fafc", stroke:"#64748b"},
+    {id:"fresh", x:220, y:170, w:240, h:48, label:"ensure_fresh_for", sub:"种子缺失 → 立即全量重建", fill:"#fffbeb", stroke:"#f59e0b"},
+    {id:"gs", x:560, y:120, w:90, h:38, label:"seed", fill:"#eff6ff", stroke:"#3b82f6"},
+    {id:"g1", x:690, y:80, w:90, h:38, label:"chunk", fill:"#eff6ff", stroke:"#3b82f6"},
+    {id:"g2", x:690, y:160, w:90, h:38, label:"fact", fill:"#ecfdf5", stroke:"#10b981"},
+    {id:"g3", x:820, y:120, w:100, h:38, label:"outcome", fill:"#f0f9ff", stroke:"#0ea5e9"},
+    {id:"split", x:520, y:280, w:330, h:52, label:"split_typed", sub:"fact_ids / chunk_activation / 共现缓冲", fill:"#eff6ff", stroke:"#3b82f6"},
+    {id:"mat", x:920, y:70, w:260, h:60, label:"物化（SQL）", sub:"facts_by_ids / edges_touching_chunks", fill:"#f8fafc", stroke:"#64748b"},
+    {id:"res", x:920, y:190, w:260, h:80, label:"结果", sub:"facts + causal 按激活序返回", fill:"#ecfdf5", stroke:"#10b981"},
+    {id:"fb", x:920, y:340, w:260, h:56, label:"fallback 纯 SQL RRF", sub:"图不可用 / 无激活时", fill:"#f8fafc", stroke:"#94a3b8"}
+  ],
+  edges:[
+    {id:"q_seed", from:"q", to:"seed", color:"#64748b", label:"query"},
+    {id:"seed_fresh", from:"seed", to:"fresh", color:"#64748b"},
+    {id:"fresh_gs", from:"fresh", to:"gs", color:"#64748b", label:"种子 id"},
+    {id:"gs_g1", from:"gs", to:"g1", color:"#3b82f6"},
+    {id:"gs_g2", from:"gs", to:"g2", color:"#10b981"},
+    {id:"g1_g3", from:"g1", to:"g3", color:"#3b82f6"},
+    {id:"g2_g3", from:"g2", to:"g3", color:"#10b981"},
+    {id:"g3_split", from:"g3", to:"split", color:"#3b82f6", label:"激活"},
+    {id:"split_mat", from:"split", to:"mat", color:"#64748b", label:"ids"},
+    {id:"mat_res", from:"mat", to:"res", color:"#10b981", label:"完整行"},
+    {id:"q_fb", from:"q", to:"fb", color:"#94a3b8", dash:"5 4", label:"仅兜底"},
+    {id:"fb_res", from:"fb", to:"res", color:"#94a3b8", dash:"5 4"}
+  ],
+  steps:[
+    {hl:["q"], cap:"① 查询进来：search_memory → ranked_hits，统一引擎优先（图引擎；mode 标签暴露在响应里供 A/B 观测）。",
+     pk:[]},
+    {hl:["seed"], cap:"② 播种（SQL）：SQLite 持久 BM25 倒排索引刻意横跨 facts + causal 双命名空间，有 embedder 时语义向量补充——≤16 个种子。",
+     pk:[{e:"q_seed",label:"query",delay:300}]},
+    {hl:["fresh"], cap:"③ ensure_fresh_for：store 解析出的种子在图里找不到节点 → 立即全量重建——保证图引擎绝不弱于它替代的 store 直查路径。",
+     pk:[{e:"seed_fresh",label:"seeds",delay:400}]},
+    {hl:["gs","g1","g2","g3"], hlE:["gs_g1","gs_g2","g1_g3","g2_g3"],
+     cap:"④ 图扩散（排序核心）：种子沿 typed 边传播（caused 1.0 / fact 0.8 / meta 0.6 / cooc 0.2 / prevented −0.3），跨类型联想——facts 与 causal 一次扩散同时带出。",
+     pk:[{e:"fresh_gs",label:"种子",delay:200},{e:"gs_g1",delay:700},{e:"gs_g2",delay:900},{e:"g1_g3",delay:1200},{e:"g2_g3",delay:1400}]},
+    {hl:["split"], cap:"⑤ split_typed：fact:{id} → fact_ids、chunk → chunk_activation（|activation| ≥ 0.1 阈值）；scope 枢纽跳过；同时把激活节点对缓冲进 Hebbian 共现。",
+     pk:[{e:"g3_split",label:"激活",delay:400}]},
+    {hl:["mat"], cap:"⑥ 物化（SQL）：facts_by_ids + edges_touching_chunks 回 SQLite 拿完整行（confidence / 时间 / polarity）——图只负责排序，数据完备性归 SQL。",
+     pk:[{e:"split_mat",label:"ids",delay:400}]},
+    {hl:["res","fb"], cap:"⑦ 结果按激活序返回；图不可用 / 无激活时 fallback 纯 SQL dual-pool RRF（语义→BM25 逐层降级 + A2 hop + RRF 融合），兼 A/B 回归对照。",
+     pk:[{e:"mat_res",label:"rows",delay:300},{e:"q_fb",label:"(fallback)",delay:800},{e:"fb_res",delay:1300}]}
+  ]
+},
+
+/* ---------- ④ 睡眠巩固 ---------- */
+{ id:"sleep", title:"④ 睡眠巩固 · One Loop（distill → C7 → supersede → Q 强化）",
+  legend:[{c:"#8b5cf6",t:"巩固循环"}, {c:"#ef4444",t:"取代/退休"}, {c:"#10b981",t:"播种变强"}],
+  nodes:[
+    {id:"act", x:570, y:36, w:190, h:56, label:"行动 → 记录", sub:"record_decision / record_fact", fill:"#fff1f2", stroke:"#f43f5e"},
+    {id:"trig", x:920, y:120, w:180, h:56, label:"sleep 触发", sub:"定时 / 写入累积后", fill:"#fffbeb", stroke:"#f59e0b"},
+    {id:"distill", x:860, y:420, w:200, h:60, label:"distill 泛化压缩", sub:"LLM 抽取 fact / lesson / edge", fill:"#f5f3ff", stroke:"#8b5cf6"},
+    {id:"c7", x:540, y:530, w:220, h:62, label:"C7 取代判定", sub:"find_falsified_candidates → LLM 裁决", fill:"#f5f3ff", stroke:"#7c3aed"},
+    {id:"retire", x:200, y:420, w:210, h:60, label:"supersede + retire", sub:"旧边 valid_to + 图上 retire_node", fill:"#fef2f2", stroke:"#ef4444"},
+    {id:"qnode", x:90, y:150, w:200, h:60, label:"Q / 权重巩固", sub:"Hebbian 强化 · 衰减 · cooc flush", fill:"#eff6ff", stroke:"#3b82f6"},
+    {id:"feed", x:300, y:36, w:200, h:56, label:"检索播种变强", sub:"实体链接质量 ↑", fill:"#ecfdf5", stroke:"#10b981"}
+  ],
+  edges:[
+    {id:"act_trig", from:"act", to:"trig", color:"#8b5cf6"},
+    {id:"trig_dist", from:"trig", to:"distill", color:"#8b5cf6"},
+    {id:"dist_c7", from:"distill", to:"c7", color:"#8b5cf6"},
+    {id:"c7_ret", from:"c7", to:"retire", color:"#ef4444", label:"supersede"},
+    {id:"ret_q", from:"retire", to:"qnode", color:"#3b82f6"},
+    {id:"q_feed", from:"qnode", to:"feed", color:"#10b981", label:"播种↑"},
+    {id:"feed_act", from:"feed", to:"act", color:"#8b5cf6", label:"一轮"}
+  ],
+  steps:[
+    {hl:["act"], cap:"① 白天：行动 → 记录（走写入链路）——新 decision / fact 落 SQLite + 图补丁，对下一条查询立即可见。",
+     pk:[]},
+    {hl:["trig"], cap:"② 睡眠触发：定时（如每日）或写入累积后进入巩固循环。",
+     pk:[{e:"act_trig",delay:300}]},
+    {hl:["distill"], cap:"③ distill：LLM 把碎片对话泛化/压缩成新 fact + lesson + causal edge——不可变：只写新 delta，绝不改旧行。",
+     pk:[{e:"trig_dist",delay:400}]},
+    {hl:["c7"], cap:"④ C7 取代判定：同决策不同结果的旧边（find_falsified_candidates）交给 LLM 裁决谁对——规则短路只处理保守的『旧负→新正』，其余全靠这一步。",
+     pk:[{e:"dist_c7",delay:400}]},
+    {hl:["retire"], cap:"⑤ supersede：旧边 valid_to 软失效 + 图上 retire_node 立即停止播种/出现；superseded_by 谱系保留，重建时才物理清除。",
+     pk:[{e:"c7_ret",label:"supersede",delay:400}]},
+    {hl:["qnode"], cap:"⑥ Q 值动力学：强化激活过的边（Hebbian w←(1−λ)w+η，λ=0.995），弱边衰减；检索时缓冲的共现对 flush 落库（D1）。",
+     pk:[{e:"ret_q",delay:400}]},
+    {hl:["feed"], cap:"⑦ 巩固后的图 → 检索播种变强：实体链接质量上升（2026-08-26 精度 17%→33% 严格 / 29%→75% 宽松），跨类型联想更准。",
+     pk:[{e:"q_feed",label:"播种↑",delay:400}]},
+    {hl:["act","feed"], hlE:["feed_act"], cap:"⑧ 回到行动：更强的记忆 → 更好的干预预测 → 下一轮记录——One Loop 闭环。",
+     pk:[{e:"feed_act",label:"一轮",delay:300}]}
+  ]
+}
+];
+
+
+/* ============================ 引擎 ============================ */
+var NS = "http://www.w3.org/2000/svg";
+var stage = document.getElementById("stage");
+var caption = document.getElementById("caption");
+var sceneTitle = document.getElementById("sceneTitle");
+var legendBox = document.getElementById("legend");
+var tabsBox = document.getElementById("tabs");
+var playBtn = document.getElementById("play");
+var stepInfo = document.getElementById("stepInfo");
+var markers = {}, cur = 0, step = 0, playing = false, speed = 1, autoT = 0;
+
+function edgeDef(s, id){ for (var i=0;i<s.edges.length;i++){ if(s.edges[i].id===id) return s.edges[i]; } return null; }
+function nodeDef(s, id){ for (var i=0;i<s.nodes.length;i++){ if(s.nodes[i].id===id) return s.nodes[i]; } return null; }
+function center(n){ return {x:n.x+n.w/2, y:n.y+n.h/2}; }
+function edgeD(s, e){ var a=center(nodeDef(s,e.from)), b=center(nodeDef(s,e.to)); return "M "+a.x+" "+a.y+" L "+b.x+" "+b.y; }
+function mkMarker(color){
+  if(markers[color]) return markers[color];
+  var id="arr-"+color.replace("#","");
+  var m=document.createElementNS(NS,"marker");
+  m.setAttribute("id",id); m.setAttribute("viewBox","0 0 10 10");
+  m.setAttribute("refX","9"); m.setAttribute("refY","5");
+  m.setAttribute("markerWidth","6.5"); m.setAttribute("markerHeight","6.5");
+  m.setAttribute("orient","auto-start-reverse");
+  var p=document.createElementNS(NS,"path"); p.setAttribute("d","M0,0 L10,5 L0,10 z"); p.setAttribute("fill",color);
+  m.appendChild(p); markers[color]=m;
+  var defs=stage.querySelector("defs"); defs.appendChild(m);
+  return m;
+}
+function build(s){
+  stage.innerHTML="";
+  var svg=document.createElementNS(NS,"svg");
+  svg.setAttribute("viewBox", s.view || "0 0 1200 640");
+  svg.setAttribute("role","img"); svg.setAttribute("aria-label", s.title);
+  stage.appendChild(svg);
+  var defs=document.createElementNS(NS,"defs");
+  var glow=document.createElementNS(NS,"filter"); glow.setAttribute("id","glow");
+  var blur=document.createElementNS(NS,"feGaussianBlur"); blur.setAttribute("stdDeviation","2.4"); blur.setAttribute("result","b");
+  var merge=document.createElementNS(NS,"feMerge");
+  var m1=document.createElementNS(NS,"feMergeNode"); m1.setAttribute("in","b");
+  var m2=document.createElementNS(NS,"feMergeNode"); m2.setAttribute("in","SourceGraphic");
+  merge.appendChild(m1); merge.appendChild(m2);
+  glow.appendChild(blur); glow.appendChild(merge);
+  defs.appendChild(glow); svg.appendChild(defs);
+  s.nodes.forEach(function(n){
+    var g=document.createElementNS(NS,"g"); g.setAttribute("id","n-"+n.id); g.setAttribute("class","node"+(n.kind==="panel"?" panel":""));
+    var r=document.createElementNS(NS,"rect");
+    r.setAttribute("x",n.x); r.setAttribute("y",n.y); r.setAttribute("width",n.w); r.setAttribute("height",n.h);
+    r.setAttribute("rx","10");
+    r.setAttribute("fill", n.kind==="panel" ? "#f8fafc" : (n.fill||"#ffffff"));
+    r.setAttribute("stroke", n.kind==="panel" ? "#cbd5e1" : (n.stroke||"#cbd5e1"));
+    if(n.kind==="panel") r.setAttribute("stroke-dasharray","7 4");
+    g.appendChild(r);
+    if(n.panelTitle){
+      var pt=document.createElementNS(NS,"text"); pt.setAttribute("class","panel-title");
+      pt.setAttribute("x",n.x+14); pt.setAttribute("y",n.y+18); pt.textContent=n.panelTitle; g.appendChild(pt);
+    }
+    var t=document.createElementNS(NS,"text");
+    t.setAttribute("x",n.x+n.w/2);
+    t.setAttribute("y", n.sub ? (n.y+n.h/2-2) : (n.y+n.h/2+4));
+    t.setAttribute("class","node-label"); t.setAttribute("text-anchor","middle");
+    t.textContent=n.label; g.appendChild(t);
+    if(n.sub){
+      var st=document.createElementNS(NS,"text");
+      st.setAttribute("x",n.x+n.w/2); st.setAttribute("y",n.y+n.h/2+14);
+      st.setAttribute("class","node-sub"); st.setAttribute("text-anchor","middle");
+      st.textContent=n.sub; g.appendChild(st);
+    }
+    svg.appendChild(g);
+  });
+  s.edges.forEach(function(e){
+    var g=document.createElementNS(NS,"g"); g.setAttribute("id","e-"+e.id); g.setAttribute("class","edge");
+    var col=e.color||"#94a3b8";
+    var p=document.createElementNS(NS,"path");
+    p.setAttribute("d", edgeD(s,e)); p.setAttribute("fill","none");
+    p.setAttribute("stroke",col); p.setAttribute("stroke-width","2");
+    p.setAttribute("marker-end","url(#"+mkMarker(col).getAttribute("id")+")");
+    if(e.dash) p.setAttribute("stroke-dasharray",e.dash);
+    g.appendChild(p);
+    if(e.label){
+      var a=center(nodeDef(s,e.from)), b=center(nodeDef(s,e.to));
+      var lt=document.createElementNS(NS,"text");
+      lt.setAttribute("x",(a.x+b.x)/2); lt.setAttribute("y",(a.y+b.y)/2-6);
+      lt.setAttribute("class","edge-label"); lt.setAttribute("text-anchor","middle");
+      lt.textContent=e.label; g.appendChild(lt);
+    }
+    svg.appendChild(g);
+  });
+}
+function spawn(s, eid, label, color, delay, cb){
+  setTimeout(function(){
+    var g=document.getElementById("e-"+eid); if(!g) return;
+    var path=g.querySelector("path"); var len=path.getTotalLength();
+    var svg=stage.querySelector("svg"); var dur=0.9;
+    var dot=document.createElementNS(NS,"circle");
+    dot.setAttribute("r","5.5"); dot.setAttribute("fill",color||"#3b82f6");
+    dot.setAttribute("class","pkt"); svg.appendChild(dot);
+    var lab=null;
+    if(label){
+      lab=document.createElementNS(NS,"text");
+      lab.setAttribute("class","pkt-label"); lab.setAttribute("text-anchor","middle");
+      lab.setAttribute("fill",color||"#3b82f6"); lab.textContent=label; svg.appendChild(lab);
+    }
+    var t0=performance.now();
+    (function frame(now){
+      var t=Math.min(1,(now-t0)/1000/dur);
+      var pt=path.getPointAtLength(t*len);
+      dot.setAttribute("cx",pt.x); dot.setAttribute("cy",pt.y);
+      if(lab){ lab.setAttribute("x",pt.x+13); lab.setAttribute("y",pt.y-11); }
+      if(t<1){ requestAnimationFrame(frame); }
+      else { dot.remove(); if(lab) lab.remove(); if(cb) cb(); }
+    })(t0);
+  }, delay||0);
+}
+function edgeColor(s,eid){ var e=edgeDef(s,eid); return e?e.color:"#3b82f6"; }
+function showStep(i){
+  clearTimeout(autoT);
+  var s=SCENES[cur], st=s.steps[i];
+  var ons=stage.querySelectorAll(".on");
+  for(var k=0;k<ons.length;k++) ons[k].classList.remove("on");
+  (st.hl||[]).forEach(function(id){ var el=document.getElementById("n-"+id); if(el) el.classList.add("on"); });
+  (st.hlE||[]).forEach(function(id){ var el=document.getElementById("e-"+id); if(el) el.classList.add("on"); });
+  caption.innerHTML="<span class=\"stepno\">"+(i+1)+" / "+s.steps.length+"</span>"+st.cap;
+  stepInfo.textContent=(i+1)+" / "+s.steps.length;
+  (st.pk||[]).forEach(function(p){ spawn(s,p.e,p.label||"",p.color||edgeColor(s,p.e),p.delay||0); });
+  if(playing){
+    autoT=setTimeout(function(){
+      if(step+1<s.steps.length){ step++; showStep(step); }
+      else { playing=false; playBtn.textContent="▶"; }
+    }, 2800/speed);
+  }
+}
+function loadScene(i){
+  cur=i; step=0; playing=false; playBtn.textContent="▶";
+  var s=SCENES[i];
+  build(s);
+  sceneTitle.innerHTML="<b>"+s.title.split("·")[0]+"</b>"+(s.title.indexOf("·")>0?"<span> · "+s.title.split("·").slice(1).join("·")+"</span>":"");
+  legendBox.innerHTML="";
+  (s.legend||[]).forEach(function(l){
+    var sp=document.createElement("span");
+    var sw=document.createElement("i"); sw.style.background=l.c;
+    sp.appendChild(sw); sp.appendChild(document.createTextNode(l.t));
+    legendBox.appendChild(sp);
+  });
+  showStep(0);
+}
+/* tabs */
+SCENES.forEach(function(s,i){
+  var b=document.createElement("button");
+  b.textContent=s.title.split("·")[0];
+  b.addEventListener("click",function(){ loadScene(i); markTabs(); });
+  tabsBox.appendChild(b);
+});
+function markTabs(){
+  var bs=tabsBox.querySelectorAll("button");
+  for(var i=0;i<bs.length;i++) bs[i].classList.toggle("active", i===cur);
+}
+/* controls */
+document.getElementById("prev").addEventListener("click",function(){
+  if(step>0){ step--; showStep(step); } else { step=SCENES[cur].steps.length-1; showStep(step); }
+});
+document.getElementById("next").addEventListener("click",function(){
+  if(step+1<SCENES[cur].steps.length){ step++; showStep(step); } else { step=0; showStep(0); }
+});
+playBtn.addEventListener("click",function(){
+  playing=!playing;
+  if(playing){
+    playBtn.textContent="⏸";
+    if(step===SCENES[cur].steps.length-1){ step=0; }
+    showStep(step);
+  } else { playBtn.textContent="▶"; clearTimeout(autoT); }
+});
+document.getElementById("reset").addEventListener("click",function(){ loadScene(cur); markTabs(); });
+document.getElementById("speed").addEventListener("change",function(e){ speed=parseFloat(e.target.value); });
+document.addEventListener("keydown",function(e){
+  if(e.code==="Space"){ e.preventDefault(); playBtn.click(); }
+  else if(e.key==="ArrowRight"){ document.getElementById("next").click(); }
+  else if(e.key==="ArrowLeft"){ document.getElementById("prev").click(); }
+});
+/* init: hash routing (#graph / #write / #query / #sleep) */
+function sceneFromHash(){
+  var h=(location.hash||"").replace("#","");
+  for(var i=0;i<SCENES.length;i++){ if(SCENES[i].id===h) return i; }
+  return 0;
+}
+loadScene(sceneFromHash()); markTabs();
+window.addEventListener("hashchange", function(){ loadScene(sceneFromHash()); markTabs(); });
+
+</script>
+</body>
+</html>
+

@@ -40,6 +40,7 @@ fn make_graph(scenarios: &[Scenario]) -> CausalGraph {
             replay_count: 0,
             last_activated: 0,
             task_tag: None,
+            scope: None,
         });
 
         for (e_idx, (target_text, rel, weight)) in s.edges.iter().enumerate() {
@@ -52,6 +53,7 @@ fn make_graph(scenarios: &[Scenario]) -> CausalGraph {
                 replay_count: 0,
                 last_activated: 0,
                 task_tag: None,
+                scope: None,
             });
             edges.push(EdgeData {
                 from_id: seed_id.clone(),
@@ -211,11 +213,15 @@ fn ablation_inhibition_improves_precision() {
         let results_with = g1.spreading_activation_opts(s.query, None, false, false);
         precision_with += precision_at_k(&results_with, &s.correct, k);
         // FP = prevented target in top-k with POSITIVE activation (false positive)
-        fp_with += results_with.iter().take(k)
+        fp_with += results_with
+            .iter()
+            .take(k)
             .filter(|r| r.activation > 0.0 && s.incorrect.iter().any(|c| r.text.contains(c)))
             .count();
         // Warnings = prevented target in top-k with NEGATIVE activation (correct warning)
-        warnings_with += results_with.iter().take(k)
+        warnings_with += results_with
+            .iter()
+            .take(k)
             .filter(|r| r.activation < 0.0 && s.incorrect.iter().any(|c| r.text.contains(c)))
             .count();
 
@@ -223,10 +229,14 @@ fn ablation_inhibition_improves_precision() {
         let mut g2 = graph_without.clone();
         let results_without = g2.spreading_activation_opts(s.query, None, false, false);
         precision_without += precision_at_k(&results_without, &s.correct, k);
-        fp_without += results_without.iter().take(k)
+        fp_without += results_without
+            .iter()
+            .take(k)
             .filter(|r| r.activation > 0.0 && s.incorrect.iter().any(|c| r.text.contains(c)))
             .count();
-        warnings_without += results_without.iter().take(k)
+        warnings_without += results_without
+            .iter()
+            .take(k)
             .filter(|r| r.activation < 0.0 && s.incorrect.iter().any(|c| r.text.contains(c)))
             .count();
     }
@@ -238,11 +248,13 @@ fn ablation_inhibition_improves_precision() {
     println!("Scenarios: {n}, Precision@{k}");
     println!("  WITH inhibition:    precision={avg_p_with:.3}  false_positives={fp_with}  warnings={warnings_with}");
     println!("  WITHOUT inhibition: precision={avg_p_without:.3}  false_positives={fp_without}  warnings={warnings_without}");
-    println!("  Delta precision:    {:+.3} ({:+.1}%)",
+    println!(
+        "  Delta precision:    {:+.3} ({:+.1}%)",
         avg_p_with - avg_p_without,
         (avg_p_with - avg_p_without) * 100.0
     );
-    println!("  Warning signals:    {} → {} (lost without inhibition)",
+    println!(
+        "  Warning signals:    {} → {} (lost without inhibition)",
         warnings_with, warnings_without
     );
 
@@ -254,8 +266,14 @@ fn ablation_inhibition_improves_precision() {
     );
 
     // 2. No false positives in either case (prevented targets with positive activation)
-    assert_eq!(fp_with, 0, "inhibition: no prevented target should have positive activation");
-    assert_eq!(fp_without, 0, "without inhibition: zeroed prevented edges produce no activation");
+    assert_eq!(
+        fp_with, 0,
+        "inhibition: no prevented target should have positive activation"
+    );
+    assert_eq!(
+        fp_without, 0,
+        "without inhibition: zeroed prevented edges produce no activation"
+    );
 
     // 3. Warning signals exist WITH inhibition but not WITHOUT
     assert!(

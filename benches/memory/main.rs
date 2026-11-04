@@ -92,11 +92,31 @@ fn generate_scenario(seed: u64) -> Scenario {
 
     // Facts (key, value, query tokens, session).
     let facts = vec![
-        GoldFact { key: "editor", value: "vim", query: "vim", },
-        GoldFact { key: "production_db", value: "PostgreSQL 16", query: "PostgreSQL", },
-        GoldFact { key: "deployment", value: "Kubernetes", query: "Kubernetes", },
-        GoldFact { key: "theme", value: "dark mode", query: "dark mode", },
-        GoldFact { key: "coffee_milk", value: "oat milk", query: "oat milk", },
+        GoldFact {
+            key: "editor",
+            value: "vim",
+            query: "vim",
+        },
+        GoldFact {
+            key: "production_db",
+            value: "PostgreSQL 16",
+            query: "PostgreSQL",
+        },
+        GoldFact {
+            key: "deployment",
+            value: "Kubernetes",
+            query: "Kubernetes",
+        },
+        GoldFact {
+            key: "theme",
+            value: "dark mode",
+            query: "dark mode",
+        },
+        GoldFact {
+            key: "coffee_milk",
+            value: "oat milk",
+            query: "oat milk",
+        },
     ];
 
     // Causal lessons (decision → outcome, relation).
@@ -166,9 +186,18 @@ fn generate_scenario(seed: u64) -> Scenario {
     // 3-hop causal chain (text-derived chunk ids link the hops):
     // skipped tests → release broke API → hotfix restored it → broke again.
     let chain: Vec<(&str, &str)> = vec![
-        ("skipped integration tests before the release", "the release broke the payment API"),
-        ("the release broke the payment API", "a hotfix restored the payment API"),
-        ("a hotfix restored the payment API", "the API broke again under load"),
+        (
+            "skipped integration tests before the release",
+            "the release broke the payment API",
+        ),
+        (
+            "the release broke the payment API",
+            "a hotfix restored the payment API",
+        ),
+        (
+            "a hotfix restored the payment API",
+            "the API broke again under load",
+        ),
     ];
 
     // Seed a deterministic session order shuffle.
@@ -219,11 +248,7 @@ fn link(store: &CausalStore, from: &str, to: &str, relation: &str, conf: f64) ->
 /// Write distilled items through the production path: facts/preferences →
 /// the fact layer (with supersedes retirement), lessons/causal →
 /// record_distilled. Mirrors the CLI's write_distilled_items.
-fn record_items(
-    store: &CausalStore,
-    items: &[MemoryItem],
-    retired: &mut usize,
-) -> Result<()> {
+fn record_items(store: &CausalStore, items: &[MemoryItem], retired: &mut usize) -> Result<()> {
     for item in items {
         match item.kind {
             ItemKind::Fact | ItemKind::Preference => {
@@ -263,10 +288,9 @@ async fn ingest(
                 record_items(store, &items, &mut retired)?;
                 stats.items_extracted += items.len();
                 for item in &items {
-                    stats.extracted.push((
-                        format!("{:?}", item.kind).to_lowercase(),
-                        item.text.clone(),
-                    ));
+                    stats
+                        .extracted
+                        .push((format!("{:?}", item.kind).to_lowercase(), item.text.clone()));
                 }
                 stats.facts_written += items
                     .iter()
@@ -286,8 +310,13 @@ async fn ingest(
 
 fn session_date(idx: usize) -> &'static str {
     const DATES: [&str; 7] = [
-        "2026-06-20", "2026-06-24", "2026-06-28", "2026-07-02",
-        "2026-07-06", "2026-07-10", "2026-07-14",
+        "2026-06-20",
+        "2026-06-24",
+        "2026-06-28",
+        "2026-07-02",
+        "2026-07-06",
+        "2026-07-10",
+        "2026-07-14",
     ];
     DATES[idx % DATES.len()]
 }
@@ -350,7 +379,9 @@ fn evaluate(
     // ── Facts & preferences: search_facts_bm25 with the value tokens ─────
     for f in &scenario.facts {
         m.fact_recall.1 += 1;
-        let hits = store.search_facts_bm25(f.query, None, topk).unwrap_or_default();
+        let hits = store
+            .search_facts_bm25(f.query, None, topk)
+            .unwrap_or_default();
         let ctx = hits
             .iter()
             .map(|h| h.value.clone())
@@ -359,7 +390,9 @@ fn evaluate(
         token_sum += causal_memory::token::estimate_tokens(&ctx);
         token_n += 1;
         let gold_lower = f.value.to_lowercase();
-        let hit = hits.iter().any(|h| h.value.to_lowercase().contains(&gold_lower));
+        let hit = hits
+            .iter()
+            .any(|h| h.value.to_lowercase().contains(&gold_lower));
         if hit {
             m.fact_recall.0 += 1;
         }
@@ -379,7 +412,9 @@ fn evaluate(
     for c in &scenario.causals {
         m.causal_recall.1 += 1;
         let query_tokens: Vec<&str> = c.query.split_whitespace().collect();
-        let hits = store.search_causal_bm25(None, c.query, topk).unwrap_or_default();
+        let hits = store
+            .search_causal_bm25(None, c.query, topk)
+            .unwrap_or_default();
         let ctx = hits
             .iter()
             .map(|h| format!("{} → {}", h.decision_text, h.outcome_text))
@@ -400,7 +435,9 @@ fn evaluate(
         if hits.iter().any(|h| matches(&h.decision_text)) {
             m.decision_attachment.0 += 1;
         }
-        let hit = hits.iter().find(|h| matches(&format!("{} {}", h.decision_text, h.outcome_text)));
+        let hit = hits
+            .iter()
+            .find(|h| matches(&format!("{} {}", h.decision_text, h.outcome_text)));
         if hit.is_some() {
             m.causal_recall.0 += 1;
         }
@@ -492,17 +529,33 @@ fn evaluate(
     //    a transition fact retires the old one, and re-recording revives it;
     //    an edge-level supersede marks superseded_by, and restore_edge
     //    brings the old lesson back. ─────────────────────────────────────
-    let mech_old = store
-        .record_fact("preference", "prefers black coffee in the morning", "user", "distill", 0.8)?;
-    let mech_new = store
-        .record_fact("preference", "switched from black coffee to green tea", "user", "distill", 0.8)?;
+    let mech_old = store.record_fact(
+        "preference",
+        "prefers black coffee in the morning",
+        "user",
+        "distill",
+        0.8,
+    )?;
+    let mech_new = store.record_fact(
+        "preference",
+        "switched from black coffee to green tea",
+        "user",
+        "distill",
+        0.8,
+    )?;
     let mech_retired = store
         .retire_facts_by_hint("preference", "user", "black coffee", Some(mech_new))
         .unwrap_or(0);
     let _ = mech_old;
     let _ = mech_retired;
     // Fact revive path: re-recording the retired value resurrects it.
-    let _ = store.record_fact("preference", "prefers black coffee in the morning", "user", "distill", 0.8)?;
+    let _ = store.record_fact(
+        "preference",
+        "prefers black coffee in the morning",
+        "user",
+        "distill",
+        0.8,
+    )?;
     let revived: i64 = store
         .with_conn(|c| {
             Ok(c.query_row(
@@ -535,7 +588,10 @@ fn evaluate(
     let _ = store.record_distilled(&mech_item, None)?;
     let superseded_edges = store.superseded_edges(10)?;
     let mut restored_ok = false;
-    if let Some(edge) = superseded_edges.iter().find(|e| e.decision_text.contains("print statements")) {
+    if let Some(edge) = superseded_edges
+        .iter()
+        .find(|e| e.decision_text.contains("print statements"))
+    {
         restored_ok = store.restore_edge(edge.edge_id).unwrap_or(false)
             && store
                 .search_causal_bm25(None, "print statements", 5)
@@ -552,7 +608,9 @@ fn evaluate(
         let _ = i;
     }
     let last_outcome = scenario.chain.last().map(|(_, o)| *o).unwrap_or_default();
-    let chains = store.trace_cause_chain(last_outcome, 5, 0.3).unwrap_or_default();
+    let chains = store
+        .trace_cause_chain(last_outcome, 5, 0.3)
+        .unwrap_or_default();
     let gold_decisions: Vec<String> = scenario
         .chain
         .iter()
@@ -562,7 +620,11 @@ fn evaluate(
     for chain in &chains {
         let covered = chain
             .iter()
-            .filter(|h| gold_decisions.iter().any(|g| h.decision_text.to_lowercase().contains(g)))
+            .filter(|h| {
+                gold_decisions
+                    .iter()
+                    .any(|g| h.decision_text.to_lowercase().contains(g))
+            })
             .count();
         best = best.max(covered);
     }
@@ -633,10 +695,22 @@ fn render_report(
 
     out.push_str("## LLM extraction quality (write path)\n\n");
     out.push_str("| metric | score |\n|---|---|\n");
-    out.push_str(&format!("| fact/preference recall@{topk} | {} |\n", pct(m.fact_recall.0, m.fact_recall.1)));
-    out.push_str(&format!("| causal recall@{topk} | {} |\n", pct(m.causal_recall.0, m.causal_recall.1)));
-    out.push_str(&format!("| relation accuracy | {} |\n", pct(m.relation_accuracy.0, m.relation_accuracy.1)));
-    out.push_str(&format!("| decision attachment | {} |\n", pct(m.decision_attachment.0, m.decision_attachment.1)));
+    out.push_str(&format!(
+        "| fact/preference recall@{topk} | {} |\n",
+        pct(m.fact_recall.0, m.fact_recall.1)
+    ));
+    out.push_str(&format!(
+        "| causal recall@{topk} | {} |\n",
+        pct(m.causal_recall.0, m.causal_recall.1)
+    ));
+    out.push_str(&format!(
+        "| relation accuracy | {} |\n",
+        pct(m.relation_accuracy.0, m.relation_accuracy.1)
+    ));
+    out.push_str(&format!(
+        "| decision attachment | {} |\n",
+        pct(m.decision_attachment.0, m.decision_attachment.1)
+    ));
     out.push_str(&format!(
         "| supersession detected | {} — {} |\n",
         m.supersession_detected, m.supersession_note
@@ -648,9 +722,18 @@ fn render_report(
 
     out.push_str("\n## Read-path mechanics (deterministic)\n\n");
     out.push_str("| metric | score |\n|---|---|\n");
-    out.push_str(&format!("| multi-hop chain recall | {} |\n", pct(m.chain_recall.0, m.chain_recall.1)));
-    out.push_str(&format!("| forward-simulation recall@{topk} | {} |\n", pct(m.simulation_hits.0, m.simulation_hits.1)));
-    out.push_str(&format!("| trap warning detected | {} |\n", m.warning_detected));
+    out.push_str(&format!(
+        "| multi-hop chain recall | {} |\n",
+        pct(m.chain_recall.0, m.chain_recall.1)
+    ));
+    out.push_str(&format!(
+        "| forward-simulation recall@{topk} | {} |\n",
+        pct(m.simulation_hits.0, m.simulation_hits.1)
+    ));
+    out.push_str(&format!(
+        "| trap warning detected | {} |\n",
+        m.warning_detected
+    ));
     out.push_str(&format!(
         "| reversibility (restore) | superseded={} restored={} |\n",
         m.reversibility.0, m.reversibility.1
@@ -658,7 +741,10 @@ fn render_report(
 
     out.push_str("\n## Efficiency\n\n");
     out.push_str("| metric | value |\n|---|---|\n");
-    out.push_str(&format!("| avg context tokens/query | {:.0} |\n", m.avg_ctx_tokens));
+    out.push_str(&format!(
+        "| avg context tokens/query | {:.0} |\n",
+        m.avg_ctx_tokens
+    ));
 
     out.push_str("\n## Extraction fidelity (what the LLM wrote)\n\n");
     out.push_str("| kind | text |\n|---|---|\n");
@@ -700,9 +786,7 @@ async fn run(args: &[String]) -> Result<()> {
             }
             "--out" => {
                 i += 1;
-                out_dir = PathBuf::from(
-                    args.get(i).ok_or_else(|| anyhow!("--out needs a value"))?,
-                );
+                out_dir = PathBuf::from(args.get(i).ok_or_else(|| anyhow!("--out needs a value"))?);
             }
             other => anyhow::bail!("unknown flag: {other}"),
         }

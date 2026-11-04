@@ -8,5 +8,10 @@
     ".": "./index.js"
   },
   "description": "DeepSeek Harness native plugin bridging the causal-memory MCP server: clean-named causal memory tools + a system-prompt section. Zero runtime dependencies.",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
 }

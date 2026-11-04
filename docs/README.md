@@ -8,6 +8,7 @@
 | How to activate the MCP tools in your agent | [CLAUDE.md](../CLAUDE.md) |
 | Version history | [CHANGELOG.md](../CHANGELOG.md) |
 | Where the project is headed | [roadmap.md](roadmap.md) |
+| A dashboard of your own local store (calls, composition, growth) | [scripts/build_memory_dashboard.py](../scripts/build_memory_dashboard.py) |
 
 ## Layout
 

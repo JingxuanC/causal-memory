@@ -2,15 +2,21 @@
 //!
 //! Inspired by DoWhy's refutation framework (Athena's `causal_refuter.py`),
 //! adapted for agent memory graphs where statistical tests (t-test, CAR,
-//! Granger) don't apply. Three graph-structural refuters challenge each
-//! edge's validity:
+//! Granger) don't apply. Five refuters challenge each edge's validity:
 //!
-//! 1. **Confounder test**: neighbor Jaccard overlap (real edges share context)
-//! 2. **Corroboration test**: edge-disjoint path count (real edges have redundancy)
-//! 3. **Placebo test**: random source-node replacement (real edges are specific)
+//! 1. **Confounder test**: neighbor Jaccard overlap (real edges share context);
+//!    abstains on sparse neighborhoods (union < 4)
+//! 2. **Corroboration test**: edge-disjoint path count; absence of redundant
+//!    paths is never grounds for refutation (minimal chains are legitimately
+//!    irredundant in a DAG)
+//! 3. **Placebo test**: random source-node replacement (real edges are
+//!    specific); abstains when the target is a ubiquitous hub
+//! 4. **Backdoor test**: common-ancestor paths reaching both endpoints
+//! 5. **Temporal test**: cause must not postdate its effect (event_time);
+//!    abstains when either endpoint has no timestamp
 //!
-//! Each refuter returns Robust / Inconclusive / Refuted. An edge passing
-//! ≥2 tests gets grade A/B; failing ≥2 gets D/F.
+//! Each refuter returns Robust / Inconclusive / Refuted. Grade: A (5/5
+//! robust) → F (≥2 refuted). Calibration: docs/evaluations/refuter-calibration.md.
 
 use std::collections::{HashMap, HashSet};
 
@@ -41,15 +47,28 @@ pub struct RefutationResult {
 }
 
 impl RefutationResult {
-    /// Grade from test results: A (3/3 robust) → F (2+ refuted).
+    /// Grade from test results: A (5/5 robust) → F (2+ refuted).
+    /// Tuned for 5 refuters (confounder / corroboration / placebo / backdoor / temporal).
     fn grade(tests: &[SingleTest]) -> char {
-        let robust = tests.iter().filter(|t| t.result == TestResult::Robust).count();
-        let refuted = tests.iter().filter(|t| t.result == TestResult::Refuted).count();
-        if robust >= 3 { 'A' }
-        else if robust >= 2 && refuted == 0 { 'B' }
-        else if refuted == 0 { 'C' }
-        else if refuted >= 2 { 'F' }
-        else { 'D' }
+        let robust = tests
+            .iter()
+            .filter(|t| t.result == TestResult::Robust)
+            .count();
+        let refuted = tests
+            .iter()
+            .filter(|t| t.result == TestResult::Refuted)
+            .count();
+        if robust >= 5 {
+            'A'
+        } else if robust >= 4 && refuted == 0 {
+            'B'
+        } else if refuted == 0 {
+            'C'
+        } else if refuted >= 2 {
+            'F'
+        } else {
+            'D'
+        }
     }
 }
 
@@ -80,8 +99,10 @@ impl<'a> EdgeRefuter<'a> {
         let t1 = self.confounder_test(from, to);
         let t2 = self.corroboration_test(from, to, edge_idx);
         let t3 = self.placebo_test(from, to);
+        let t4 = self.backdoor_test(from, to, edge_idx);
+        let t5 = self.temporal_test(from, to);
 
-        let tests = vec![t1, t2, t3];
+        let tests = vec![t1, t2, t3, t4, t5];
         let grade = RefutationResult::grade(&tests);
         RefutationResult { grade, tests }
     }
@@ -114,26 +135,61 @@ impl<'a> EdgeRefuter<'a> {
         let neighbors_to = self.graph.all_neighbors(to);
 
         // Exclude each other from the sets
-        let nf: HashSet<u32> = neighbors_from.iter().copied().filter(|&n| n != to).collect();
-        let nt: HashSet<u32> = neighbors_to.iter().copied().filter(|&n| n != from).collect();
+        let nf: HashSet<u32> = neighbors_from
+            .iter()
+            .copied()
+            .filter(|&n| n != to)
+            .collect();
+        let nt: HashSet<u32> = neighbors_to
+            .iter()
+            .copied()
+            .filter(|&n| n != from)
+            .collect();
 
         let intersection = nf.intersection(&nt).count();
         let union = nf.len() + nt.len() - intersection;
-        let jaccard = if union > 0 {
+
+        // Calibration finding (refuter_calibration, 2026-09-08): on sparse
+        // graphs, Jaccard over tiny neighbor sets is uninformative — with
+        // union < 4 the test cannot distinguish "no shared context" from
+        // "too little data". Abstain instead of refuting.
+        let jaccard = if union >= 4 {
             intersection as f32 / union as f32
         } else {
-            0.0
+            0.5 // neutral
         };
 
-        let (result, detail) = if jaccard >= 0.15 {
-            (TestResult::Robust, format!("High neighbor overlap (J={:.3}): shared context", jaccard))
+        let (result, detail) = if union < 4 {
+            (
+                TestResult::Inconclusive,
+                format!(
+                    "Only {} shared neighbors — too sparse to judge overlap",
+                    union
+                ),
+            )
+        } else if jaccard >= 0.15 {
+            (
+                TestResult::Robust,
+                format!("High neighbor overlap (J={:.3}): shared context", jaccard),
+            )
         } else if jaccard < 0.03 {
-            (TestResult::Refuted, format!("No neighbor overlap (J={:.3}): likely spurious", jaccard))
+            (
+                TestResult::Refuted,
+                format!("No neighbor overlap (J={:.3}): likely spurious", jaccard),
+            )
         } else {
-            (TestResult::Inconclusive, format!("Moderate overlap (J={:.3})", jaccard))
+            (
+                TestResult::Inconclusive,
+                format!("Moderate overlap (J={:.3})", jaccard),
+            )
         };
 
-        SingleTest { name: "confounder", result, score: jaccard, detail }
+        SingleTest {
+            name: "confounder",
+            result,
+            score: jaccard,
+            detail,
+        }
     }
 
     // ─── Refuter 2: Corroboration (edge-disjoint paths) ────────────────
@@ -143,17 +199,30 @@ impl<'a> EdgeRefuter<'a> {
     fn corroboration_test(&self, from: u32, to: u32, exclude_edge: usize) -> SingleTest {
         let alt_paths = self.count_simple_paths(from, to, exclude_edge, 4);
 
-        let in_degree_to = self.graph.in_degree(to);
-
+        // Calibration finding (refuter_calibration, 2026-09-08): "no
+        // alternative path" is NOT evidence against a true direct edge — in a
+        // DAG, minimal causal chains (X→Y→Z) legitimately have zero redundant
+        // paths, and this branch refuted 38% of ground-truth-true edges.
+        // Absence of corroboration means we cannot corroborate → Inconclusive,
+        // never Refuted.
         let (result, detail) = if alt_paths >= 1 {
-            (TestResult::Robust, format!("{} alternative paths found", alt_paths))
-        } else if in_degree_to >= 2 {
-            (TestResult::Inconclusive, format!("No alt path, but in-degree={}", in_degree_to))
+            (
+                TestResult::Robust,
+                format!("{} alternative paths found", alt_paths),
+            )
         } else {
-            (TestResult::Refuted, "No alternative path and low in-degree — isolated edge".to_string())
+            (
+                TestResult::Inconclusive,
+                "No alternative path — direct edge not structurally corroborated".to_string(),
+            )
         };
 
-        SingleTest { name: "corroboration", result, score: alt_paths as f32, detail }
+        SingleTest {
+            name: "corroboration",
+            result,
+            score: alt_paths as f32,
+            detail,
+        }
     }
 
     // ─── Refuter 3: Placebo (activation specificity) ───────────────────
@@ -205,24 +274,147 @@ impl<'a> EdgeRefuter<'a> {
             0.0
         };
 
+        // Hub abstention (calibration: placebo refuted 29% of ground-truth-true
+        // edges in dense graphs). When nearly all sampled nodes reach Y, Y is a
+        // hub and "who reaches Y" carries no information about the X→Y claim.
+        if placebo_count >= 3 && placebo_rate > 0.8 {
+            return SingleTest {
+                name: "placebo",
+                result: TestResult::Inconclusive,
+                score: specificity,
+                detail: format!(
+                    "Y is ubiquitously reachable ({:.0}% of random nodes) — specificity uninformative",
+                    placebo_rate * 100.0
+                ),
+            };
+        }
+
         let (result, detail) = if placebo_count < 3 {
-            (TestResult::Inconclusive, format!("Only {} placebo samples", placebo_count))
+            (
+                TestResult::Inconclusive,
+                format!("Only {} placebo samples", placebo_count),
+            )
         } else if specificity >= 2.0 {
-            (TestResult::Robust, format!("Specificity {:.1}x: X reaches Y but random nodes rarely do", specificity))
+            (
+                TestResult::Robust,
+                format!(
+                    "Specificity {:.1}x: X reaches Y but random nodes rarely do",
+                    specificity
+                ),
+            )
         } else if specificity < 1.0 {
-            (TestResult::Refuted, format!("Specificity {:.1}x: random nodes reach Y just as easily", specificity))
+            (
+                TestResult::Refuted,
+                format!(
+                    "Specificity {:.1}x: random nodes reach Y just as easily",
+                    specificity
+                ),
+            )
         } else {
-            (TestResult::Inconclusive, format!("Specificity {:.1}x: moderate", specificity))
+            (
+                TestResult::Inconclusive,
+                format!("Specificity {:.1}x: moderate", specificity),
+            )
         };
 
-        SingleTest { name: "placebo", result, score: specificity, detail }
+        SingleTest {
+            name: "placebo",
+            result,
+            score: specificity,
+            detail,
+        }
+    }
+
+    // ─── Refuter 4: Backdoor path (d-separation) ─────────────────────────
+
+    /// Real causal edge X→Y should not be fully explained by a confounding path.
+    /// Remove the candidate edge and check if X and Y remain d-connected.
+    /// If d-separated, the edge is structurally necessary → Robust.
+    /// If d-connected, a backdoor path exists → Refuted.
+    fn backdoor_test(&self, from: u32, to: u32, exclude_edge: usize) -> SingleTest {
+        let d_separated = self.graph.is_d_separated(from, to, &[], Some(exclude_edge));
+
+        let (result, detail, score) = if d_separated {
+            (
+                TestResult::Robust,
+                "No backdoor path: edge is structurally necessary".to_string(),
+                0.0,
+            )
+        } else {
+            (
+                TestResult::Refuted,
+                "Backdoor path exists: association likely confounded, not causal".to_string(),
+                1.0,
+            )
+        };
+
+        SingleTest {
+            name: "backdoor",
+            result,
+            score,
+            detail,
+        }
+    }
+
+    // ─── Refuter 5: Temporal consistency (cause precedes effect) ─────────
+
+    /// A recorded causal edge X→Y with event_time(X) > event_time(Y) is
+    /// temporally impossible — the "effect" was recorded before its "cause".
+    /// This is the one refuter that is nearly free of false positives on
+    /// ground-truth-true edges (calibration: it lifts the pseudo-edge flag
+    /// rate from ~36% to ~60%+ without touching the true-edge keep rate,
+    /// breaking the structural keep/flag frontier documented in
+    /// docs/evaluations/refuter-calibration.md).
+    ///
+    /// Abstains when either endpoint has no timestamp (event_time == 0),
+    /// and treats exact ties as Inconclusive (coarse/same-tick recording).
+    fn temporal_test(&self, from: u32, to: u32) -> SingleTest {
+        let tx = self.graph.node_event_time(from as usize);
+        let ty = self.graph.node_event_time(to as usize);
+
+        let (result, detail) = if tx == 0 || ty == 0 {
+            (
+                TestResult::Inconclusive,
+                "No temporal data on one or both endpoints".to_string(),
+            )
+        } else if tx > ty {
+            (
+                TestResult::Refuted,
+                format!(
+                    "Effect precedes cause (t_cause={tx} > t_effect={ty}): temporally impossible"
+                ),
+            )
+        } else if tx == ty {
+            (
+                TestResult::Inconclusive,
+                format!("Simultaneous timestamps (t={tx}): temporal order unresolvable"),
+            )
+        } else {
+            (
+                TestResult::Robust,
+                format!("Cause precedes effect (t_cause={tx} < t_effect={ty})"),
+            )
+        };
+
+        SingleTest {
+            name: "temporal",
+            result,
+            score: (ty - tx) as f32,
+            detail,
+        }
     }
 
     // ─── Graph helpers ─────────────────────────────────────────────────
 
     /// Count simple paths from `from` to `to` (excluding one edge), up to max_hops.
     /// Uses bounded DFS.
-    fn count_simple_paths(&self, from: u32, to: u32, exclude_edge: usize, max_hops: usize) -> usize {
+    fn count_simple_paths(
+        &self,
+        from: u32,
+        to: u32,
+        exclude_edge: usize,
+        max_hops: usize,
+    ) -> usize {
         let mut count = 0;
         let mut visited = HashSet::new();
         visited.insert(from);
@@ -258,7 +450,14 @@ impl<'a> EdgeRefuter<'a> {
                 continue;
             }
             visited.insert(neighbor);
-            self.dfs_count(neighbor, target, exclude_edge, hops_left - 1, visited, count);
+            self.dfs_count(
+                neighbor,
+                target,
+                exclude_edge,
+                hops_left - 1,
+                visited,
+                count,
+            );
             visited.remove(&neighbor);
         }
     }
@@ -292,5 +491,209 @@ impl<'a> EdgeRefuter<'a> {
             frontier = next;
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hippocampus::{EdgeData, NodeData, Relation};
+
+    fn build_graph(edges: &[(&str, &str)]) -> CausalGraph {
+        let mut ids: Vec<&str> = Vec::new();
+        for &(a, b) in edges {
+            if !ids.contains(&a) {
+                ids.push(a);
+            }
+            if !ids.contains(&b) {
+                ids.push(b);
+            }
+        }
+        let nodes: Vec<NodeData> = ids
+            .iter()
+            .map(|id| NodeData {
+                id: id.to_string(),
+                text: id.to_string(),
+                event_time: 0,
+                q_value: 0.5,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: None,
+                scope: None,
+            })
+            .collect();
+        let edge_data: Vec<EdgeData> = edges
+            .iter()
+            .map(|(a, b)| EdgeData {
+                from_id: a.to_string(),
+                to_id: b.to_string(),
+                relation: Relation::Caused,
+                weight: 1.0,
+                valid: true,
+            })
+            .collect();
+        CausalGraph::build(&nodes, &edge_data)
+    }
+
+    #[test]
+    fn backdoor_detects_confounded_edge() {
+        // B→A, B→C, A→C: A→C has a backdoor path through B (common cause).
+        let g = build_graph(&[("B", "A"), ("B", "C"), ("A", "C")]);
+        let refuter = EdgeRefuter::new(&g);
+        // Find the A→C edge.
+        let a_idx = g.node_index_of("A").unwrap();
+        let c_idx = g.node_index_of("C").unwrap();
+        let ac_edge = (0..g.num_edges())
+            .find(|&i| g.edge_source_node(i) == a_idx && g.edge_target(i) == c_idx)
+            .expect("A→C edge must exist");
+        let result = refuter.refute_edge(ac_edge);
+        let backdoor = result.tests.iter().find(|t| t.name == "backdoor").unwrap();
+        assert!(
+            backdoor.result == TestResult::Refuted || backdoor.result == TestResult::Inconclusive,
+            "confounded A→C must trigger backdoor refuter, got {:?}: {}",
+            backdoor.result,
+            backdoor.detail
+        );
+    }
+
+    #[test]
+    fn backdoor_passes_clean_edge() {
+        // A→B→C: A→B has no confounder.
+        let g = build_graph(&[("A", "B"), ("B", "C")]);
+        let refuter = EdgeRefuter::new(&g);
+        let a_idx = g.node_index_of("A").unwrap();
+        let b_idx = g.node_index_of("B").unwrap();
+        let ab_edge = (0..g.num_edges())
+            .find(|&i| g.edge_source_node(i) == a_idx && g.edge_target(i) == b_idx)
+            .expect("A→B edge must exist");
+        let result = refuter.refute_edge(ab_edge);
+        let backdoor = result.tests.iter().find(|t| t.name == "backdoor").unwrap();
+        assert_eq!(
+            backdoor.result,
+            TestResult::Robust,
+            "clean A→B must be robust, got: {}",
+            backdoor.detail
+        );
+    }
+
+    #[test]
+    fn backdoor_detects_fork_confounder() {
+        // A←B→C: A→C doesn't exist, but if we add it, it should be flagged.
+        // Here we test the existing A←B edge — B→C creates a backdoor for A←B? No,
+        // backdoor for A←B means a common cause of A and B. B IS the common cause.
+        // The A←B edge itself is the causal claim, so B is not a confounder of its own edge.
+        // Instead test: add a fake A→C edge and check it gets flagged.
+        let g = build_graph(&[("B", "A"), ("B", "C")]);
+        let refuter = EdgeRefuter::new(&g);
+        // B→A edge: B is the source, not a confounder of itself → robust
+        let b_idx = g.node_index_of("B").unwrap();
+        let a_idx = g.node_index_of("A").unwrap();
+        let ba_edge = (0..g.num_edges())
+            .find(|&i| g.edge_source_node(i) == b_idx && g.edge_target(i) == a_idx)
+            .expect("B→A edge must exist");
+        let result = refuter.refute_edge(ba_edge);
+        let backdoor = result.tests.iter().find(|t| t.name == "backdoor").unwrap();
+        assert_eq!(
+            backdoor.result,
+            TestResult::Robust,
+            "B→A has no ancestor of B reaching A, got: {}",
+            backdoor.detail
+        );
+    }
+
+    // ─── Temporal refuter tests ─────────────────────────────────────
+
+    fn build_graph_with_times(edges: &[(&str, &str, i64, i64)]) -> CausalGraph {
+        let mut ids: Vec<&str> = Vec::new();
+        for &(a, b, _, _) in edges {
+            if !ids.contains(&a) {
+                ids.push(a);
+            }
+            if !ids.contains(&b) {
+                ids.push(b);
+            }
+        }
+        // time lookup: first occurrence of an id wins
+        let time_of = |id: &str| -> i64 {
+            edges
+                .iter()
+                .find(|e| e.0 == id)
+                .map(|e| e.2)
+                .or_else(|| edges.iter().find(|e| e.1 == id).map(|e| e.3))
+                .unwrap_or(0)
+        };
+        let nodes: Vec<NodeData> = ids
+            .iter()
+            .map(|id| NodeData {
+                id: id.to_string(),
+                text: id.to_string(),
+                event_time: time_of(id),
+                q_value: 0.5,
+                replay_count: 0,
+                last_activated: 0,
+                task_tag: None,
+                scope: None,
+            })
+            .collect();
+        let edge_data: Vec<EdgeData> = edges
+            .iter()
+            .map(|(a, b, _, _)| EdgeData {
+                from_id: a.to_string(),
+                to_id: b.to_string(),
+                relation: Relation::Caused,
+                weight: 1.0,
+                valid: true,
+            })
+            .collect();
+        CausalGraph::build(&nodes, &edge_data)
+    }
+
+    fn temporal_of(g: &CausalGraph, refuter: &EdgeRefuter, from: &str, to: &str) -> TestResult {
+        let fi = g.node_index_of(from).unwrap();
+        let ti = g.node_index_of(to).unwrap();
+        let eidx = (0..g.num_edges())
+            .find(|&i| g.edge_source_node(i) == fi && g.edge_target(i) == ti)
+            .expect("edge must exist");
+        refuter
+            .refute_edge(eidx)
+            .tests
+            .iter()
+            .find(|t| t.name == "temporal")
+            .unwrap()
+            .result
+    }
+
+    #[test]
+    fn temporal_refutes_inverted_edge() {
+        // A happened at t=20, B at t=10: A→B claims effect preceded cause.
+        let g = build_graph_with_times(&[("A", "B", 20, 10)]);
+        let refuter = EdgeRefuter::new(&g);
+        assert_eq!(
+            temporal_of(&g, &refuter, "A", "B"),
+            TestResult::Refuted,
+            "inverted timestamps must be refuted"
+        );
+    }
+
+    #[test]
+    fn temporal_passes_ordered_edge() {
+        let g = build_graph_with_times(&[("A", "B", 10, 20)]);
+        let refuter = EdgeRefuter::new(&g);
+        assert_eq!(
+            temporal_of(&g, &refuter, "A", "B"),
+            TestResult::Robust,
+            "cause-before-effect must be robust"
+        );
+    }
+
+    #[test]
+    fn temporal_abstains_without_timestamps() {
+        let g = build_graph(&[("A", "B")]); // build_graph uses event_time = 0
+        let refuter = EdgeRefuter::new(&g);
+        assert_eq!(
+            temporal_of(&g, &refuter, "A", "B"),
+            TestResult::Inconclusive,
+            "unset timestamps must abstain"
+        );
     }
 }

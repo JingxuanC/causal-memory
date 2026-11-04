@@ -29,10 +29,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::PromptVersion;
 use anyhow::{anyhow, Context, Result};
 use causal_memory::store::CausalStore;
 use chrono::Utc;
-use crate::PromptVersion;
 use serde::Serialize;
 
 use super::{
@@ -436,8 +436,9 @@ fn print_comparison(summary: &CompactSummary) {
 
 pub(crate) async fn run(args: CompactArgs) -> Result<()> {
     let cfg = LlmConfig::from_env()?;
-    let embedder: crate::SharedEmbedder =
-        std::sync::Arc::new(tokio::sync::Mutex::new(causal_memory::embed::init_embedder()));
+    let embedder: crate::SharedEmbedder = std::sync::Arc::new(tokio::sync::Mutex::new(
+        causal_memory::embed::init_embedder(),
+    ));
     eprintln!("LLM: {} @ {}", cfg.model, cfg.api_base);
     eprintln!(
         "compact: k={} prompt={} (topk={})",
@@ -534,7 +535,7 @@ pub(crate) async fn run(args: CompactArgs) -> Result<()> {
             qas.clone(),
             COMPACT_TOPK,
             args.concurrency,
-            false, // compact experiment is causal/text-only; no fact layer
+            false,             // compact experiment is causal/text-only; no fact layer
             PromptVersion::V1, // compact experiment uses legacy prompt
             crate::JudgeStyle::Strict,
             false, // search_only: compact experiment always answers+judges
@@ -562,7 +563,7 @@ pub(crate) async fn run(args: CompactArgs) -> Result<()> {
             qas,
             COMPACT_TOPK,
             args.concurrency,
-            false, // compact experiment is causal/text-only; no fact layer
+            false,             // compact experiment is causal/text-only; no fact layer
             PromptVersion::V1, // compact experiment uses legacy prompt
             crate::JudgeStyle::Strict,
             false, // search_only: compact experiment always answers+judges

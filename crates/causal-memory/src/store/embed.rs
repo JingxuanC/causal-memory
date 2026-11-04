@@ -26,6 +26,95 @@ impl CausalStore {
         Ok(())
     }
 
+    /// Store/replace the embedding of a chunk (schema v19) — the raw-turn
+    /// semantic leg. Mirrors `put_embedding`/`put_fact_embedding`.
+    pub fn put_chunk_embedding(&self, chunk_id: &str, model: &str, vector: &[f32]) -> Result<()> {
+        let conn = self.acquire()?;
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, model, vector, created_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(chunk_id) DO UPDATE SET
+                 model = excluded.model,
+                 vector = excluded.vector,
+                 created_at = excluded.created_at",
+            params![
+                chunk_id,
+                model,
+                crate::embed::vec_to_blob(vector),
+                chrono::Utc::now().timestamp()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Semantic chunk search: cosine-rank `query_vec` against every stored
+    /// chunk vector. Brute-force scan, same argument as the edge/fact
+    /// variants — the vector store is bounded by what the write path chose
+    /// to embed (write-time embedding is opt-in). The JOIN drops embeddings
+    /// whose chunk was deleted, so a returned id is always a live graph
+    /// node id.
+    pub fn search_chunks_semantic(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+    ) -> Result<Vec<(String, f64)>> {
+        let conn = self.acquire()?;
+        let mut stmt = conn.prepare(
+            "SELECT c.id, e.vector
+             FROM chunks c
+             JOIN chunk_embeddings e ON e.chunk_id = c.id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut scored: Vec<(String, f64)> = rows
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
+            .filter_map(|(id, blob)| {
+                let vec = crate::embed::blob_to_vec(&blob).ok()?;
+                let sim = crate::embed::cosine_similarity(query_vec, &vec);
+                Some((id, sim))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+        Ok(scored)
+    }
+
+    /// Chunks that have no embedding yet (for CLI backfill), as
+    /// (chunk_id, text) pairs. `limit = 0` means all — the caller owns the
+    /// "embed everything" decision; the write path only embeds what it is
+    /// asked to.
+    pub fn chunks_without_embedding(&self, limit: usize) -> Result<Vec<(String, String)>> {
+        let conn = self.acquire()?;
+        let (sql, binds): (&str, Vec<Box<dyn rusqlite::ToSql>>) = if limit == 0 {
+            (
+                "SELECT c.id, c.text
+                 FROM chunks c
+                 LEFT JOIN chunk_embeddings e ON e.chunk_id = c.id
+                 WHERE e.chunk_id IS NULL
+                 ORDER BY c.id",
+                Vec::new(),
+            )
+        } else {
+            (
+                "SELECT c.id, c.text
+                 FROM chunks c
+                 LEFT JOIN chunk_embeddings e ON e.chunk_id = c.id
+                 WHERE e.chunk_id IS NULL
+                 ORDER BY c.id LIMIT ?1",
+                vec![Box::new(limit as i64)],
+            )
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(bind_refs.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| anyhow!("Query failed: {e}"))
+    }
+
     /// Valid edges that have no embedding yet (for CLI backfill).
     /// Returns (edge_id, "decision outcome") pairs. `limit = 0` means all.
     pub fn edges_without_embedding(&self, limit: usize) -> Result<Vec<(i64, String)>> {
